@@ -1,19 +1,8 @@
-# Save as: <repo-root>/.github/workflows/build-mgecg-apk.yml
-# Assumes the noop-mg-ecg/ folder (from noop-mg-ecg-experimental-build.zip)
-# sits at the repo root, unchanged.
-#
-# Run it from the Actions tab (workflow_dispatch = "Run workflow" button),
-# or it fires automatically on any push touching noop-mg-ecg/.
-# When the run finishes, the debug APK is under that run's "Artifacts"
-# section, named noop-mg-ecg-debug.
-
 name: Build NOOP MG ECG Experimental APK
 
 on:
   workflow_dispatch:
   push:
-    paths:
-      - 'noop-mg-ecg/**'
 
 jobs:
   build:
@@ -39,11 +28,10 @@ jobs:
           gradle-version: '8.7'
 
       - name: assembleDebug
-        working-directory: noop-mg-ecg
         run: gradle assembleDebug --stacktrace
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: noop-mg-ecg-debug
-          path: noop-mg-ecg/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
