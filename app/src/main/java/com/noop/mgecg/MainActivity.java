@@ -6,18 +6,29 @@ public class MainActivity extends Activity {
     private static final int REQ=42;
     private BluetoothAdapter adapter; private BluetoothGatt gatt; private BluetoothGattCharacteristic cmdWrite; private int seq=1;
     private TextView log; private Button scanBtn; private final UUID svc=UUID.fromString(Protocol.SERVICE), cmd=UUID.fromString(Protocol.CMD_WRITE), cmdN=UUID.fromString(Protocol.CMD_NOTIFY), dataN=UUID.fromString(Protocol.DATA_NOTIFY), eventN=UUID.fromString(Protocol.EVENT_NOTIFY), extraN=UUID.fromString(Protocol.EXTRA_NOTIFY);
+
+    private final ArrayDeque<Runnable> opQueue = new ArrayDeque<>();
+    private boolean opInFlight = false;
+    private void enqueue(Runnable op){ opQueue.add(op); drainQueue(); }
+    private void drainQueue(){ if(opInFlight || opQueue.isEmpty()) return; opInFlight=true; opQueue.poll().run(); }
+    private void opDone(){ opInFlight=false; drainQueue(); }
+
     private final BluetoothGattCallback cb=new BluetoothGattCallback(){
         @Override public void onConnectionStateChange(BluetoothGatt g,int status,int state){ line("GATT state="+state+" status="+status); if(state==BluetoothProfile.STATE_CONNECTED){ if(Build.VERSION.SDK_INT>=21) g.requestMtu(247); g.discoverServices(); } }
         @Override public void onMtuChanged(BluetoothGatt g,int mtu,int status){ line("MTU="+mtu+" status="+status); }
-        @Override public void onServicesDiscovered(BluetoothGatt g,int status){ line("services discovered status="+status); BluetoothGattService s=g.getService(svc); if(s==null){line("ERROR: fd4b service not found");return;} cmdWrite=s.getCharacteristic(cmd); subscribe(g,s.getCharacteristic(cmdN)); subscribe(g,s.getCharacteristic(eventN)); subscribe(g,s.getCharacteristic(dataN)); subscribe(g,s.getCharacteristic(extraN));
-            if(cmdWrite!=null){ line("TX CLIENT_HELLO (confirmed write)"); cmdWrite.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT); cmdWrite.setValue(Protocol.clientHello()); g.writeCharacteristic(cmdWrite); } }
-        @Override public void onCharacteristicWrite(BluetoothGatt g,BluetoothGattCharacteristic c,int status){ line("WRITE " + c.getUuid()+" status="+status); }
+        @Override public void onServicesDiscovered(BluetoothGatt g,int status){ line("services discovered status="+status); BluetoothGattService s=g.getService(svc); if(s==null){line("ERROR: fd4b service not found");return;} cmdWrite=s.getCharacteristic(cmd);
+            subscribe(g,s.getCharacteristic(cmdN)); subscribe(g,s.getCharacteristic(eventN)); subscribe(g,s.getCharacteristic(dataN)); subscribe(g,s.getCharacteristic(extraN));
+            if(cmdWrite!=null){ enqueue(()->{ line("TX CLIENT_HELLO (confirmed write)"); cmdWrite.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT); cmdWrite.setValue(Protocol.clientHello()); if(!g.writeCharacteristic(cmdWrite)){line("writeCharacteristic() rejected (CLIENT_HELLO)");opDone();} }); } }
+        @Override public void onCharacteristicWrite(BluetoothGatt g,BluetoothGattCharacteristic c,int status){ line("WRITE " + c.getUuid()+" status="+status); opDone(); }
+        @Override public void onDescriptorWrite(BluetoothGatt g,BluetoothGattDescriptor d,int status){ line("CCCD "+shortUuid(d.getCharacteristic().getUuid())+" status="+status); opDone(); }
         @Override public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c,byte[] value){ line("RX "+shortUuid(c.getUuid())+"  "+Protocol.hex(value)+"  "+Protocol.frameSummary(value)); }
         @Override public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c){ byte[] v=c.getValue(); onCharacteristicChanged(g,c,v); }
     };
     private String shortUuid(UUID u){return u.toString().substring(4,8);}
-    private void subscribe(BluetoothGatt g,BluetoothGattCharacteristic c){ if(c==null)return; if(Build.VERSION.SDK_INT>=31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=PackageManager.PERMISSION_GRANTED)return; g.setCharacteristicNotification(c,true); BluetoothGattDescriptor d=c.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")); if(d!=null){d.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE); g.writeDescriptor(d);} line("subscribe "+shortUuid(c.getUuid())); }
-    private void send(int opcode,int arg,String name){ if(gatt==null||cmdWrite==null){line("NOT CONNECTED");return;} byte[] f=Protocol.labrador(opcode,arg,seq++); line("TX "+name+"  "+Protocol.hex(f)); cmdWrite.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT); cmdWrite.setValue(f); gatt.writeCharacteristic(cmdWrite); }
+    private void subscribe(BluetoothGatt g,BluetoothGattCharacteristic c){ if(c==null)return; if(Build.VERSION.SDK_INT>=31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=PackageManager.PERMISSION_GRANTED)return;
+        enqueue(()->{ g.setCharacteristicNotification(c,true); BluetoothGattDescriptor d=c.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")); if(d!=null){d.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE); if(!g.writeDescriptor(d)){line("writeDescriptor() rejected "+shortUuid(c.getUuid()));opDone();}}else{opDone();} line("subscribe "+shortUuid(c.getUuid())); });
+    }
+    private void send(int opcode,int arg,String name){ if(gatt==null||cmdWrite==null){line("NOT CONNECTED");return;} enqueue(()->{ byte[] f=Protocol.labrador(opcode,arg,seq++); line("TX "+name+"  "+Protocol.hex(f)); cmdWrite.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT); cmdWrite.setValue(f); if(!gatt.writeCharacteristic(cmdWrite)){line("writeCharacteristic() rejected ("+name+")");opDone();} }); }
     @Override protected void onCreate(Bundle b){super.onCreate(b); adapter=((BluetoothManager)getSystemService(BLUETOOTH_SERVICE)).getAdapter(); buildUi(); requestPerms();}
     private void buildUi(){ LinearLayout root=new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(24,24,24,24); TextView title=new TextView(this); title.setText("NOOP MG ECG Experimental\nWHOOP 5/MG Labrador command probe"); title.setTextSize(20); root.addView(title,new LinearLayout.LayoutParams(-1,-2));
         scanBtn=new Button(this);scanBtn.setText("SCAN FOR WHOOP 5/MG");scanBtn.setOnClickListener(v->scan());root.addView(scanBtn);
