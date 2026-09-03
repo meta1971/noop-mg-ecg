@@ -10,13 +10,16 @@ public class MainActivity extends Activity {
 
     private final ArrayDeque<Runnable> opQueue = new ArrayDeque<>();
     private boolean opInFlight = false;
+    private final Handler mainH = new Handler(Looper.getMainLooper());
+    private Runnable timeoutRunnable;
     private void enqueue(Runnable op){ opQueue.add(op); drainQueue(); }
-    private void drainQueue(){ if(opInFlight || opQueue.isEmpty()) return; opInFlight=true; opQueue.poll().run(); }
-    private void opDone(){ opInFlight=false; drainQueue(); }
+    private void drainQueue(){ if(opInFlight || opQueue.isEmpty()) return; opInFlight=true; timeoutRunnable=()->{ line("TIMEOUT - no callback, unsticking queue"); timeoutRunnable=null; opInFlight=false; drainQueue(); }; mainH.postDelayed(timeoutRunnable,4000); opQueue.poll().run(); }
+    private void opDone(){ if(timeoutRunnable!=null){ mainH.removeCallbacks(timeoutRunnable); timeoutRunnable=null; } opInFlight=false; drainQueue(); }
 
     private final BluetoothGattCallback cb=new BluetoothGattCallback(){
-        @Override public void onConnectionStateChange(BluetoothGatt g,int status,int state){ line("GATT state="+state+" status="+status); if(state==BluetoothProfile.STATE_CONNECTED){ if(Build.VERSION.SDK_INT>=21) g.requestMtu(247); g.discoverServices(); } }
-        @Override public void onMtuChanged(BluetoothGatt g,int mtu,int status){ line("MTU="+mtu+" status="+status); }
+        @Override public void onConnectionStateChange(BluetoothGatt g,int status,int state){ line("GATT state="+state+" status="+status);
+            if(state==BluetoothProfile.STATE_CONNECTED){ g.discoverServices(); }
+            else if(state==BluetoothProfile.STATE_DISCONNECTED){ try{g.close();}catch(Exception ignored){} if(timeoutRunnable!=null){mainH.removeCallbacks(timeoutRunnable);timeoutRunnable=null;} gatt=null; cmdWrite=null; opQueue.clear(); opInFlight=false; } }
         @Override public void onServicesDiscovered(BluetoothGatt g,int status){ line("services discovered status="+status); BluetoothGattService s=g.getService(svc); if(s==null){line("ERROR: fd4b service not found");return;} cmdWrite=s.getCharacteristic(cmd);
             subscribe(g,s.getCharacteristic(cmdN)); subscribe(g,s.getCharacteristic(eventN)); subscribe(g,s.getCharacteristic(dataN)); subscribe(g,s.getCharacteristic(extraN));
             if(cmdWrite!=null){ enqueue(()->{ line("TX CLIENT_HELLO (confirmed write)"); cmdWrite.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT); cmdWrite.setValue(Protocol.clientHello()); if(!g.writeCharacteristic(cmdWrite)){line("writeCharacteristic() rejected (CLIENT_HELLO)");opDone();} }); } }
