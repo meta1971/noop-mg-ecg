@@ -48,10 +48,9 @@ public class MainActivity extends Activity {
             line("RX "+shortUuid(c.getUuid())+"  "+Protocol.hex(value)+"  "+Protocol.frameSummary(value));
             scanForTimestamps(value);
             if(value.length>=11 && (value[0]&0xff)==0xAA){
-                int frType=value[8]&0xff, frCmd=value[10]&0xff;
+                int frType=value[8]&0xff, frCmd=value[10]&0xff, frSeq=value[9]&0xff;
                 if("0004".equals(shortUuid(c.getUuid())) && frType==48 && frCmd==0x1D){
-                    line("Recording-complete event matched -> auto-firing guessed PULL (type 0x2F cmd 0x01 arg 0x00)");
-                    sendCustom(0x2F,0x01,0x00);
+                    line(String.format("Recording-complete/reminder event (seq=0x%02X) - try a pull guess via the custom frame box now",frSeq));
                 }
             }
         }
