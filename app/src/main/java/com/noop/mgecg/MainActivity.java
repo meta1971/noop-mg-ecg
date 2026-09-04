@@ -37,6 +37,7 @@ public class MainActivity extends Activity {
     private TextView log;
     private Button scanBtn;
     private EditText customInput;
+    private EditText clockInput;
     private ScrollView scrollView;
 
     private final UUID svc =
@@ -758,6 +759,55 @@ public class MainActivity extends Activity {
     }
 
     /*
+     * Send a 4-byte-argument frame carrying the current Unix
+     * time, for experimenting with a possible SET_CLOCK opcode.
+     *
+     * Uses Protocol.labradorU32() rather than sendNamed(), since
+     * sendNamed()/Protocol.labrador() only support a single arg
+     * byte.
+     *
+     * type/cmd are unconfirmed - this is deliberately a fast,
+     * no-rebuild way to try different cmd guesses.
+     */
+    private void sendClockGuess(int type, int cmd) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+        final long epochNow = System.currentTimeMillis() / 1000L;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labradorU32(
+                    type, cmd, epochNow, thisSeq);
+
+            line("");
+            line("TX SET_CLOCK GUESS");
+            line("TX TYPE =0x" + String.format("%02X", type));
+            line("TX CMD  =0x" + String.format("%02X", cmd));
+            line("TX ARG4 =0x" + String.format("%08X", epochNow));
+            line("TX EPOCH=" + epochNow +
+                    " (" + new Date(epochNow * 1000L) + ")");
+            line("TX SEQ  =0x" +
+                    String.format("%02X", thisSeq & 0xff));
+            line("TX LEN  =" + f.length);
+            line("TX RAW  =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (SET_CLOCK GUESS)");
+                opDone();
+            }
+        });
+    }
+
+    /*
      * ------------------------------------------------------------------
      * Notification subscriptions
      * ------------------------------------------------------------------
@@ -1093,6 +1143,68 @@ public class MainActivity extends Activity {
                         });
 
         root.addView(sendCustomBtn);
+
+        /*
+         * Fast-iteration SET_CLOCK guess: type + cmd only,
+         * current Unix time is filled in automatically as the
+         * 4-byte argument.
+         */
+        clockInput = new EditText(this);
+
+        clockInput.setHint(
+                "type cmd hex for clock guess, e.g. 23 2C");
+
+        clockInput.setSingleLine(true);
+
+        root.addView(clockInput);
+
+        Button sendClockBtn =
+                btn(
+                        "SET_CLOCK NOW (fill time + send)",
+                        v -> {
+
+                            String text =
+                                    clockInput
+                                            .getText()
+                                            .toString()
+                                            .trim();
+
+                            String[] parts =
+                                    text.split("\\s+");
+
+                            if (parts.length != 2) {
+
+                                line(
+                                        "clock guess needs " +
+                                        "exactly 2 hex bytes: " +
+                                        "type cmd");
+
+                                return;
+                            }
+
+                            try {
+
+                                int t =
+                                        Integer.parseInt(
+                                                parts[0],
+                                                16);
+
+                                int cv =
+                                        Integer.parseInt(
+                                                parts[1],
+                                                16);
+
+                                sendClockGuess(t, cv);
+
+                            } catch (Exception e) {
+
+                                line(
+                                        "parse error: " +
+                                        e.getMessage());
+                            }
+                        });
+
+        root.addView(sendClockBtn);
 
         log =
                 new TextView(this);
