@@ -1,8 +1,5 @@
 package com.noop.mgecg;
 
-import java.io.ByteArrayOutputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.zip.CRC32;
 
 public final class Protocol {
@@ -16,8 +13,10 @@ public final class Protocol {
 
     public static byte[] clientHello() { return hex("AA 01 08 00 00 01 E6 71 23 01 91 01 36 3E 5C 8D"); }
 
-    public static byte[] labrador(int cmd, int arg, int seq) {
-        byte[] inner = new byte[] { 0x23, (byte)seq, (byte)cmd, 0x01, (byte)arg };
+    public static byte[] labrador(int cmd, int arg, int seq) { return labrador(0x23, cmd, arg, seq); }
+
+    public static byte[] labrador(int type, int cmd, int arg, int seq) {
+        byte[] inner = new byte[] { (byte)type, (byte)seq, (byte)cmd, 0x01, (byte)arg };
         CRC32 c = new CRC32(); c.update(inner);
         long crc = c.getValue();
         int declared = inner.length + 4;
@@ -45,5 +44,8 @@ public final class Protocol {
         if(b.length<12 || (b[0]&255)!=0xAA) return "non-puffin/fragment";
         int type=b[8]&255, seq=b[9]&255, cmd=b[10]&255;
         return String.format("type=%d seq=%d cmd=0x%02X",type,seq,cmd);
+    }
+    public static long u32le(byte[] b, int off) {
+        return (b[off]&0xffL) | ((b[off+1]&0xffL)<<8) | ((b[off+2]&0xffL)<<16) | ((b[off+3]&0xffL)<<24);
     }
 }
