@@ -22,8 +22,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
+import android.app.Activity;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -38,7 +37,7 @@ import java.util.Locale;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends Activity {
 
     private static final int REQ_BT = 1001;
 
@@ -259,17 +258,14 @@ public class MainActivity extends AppCompatActivity {
                 )
         );
 
-        if (ActivityCompat.checkSelfPermission(
-                this,
+        if (checkSelfPermission(
                 Manifest.permission.BLUETOOTH_CONNECT
         ) != PackageManager.PERMISSION_GRANTED ||
-                ActivityCompat.checkSelfPermission(
-                        this,
+                checkSelfPermission(
                         Manifest.permission.BLUETOOTH_SCAN
                 ) != PackageManager.PERMISSION_GRANTED) {
 
-            ActivityCompat.requestPermissions(
-                    this,
+            requestPermissions(
                     new String[]{
                             Manifest.permission.BLUETOOTH_SCAN,
                             Manifest.permission.BLUETOOTH_CONNECT
@@ -493,8 +489,7 @@ public class MainActivity extends AppCompatActivity {
 
                         append("GATT CONNECTED");
 
-                        if (ActivityCompat.checkSelfPermission(
-                                MainActivity.this,
+                        if (MainActivity.this.checkSelfPermission(
                                 Manifest.permission.BLUETOOTH_CONNECT
                         ) == PackageManager.PERMISSION_GRANTED) {
 
