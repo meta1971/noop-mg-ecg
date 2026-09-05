@@ -798,6 +798,10 @@ public class MainActivity extends Activity {
          * Safety timeout - if we never see 3 completions,
          * stop waiting rather than hang the experiment state
          * forever.
+         *
+         * Widened from 90s to 240s of extra headroom after real
+         * data showed a completion arriving 262s after experiment
+         * start against the old 210s ceiling.
          */
         mainH.postDelayed(() -> {
 
@@ -815,7 +819,7 @@ public class MainActivity extends Activity {
                 experimentActive = false;
             }
 
-        }, finalIntervalMs * 3 + 90000L);
+        }, finalIntervalMs * 3 + 240000L);
     }
 
     private void fireNextExperimentStart(long intervalMs) {
