@@ -38,6 +38,8 @@ public class MainActivity extends Activity {
     private Button scanBtn;
     private EditText customInput;
     private EditText clockInput;
+    private EditText experimentIntervalInput;
+    private CheckBox autoPullCheckbox;
     private ScrollView scrollView;
 
     private final UUID svc =
@@ -82,6 +84,67 @@ public class MainActivity extends Activity {
      * Count all notifications independently.
      */
     private int rxCount = 0;
+
+    /*
+     * ------------------------------------------------------------------
+     * Controlled 3x-START experiment state
+     * ------------------------------------------------------------------
+     */
+    private boolean experimentActive = false;
+    private int experimentStartsSent = 0;
+    private int experimentCompletionsSeen = 0;
+    private boolean autoPullAfterExperiment = false;
+
+    /*
+     * ------------------------------------------------------------------
+     * Persistent raw log file
+     * ------------------------------------------------------------------
+     */
+    private java.io.File rawLogFile;
+
+    private void initRawLogFile() {
+
+        long epochNow = System.currentTimeMillis() / 1000L;
+
+        rawLogFile = new java.io.File(
+                getExternalFilesDir(null),
+                "labrador_log_" + epochNow + ".txt");
+
+        logRaw("LOG_FILE_OPENED path=" +
+                rawLogFile.getAbsolutePath());
+    }
+
+    /*
+     * Structured, always-persisted, never-truncated log.
+     *
+     * Separate from line(), which is the on-screen scrolling
+     * view and IS capped/trimmed. This file is not.
+     */
+    private void logRaw(String s) {
+
+        if (rawLogFile == null) {
+            return;
+        }
+
+        long ms = System.currentTimeMillis();
+
+        String stamped =
+                new java.text.SimpleDateFormat(
+                        "yyyy-MM-dd HH:mm:ss.SSS",
+                        Locale.US)
+                        .format(new Date(ms)) +
+                "\t" + ms + "\t" + s;
+
+        try (java.io.FileWriter fw =
+                     new java.io.FileWriter(rawLogFile, true)) {
+
+            fw.write(stamped + "\n");
+
+        } catch (Exception e) {
+
+            line("FILE LOG WRITE ERROR: " + e);
+        }
+    }
 
     /*
      * ------------------------------------------------------------------
@@ -253,6 +316,8 @@ public class MainActivity extends Activity {
 
                 labradorActive = false;
                 recordingComplete = false;
+
+                experimentActive = false;
             }
         }
 
@@ -440,14 +505,46 @@ public class MainActivity extends Activity {
                 line("");
                 line("*** RECORDING COMPLETE DETECTED ***");
 
-                /*
-                 * Do NOT automatically fire another experimental
-                 * command here.
-                 *
-                 * For Step 1 we want a clean capture so that we
-                 * know exactly what the WHOOP sends before/after
-                 * the pull.
-                 */
+                logRaw("RECORDING_COMPLETE raw=" +
+                        Protocol.hex(value) +
+                        " experimentActive=" + experimentActive +
+                        " startsSent=" + experimentStartsSent +
+                        " completionsSeenBefore=" +
+                        experimentCompletionsSeen);
+
+                if (experimentActive) {
+
+                    experimentCompletionsSeen++;
+
+                    line("*** EXPERIMENT: completion #" +
+                            experimentCompletionsSeen +
+                            " of 3 seen ***");
+
+                    if (experimentCompletionsSeen >= 3) {
+
+                        line("*** EXPERIMENT: all 3 " +
+                                "completions seen ***");
+
+                        logRaw("EXPERIMENT_ALL_COMPLETIONS_SEEN");
+
+                        if (autoPullAfterExperiment) {
+
+                            line("*** EXPERIMENT: auto-firing " +
+                                    "PULL now ***");
+
+                            logRaw("EXPERIMENT_AUTO_PULL_FIRING");
+
+                            sendCustom(0x2F, 0x01, 0x00);
+
+                        } else {
+
+                            line("(auto-pull not enabled - " +
+                                    "use PULL button manually)");
+                        }
+
+                        experimentActive = false;
+                    }
+                }
             }
         }
 
@@ -490,6 +587,13 @@ public class MainActivity extends Activity {
             byte[] value) {
 
         labradorPacketCount++;
+
+        /*
+         * Always persist the full raw packet, unconditionally -
+         * not just during a controlled experiment.
+         */
+        logRaw("RX_0007_FULL len=" + value.length +
+                " raw=" + Protocol.hex(value));
 
         line("");
         line("LABRADOR 0007 FRAGMENT #" +
@@ -653,6 +757,100 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * Controlled 3x-START experiment
+     * ------------------------------------------------------------------
+     */
+
+    private void runLabradorExperiment() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run experiment");
+            return;
+        }
+
+        long intervalMs;
+
+        try {
+            intervalMs = Long.parseLong(
+                    experimentIntervalInput.getText()
+                            .toString().trim()) * 1000L;
+        } catch (Exception e) {
+            intervalMs = 40000L;
+            line("bad interval, defaulting to 40s");
+        }
+
+        final long finalIntervalMs = intervalMs;
+
+        experimentActive = true;
+        experimentStartsSent = 0;
+        experimentCompletionsSeen = 0;
+
+        line("");
+        line("*** EXPERIMENT BEGIN: 3x LABRADOR_START, " +
+                (intervalMs / 1000) + "s apart ***");
+
+        logRaw("EXPERIMENT_BEGIN interval_ms=" + intervalMs +
+                " auto_pull=" + autoPullAfterExperiment);
+
+        fireNextExperimentStart(finalIntervalMs);
+
+        /*
+         * Safety timeout - if we never see 3 completions,
+         * stop waiting rather than hang the experiment state
+         * forever.
+         */
+        mainH.postDelayed(() -> {
+
+            if (experimentActive &&
+                    experimentCompletionsSeen < 3) {
+
+                line("*** EXPERIMENT TIMEOUT: only saw " +
+                        experimentCompletionsSeen +
+                        "/3 completions, giving up " +
+                        "on auto-pull ***");
+
+                logRaw("EXPERIMENT_TIMEOUT completions_seen=" +
+                        experimentCompletionsSeen);
+
+                experimentActive = false;
+            }
+
+        }, finalIntervalMs * 3 + 90000L);
+    }
+
+    private void fireNextExperimentStart(long intervalMs) {
+
+        if (experimentStartsSent >= 3) {
+
+            line("*** ALL 3 EXPERIMENT STARTS SENT - " +
+                    "waiting for completions ***");
+
+            logRaw("EXPERIMENT_ALL_STARTS_SENT");
+
+            return;
+        }
+
+        experimentStartsSent++;
+
+        int n = experimentStartsSent;
+
+        line("");
+        line("*** EXPERIMENT: firing START #" + n + " of 3 ***");
+
+        logRaw("EXPERIMENT_START_FIRING n=" + n);
+
+        send(0x7C, 1, "EXPERIMENT_LABRADOR_START_" + n);
+
+        if (experimentStartsSent < 3) {
+
+            mainH.postDelayed(
+                    () -> fireNextExperimentStart(intervalMs),
+                    intervalMs);
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
      * Protocol transmission
      * ------------------------------------------------------------------
      */
@@ -699,6 +897,14 @@ public class MainActivity extends Activity {
                             opcode,
                             arg,
                             thisSeq);
+
+            logRaw("TX name=" + name +
+                    " type=0x" + String.format("%02X", type) +
+                    " cmd=0x" + String.format("%02X", opcode) +
+                    " arg=0x" + String.format("%02X", arg) +
+                    " seq=0x" + String.format("%02X",
+                            thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
 
             line("");
             line("TX " + name);
@@ -783,6 +989,14 @@ public class MainActivity extends Activity {
 
             byte[] f = Protocol.labradorU32(
                     type, cmd, epochNow, thisSeq);
+
+            logRaw("TX SET_CLOCK_GUESS type=0x" +
+                    String.format("%02X", type) +
+                    " cmd=0x" + String.format("%02X", cmd) +
+                    " epoch=" + epochNow +
+                    " seq=0x" + String.format("%02X",
+                            thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
 
             line("");
             line("TX SET_CLOCK GUESS");
@@ -927,6 +1141,11 @@ public class MainActivity extends Activity {
         buildUi();
         requestPerms();
 
+        initRawLogFile();
+
+        line("Raw log file: " +
+                rawLogFile.getAbsolutePath());
+
         registerReceiver(
                 bondReceiver,
                 new IntentFilter(
@@ -1054,6 +1273,29 @@ public class MainActivity extends Activity {
                         });
 
         root.addView(stop);
+
+        /*
+         * Controlled 3x-START experiment controls.
+         */
+        experimentIntervalInput = new EditText(this);
+        experimentIntervalInput.setHint(
+                "seconds between STARTs, e.g. 40");
+        experimentIntervalInput.setText("40");
+        experimentIntervalInput.setSingleLine(true);
+        root.addView(experimentIntervalInput);
+
+        autoPullCheckbox = new CheckBox(this);
+        autoPullCheckbox.setText(
+                "Auto-PULL (0x2F 01 00) after 3rd completion");
+        autoPullCheckbox.setOnCheckedChangeListener(
+                (btn2, checked) ->
+                        autoPullAfterExperiment = checked);
+        root.addView(autoPullCheckbox);
+
+        Button runExperimentBtn = btn(
+                "RUN 3x LABRADOR EXPERIMENT",
+                v -> runLabradorExperiment());
+        root.addView(runExperimentBtn);
 
         /*
          * Pull is now explicit rather than automatic.
