@@ -62,6 +62,38 @@ public class MainActivity extends Activity {
             UUID.fromString(Protocol.EXTRA_NOTIFY);
 
     /*
+     * ------------------------------------------------------------------
+     * Standard Bluetooth SIG services discovered via the full GATT
+     * enumeration - Heart Rate and Device Information. Unlike the
+     * fd4b custom protocol, these are publicly documented and
+     * require no command guessing.
+     * ------------------------------------------------------------------
+     */
+    private final UUID hrService =
+            UUID.fromString("0000180D-0000-1000-8000-00805f9b34fb");
+
+    private final UUID hrMeasurement =
+            UUID.fromString("00002A37-0000-1000-8000-00805f9b34fb");
+
+    private final UUID disService =
+            UUID.fromString("0000180A-0000-1000-8000-00805f9b34fb");
+
+    private final UUID manufacturerNameChar =
+            UUID.fromString("00002A29-0000-1000-8000-00805f9b34fb");
+
+    private final UUID modelNumberChar =
+            UUID.fromString("00002A24-0000-1000-8000-00805f9b34fb");
+
+    private final UUID serialNumberChar =
+            UUID.fromString("00002A25-0000-1000-8000-00805f9b34fb");
+
+    private final UUID hardwareRevisionChar =
+            UUID.fromString("00002A26-0000-1000-8000-00805f9b34fb");
+
+    private final UUID firmwareRevisionChar =
+            UUID.fromString("00002A27-0000-1000-8000-00805f9b34fb");
+
+    /*
      * Serialize BLE operations.
      */
     private final ArrayDeque<Runnable> opQueue =
@@ -98,11 +130,11 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
-     * Automated cmd sweep state
+     * Config-value sweep state (GET_DEVICE_CONFIG_VALUE key sweep)
      * ------------------------------------------------------------------
      */
     private boolean sweepActive = false;
-    private int sweepCmd = 0;
+    private int sweepKey = 0;
 
     /*
      * ------------------------------------------------------------------
@@ -411,6 +443,9 @@ public class MainActivity extends Activity {
 
             dumpAllServices(g);
 
+            subscribeHeartRateIfPresent(g);
+            readDeviceInfoIfPresent(g);
+
             BluetoothGattService s =
                     g.getService(svc);
 
@@ -498,6 +533,32 @@ public class MainActivity extends Activity {
         }
 
         /*
+         * Device Information reads - modern signature (API 33+)
+         * supplies value directly.
+         */
+        @Override
+        public void onCharacteristicRead(
+                BluetoothGatt g,
+                BluetoothGattCharacteristic c,
+                byte[] value,
+                int status) {
+
+            handleCharacteristicRead(c, value, status);
+        }
+
+        /*
+         * Older Android read callback.
+         */
+        @Override
+        public void onCharacteristicRead(
+                BluetoothGatt g,
+                BluetoothGattCharacteristic c,
+                int status) {
+
+            handleCharacteristicRead(c, c.getValue(), status);
+        }
+
+        /*
          * Android versions which supply value directly.
          */
         @Override
@@ -575,6 +636,13 @@ public class MainActivity extends Activity {
          */
         if ("0007".equals(uuid)) {
             handleLabradorFragment(value);
+        }
+
+        /*
+         * Standard Bluetooth SIG Heart Rate Measurement.
+         */
+        if (hrMeasurement.equals(c.getUuid())) {
+            parseHeartRate(value);
         }
 
         /*
@@ -677,11 +745,13 @@ public class MainActivity extends Activity {
          * not just during a controlled experiment.
          */
         logRaw("RX_0007_FULL len=" + value.length +
+                " active=" + labradorActive +
                 " raw=" + Protocol.hex(value));
 
         line("");
         line("LABRADOR 0007 FRAGMENT #" +
-                labradorPacketCount);
+                labradorPacketCount +
+                (labradorActive ? " [ACTIVE]" : " [BACKGROUND]"));
 
         line("LABRADOR LENGTH=" +
                 value.length);
@@ -1276,9 +1346,11 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
-     * Automated cmd sweep - walks type=0x23, cmd 0x00-0xFF, arg=0x00,
-     * one per second, logging any reply. Turns hours of manual
-     * type/cmd guessing into one unattended run.
+     * Config-value sweep - targets cmd=0x79 (GET_DEVICE_CONFIG_VALUE),
+     * a real opcode name found in NOOP's own decompiled source, sitting
+     * just below the confirmed-working 0x7B-0x8B cluster. Sweeps a
+     * small key range (0x00-0x1F) rather than blindly trying all 256
+     * possible cmd bytes against the real device.
      * ------------------------------------------------------------------
      */
 
@@ -1290,11 +1362,12 @@ public class MainActivity extends Activity {
         }
 
         sweepActive = true;
-        sweepCmd = 0;
+        sweepKey = 0;
 
         line("");
-        line("*** CMD SWEEP BEGIN: type=0x23, cmd 0x00-0xFF, arg=0x00 ***");
-        logRaw("SWEEP_BEGIN");
+        line("*** CONFIG-VALUE SWEEP BEGIN: cmd=0x79 " +
+                "(GET_DEVICE_CONFIG_VALUE), key 0x00-0x1F ***");
+        logRaw("SWEEP_BEGIN cmd=0x79");
 
         runSweepStep();
     }
@@ -1303,9 +1376,9 @@ public class MainActivity extends Activity {
 
         sweepActive = false;
 
-        line("*** CMD SWEEP STOPPED at cmd=0x" +
-                String.format("%02X", sweepCmd) + " ***");
-        logRaw("SWEEP_STOPPED at=" + sweepCmd);
+        line("*** SWEEP STOPPED at key=0x" +
+                String.format("%02X", sweepKey) + " ***");
+        logRaw("SWEEP_STOPPED at=" + sweepKey);
     }
 
     private void runSweepStep() {
@@ -1314,22 +1387,22 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (sweepCmd > 0xFF) {
+        if (sweepKey > 0x1F) {
             sweepActive = false;
-            line("*** CMD SWEEP COMPLETE ***");
+            line("*** CONFIG-VALUE SWEEP COMPLETE ***");
             logRaw("SWEEP_COMPLETE");
             return;
         }
 
-        int thisCmd = sweepCmd;
+        int thisKey = sweepKey;
 
-        line("SWEEP: trying cmd=0x" +
-                String.format("%02X", thisCmd) +
-                " (" + thisCmd + "/255)");
+        line("SWEEP: GET_DEVICE_CONFIG_VALUE key=0x" +
+                String.format("%02X", thisKey) +
+                " (" + thisKey + "/31)");
 
-        sendCustom(0x23, thisCmd, 0x00);
+        sendCustom(0x23, 0x79, thisKey);
 
-        sweepCmd++;
+        sweepKey++;
 
         mainH.postDelayed(this::runSweepStep, 1000);
     }
@@ -1700,6 +1773,146 @@ public class MainActivity extends Activity {
                 opDone();
             }
         });
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Standard Bluetooth SIG services - Heart Rate and Device
+     * Information. These require no command guessing: Heart Rate
+     * is a plain subscribe (reuses the existing subscribe() method
+     * above), Device Information is a set of plain reads.
+     * ------------------------------------------------------------------
+     */
+
+    private void subscribeHeartRateIfPresent(BluetoothGatt g) {
+
+        BluetoothGattService hr = g.getService(hrService);
+
+        if (hr == null) {
+            return;
+        }
+
+        BluetoothGattCharacteristic c =
+                hr.getCharacteristic(hrMeasurement);
+
+        if (c == null) {
+            return;
+        }
+
+        line("Heart Rate Service found - subscribing");
+        subscribe(g, c);
+    }
+
+    private void readDeviceInfoIfPresent(BluetoothGatt g) {
+
+        BluetoothGattService dis = g.getService(disService);
+
+        if (dis == null) {
+            return;
+        }
+
+        line("Device Information Service found - reading");
+
+        queueRead(g, dis.getCharacteristic(manufacturerNameChar));
+        queueRead(g, dis.getCharacteristic(modelNumberChar));
+        queueRead(g, dis.getCharacteristic(serialNumberChar));
+        queueRead(g, dis.getCharacteristic(hardwareRevisionChar));
+        queueRead(g, dis.getCharacteristic(firmwareRevisionChar));
+    }
+
+    private void queueRead(
+            BluetoothGatt g,
+            BluetoothGattCharacteristic c) {
+
+        if (c == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= 31 &&
+                checkSelfPermission(
+                        Manifest.permission
+                                .BLUETOOTH_CONNECT)
+                        != PackageManager.PERMISSION_GRANTED) {
+
+            return;
+        }
+
+        enqueue(() -> {
+
+            if (!g.readCharacteristic(c)) {
+
+                line("readCharacteristic() rejected (" +
+                        c.getUuid() + ")");
+
+                opDone();
+            }
+        });
+    }
+
+    private String deviceInfoLabel(UUID u) {
+
+        if (manufacturerNameChar.equals(u)) return "Manufacturer Name";
+        if (modelNumberChar.equals(u)) return "Model Number";
+        if (serialNumberChar.equals(u)) return "Serial Number";
+        if (hardwareRevisionChar.equals(u)) return "Hardware Revision";
+        if (firmwareRevisionChar.equals(u)) return "Firmware Revision";
+
+        return null;
+    }
+
+    private void handleCharacteristicRead(
+            BluetoothGattCharacteristic c,
+            byte[] value,
+            int status) {
+
+        String label = deviceInfoLabel(c.getUuid());
+
+        if (label != null) {
+
+            if (status == BluetoothGatt.GATT_SUCCESS && value != null) {
+
+                String text = new String(
+                        value,
+                        java.nio.charset.StandardCharsets.UTF_8);
+
+                line(label + ": \"" + text + "\" (" +
+                        Protocol.hex(value) + ")");
+
+                logRaw("DEVICE_INFO " + label + "=" + text);
+
+            } else {
+
+                line(label + ": read failed status=" + status);
+            }
+        }
+
+        opDone();
+    }
+
+    /*
+     * Standard Bluetooth SIG Heart Rate Measurement format:
+     * byte 0 = flags (bit 0 selects 8-bit vs 16-bit HR value),
+     * byte 1 (+2) = the heart rate value itself.
+     */
+    private void parseHeartRate(byte[] value) {
+
+        if (value.length < 2) {
+            return;
+        }
+
+        int flags = value[0] & 0xff;
+        boolean is16Bit = (flags & 0x01) != 0;
+
+        int hr;
+
+        if (is16Bit && value.length >= 3) {
+            hr = (value[1] & 0xff) | ((value[2] & 0xff) << 8);
+        } else {
+            hr = value[1] & 0xff;
+        }
+
+        line("HEART RATE: " + hr + " bpm");
+        logRaw("HEART_RATE bpm=" + hr + " raw=" + Protocol.hex(value));
     }
 
     /*
@@ -2148,7 +2361,7 @@ public class MainActivity extends Activity {
         controls.addView(gattDumpBtn);
 
         Button startSweepBtn = btn(
-                "START CMD SWEEP (0x00-0xFF)",
+                "GET CONFIG VALUE SWEEP (0x79, key 0x00-0x1F)",
                 v -> startCmdSweep());
         controls.addView(startSweepBtn);
 
