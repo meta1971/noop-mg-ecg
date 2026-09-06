@@ -1,2918 +1,2151 @@
 package com.noop.mgecg;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.bluetooth.BluetoothAdapter;
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothGatt;
-import android.bluetooth.BluetoothGattCallback;
-import android.bluetooth.BluetoothGattCharacteristic;
-import android.bluetooth.BluetoothGattDescriptor;
-import android.bluetooth.BluetoothGattService;
-import android.bluetooth.BluetoothManager;
-import android.bluetooth.BluetoothProfile;
-import android.bluetooth.le.BluetoothLeScanner;
-import android.bluetooth.le.ScanCallback;
-import android.bluetooth.le.ScanResult;
-import android.bluetooth.le.ScanSettings;
-import android.content.Intent;
+import android.bluetooth.*;
+import android.bluetooth.le.*;
+import android.content.*;
 import android.content.pm.PackageManager;
-import android.os.Build;
-import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.provider.Settings;
-import android.widget.Button;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.TextView;
+import android.os.*;
+import android.view.*;
+import android.widget.*;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
-import java.nio.charset.StandardCharsets;
-import java.text.SimpleDateFormat;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-import java.util.Locale;
-import java.util.Queue;
+import java.util.*;
 import java.util.UUID;
 
 public class MainActivity extends Activity {
 
-    private static final int REQ_BT = 1001;
+    private static final int REQ = 42;
 
-    private static final UUID CCCD_UUID =
-            UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
-
-    private BluetoothManager bluetoothManager;
     private BluetoothAdapter adapter;
-    private BluetoothLeScanner scanner;
     private BluetoothGatt gatt;
-
     private BluetoothGattCharacteristic cmdWrite;
 
-    private TextView logView;
-    private ScrollView scroll;
+    /*
+     * Protocol sequence counter.
+     *
+     * Keep this separate from the Labrador command fields.
+     * Protocol.labrador() currently receives:
+     *
+     *     type, opcode, argument, sequence
+     */
+    private int seq = 1;
 
-    private final Handler handler =
-            new Handler(Looper.getMainLooper());
+    private BluetoothLeScanner scanner;
+    private BluetoothDevice pendingDevice;
 
-    private final Queue<byte[]> writeQueue =
-            new ArrayDeque<>();
+    private TextView log;
+    private Button scanBtn;
+    private EditText customInput;
+    private EditText clockInput;
+    private EditText experimentIntervalInput;
+    private CheckBox autoPullCheckbox;
+    private ScrollView scrollView;
 
-    private boolean writing = false;
-    private boolean scanning = false;
+    private final UUID svc =
+            UUID.fromString(Protocol.SERVICE);
 
-    private int sequence = 1;
-    private int rxCount = 0;
+    private final UUID cmd =
+            UUID.fromString(Protocol.CMD_WRITE);
 
-    private File rawLogFile;
-    private File binaryFile;
-    private File analysisFile;
+    private final UUID cmdN =
+            UUID.fromString(Protocol.CMD_NOTIFY);
 
-    private final List<byte[]> labradorFragments =
-            new ArrayList<>();
+    private final UUID dataN =
+            UUID.fromString(Protocol.DATA_NOTIFY);
 
-    private int labradorFragmentCount = 0;
-    private boolean recordingComplete = false;
+    private final UUID eventN =
+            UUID.fromString(Protocol.EVENT_NOTIFY);
+
+    private final UUID extraN =
+            UUID.fromString(Protocol.EXTRA_NOTIFY);
 
     /*
-     * Notification subscription queue.
-     *
-     * We deliberately subscribe one characteristic at a time.
-     * This avoids several simultaneous CCCD writes fighting for
-     * the GATT operation slot.
+     * Serialize BLE operations.
      */
-    private final List<SubscribeItem> subscribeQueue =
-            new ArrayList<>();
+    private final ArrayDeque<Runnable> opQueue =
+            new ArrayDeque<>();
 
-    private int subscribeIndex = 0;
+    private boolean opInFlight = false;
 
-    private static class SubscribeItem {
-        final String uuid;
-        final String label;
+    private final Handler mainH =
+            new Handler(Looper.getMainLooper());
 
-        SubscribeItem(String uuid, String label) {
-            this.uuid = uuid;
-            this.label = label;
+    private Runnable timeoutRunnable;
+
+    /*
+     * Labrador capture state.
+     */
+    private boolean labradorActive = false;
+    private boolean recordingComplete = false;
+    private int labradorPacketCount = 0;
+
+    /*
+     * Count all notifications independently.
+     */
+    private int rxCount = 0;
+
+    /*
+     * ------------------------------------------------------------------
+     * Controlled 3x-START experiment state
+     * ------------------------------------------------------------------
+     */
+    private boolean experimentActive = false;
+    private int experimentStartsSent = 0;
+    private int experimentCompletionsSeen = 0;
+    private boolean autoPullAfterExperiment = false;
+
+    /*
+     * ------------------------------------------------------------------
+     * Persistent raw log file
+     * ------------------------------------------------------------------
+     */
+    private java.io.File rawLogFile;
+
+    /*
+     * ------------------------------------------------------------------
+     * Binary + structural-analysis capture (merged in from the CBOR
+     * decoder branch)
+     * ------------------------------------------------------------------
+     */
+    private java.io.File binaryFile;
+    private java.io.File analysisFile;
+    private final List<byte[]> labradorFragments = new ArrayList<>();
+
+    private void prepareCaptureFiles() {
+
+        java.io.File dir = getExternalFilesDir(null);
+
+        if (dir == null) {
+            line("ERROR: external files directory unavailable");
+            return;
+        }
+
+        long stamp = System.currentTimeMillis() / 1000L;
+
+        binaryFile = new java.io.File(
+                dir, "labrador_bin_" + stamp + ".bin");
+
+        analysisFile = new java.io.File(
+                dir, "labrador_analysis_" + stamp + ".txt");
+
+        line("LABRADOR BINARY FILE:");
+        line(binaryFile.getAbsolutePath());
+
+        line("LABRADOR ANALYSIS FILE:");
+        line(analysisFile.getAbsolutePath());
+    }
+
+    private void saveBinaryFragment(byte[] data) {
+
+        if (binaryFile == null) {
+            prepareCaptureFiles();
+        }
+
+        try (java.io.FileOutputStream fos =
+                     new java.io.FileOutputStream(binaryFile, true)) {
+
+            fos.write(data);
+
+        } catch (Exception e) {
+            line("BINARY SAVE ERROR: " + e);
         }
     }
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
+    private void writeAnalysis(String text) {
 
-        createUserInterface();
+        if (analysisFile == null) {
+            prepareCaptureFiles();
+        }
 
-        append("NOOP MG ECG Experimental");
-        append("Initializing Bluetooth...");
+        try (java.io.FileWriter fw =
+                     new java.io.FileWriter(analysisFile, true)) {
 
-        initializeBluetooth();
+            fw.write(text);
+            fw.write("\n");
+
+        } catch (Exception e) {
+            line("ANALYSIS SAVE ERROR: " + e);
+        }
+    }
+
+    private void initRawLogFile() {
+
+        long epochNow = System.currentTimeMillis() / 1000L;
+
+        rawLogFile = new java.io.File(
+                getExternalFilesDir(null),
+                "labrador_log_" + epochNow + ".txt");
+
+        logRaw("LOG_FILE_OPENED path=" +
+                rawLogFile.getAbsolutePath());
     }
 
     /*
-     * ================================================================
-     * BLUETOOTH INITIALIZATION
-     * ================================================================
+     * Structured, always-persisted, never-truncated log.
+     *
+     * Separate from line(), which is the on-screen scrolling
+     * view and IS capped/trimmed. This file is not.
+     */
+    private void logRaw(String s) {
+
+        if (rawLogFile == null) {
+            return;
+        }
+
+        long ms = System.currentTimeMillis();
+
+        String stamped =
+                new java.text.SimpleDateFormat(
+                        "yyyy-MM-dd HH:mm:ss.SSS",
+                        Locale.US)
+                        .format(new Date(ms)) +
+                "\t" + ms + "\t" + s;
+
+        try (java.io.FileWriter fw =
+                     new java.io.FileWriter(rawLogFile, true)) {
+
+            fw.write(stamped + "\n");
+
+        } catch (Exception e) {
+
+            line("FILE LOG WRITE ERROR: " + e);
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * BLE operation queue
+     * ------------------------------------------------------------------
      */
 
-    private void initializeBluetooth() {
+    private void enqueue(Runnable op) {
+        opQueue.add(op);
+        drainQueue();
+    }
 
-        /*
-         * Android's recommended way to obtain the adapter.
-         */
+    private void drainQueue() {
+        if (opInFlight || opQueue.isEmpty()) {
+            return;
+        }
+
+        opInFlight = true;
+
+        timeoutRunnable = () -> {
+            line("TIMEOUT - no BLE callback, unsticking queue");
+            timeoutRunnable = null;
+            opInFlight = false;
+            drainQueue();
+        };
+
+        mainH.postDelayed(timeoutRunnable, 4000);
+
+        Runnable next = opQueue.poll();
+
         try {
-            bluetoothManager =
-                    (BluetoothManager) getSystemService(
-                            BLUETOOTH_SERVICE
-                    );
+            next.run();
+        } catch (Exception e) {
+            line("BLE operation exception: " + e);
+            opDone();
+        }
+    }
 
-            if (bluetoothManager == null) {
-                append("ERROR: BluetoothManager unavailable");
+    private void opDone() {
+        if (timeoutRunnable != null) {
+            mainH.removeCallbacks(timeoutRunnable);
+            timeoutRunnable = null;
+        }
+
+        opInFlight = false;
+        drainQueue();
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Bond receiver
+     * ------------------------------------------------------------------
+     */
+
+    private final BroadcastReceiver bondReceiver =
+            new BroadcastReceiver() {
+
+        @Override
+        public void onReceive(Context ctx, Intent i) {
+
+            if (!BluetoothDevice.ACTION_BOND_STATE_CHANGED
+                    .equals(i.getAction())) {
                 return;
             }
 
-            adapter = bluetoothManager.getAdapter();
+            BluetoothDevice d =
+                    i.getParcelableExtra(
+                            BluetoothDevice.EXTRA_DEVICE);
 
-        } catch (Exception e) {
-            append("ERROR initializing Bluetooth: " + e);
-            return;
+            int state =
+                    i.getIntExtra(
+                            BluetoothDevice.EXTRA_BOND_STATE,
+                            -1);
+
+            String label;
+
+            if (state == BluetoothDevice.BOND_BONDED) {
+                label = "BONDED";
+            } else if (state == BluetoothDevice.BOND_BONDING) {
+                label = "BONDING";
+            } else if (state == BluetoothDevice.BOND_NONE) {
+                label = "BOND_NONE";
+            } else {
+                label = String.valueOf(state);
+            }
+
+            line("BOND STATE " + label +
+                    " (" +
+                    (d != null ? d.getAddress() : "?") +
+                    ")");
+
+            if (state == BluetoothDevice.BOND_BONDED
+                    && pendingDevice != null
+                    && d != null
+                    && d.getAddress().equals(
+                    pendingDevice.getAddress())
+                    && gatt == null) {
+
+                BluetoothDevice toConnect = pendingDevice;
+                pendingDevice = null;
+
+                line("CONNECTING (post-bond) " +
+                        toConnect.getAddress());
+
+                gatt = toConnect.connectGatt(
+                        MainActivity.this,
+                        false,
+                        cb,
+                        BluetoothDevice.TRANSPORT_LE);
+
+            } else if (state == BluetoothDevice.BOND_NONE
+                    && pendingDevice != null) {
+
+                line("BONDING FAILED/CANCELLED - " +
+                        "not connecting");
+
+                pendingDevice = null;
+            }
+        }
+    };
+
+    /*
+     * ------------------------------------------------------------------
+     * GATT callback
+     * ------------------------------------------------------------------
+     */
+
+    private final BluetoothGattCallback cb =
+            new BluetoothGattCallback() {
+
+        @Override
+        public void onConnectionStateChange(
+                BluetoothGatt g,
+                int status,
+                int state) {
+
+            line("GATT state=" +
+                    state +
+                    " status=" +
+                    status);
+
+            if (state ==
+                    BluetoothProfile.STATE_CONNECTED) {
+
+                line("GATT CONNECTED");
+                g.discoverServices();
+
+            } else if (state ==
+                    BluetoothProfile.STATE_DISCONNECTED) {
+
+                line("GATT DISCONNECTED");
+
+                try {
+                    g.close();
+                } catch (Exception ignored) {
+                }
+
+                if (timeoutRunnable != null) {
+                    mainH.removeCallbacks(
+                            timeoutRunnable);
+                    timeoutRunnable = null;
+                }
+
+                gatt = null;
+                cmdWrite = null;
+
+                opQueue.clear();
+                opInFlight = false;
+
+                labradorActive = false;
+                recordingComplete = false;
+
+                experimentActive = false;
+            }
         }
 
-        if (adapter == null) {
-            append("ERROR: Bluetooth adapter unavailable");
-            return;
+        @Override
+        public void onServicesDiscovered(
+                BluetoothGatt g,
+                int status) {
+
+            line("services discovered status=" +
+                    status);
+
+            BluetoothGattService s =
+                    g.getService(svc);
+
+            if (s == null) {
+                line("ERROR: fd4b service not found");
+                return;
+            }
+
+            cmdWrite =
+                    s.getCharacteristic(cmd);
+
+            line("fd4b service found");
+
+            subscribe(
+                    g,
+                    s.getCharacteristic(cmdN));
+
+            subscribe(
+                    g,
+                    s.getCharacteristic(eventN));
+
+            subscribe(
+                    g,
+                    s.getCharacteristic(dataN));
+
+            subscribe(
+                    g,
+                    s.getCharacteristic(extraN));
+
+            if (cmdWrite != null) {
+
+                enqueue(() -> {
+
+                    line("TX CLIENT_HELLO " +
+                            "(confirmed write)");
+
+                    cmdWrite.setWriteType(
+                            BluetoothGattCharacteristic
+                                    .WRITE_TYPE_DEFAULT);
+
+                    cmdWrite.setValue(
+                            Protocol.clientHello());
+
+                    if (!g.writeCharacteristic(
+                            cmdWrite)) {
+
+                        line("writeCharacteristic() " +
+                                "rejected " +
+                                "(CLIENT_HELLO)");
+
+                        opDone();
+                    }
+                });
+            }
         }
 
-        append("Bluetooth adapter found");
+        @Override
+        public void onCharacteristicWrite(
+                BluetoothGatt g,
+                BluetoothGattCharacteristic c,
+                int status) {
 
-        requestBluetoothPermissions();
+            line("WRITE " +
+                    shortUuid(c.getUuid()) +
+                    " status=" +
+                    status);
+
+            opDone();
+        }
+
+        @Override
+        public void onDescriptorWrite(
+                BluetoothGatt g,
+                BluetoothGattDescriptor d,
+                int status) {
+
+            line("CCCD " +
+                    shortUuid(
+                            d.getCharacteristic()
+                                    .getUuid()) +
+                    " status=" +
+                    status);
+
+            opDone();
+        }
 
         /*
-         * On Android 11 the permissions can already be granted.
-         * On Android 12+ we wait for the runtime permission callback.
+         * Android versions which supply value directly.
          */
-        if (permissionsGranted()) {
-            finishBluetoothInitialization();
-        }
-    }
+        @Override
+        public void onCharacteristicChanged(
+                BluetoothGatt g,
+                BluetoothGattCharacteristic c,
+                byte[] value) {
 
-    private boolean permissionsGranted() {
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-
-            return checkSelfPermission(
-                    Manifest.permission.BLUETOOTH_SCAN
-            ) == PackageManager.PERMISSION_GRANTED
-                    &&
-                    checkSelfPermission(
-                            Manifest.permission.BLUETOOTH_CONNECT
-                    ) == PackageManager.PERMISSION_GRANTED;
-
-        } else {
-
-            return checkSelfPermission(
-                    Manifest.permission.BLUETOOTH
-            ) == PackageManager.PERMISSION_GRANTED
-                    &&
-                    checkSelfPermission(
-                            Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED;
-        }
-    }
-
-    private void requestBluetoothPermissions() {
-
-        ArrayList<String> permissions =
-                new ArrayList<>();
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-
-            if (checkSelfPermission(
-                    Manifest.permission.BLUETOOTH_SCAN
-            ) != PackageManager.PERMISSION_GRANTED) {
-
-                permissions.add(
-                        Manifest.permission.BLUETOOTH_SCAN
-                );
-            }
-
-            if (checkSelfPermission(
-                    Manifest.permission.BLUETOOTH_CONNECT
-            ) != PackageManager.PERMISSION_GRANTED) {
-
-                permissions.add(
-                        Manifest.permission.BLUETOOTH_CONNECT
-                );
-            }
-
-        } else {
-
-            if (checkSelfPermission(
-                    Manifest.permission.BLUETOOTH
-            ) != PackageManager.PERMISSION_GRANTED) {
-
-                permissions.add(
-                        Manifest.permission.BLUETOOTH
-                );
-            }
-
-            if (checkSelfPermission(
-                    Manifest.permission.BLUETOOTH_ADMIN
-            ) != PackageManager.PERMISSION_GRANTED) {
-
-                permissions.add(
-                        Manifest.permission.BLUETOOTH_ADMIN
-                );
-            }
-
-            if (checkSelfPermission(
-                    Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED) {
-
-                permissions.add(
-                        Manifest.permission.ACCESS_FINE_LOCATION
-                );
-            }
+            handleRx(c, value);
         }
 
-        if (!permissions.isEmpty()) {
+        /*
+         * Older Android callback.
+         */
+        @Override
+        public void onCharacteristicChanged(
+                BluetoothGatt g,
+                BluetoothGattCharacteristic c) {
 
-            append(
-                    "Requesting Bluetooth permissions..."
-            );
+            byte[] value = c.getValue();
 
-            requestPermissions(
-                    permissions.toArray(
-                            new String[0]
-                    ),
-                    REQ_BT
-            );
+            handleRx(c, value);
         }
-    }
+    };
 
-    @Override
-    public void onRequestPermissionsResult(
-            int requestCode,
-            String[] permissions,
-            int[] grantResults) {
+    /*
+     * ------------------------------------------------------------------
+     * RX decoder / capture
+     * ------------------------------------------------------------------
+     */
 
-        super.onRequestPermissionsResult(
-                requestCode,
-                permissions,
-                grantResults
-        );
+    private void handleRx(
+            BluetoothGattCharacteristic c,
+            byte[] value) {
 
-        if (requestCode != REQ_BT)
-            return;
-
-        boolean ok = permissionsGranted();
-
-        if (ok) {
-
-            append(
-                    "Bluetooth permissions GRANTED"
-            );
-
-            finishBluetoothInitialization();
-
-        } else {
-
-            append(
-                    "ERROR: Bluetooth permissions NOT GRANTED"
-            );
-
-            append(
-                    "Go to Android Settings > Apps > NOOP MG ECG > Permissions"
-            );
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private void finishBluetoothInitialization() {
-
-        if (adapter == null) {
-            append("ERROR: adapter is NULL");
+        if (value == null) {
             return;
         }
 
-        if (!adapter.isEnabled()) {
+        rxCount++;
 
-            append(
-                    "Bluetooth is OFF - requesting enable"
-            );
+        String uuid = shortUuid(c.getUuid());
 
-            try {
+        /*
+         * Always preserve the raw packet first.
+         */
+        line("");
+        line("========== RX #" + rxCount + " ==========");
+        line("CHANNEL " + uuid);
+        line("LENGTH  " + value.length);
+        line("RAW     " + Protocol.hex(value));
 
-                Intent intent =
-                        new Intent(
-                                BluetoothAdapter.ACTION_REQUEST_ENABLE
-                        );
+        /*
+         * Existing generic protocol summary.
+         */
+        try {
+            line("FRAME   " +
+                    Protocol.frameSummary(value));
+        } catch (Exception e) {
+            line("FRAME   summary-error: " + e);
+        }
 
-                startActivityForResult(
-                        intent,
-                        2001
-                );
+        /*
+         * Decode the normal AA 01 envelope where possible.
+         */
+        decodeEnvelope(value);
 
-            } catch (Exception e) {
+        /*
+         * Timestamp candidates.
+         */
+        scanForTimestamps(value);
 
-                append(
-                        "Unable to request Bluetooth enable: "
-                                + e
-                );
+        /*
+         * Special handling for Labrador 0007 traffic.
+         */
+        if ("0007".equals(uuid)) {
+            handleLabradorFragment(value);
+        }
+
+        /*
+         * Recording-complete event.
+         */
+        if ("0004".equals(uuid)) {
+            if (isRecordingComplete(value)) {
+                recordingComplete = true;
+
+                line("");
+                line("*** RECORDING COMPLETE DETECTED ***");
+
+                runFullCborAnalysisOnCompletion();
+
+                logRaw("RECORDING_COMPLETE raw=" +
+                        Protocol.hex(value) +
+                        " experimentActive=" + experimentActive +
+                        " startsSent=" + experimentStartsSent +
+                        " completionsSeenBefore=" +
+                        experimentCompletionsSeen);
+
+                if (experimentActive) {
+
+                    experimentCompletionsSeen++;
+
+                    line("*** EXPERIMENT: completion #" +
+                            experimentCompletionsSeen +
+                            " of 3 seen ***");
+
+                    if (experimentCompletionsSeen >= 3) {
+
+                        line("*** EXPERIMENT: all 3 " +
+                                "completions seen ***");
+
+                        logRaw("EXPERIMENT_ALL_COMPLETIONS_SEEN");
+
+                        if (autoPullAfterExperiment) {
+
+                            line("*** EXPERIMENT: auto-firing " +
+                                    "PULL now ***");
+
+                            logRaw("EXPERIMENT_AUTO_PULL_FIRING");
+
+                            sendCustom(0x2F, 0x01, 0x00);
+
+                        } else {
+
+                            line("(auto-pull not enabled - " +
+                                    "use PULL button manually)");
+                        }
+
+                        experimentActive = false;
+                    }
+                }
             }
+        }
 
+        line("========== END RX ==========");
+    }
+
+    /*
+     * Decode the common AA 01 packet header without assuming
+     * that every byte has already been understood.
+     */
+    private void decodeEnvelope(byte[] v) {
+
+        if (v.length < 11) {
             return;
         }
 
-        append("Bluetooth is ON");
-        append(
-                "BLE adapter ready - press SCAN / CONNECT"
-        );
+        if ((v[0] & 0xff) != 0xAA) {
+            return;
+        }
+
+        line(String.format(
+                "HEADER  AA 01  len/field=%02X %02X",
+                v[2] & 0xff,
+                v[3] & 0xff));
+
+        line(String.format(
+                "FIELDS  type=0x%02X seq=0x%02X " +
+                        "cmd=0x%02X",
+                v[8] & 0xff,
+                v[9] & 0xff,
+                v[10] & 0xff));
     }
 
-    @Override
-    protected void onActivityResult(
-            int requestCode,
-            int resultCode,
-            Intent data) {
+    /*
+     * Labrador packets are currently delivered on 0007.
+     *
+     * Do not interpret their payload as ECG yet.
+     */
+    private void handleLabradorFragment(
+            byte[] value) {
 
-        super.onActivityResult(
-                requestCode,
-                resultCode,
-                data
-        );
+        labradorPacketCount++;
 
-        if (requestCode == 2001) {
+        /*
+         * Always persist the full raw packet, unconditionally -
+         * not just during a controlled experiment.
+         */
+        logRaw("RX_0007_FULL len=" + value.length +
+                " raw=" + Protocol.hex(value));
 
-            if (adapter != null &&
-                    adapter.isEnabled()) {
+        line("");
+        line("LABRADOR 0007 FRAGMENT #" +
+                labradorPacketCount);
 
-                append("Bluetooth enabled");
-                append(
-                        "BLE adapter ready - press SCAN / CONNECT"
-                );
+        line("LABRADOR LENGTH=" +
+                value.length);
+
+        /*
+         * First 32 bytes.
+         */
+        int first = Math.min(
+                32,
+                value.length);
+
+        byte[] head =
+                Arrays.copyOfRange(
+                        value,
+                        0,
+                        first);
+
+        line("HEAD    " +
+                Protocol.hex(head));
+
+        /*
+         * Last 32 bytes.
+         */
+        int start =
+                Math.max(
+                        0,
+                        value.length - 32);
+
+        byte[] tail =
+                Arrays.copyOfRange(
+                        value,
+                        start,
+                        value.length);
+
+        line("TAIL    " +
+                Protocol.hex(tail));
+
+        /*
+         * Printable ASCII runs.
+         */
+        dumpAsciiRuns(value);
+
+        /*
+         * Common integer interpretations.
+         */
+        dumpIntegerCandidates(value);
+
+        /*
+         * Persist the raw bytes (separate .bin file, exact
+         * concatenated payload, no text formatting in the way) and
+         * buffer a copy for a full CBOR pass once the recording
+         * completes.
+         */
+        saveBinaryFragment(value);
+
+        byte[] copy = new byte[value.length];
+        System.arraycopy(value, 0, copy, 0, value.length);
+        labradorFragments.add(copy);
+
+        /*
+         * CBOR structural candidate scan on this fragment alone.
+         */
+        analysePotentialCbor(value);
+
+        line("LABRADOR FRAGMENT END");
+    }
+
+    /*
+     * Print printable ASCII sequences of length >= 4.
+     */
+    private void dumpAsciiRuns(byte[] v) {
+
+        StringBuilder run =
+                new StringBuilder();
+
+        int start = -1;
+
+        for (int i = 0; i < v.length; i++) {
+
+            int b = v[i] & 0xff;
+
+            boolean printable =
+                    b >= 0x20 && b <= 0x7e;
+
+            if (printable) {
+
+                if (run.length() == 0) {
+                    start = i;
+                }
+
+                run.append((char) b);
 
             } else {
 
-                append(
-                        "Bluetooth remains OFF"
-                );
+                if (run.length() >= 4) {
+
+                    line(String.format(
+                            "ASCII   @%d \"%s\"",
+                            start,
+                            run.toString()));
+                }
+
+                run.setLength(0);
+                start = -1;
+            }
+        }
+
+        if (run.length() >= 4) {
+
+            line(String.format(
+                    "ASCII   @%d \"%s\"",
+                    start,
+                    run.toString()));
+        }
+    }
+
+    /*
+     * Show selected little-endian integer candidates.
+     *
+     * This is deliberately diagnostic only.
+     */
+    private void dumpIntegerCandidates(
+            byte[] v) {
+
+        int count =
+                Math.min(
+                        v.length - 3,
+                        64);
+
+        if (count <= 0) {
+            return;
+        }
+
+        for (int i = 0; i <= count; i += 4) {
+
+            long x =
+                    Protocol.u32le(v, i);
+
+            line(String.format(
+                    "U32LE   @%d = %d (0x%08X)",
+                    i,
+                    x,
+                    x));
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * CBOR structural decoder (merged in from the parallel
+     * ChatGPT-assisted branch - this is what actually found a real
+     * CBOR map at byte offset 37 inside the Maverick/WG50 identity
+     * burst on 0007, containing a 108-element array not yet mapped
+     * to a meaning)
+     * ------------------------------------------------------------------
+     */
+
+    private void analysePotentialCbor(byte[] fragment) {
+
+        /*
+         * Search for likely CBOR map/array markers. We deliberately
+         * don't assume the fragment starts on a CBOR boundary.
+         */
+        for (int i = 0; i < fragment.length; i++) {
+
+            int x = fragment[i] & 0xff;
+
+            if (x == 0xA7 || x == 0xA2 || x == 0xA1 || x == 0x98) {
+
+                String s = String.format(
+                        Locale.US,
+                        "CBOR-CANDIDATE @%d = 0x%02X",
+                        i, x);
+
+                line(s);
+                writeAnalysis(s);
+            }
+        }
+
+        /*
+         * Known-area check: every identity burst we've seen so far
+         * has a CBOR map header (0xA7 = map, 7 pairs) sitting at a
+         * consistent offset of 37.
+         */
+        if (fragment.length > 37) {
+
+            String s = String.format(
+                    Locale.US,
+                    "KNOWN-AREA CHECK @37: 0x%02X",
+                    fragment[37] & 0xff);
+
+            line(s);
+            writeAnalysis(s);
+
+            if ((fragment[37] & 0xff) == 0xA7) {
+
+                line("KNOWN CBOR MAP FOUND AT OFFSET 37");
+                writeAnalysis("KNOWN CBOR MAP FOUND AT OFFSET 37");
+            }
+        }
+    }
+
+    private static class CborParser {
+
+        byte[] data;
+        int pos = 0;
+
+        List<String> lines = new ArrayList<>();
+
+        CborParser(byte[] data) {
+            this.data = data;
+        }
+
+        void parseTopLevel() {
+
+            add("CBOR parse begins at offset 0");
+
+            try {
+                parseItem(0);
+            } catch (Exception e) {
+                add("CBOR parser stopped: " + e.getMessage());
+            }
+
+            add("CBOR parser final offset=" + pos + "/" + data.length);
+
+            if (pos < data.length) {
+                add("TRAILING BYTES @" + pos + ": " +
+                        Protocol.hex(slice(pos, data.length)));
+            }
+        }
+
+        private void parseItem(int level) {
+
+            if (pos >= data.length)
+                throw new RuntimeException("EOF");
+
+            int offset = pos;
+            int initial = data[pos++] & 0xff;
+            int major = initial >>> 5;
+            int ai = initial & 0x1f;
+            String indent = indent(level);
+
+            if (initial == 0xF6) {
+                add(indent + "@" + offset + " NULL (F6)");
+                return;
+            }
+
+            if (ai == 31) {
+                add(indent + "@" + offset + " INDEFINITE/UNSUPPORTED");
+                return;
+            }
+
+            long n = readAdditional(ai);
+
+            switch (major) {
+
+                case 0:
+                    add(indent + "@" + offset + " UINT " + n);
+                    break;
+
+                case 1:
+                    add(indent + "@" + offset + " NINT " + (-1L - n));
+                    break;
+
+                case 2:
+                    add(indent + "@" + offset + " BYTES len=" + n);
+                    skip(n);
+                    break;
+
+                case 3:
+                    if (n > Integer.MAX_VALUE ||
+                            pos + (int) n > data.length) {
+                        throw new RuntimeException("bad text length");
+                    }
+                    String s = new String(
+                            data, pos, (int) n,
+                            java.nio.charset.StandardCharsets.UTF_8);
+                    pos += (int) n;
+                    add(indent + "@" + offset + " TEXT \"" + s + "\"");
+                    break;
+
+                case 4:
+                    add(indent + "@" + offset + " ARRAY len=" + n);
+                    if (n > 10000)
+                        throw new RuntimeException("array too large");
+                    for (int i = 0; i < n; i++) {
+                        add(indent + "  [" + i + "]");
+                        parseItem(level + 1);
+                    }
+                    break;
+
+                case 5:
+                    add(indent + "@" + offset + " MAP pairs=" + n);
+                    if (n > 10000)
+                        throw new RuntimeException("map too large");
+                    for (int i = 0; i < n; i++) {
+                        add(indent + "  KEY");
+                        parseItem(level + 1);
+                        add(indent + "  VALUE");
+                        parseItem(level + 1);
+                    }
+                    break;
+
+                case 6:
+                    add(indent + "@" + offset + " TAG " + n);
+                    parseItem(level + 1);
+                    break;
+
+                case 7:
+                    add(indent + "@" + offset + " SIMPLE/FLOAT ai=" + ai);
+                    break;
+
+                default:
+                    add(indent + "@" + offset + " UNKNOWN");
+            }
+        }
+
+        private long readAdditional(int ai) {
+
+            if (ai < 24) return ai;
+
+            if (ai == 24) {
+                ensure(1);
+                return data[pos++] & 0xffL;
+            }
+
+            if (ai == 25) {
+                ensure(2);
+                long v = ((data[pos] & 0xffL) << 8) | (data[pos + 1] & 0xffL);
+                pos += 2;
+                return v;
+            }
+
+            if (ai == 26) {
+                ensure(4);
+                long v = ((data[pos] & 0xffL) << 24)
+                        | ((data[pos + 1] & 0xffL) << 16)
+                        | ((data[pos + 2] & 0xffL) << 8)
+                        | (data[pos + 3] & 0xffL);
+                pos += 4;
+                return v;
+            }
+
+            if (ai == 27) {
+                ensure(8);
+                long v = 0;
+                for (int i = 0; i < 8; i++) {
+                    v = (v << 8) | (data[pos + i] & 0xffL);
+                }
+                pos += 8;
+                return v;
+            }
+
+            throw new RuntimeException("unsupported additional info " + ai);
+        }
+
+        private void skip(long n) {
+            if (n < 0 || n > Integer.MAX_VALUE)
+                throw new RuntimeException("invalid length");
+            ensure((int) n);
+            pos += (int) n;
+        }
+
+        private void ensure(int n) {
+            if (n < 0 || pos + n > data.length) {
+                throw new RuntimeException(
+                        "EOF at " + pos + " need " + n);
+            }
+        }
+
+        private byte[] slice(int a, int b) {
+            if (a < 0) a = 0;
+            if (b > data.length) b = data.length;
+            if (b < a) b = a;
+            byte[] x = new byte[b - a];
+            System.arraycopy(data, a, x, 0, x.length);
+            return x;
+        }
+
+        private String indent(int level) {
+            StringBuilder s = new StringBuilder();
+            for (int i = 0; i < level; i++) s.append("  ");
+            return s.toString();
+        }
+
+        private void add(String s) {
+            lines.add(s);
+        }
+    }
+
+    private static class F6Analysis {
+        int count = 0;
+        List<Integer> runs = new ArrayList<>();
+    }
+
+    private F6Analysis analyseF6(byte[] b) {
+
+        F6Analysis result = new F6Analysis();
+        int run = 0;
+
+        for (byte x : b) {
+            if ((x & 0xff) == 0xF6) {
+                result.count++;
+                run++;
+            } else {
+                if (run > 0) {
+                    result.runs.add(run);
+                    run = 0;
+                }
+            }
+        }
+
+        if (run > 0) result.runs.add(run);
+
+        return result;
+    }
+
+    private byte[] combineLabradorFragments() {
+
+        int total = 0;
+        for (byte[] f : labradorFragments) total += f.length;
+
+        byte[] out = new byte[total];
+        int pos = 0;
+
+        for (byte[] f : labradorFragments) {
+            System.arraycopy(f, 0, out, pos, f.length);
+            pos += f.length;
+        }
+
+        return out;
+    }
+
+    private void runFullCborAnalysisOnCompletion() {
+
+        if (labradorFragments.isEmpty()) {
+            line("NO 0007 DATA CAPTURED TO ANALYSE");
+            return;
+        }
+
+        byte[] combined = combineLabradorFragments();
+
+        line("");
+        line("========== LABRADOR REASSEMBLED ==========");
+        line("FRAGMENTS=" + labradorFragments.size());
+        line("TOTAL BYTES=" + combined.length);
+
+        writeAnalysis("");
+        writeAnalysis("========== LABRADOR REASSEMBLED ==========");
+        writeAnalysis("FRAGMENTS=" + labradorFragments.size());
+        writeAnalysis("TOTAL BYTES=" + combined.length);
+
+        line("========== STRUCTURAL CBOR ANALYSIS ==========");
+        writeAnalysis("========== STRUCTURAL CBOR ANALYSIS ==========");
+
+        CborParser parser = new CborParser(combined);
+        parser.parseTopLevel();
+
+        for (String s : parser.lines) {
+            line(s);
+            writeAnalysis(s);
+        }
+
+        F6Analysis f6 = analyseF6(combined);
+
+        line("F6 COUNT=" + f6.count);
+        line("F6 RUNS=" + f6.runs);
+        writeAnalysis("F6 COUNT=" + f6.count);
+        writeAnalysis("F6 RUNS=" + f6.runs);
+
+        labradorFragments.clear();
+    }
+
+    /*
+     * Recording-complete packet currently observed:
+     *
+     * characteristic 0004
+     * type 0x30
+     * command 0x1D
+     */
+    private boolean isRecordingComplete(
+            byte[] value) {
+
+        if (value.length < 11) {
+            return false;
+        }
+
+        if ((value[0] & 0xff) != 0xAA) {
+            return false;
+        }
+
+        int type =
+                value[8] & 0xff;
+
+        int command =
+                value[10] & 0xff;
+
+        return type == 0x30 &&
+                command == 0x1D;
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Controlled 3x-START experiment
+     * ------------------------------------------------------------------
+     */
+
+    private void runLabradorExperiment() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run experiment");
+            return;
+        }
+
+        long intervalMs;
+
+        try {
+            intervalMs = Long.parseLong(
+                    experimentIntervalInput.getText()
+                            .toString().trim()) * 1000L;
+        } catch (Exception e) {
+            intervalMs = 40000L;
+            line("bad interval, defaulting to 40s");
+        }
+
+        final long finalIntervalMs = intervalMs;
+
+        experimentActive = true;
+        experimentStartsSent = 0;
+        experimentCompletionsSeen = 0;
+
+        line("");
+        line("*** EXPERIMENT BEGIN: 3x LABRADOR_START, " +
+                (intervalMs / 1000) + "s apart ***");
+
+        logRaw("EXPERIMENT_BEGIN interval_ms=" + intervalMs +
+                " auto_pull=" + autoPullAfterExperiment);
+
+        fireNextExperimentStart(finalIntervalMs);
+
+        /*
+         * Safety timeout - if we never see 3 completions,
+         * stop waiting rather than hang the experiment state
+         * forever.
+         *
+         * Widened from 90s to 240s of extra headroom after real
+         * data showed a completion arriving 262s after experiment
+         * start against the old 210s ceiling.
+         */
+        mainH.postDelayed(() -> {
+
+            if (experimentActive &&
+                    experimentCompletionsSeen < 3) {
+
+                line("*** EXPERIMENT TIMEOUT: only saw " +
+                        experimentCompletionsSeen +
+                        "/3 completions, giving up " +
+                        "on auto-pull ***");
+
+                logRaw("EXPERIMENT_TIMEOUT completions_seen=" +
+                        experimentCompletionsSeen);
+
+                experimentActive = false;
+            }
+
+        }, finalIntervalMs * 3 + 240000L);
+    }
+
+    private void fireNextExperimentStart(long intervalMs) {
+
+        if (experimentStartsSent >= 3) {
+
+            line("*** ALL 3 EXPERIMENT STARTS SENT - " +
+                    "waiting for completions ***");
+
+            logRaw("EXPERIMENT_ALL_STARTS_SENT");
+
+            return;
+        }
+
+        experimentStartsSent++;
+
+        int n = experimentStartsSent;
+
+        line("");
+        line("*** EXPERIMENT: firing START #" + n + " of 3 ***");
+
+        logRaw("EXPERIMENT_START_FIRING n=" + n);
+
+        send(0x7C, 1, "EXPERIMENT_LABRADOR_START_" + n);
+
+        if (experimentStartsSent < 3) {
+
+            mainH.postDelayed(
+                    () -> fireNextExperimentStart(intervalMs),
+                    intervalMs);
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Protocol transmission
+     * ------------------------------------------------------------------
+     */
+
+    private void send(
+            int opcode,
+            int arg,
+            String name) {
+
+        sendNamed(
+                0x23,
+                opcode,
+                arg,
+                name);
+    }
+
+    private void sendNamed(
+            int type,
+            int opcode,
+            int arg,
+            String name) {
+
+        if (gatt == null ||
+                cmdWrite == null) {
+
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            /*
+             * IMPORTANT:
+             *
+             * This matches the existing Protocol.java API:
+             *
+             *     labrador(type, opcode, arg, sequence)
+             */
+            byte[] f =
+                    Protocol.labrador(
+                            type,
+                            opcode,
+                            arg,
+                            thisSeq);
+
+            logRaw("TX name=" + name +
+                    " type=0x" + String.format("%02X", type) +
+                    " cmd=0x" + String.format("%02X", opcode) +
+                    " arg=0x" + String.format("%02X", arg) +
+                    " seq=0x" + String.format("%02X",
+                            thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX " + name);
+            line("TX TYPE=0x" +
+                    String.format("%02X", type));
+
+            line("TX CMD =0x" +
+                    String.format("%02X", opcode));
+
+            line("TX ARG =0x" +
+                    String.format("%02X", arg));
+
+            line("TX SEQ =0x" +
+                    String.format("%02X",
+                            thisSeq & 0xff));
+
+            line("TX LEN =" +
+                    f.length);
+
+            line("TX RAW =" +
+                    Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic
+                            .WRITE_TYPE_DEFAULT);
+
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(
+                    cmdWrite)) {
+
+                line("writeCharacteristic() " +
+                        "rejected (" +
+                        name +
+                        ")");
+
+                opDone();
+            }
+        });
+    }
+
+    private void sendCustom(
+            int type,
+            int opcode,
+            int arg) {
+
+        sendNamed(
+                type,
+                opcode,
+                arg,
+                String.format(
+                        "CUSTOM type=0x%02X " +
+                                "cmd=0x%02X " +
+                                "arg=0x%02X",
+                        type,
+                        opcode,
+                        arg));
+    }
+
+    /*
+     * Send a 4-byte-argument frame carrying the current Unix
+     * time, for experimenting with a possible SET_CLOCK opcode.
+     *
+     * Uses Protocol.labradorU32() rather than sendNamed(), since
+     * sendNamed()/Protocol.labrador() only support a single arg
+     * byte.
+     *
+     * type/cmd are unconfirmed - this is deliberately a fast,
+     * no-rebuild way to try different cmd guesses.
+     */
+    private void sendClockGuess(int type, int cmd) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+        final long epochNow = System.currentTimeMillis() / 1000L;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labradorU32(
+                    type, cmd, epochNow, thisSeq);
+
+            logRaw("TX SET_CLOCK_GUESS type=0x" +
+                    String.format("%02X", type) +
+                    " cmd=0x" + String.format("%02X", cmd) +
+                    " epoch=" + epochNow +
+                    " seq=0x" + String.format("%02X",
+                            thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX SET_CLOCK GUESS");
+            line("TX TYPE =0x" + String.format("%02X", type));
+            line("TX CMD  =0x" + String.format("%02X", cmd));
+            line("TX ARG4 =0x" + String.format("%08X", epochNow));
+            line("TX EPOCH=" + epochNow +
+                    " (" + new Date(epochNow * 1000L) + ")");
+            line("TX SEQ  =0x" +
+                    String.format("%02X", thisSeq & 0xff));
+            line("TX LEN  =" + f.length);
+            line("TX RAW  =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (SET_CLOCK GUESS)");
+                opDone();
+            }
+        });
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Notification subscriptions
+     * ------------------------------------------------------------------
+     */
+
+    private void subscribe(
+            BluetoothGatt g,
+            BluetoothGattCharacteristic c) {
+
+        if (c == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= 31 &&
+                checkSelfPermission(
+                        Manifest.permission
+                                .BLUETOOTH_CONNECT)
+                        != PackageManager.PERMISSION_GRANTED) {
+
+            return;
+        }
+
+        enqueue(() -> {
+
+            line("subscribe " +
+                    shortUuid(c.getUuid()));
+
+            g.setCharacteristicNotification(
+                    c,
+                    true);
+
+            BluetoothGattDescriptor d =
+                    c.getDescriptor(
+                            UUID.fromString(
+                                    "00002902-0000-1000-8000-00805f9b34fb"));
+
+            if (d != null) {
+
+                d.setValue(
+                        BluetoothGattDescriptor
+                                .ENABLE_NOTIFICATION_VALUE);
+
+                if (!g.writeDescriptor(d)) {
+
+                    line("writeDescriptor() " +
+                            "rejected " +
+                            shortUuid(c.getUuid()));
+
+                    opDone();
+                }
+
+            } else {
+
+                line("NO CCCD for " +
+                        shortUuid(c.getUuid()));
+
+                opDone();
+            }
+        });
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Timestamp scan
+     * ------------------------------------------------------------------
+     */
+
+    private void scanForTimestamps(
+            byte[] value) {
+
+        long now =
+                System.currentTimeMillis() / 1000L;
+
+        long lo =
+                now - 7L * 86400L;
+
+        long hi =
+                now + 7L * 86400L;
+
+        for (int i = 0;
+             i + 4 <= value.length;
+             i++) {
+
+            long v =
+                    Protocol.u32le(
+                            value,
+                            i);
+
+            if (v > lo && v < hi) {
+
+                line(String.format(
+                        "TS-CANDIDATE @%d: %d (%s)",
+                        i,
+                        v,
+                        new Date(v * 1000L)));
             }
         }
     }
 
     /*
-     * ================================================================
-     * USER INTERFACE
-     * ================================================================
+     * ------------------------------------------------------------------
+     * UI
+     * ------------------------------------------------------------------
      */
 
-    private void createUserInterface() {
+    @Override
+    protected void onCreate(Bundle b) {
+
+        super.onCreate(b);
+
+        adapter =
+                ((BluetoothManager)
+                        getSystemService(
+                                BLUETOOTH_SERVICE))
+                        .getAdapter();
+
+        buildUi();
+        requestPerms();
+
+        initRawLogFile();
+
+        line("Raw log file: " +
+                rawLogFile.getAbsolutePath());
+
+        registerReceiver(
+                bondReceiver,
+                new IntentFilter(
+                        BluetoothDevice
+                                .ACTION_BOND_STATE_CHANGED));
+    }
+
+    private void buildUi() {
 
         LinearLayout root =
                 new LinearLayout(this);
 
         root.setOrientation(
-                LinearLayout.VERTICAL
-        );
+                LinearLayout.VERTICAL);
 
-        Button scanButton =
-                new Button(this);
+        root.setPadding(
+                24,
+                24,
+                24,
+                24);
 
-        scanButton.setText(
-                "SCAN / CONNECT"
-        );
-
-        Button wristButton =
-                new Button(this);
-
-        wristButton.setText(
-                "SELECT WRIST"
-        );
-
-        Button filterButton =
-                new Button(this);
-
-        filterButton.setText(
-                "FILTERED ON"
-        );
-
-        Button rawButton =
-                new Button(this);
-
-        rawButton.setText(
-                "RAW SAVE ON"
-        );
-
-        Button startButton =
-                new Button(this);
-
-        startButton.setText(
-                "START LABRADOR"
-        );
-
-        Button tripleButton =
-                new Button(this);
-
-        tripleButton.setText(
-                "3X START EXPERIMENT"
-        );
-
-        Button stopButton =
-                new Button(this);
-
-        stopButton.setText(
-                "STOP LABRADOR"
-        );
-
-        logView =
+        TextView title =
                 new TextView(this);
 
-        logView.setTextSize(11);
-        logView.setTextIsSelectable(true);
+        title.setText(
+                "NOOP MG ECG Experimental\n" +
+                "WHOOP 5/MG Labrador capture");
 
-        scroll =
-                new ScrollView(this);
-
-        scroll.addView(logView);
-
-        root.addView(scanButton);
-        root.addView(wristButton);
-        root.addView(filterButton);
-        root.addView(rawButton);
-        root.addView(startButton);
-        root.addView(tripleButton);
-        root.addView(stopButton);
+        title.setTextSize(20);
 
         root.addView(
-                scroll,
+                title,
                 new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        -1,
+                        -2));
+
+        scanBtn =
+                new Button(this);
+
+        scanBtn.setText(
+                "SCAN FOR WHOOP 5/MG");
+
+        scanBtn.setOnClickListener(
+                v -> scan());
+
+        root.addView(scanBtn);
+
+        Button c1 =
+                btn(
+                        "0x7B SELECT_WRIST " +
+                                "(RIGHT=0)",
+                        v -> send(
+                                0x7B,
+                                0,
+                                "SELECT_WRIST"));
+
+        root.addView(c1);
+
+        Button c4 =
+                btn(
+                        "0x8B FILTERED ON",
+                        v -> send(
+                                0x8B,
+                                1,
+                                "FILTERED_ON"));
+
+        root.addView(c4);
+
+        Button c3 =
+                btn(
+                        "0x7D RAW SAVE ON",
+                        v -> send(
+                                0x7D,
+                                1,
+                                "RAW_SAVE_ON"));
+
+        root.addView(c3);
+
+        Button c2 =
+                btn(
+                        "0x7C LABRADOR " +
+                                "GENERATION START",
+                        v -> {
+
+                            labradorActive = true;
+                            recordingComplete = false;
+                            labradorPacketCount = 0;
+
+                            line("");
+                            line("*** STARTING " +
+                                    "LABRADOR CAPTURE ***");
+
+                            send(
+                                    0x7C,
+                                    1,
+                                    "LABRADOR_START");
+                        });
+
+        root.addView(c2);
+
+        Button c5 =
+                btn(
+                        "0x3F SPO2 STREAM ON",
+                        v -> send(
+                                0x3F,
+                                1,
+                                "SPO2_ON"));
+
+        root.addView(c5);
+
+        Button stop =
+                btn(
+                        "0x7C LABRADOR STOP",
+                        v -> {
+
+                            labradorActive = false;
+
+                            line("");
+                            line("*** LABRADOR STOP ***");
+
+                            send(
+                                    0x7C,
+                                    0,
+                                    "LABRADOR_STOP");
+                        });
+
+        root.addView(stop);
+
+        /*
+         * Controlled 3x-START experiment controls.
+         */
+        experimentIntervalInput = new EditText(this);
+        experimentIntervalInput.setHint(
+                "seconds between STARTs, e.g. 40");
+        experimentIntervalInput.setText("40");
+        experimentIntervalInput.setSingleLine(true);
+        root.addView(experimentIntervalInput);
+
+        autoPullCheckbox = new CheckBox(this);
+        autoPullCheckbox.setText(
+                "Auto-PULL (0x2F 01 00) after 3rd completion");
+        autoPullCheckbox.setOnCheckedChangeListener(
+                (btn2, checked) ->
+                        autoPullAfterExperiment = checked);
+        root.addView(autoPullCheckbox);
+
+        Button runExperimentBtn = btn(
+                "RUN 3x LABRADOR EXPERIMENT",
+                v -> runLabradorExperiment());
+        root.addView(runExperimentBtn);
+
+        /*
+         * Pull is now explicit rather than automatic.
+         *
+         * This is important for reverse engineering:
+         * we want a clean before/after boundary.
+         */
+        Button pull =
+                btn(
+                        "0x2F PULL 01 00",
+                        v -> {
+
+                            line("");
+                            line("*** MANUAL PULL ***");
+
+                            sendCustom(
+                                    0x2F,
+                                    0x01,
+                                    0x00);
+                        });
+
+        root.addView(pull);
+
+        customInput =
+                new EditText(this);
+
+        customInput.setHint(
+                "type cmd arg hex, " +
+                        "e.g. 2F 01 00");
+
+        customInput.setSingleLine(true);
+
+        root.addView(customInput);
+
+        Button sendCustomBtn =
+                btn(
+                        "SEND CUSTOM FRAME",
+                        v -> {
+
+                            String text =
+                                    customInput
+                                            .getText()
+                                            .toString()
+                                            .trim();
+
+                            String[] parts =
+                                    text.split("\\s+");
+
+                            if (parts.length != 3) {
+
+                                line(
+                                        "custom frame needs " +
+                                        "exactly 3 hex bytes: " +
+                                        "type cmd arg");
+
+                                return;
+                            }
+
+                            try {
+
+                                int t =
+                                        Integer.parseInt(
+                                                parts[0],
+                                                16);
+
+                                int cv =
+                                        Integer.parseInt(
+                                                parts[1],
+                                                16);
+
+                                int av =
+                                        Integer.parseInt(
+                                                parts[2],
+                                                16);
+
+                                sendCustom(
+                                        t,
+                                        cv,
+                                        av);
+
+                            } catch (Exception e) {
+
+                                line(
+                                        "parse error: " +
+                                        e.getMessage());
+                            }
+                        });
+
+        root.addView(sendCustomBtn);
+
+        /*
+         * Fast-iteration SET_CLOCK guess: type + cmd only,
+         * current Unix time is filled in automatically as the
+         * 4-byte argument.
+         */
+        clockInput = new EditText(this);
+
+        clockInput.setHint(
+                "type cmd hex for clock guess, e.g. 23 2C");
+
+        clockInput.setSingleLine(true);
+
+        root.addView(clockInput);
+
+        Button sendClockBtn =
+                btn(
+                        "SET_CLOCK NOW (fill time + send)",
+                        v -> {
+
+                            String text =
+                                    clockInput
+                                            .getText()
+                                            .toString()
+                                            .trim();
+
+                            String[] parts =
+                                    text.split("\\s+");
+
+                            if (parts.length != 2) {
+
+                                line(
+                                        "clock guess needs " +
+                                        "exactly 2 hex bytes: " +
+                                        "type cmd");
+
+                                return;
+                            }
+
+                            try {
+
+                                int t =
+                                        Integer.parseInt(
+                                                parts[0],
+                                                16);
+
+                                int cv =
+                                        Integer.parseInt(
+                                                parts[1],
+                                                16);
+
+                                sendClockGuess(t, cv);
+
+                            } catch (Exception e) {
+
+                                line(
+                                        "parse error: " +
+                                        e.getMessage());
+                            }
+                        });
+
+        root.addView(sendClockBtn);
+
+        log =
+                new TextView(this);
+
+        log.setTextIsSelectable(true);
+        log.setTextSize(11);
+
+        scrollView =
+                new ScrollView(this);
+
+        scrollView.addView(log);
+
+        root.addView(
+                scrollView,
+                new LinearLayout.LayoutParams(
+                        -1,
                         0,
-                        1
-                )
-        );
+                        1));
 
         setContentView(root);
+    }
 
-        scanButton.setOnClickListener(
-                v -> scan()
-        );
+    private Button btn(
+            String text,
+            View.OnClickListener listener) {
 
-        wristButton.setOnClickListener(
-                v -> sendNamed(
-                        "SELECT_WRIST",
-                        0x23,
-                        0x7B,
-                        0x00
-                )
-        );
+        Button b =
+                new Button(this);
 
-        filterButton.setOnClickListener(
-                v -> sendNamed(
-                        "FILTERED_ON",
-                        0x23,
-                        0x8B,
-                        0x01
-                )
-        );
+        b.setText(text);
+        b.setOnClickListener(listener);
 
-        rawButton.setOnClickListener(
-                v -> sendNamed(
-                        "RAW_SAVE_ON",
-                        0x23,
-                        0x7D,
-                        0x01
-                )
-        );
-
-        startButton.setOnClickListener(
-                v -> {
-
-                    prepareNewExperiment();
-
-                    sendNamed(
-                            "LABRADOR_START",
-                            0x23,
-                            0x7C,
-                            0x01
-                    );
-                }
-        );
-
-        tripleButton.setOnClickListener(
-                v -> startTripleExperiment()
-        );
-
-        stopButton.setOnClickListener(
-                v -> sendNamed(
-                        "LABRADOR_STOP",
-                        0x23,
-                        0x7C,
-                        0x00
-                )
-        );
+        return b;
     }
 
     /*
-     * ================================================================
-     * LABRADOR EXPERIMENT
-     * ================================================================
+     * ------------------------------------------------------------------
+     * Permissions
+     * ------------------------------------------------------------------
      */
 
-    private void prepareNewExperiment() {
+    private void requestPerms() {
 
-        labradorFragments.clear();
+        if (Build.VERSION.SDK_INT >= 31) {
 
-        labradorFragmentCount = 0;
-        recordingComplete = false;
+            ArrayList<String> p =
+                    new ArrayList<>();
 
-        prepareCaptureFiles();
+            if (checkSelfPermission(
+                    Manifest.permission
+                            .BLUETOOTH_SCAN)
+                    != PackageManager.PERMISSION_GRANTED) {
 
-        writeAnalysis("");
-        writeAnalysis(
-                "=================================================="
-        );
-        writeAnalysis(
-                "LABRADOR EXPERIMENT START"
-        );
-        writeAnalysis(
-                new Date().toString()
-        );
-        writeAnalysis(
-                "=================================================="
-        );
+                p.add(
+                        Manifest.permission
+                                .BLUETOOTH_SCAN);
+            }
 
-        append("");
-        append(
-                "========== NEW LABRADOR CAPTURE =========="
-        );
-        append(
-                "Persistent binary capture ENABLED"
-        );
-        append(
-                "Structural decoder ENABLED"
-        );
-    }
+            if (checkSelfPermission(
+                    Manifest.permission
+                            .BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED) {
 
-    private void startTripleExperiment() {
+                p.add(
+                        Manifest.permission
+                                .BLUETOOTH_CONNECT);
+            }
 
-        prepareNewExperiment();
+            if (!p.isEmpty()) {
 
-        append("");
-        append(
-                "*** 3x LABRADOR START EXPERIMENT ***"
-        );
-
-        append(
-                "*** START #1 NOW ***"
-        );
-
-        sendNamed(
-                "EXPERIMENT_LABRADOR_START_1",
-                0x23,
-                0x7C,
-                0x01
-        );
-
-        handler.postDelayed(
-                () -> {
-
-                    append("");
-                    append(
-                            "*** START #2 - 40 SECONDS ***"
-                    );
-
-                    sendNamed(
-                            "EXPERIMENT_LABRADOR_START_2",
-                            0x23,
-                            0x7C,
-                            0x01
-                    );
-
-                },
-                40000
-        );
-
-        handler.postDelayed(
-                () -> {
-
-                    append("");
-                    append(
-                            "*** START #3 - 80 SECONDS ***"
-                    );
-
-                    sendNamed(
-                            "EXPERIMENT_LABRADOR_START_3",
-                            0x23,
-                            0x7C,
-                            0x01
-                    );
-
-                },
-                80000
-        );
-    }
-
-    /*
-     * ================================================================
-     * FILE CAPTURE
-     * ================================================================
-     */
-
-    private void prepareCaptureFiles() {
-
-        File dir =
-                getExternalFilesDir(null);
-
-        if (dir == null) {
-
-            append(
-                    "ERROR: external files directory unavailable"
-            );
-
-            return;
-        }
-
-        String stamp =
-                new SimpleDateFormat(
-                        "yyyyMMdd_HHmmss",
-                        Locale.US
-                ).format(
-                        new Date()
-                );
-
-        binaryFile =
-                new File(
-                        dir,
-                        "labrador_"
-                                + stamp
-                                + ".bin"
-                );
-
-        analysisFile =
-                new File(
-                        dir,
-                        "labrador_"
-                                + stamp
-                                + "_analysis.txt"
-                );
-
-        append(
-                "LABRADOR BINARY FILE:"
-        );
-
-        append(
-                binaryFile.getAbsolutePath()
-        );
-
-        append(
-                "LABRADOR ANALYSIS FILE:"
-        );
-
-        append(
-                analysisFile.getAbsolutePath()
-        );
-    }
-
-    private void saveBinaryFragment(
-            byte[] data) {
-
-        if (binaryFile == null)
-            prepareCaptureFiles();
-
-        if (binaryFile == null)
-            return;
-
-        try {
-
-            FileOutputStream fos =
-                    new FileOutputStream(
-                            binaryFile,
-                            true
-                    );
-
-            fos.write(data);
-            fos.close();
-
-        } catch (Exception e) {
-
-            append(
-                    "BINARY SAVE ERROR: "
-                            + e
-            );
-        }
-    }
-
-    private void writeAnalysis(
-            String text) {
-
-        if (analysisFile == null)
-            return;
-
-        try {
-
-            FileWriter fw =
-                    new FileWriter(
-                            analysisFile,
-                            true
-                    );
-
-            fw.write(text);
-            fw.write("\n");
-            fw.close();
-
-        } catch (Exception e) {
-
-            append(
-                    "ANALYSIS SAVE ERROR: "
-                            + e
-            );
+                requestPermissions(
+                        p.toArray(
+                                new String[0]),
+                        REQ);
+            }
         }
     }
 
     /*
-     * ================================================================
-     * BLE SCANNING
-     * ================================================================
+     * ------------------------------------------------------------------
+     * BLE scanning
+     * ------------------------------------------------------------------
      */
 
-    @SuppressLint("MissingPermission")
+    private void stopScanning() {
+
+        if (scanner != null) {
+
+            try {
+                scanner.stopScan(sc);
+            } catch (Exception ignored) {
+            }
+
+            scanner = null;
+
+            line("SCAN STOP");
+        }
+    }
+
     private void scan() {
 
-        if (!permissionsGranted()) {
+        if (Build.VERSION.SDK_INT >= 31 &&
+                checkSelfPermission(
+                        Manifest.permission
+                                .BLUETOOTH_SCAN)
+                        != PackageManager.PERMISSION_GRANTED) {
 
-            append(
-                    "Bluetooth permissions missing"
-            );
-
-            requestBluetoothPermissions();
-
-            return;
-        }
-
-        if (adapter == null) {
-
-            append(
-                    "ERROR: Bluetooth adapter is NULL"
-            );
-
-            initializeBluetooth();
-
-            return;
-        }
-
-        if (!adapter.isEnabled()) {
-
-            append(
-                    "Bluetooth is OFF"
-            );
-
-            finishBluetoothInitialization();
-
+            requestPerms();
             return;
         }
 
         scanner =
                 adapter.getBluetoothLeScanner();
 
-        if (scanner == null) {
+        line("SCANNING 10s...");
 
-            append(
-                    "ERROR: BLE scanner unavailable"
-            );
-
-            return;
-        }
-
-        append("");
-        append(
-                "SCANNING 10s..."
-        );
-
-        scanning = true;
-
-        ScanSettings settings =
-                new ScanSettings.Builder()
-                        .setScanMode(
-                                ScanSettings.SCAN_MODE_LOW_LATENCY
-                        )
+        ScanFilter f =
+                new ScanFilter.Builder()
+                        .setServiceUuid(
+                                new android.os.ParcelUuid(
+                                        svc))
                         .build();
 
-        try {
+        ScanSettings ss =
+                new ScanSettings.Builder()
+                        .setScanMode(
+                                ScanSettings
+                                        .SCAN_MODE_LOW_LATENCY)
+                        .build();
 
-            scanner.startScan(
-                    null,
-                    settings,
-                    scanCallback
-            );
+        scanner.startScan(
+                Collections.singletonList(f),
+                ss,
+                sc);
 
-        } catch (Exception e) {
-
-            scanning = false;
-
-            append(
-                    "SCAN ERROR: "
-                            + e
-            );
-
-            return;
-        }
-
-        handler.postDelayed(
-                () -> {
-
-                    if (!scanning)
-                        return;
-
-                    scanning = false;
-
-                    try {
-
-                        if (scanner != null)
-                            scanner.stopScan(
-                                    scanCallback
-                            );
-
-                    } catch (Exception ignored) {
-                    }
-
-                    append(
-                            "SCAN STOP"
-                    );
-
-                },
-                10000
-        );
+        new Handler(
+                Looper.getMainLooper())
+                .postDelayed(
+                        this::stopScanning,
+                        10000);
     }
 
-    private final ScanCallback scanCallback =
+    private final ScanCallback sc =
             new ScanCallback() {
 
-                @SuppressLint("MissingPermission")
-                @Override
-                public void onScanResult(
-                        int callbackType,
-                        ScanResult result) {
+        @Override
+        public void onScanResult(
+                int type,
+                ScanResult r) {
 
-                    BluetoothDevice device =
-                            result.getDevice();
+            BluetoothDevice d =
+                    r.getDevice();
 
-                    if (device == null)
-                        return;
+            line(
+                    "FOUND " +
+                    d.getName() +
+                    " " +
+                    d.getAddress() +
+                    " RSSI=" +
+                    r.getRssi());
 
-                    String name;
+            if (gatt == null &&
+                    pendingDevice == null) {
 
-                    try {
-                        name = device.getName();
-                    } catch (Exception e) {
-                        return;
-                    }
+                if (Build.VERSION.SDK_INT >= 31 &&
+                        checkSelfPermission(
+                                Manifest.permission
+                                        .BLUETOOTH_CONNECT)
+                                != PackageManager.PERMISSION_GRANTED) {
 
-                    if (name == null)
-                        return;
-
-                    if (!name.toUpperCase(
-                            Locale.US
-                    ).contains("WHOOP")) {
-
-                        return;
-                    }
-
-                    append(
-                            "FOUND WHOOP "
-                                    + name
-                                    + " "
-                                    + device.getAddress()
-                                    + " RSSI="
-                                    + result.getRssi()
-                    );
-
-                    scanning = false;
-
-                    try {
-
-                        if (scanner != null)
-                            scanner.stopScan(
-                                    scanCallback
-                            );
-
-                    } catch (Exception ignored) {
-                    }
-
-                    append(
-                            "SCAN STOP"
-                    );
-
-                    connect(device);
+                    return;
                 }
 
-                @Override
-                public void onScanFailed(
-                        int errorCode) {
+                stopScanning();
 
-                    scanning = false;
+                if (d.getBondState() ==
+                        BluetoothDevice.BOND_BONDED) {
 
-                    append(
-                            "SCAN FAILED error="
-                                    + errorCode
-                    );
+                    line(
+                            "ALREADY BONDED, " +
+                            "CONNECTING " +
+                            d.getAddress());
+
+                    gatt =
+                            d.connectGatt(
+                                    MainActivity.this,
+                                    false,
+                                    cb,
+                                    BluetoothDevice
+                                            .TRANSPORT_LE);
+
+                } else {
+
+                    line(
+                            "NOT BONDED - " +
+                            "requesting bond " +
+                            d.getAddress());
+
+                    pendingDevice = d;
+
+                    boolean started =
+                            d.createBond();
+
+                    if (!started) {
+
+                        line(
+                                "createBond() " +
+                                "returned false");
+
+                        pendingDevice = null;
+                    }
                 }
-            };
+            }
+        }
+    };
 
     /*
-     * ================================================================
-     * GATT CONNECTION
-     * ================================================================
+     * ------------------------------------------------------------------
+     * Logging
+     * ------------------------------------------------------------------
      */
 
-    @SuppressLint("MissingPermission")
-    private void connect(
-            BluetoothDevice device) {
+    private String shortUuid(UUID u) {
 
-        if (!permissionsGranted()) {
+        return u.toString()
+                .substring(4, 8);
+    }
 
-            append(
-                    "Cannot connect: Bluetooth permission missing"
-            );
+    private void line(String s) {
 
-            return;
-        }
+        runOnUiThread(() -> {
 
-        if (gatt != null) {
+            String old =
+                    log == null
+                            ? ""
+                            : log.getText()
+                            .toString();
 
-            try {
-                gatt.close();
-            } catch (Exception ignored) {
+            if (old.length() > 20000) {
+
+                old =
+                        old.substring(
+                                old.length() - 16000);
             }
 
-            gatt = null;
-        }
+            if (log != null) {
 
-        cmdWrite = null;
-
-        append("");
-        append(
-                "CONNECTING "
-                        + device.getAddress()
-        );
-
-        try {
-
-            gatt =
-                    device.connectGatt(
-                            this,
-                            false,
-                            gattCallback
-                    );
-
-        } catch (Exception e) {
-
-            append(
-                    "GATT CONNECT ERROR: "
-                            + e
-            );
-        }
-    }
-
-    private final BluetoothGattCallback gattCallback =
-            new BluetoothGattCallback() {
-
-                @Override
-                public void onConnectionStateChange(
-                        BluetoothGatt g,
-                        int status,
-                        int newState) {
-
-                    append(
-                            "GATT state="
-                                    + newState
-                                    + " status="
-                                    + status
-                    );
-
-                    if (newState ==
-                            BluetoothProfile.STATE_CONNECTED) {
-
-                        append(
-                                "GATT CONNECTED"
-                        );
-
-                        if (hasBluetoothConnectPermission()) {
-
-                            handler.postDelayed(
-                                    () -> {
-
-                                        try {
-
-                                            boolean ok =
-                                                    g.discoverServices();
-
-                                            append(
-                                                    "discoverServices="
-                                                            + ok
-                                            );
-
-                                        } catch (Exception e) {
-
-                                            append(
-                                                    "discoverServices ERROR "
-                                                            + e
-                                            );
-                                        }
-
-                                    },
-                                    300
-                            );
-                        }
-
-                    } else if (
-                            newState ==
-                                    BluetoothProfile.STATE_DISCONNECTED
-                    ) {
-
-                        append(
-                                "GATT DISCONNECTED status="
-                                        + status
-                        );
-
-                        cmdWrite = null;
-                    }
-                }
-
-                @Override
-                public void onServicesDiscovered(
-                        BluetoothGatt g,
-                        int status) {
-
-                    append(
-                            "SERVICES DISCOVERED status="
-                                    + status
-                    );
-
-                    if (status != BluetoothGatt.GATT_SUCCESS) {
-
-                        append(
-                                "Service discovery failed"
-                        );
-
-                        return;
-                    }
-
-                    BluetoothGattService service =
-                            g.getService(
-                                    UUID.fromString(
-                                            Protocol.SERVICE
-                                    )
-                            );
-
-                    if (service == null) {
-
-                        append(
-                                "fd4b service NOT FOUND"
-                        );
-
-                        return;
-                    }
-
-                    append(
-                            "fd4b service FOUND"
-                    );
-
-                    cmdWrite =
-                            service.getCharacteristic(
-                                    UUID.fromString(
-                                            Protocol.CMD_WRITE
-                                    )
-                            );
-
-                    if (cmdWrite == null) {
-
-                        append(
-                                "CMD WRITE CHARACTERISTIC NOT FOUND"
-                        );
-
-                        return;
-                    }
-
-                    append(
-                            "CMD WRITE CHARACTERISTIC FOUND"
-                    );
-
-                    subscribeQueue.clear();
-
-                    subscribeQueue.add(
-                            new SubscribeItem(
-                                    Protocol.CMD_NOTIFY,
-                                    "0003"
-                            )
-                    );
-
-                    subscribeQueue.add(
-                            new SubscribeItem(
-                                    Protocol.EVENT_NOTIFY,
-                                    "0004"
-                            )
-                    );
-
-                    subscribeQueue.add(
-                            new SubscribeItem(
-                                    Protocol.DATA_NOTIFY,
-                                    "0005"
-                            )
-                    );
-
-                    subscribeQueue.add(
-                            new SubscribeItem(
-                                    Protocol.EXTRA_NOTIFY,
-                                    "0007"
-                            )
-                    );
-
-                    subscribeIndex = 0;
-
-                    subscribeNext(
-                            g,
-                            service
-                    );
-                }
-
-                @Override
-                public void onDescriptorWrite(
-                        BluetoothGatt g,
-                        BluetoothGattDescriptor descriptor,
-                        int status) {
-
-                    append(
-                            "CCCD WRITE "
-                                    + shortUuid(
-                                    descriptor.getCharacteristic()
-                                            .getUuid()
-                            )
-                                    + " status="
-                                    + status
-                    );
-
-                    subscribeIndex++;
-
-                    BluetoothGattService service =
-                            g.getService(
-                                    UUID.fromString(
-                                            Protocol.SERVICE
-                                    )
-                            );
-
-                    if (service == null)
-                        return;
-
-                    handler.postDelayed(
-                            () -> subscribeNext(
-                                    g,
-                                    service
-                            ),
-                            150
-                    );
-                }
-
-                @Override
-                public void onCharacteristicChanged(
-                        BluetoothGatt g,
-                        BluetoothGattCharacteristic c,
-                        byte[] value) {
-
-                    handleRx(
-                            c.getUuid(),
-                            value
-                    );
-                }
-
-                /*
-                 * Android 13+ callback.
-                 */
-                @Override
-                public void onCharacteristicChanged(
-                        BluetoothGatt g,
-                        BluetoothGattCharacteristic c) {
-
-                    byte[] value =
-                            c.getValue();
-
-                    if (value != null) {
-
-                        handleRx(
-                                c.getUuid(),
-                                value
-                        );
-                    }
-                }
-
-                @Override
-                public void onCharacteristicWrite(
-                        BluetoothGatt g,
-                        BluetoothGattCharacteristic c,
-                        int status) {
-
-                    append(
-                            "WRITE "
-                                    + channelName(
-                                    c.getUuid()
-                            )
-                                    + " status="
-                                    + status
-                    );
-
-                    writing = false;
-
-                    handler.postDelayed(
-                            MainActivity.this::writeNext,
-                            50
-                    );
-                }
-            };
-
-    /*
-     * ================================================================
-     * NOTIFICATION SUBSCRIPTIONS
-     * ================================================================
-     */
-
-    @SuppressLint("MissingPermission")
-    private void subscribeNext(
-            BluetoothGatt g,
-            BluetoothGattService service) {
-
-        if (subscribeIndex >=
-                subscribeQueue.size()) {
-
-            append(
-                    "ALL NOTIFICATIONS SUBSCRIBED"
-            );
-
-            if (cmdWrite != null) {
-
-                append(
-                        "TX CLIENT_HELLO"
-                );
-
-                enqueueWrite(
-                        Protocol.clientHello()
-                );
-            }
-
-            return;
-        }
-
-        SubscribeItem item =
-                subscribeQueue.get(
-                        subscribeIndex
-                );
-
-        BluetoothGattCharacteristic c =
-                service.getCharacteristic(
-                        UUID.fromString(
-                                item.uuid
-                        )
-                );
-
-        if (c == null) {
-
-            append(
-                    "CHAR "
-                            + item.label
-                            + " NOT FOUND"
-            );
-
-            subscribeIndex++;
-
-            subscribeNext(
-                    g,
-                    service
-            );
-
-            return;
-        }
-
-        boolean local =
-                g.setCharacteristicNotification(
-                        c,
-                        true
-                );
-
-        append(
-                "SUBSCRIBE "
-                        + item.label
-                        + " local="
-                        + local
-        );
-
-        BluetoothGattDescriptor d =
-                c.getDescriptor(
-                        CCCD_UUID
-                );
-
-        if (d == null) {
-
-            append(
-                    "CCCD "
-                            + item.label
-                            + " NOT FOUND"
-            );
-
-            subscribeIndex++;
-
-            subscribeNext(
-                    g,
-                    service
-            );
-
-            return;
-        }
-
-        d.setValue(
-                BluetoothGattDescriptor
-                        .ENABLE_NOTIFICATION_VALUE
-        );
-
-        boolean writeOk =
-                g.writeDescriptor(d);
-
-        append(
-                "CCCD WRITE REQUEST "
-                        + item.label
-                        + " ok="
-                        + writeOk
-        );
-
-        if (!writeOk) {
-
-            subscribeIndex++;
-
-            handler.postDelayed(
-                    () -> subscribeNext(
-                            g,
-                            service
-                    ),
-                    200
-            );
-        }
-    }
-
-    /*
-     * ================================================================
-     * TX
-     * ================================================================
-     */
-
-    private void sendNamed(
-            String name,
-            int type,
-            int cmd,
-            int arg) {
-
-        int seq =
-                sequence++ & 0xFF;
-
-        byte[] frame =
-                Protocol.labrador(
-                        type,
-                        cmd,
-                        arg,
-                        seq
-                );
-
-        append("");
-        append(
-                "TX "
-                        + name
-        );
-
-        append(
-                String.format(
-                        Locale.US,
-                        "TX TYPE=0x%02X",
-                        type
-                )
-        );
-
-        append(
-                String.format(
-                        Locale.US,
-                        "TX CMD=0x%02X",
-                        cmd
-                )
-        );
-
-        append(
-                String.format(
-                        Locale.US,
-                        "TX ARG=0x%02X",
-                        arg
-                )
-        );
-
-        append(
-                String.format(
-                        Locale.US,
-                        "TX SEQ=0x%02X",
-                        seq
-                )
-        );
-
-        append(
-                "TX LEN="
-                        + frame.length
-        );
-
-        append(
-                "TX RAW="
-                        + Protocol.hex(frame)
-        );
-
-        enqueueWrite(frame);
-    }
-
-    private synchronized void enqueueWrite(
-            byte[] data) {
-
-        if (data == null)
-            return;
-
-        byte[] copy =
-                new byte[data.length];
-
-        System.arraycopy(
-                data,
-                0,
-                copy,
-                0,
-                data.length
-        );
-
-        writeQueue.offer(copy);
-
-        runOnUiThread(
-                this::writeNext
-        );
-    }
-
-    @SuppressLint("MissingPermission")
-    private synchronized void writeNext() {
-
-        if (writing)
-            return;
-
-        byte[] data =
-                writeQueue.poll();
-
-        if (data == null)
-            return;
-
-        if (gatt == null ||
-                cmdWrite == null) {
-
-            append(
-                    "WRITE ERROR: GATT/CHAR NULL"
-            );
-
-            return;
-        }
-
-        if (!hasBluetoothConnectPermission()) {
-
-            append(
-                    "WRITE ERROR: Bluetooth CONNECT permission missing"
-            );
-
-            return;
-        }
-
-        writing = true;
-
-        cmdWrite.setWriteType(
-                BluetoothGattCharacteristic
-                        .WRITE_TYPE_DEFAULT
-        );
-
-        cmdWrite.setValue(data);
-
-        boolean ok;
-
-        try {
-
-            ok =
-                    gatt.writeCharacteristic(
-                            cmdWrite
-                    );
-
-        } catch (Exception e) {
-
-            ok = false;
-
-            append(
-                    "writeCharacteristic ERROR "
-                            + e
-            );
-        }
-
-        if (!ok) {
-
-            append(
-                    "writeCharacteristic returned FALSE"
-            );
-
-            writing = false;
-
-            handler.postDelayed(
-                    this::writeNext,
-                    150
-            );
-        }
-    }
-
-    /*
-     * ================================================================
-     * RX
-     * ================================================================
-     */
-
-    private void handleRx(
-            UUID uuid,
-            byte[] value) {
-
-        if (value == null)
-            return;
-
-        byte[] copy =
-                new byte[value.length];
-
-        System.arraycopy(
-                value,
-                0,
-                copy,
-                0,
-                value.length
-        );
-
-        rxCount++;
-
-        String channel =
-                channelName(uuid);
-
-        append("");
-        append(
-                "========== RX #"
-                        + rxCount
-                        + " =========="
-        );
-
-        append(
-                "CHANNEL "
-                        + channel
-        );
-
-        append(
-                "LENGTH "
-                        + copy.length
-        );
-
-        append(
-                "RAW "
-                        + Protocol.hex(copy)
-        );
-
-        append(
-                "FRAME "
-                        + Protocol.frameSummary(copy)
-        );
-
-        if (copy.length >= 8 &&
-                (copy[0] & 0xFF) == 0xAA) {
-
-            append(
-                    "HEADER "
-                            + Protocol.hex(
-                            firstBytes(
-                                    copy,
-                                    8
-                            )
-                    )
-            );
-
-            if (copy.length >= 11) {
-
-                append(
+                log.setText(
+                        old +
                         String.format(
-                                Locale.US,
-                                "FIELDS type=0x%02X seq=0x%02X cmd=0x%02X",
-                                copy[8] & 0xFF,
-                                copy[9] & 0xFF,
-                                copy[10] & 0xFF
-                        )
-                );
+                                "\n%tT  %s",
+                                new Date(),
+                                s));
             }
-        }
 
-        if ("0007".equals(channel)) {
+            if (scrollView != null) {
 
-            captureLabradorFragment(
-                    copy
-            );
-        }
-
-        if ("0004".equals(channel)
-                &&
-                isLabradorCompletion(copy)) {
-
-            append(
-                    "*** RECORDING COMPLETE DETECTED ***"
-            );
-
-            recordingComplete = true;
-
-            finishLabradorCapture();
-        }
-
-        append(
-                "========== END RX =========="
-        );
-    }
-
-    private String channelName(
-            UUID uuid) {
-
-        if (uuid == null)
-            return "?";
-
-        if (uuid.equals(
-                UUID.fromString(
-                        Protocol.CMD_NOTIFY
-                )))
-            return "0003";
-
-        if (uuid.equals(
-                UUID.fromString(
-                        Protocol.EVENT_NOTIFY
-                )))
-            return "0004";
-
-        if (uuid.equals(
-                UUID.fromString(
-                        Protocol.DATA_NOTIFY
-                )))
-            return "0005";
-
-        if (uuid.equals(
-                UUID.fromString(
-                        Protocol.EXTRA_NOTIFY
-                )))
-            return "0007";
-
-        return shortUuid(uuid);
-    }
-
-    private String shortUuid(
-            UUID uuid) {
-
-        if (uuid == null)
-            return "?";
-
-        String s =
-                uuid.toString();
-
-        if (s.length() >= 8)
-            return s.substring(
-                    0,
-                    8
-            );
-
-        return s;
-    }
-
-    private boolean isLabradorCompletion(
-            byte[] b) {
-
-        if (b.length < 13)
-            return false;
-
-        if ((b[0] & 0xFF) != 0xAA)
-            return false;
-
-        return (b[8] & 0xFF) == 0x30
-                &&
-                (b[10] & 0xFF) == 0x1D;
+                scrollView.post(() ->
+                        scrollView.fullScroll(
+                                View.FOCUS_DOWN));
+            }
+        });
     }
 
     /*
-     * ================================================================
-     * LABRADOR CAPTURE
-     * ================================================================
+     * ------------------------------------------------------------------
+     * Cleanup
+     * ------------------------------------------------------------------
      */
-
-    private void captureLabradorFragment(
-            byte[] value) {
-
-        byte[] copy =
-                new byte[value.length];
-
-        System.arraycopy(
-                value,
-                0,
-                copy,
-                0,
-                value.length
-        );
-
-        labradorFragments.add(copy);
-
-        labradorFragmentCount++;
-
-        saveBinaryFragment(copy);
-
-        append("");
-        append(
-                "LABRADOR 0007 FRAGMENT #"
-                        + labradorFragmentCount
-        );
-
-        append(
-                "LABRADOR LENGTH="
-                        + copy.length
-        );
-
-        append(
-                "LABRADOR HEAD "
-                        + Protocol.hex(
-                        firstBytes(
-                                copy,
-                                32
-                        )
-                )
-        );
-
-        append(
-                "LABRADOR TAIL "
-                        + Protocol.hex(
-                        lastBytes(
-                                copy,
-                                32
-                        )
-                )
-        );
-
-        analyseAscii(copy);
-        findCborCandidates(copy);
-        analyseF6Fragment(copy);
-    }
-
-    private void finishLabradorCapture() {
-
-        if (labradorFragments.isEmpty()) {
-
-            append(
-                    "NO 0007 DATA TO REASSEMBLE"
-            );
-
-            return;
-        }
-
-        byte[] combined =
-                combineFragments();
-
-        append("");
-        append(
-                "=================================================="
-        );
-
-        append(
-                "LABRADOR REASSEMBLED"
-        );
-
-        append(
-                "FRAGMENTS="
-                        + labradorFragments.size()
-        );
-
-        append(
-                "TOTAL BYTES="
-                        + combined.length
-        );
-
-        append(
-                "FULL HEX:"
-        );
-
-        append(
-                Protocol.hex(combined)
-        );
-
-        writeAnalysis("");
-        writeAnalysis(
-                "=================================================="
-        );
-        writeAnalysis(
-                "LABRADOR REASSEMBLED"
-        );
-        writeAnalysis(
-                "FRAGMENTS="
-                        + labradorFragments.size()
-        );
-        writeAnalysis(
-                "TOTAL BYTES="
-                        + combined.length
-        );
-        writeAnalysis(
-                "FULL HEX:"
-        );
-        writeAnalysis(
-                Protocol.hex(combined)
-        );
-
-        append("");
-        append(
-                "========== CBOR CANDIDATE ANALYSIS =========="
-        );
-
-        writeAnalysis("");
-        writeAnalysis(
-                "========== CBOR CANDIDATE ANALYSIS =========="
-        );
-
-        findCborCandidatesCombined(
-                combined
-        );
-
-        /*
-         * Specifically parse every A7 candidate.
-         */
-        int[] candidates =
-                findCandidateOffsets(
-                        combined
-                );
-
-        for (int offset :
-                candidates) {
-
-            decodeCborAt(
-                    combined,
-                    offset
-            );
-        }
-
-        /*
-         * F6 analysis.
-         */
-        append("");
-        append(
-                "========== F6 ANALYSIS =========="
-        );
-
-        writeAnalysis("");
-        writeAnalysis(
-                "========== F6 ANALYSIS =========="
-        );
-
-        F6Analysis f6 =
-                analyseF6(combined);
-
-        append(
-                "F6 COUNT="
-                        + f6.count
-        );
-
-        append(
-                "F6 RUNS="
-                        + f6.runs
-        );
-
-        writeAnalysis(
-                "F6 COUNT="
-                        + f6.count
-        );
-
-        writeAnalysis(
-                "F6 RUNS="
-                        + f6.runs
-        );
-
-        append("");
-        append(
-                "========== CAPTURE COMPLETE =========="
-        );
-
-        append(
-                "BINARY="
-                        + binaryFile.getAbsolutePath()
-        );
-
-        append(
-                "ANALYSIS="
-                        + analysisFile.getAbsolutePath()
-        );
-
-        writeAnalysis(
-                "CAPTURE COMPLETE"
-        );
-    }
-
-    private byte[] combineFragments() {
-
-        int total = 0;
-
-        for (byte[] f :
-                labradorFragments) {
-
-            total += f.length;
-        }
-
-        byte[] result =
-                new byte[total];
-
-        int pos = 0;
-
-        for (byte[] f :
-                labradorFragments) {
-
-            System.arraycopy(
-                    f,
-                    0,
-                    result,
-                    pos,
-                    f.length
-            );
-
-            pos += f.length;
-        }
-
-        return result;
-    }
-
-    /*
-     * ================================================================
-     * ASCII ANALYSIS
-     * ================================================================
-     */
-
-    private void analyseAscii(
-            byte[] b) {
-
-        int start = -1;
-
-        for (int i = 0;
-             i < b.length;
-             i++) {
-
-            int x =
-                    b[i] & 0xFF;
-
-            boolean printable =
-                    x >= 32 &&
-                            x <= 126;
-
-            if (printable) {
-
-                if (start < 0)
-                    start = i;
-
-            } else {
-
-                if (start >= 0 &&
-                        i - start >= 4) {
-
-                    String s =
-                            new String(
-                                    b,
-                                    start,
-                                    i - start,
-                                    StandardCharsets.US_ASCII
-                            );
-
-                    String line =
-                            "ASCII @"
-                                    + start
-                                    + " \""
-                                    + s
-                                    + "\"";
-
-                    append(line);
-                    writeAnalysis(line);
-                }
-
-                start = -1;
-            }
-        }
-
-        if (start >= 0 &&
-                b.length - start >= 4) {
-
-            String s =
-                    new String(
-                            b,
-                            start,
-                            b.length - start,
-                            StandardCharsets.US_ASCII
-                    );
-
-            String line =
-                    "ASCII @"
-                            + start
-                            + " \""
-                            + s
-                            + "\"";
-
-            append(line);
-            writeAnalysis(line);
-        }
-    }
-
-    /*
-     * ================================================================
-     * CBOR CANDIDATE SEARCH
-     * ================================================================
-     */
-
-    private void findCborCandidates(
-            byte[] b) {
-
-        for (int i = 0;
-             i < b.length;
-             i++) {
-
-            int x =
-                    b[i] & 0xFF;
-
-            if (x == 0xA7 ||
-                    x == 0xA2 ||
-                    x == 0xA1 ||
-                    x == 0x98) {
-
-                String line =
-                        String.format(
-                                Locale.US,
-                                "CBOR-CANDIDATE @%d = 0x%02X",
-                                i,
-                                x
-                        );
-
-                append(line);
-                writeAnalysis(line);
-            }
-        }
-    }
-
-    private void findCborCandidatesCombined(
-            byte[] b) {
-
-        findCborCandidates(b);
-
-        if (b.length > 37) {
-
-            String line =
-                    String.format(
-                            Locale.US,
-                            "KNOWN-AREA CHECK @37: 0x%02X",
-                            b[37] & 0xFF
-                    );
-
-            append(line);
-            writeAnalysis(line);
-
-            if ((b[37] & 0xFF) == 0xA7) {
-
-                append(
-                        "KNOWN CBOR MAP FOUND AT OFFSET 37"
-                );
-
-                writeAnalysis(
-                        "KNOWN CBOR MAP FOUND AT OFFSET 37"
-                );
-            }
-        }
-    }
-
-    private int[] findCandidateOffsets(
-            byte[] b) {
-
-        ArrayList<Integer> list =
-                new ArrayList<>();
-
-        for (int i = 0;
-             i < b.length;
-             i++) {
-
-            if ((b[i] & 0xFF) == 0xA7)
-                list.add(i);
-        }
-
-        int[] result =
-                new int[list.size()];
-
-        for (int i = 0;
-             i < list.size();
-             i++) {
-
-            result[i] =
-                    list.get(i);
-        }
-
-        return result;
-    }
-
-    /*
-     * ================================================================
-     * CBOR DECODER
-     * ================================================================
-     */
-
-    private void decodeCborAt(
-            byte[] data,
-            int offset) {
-
-        append("");
-        append(
-                "========== CBOR PARSE @"
-                        + offset
-                        + " =========="
-        );
-
-        writeAnalysis("");
-        writeAnalysis(
-                "========== CBOR PARSE @"
-                        + offset
-                        + " =========="
-        );
-
-        CborReader reader =
-                new CborReader(
-                        data,
-                        offset
-                );
-
-        try {
-
-            reader.parseItem(
-                    0
-            );
-
-            append(
-                    "CBOR PARSE END="
-                            + reader.pos
-            );
-
-            append(
-                    "CBOR BYTES CONSUMED="
-                            + (
-                            reader.pos - offset
-                    )
-            );
-
-            writeAnalysis(
-                    "CBOR PARSE END="
-                            + reader.pos
-            );
-
-            writeAnalysis(
-                    "CBOR BYTES CONSUMED="
-                            + (
-                            reader.pos - offset
-                    )
-            );
-
-        } catch (Exception e) {
-
-            String line =
-                    "CBOR PARSE ERROR @"
-                            + reader.pos
-                            + ": "
-                            + e.getMessage();
-
-            append(line);
-            writeAnalysis(line);
-        }
-    }
-
-    private class CborReader {
-
-        private final byte[] data;
-        private int pos;
-
-        private int itemCount = 0;
-
-        CborReader(
-                byte[] data,
-                int start) {
-
-            this.data = data;
-            this.pos = start;
-        }
-
-        void parseItem(
-                int depth) {
-
-            if (depth > 20)
-                throw new RuntimeException(
-                        "maximum CBOR depth"
-                );
-
-            if (++itemCount > 500)
-                throw new RuntimeException(
-                        "CBOR item limit reached"
-                );
-
-            ensure(1);
-
-            int offset = pos;
-
-            int first =
-                    data[pos++] & 0xFF;
-
-            int major =
-                    first >>> 5;
-
-            int ai =
-                    first & 0x1F;
-
-            String indent =
-                    indent(depth);
-
-            switch (major) {
-
-                case 0: {
-
-                    long value =
-                            readAdditional(ai);
-
-                    addAnalysis(
-                            indent
-                                    + "@"
-                                    + offset
-                                    + " UINT "
-                                    + value
-                                    + " 0x"
-                                    + Long.toHexString(
-                                    value
-                            )
-                    );
-
-                    break;
-                }
-
-                case 1: {
-
-                    long value =
-                            readAdditional(ai);
-
-                    addAnalysis(
-                            indent
-                                    + "@"
-                                    + offset
-                                    + " NEG "
-                                    + (-1L - value)
-                    );
-
-                    break;
-                }
-
-                case 2: {
-
-                    long length =
-                            readAdditional(ai);
-
-                    if (length >
-                            Integer.MAX_VALUE) {
-
-                        throw new RuntimeException(
-                                "byte string too large"
-                        );
-                    }
-
-                    ensure(
-                            (int) length
-                    );
-
-                    addAnalysis(
-                            indent
-                                    + "@"
-                                    + offset
-                                    + " BYTES length="
-                                    + length
-                                    + " "
-                                    + hexRange(
-                                    pos,
-                                    pos + (int) length
-                            )
-                    );
-
-                    pos +=
-                            (int) length;
-
-                    break;
-                }
-
-                case 3: {
-
-                    long length =
-                            readAdditional(ai);
-
-                    if (length >
-                            Integer.MAX_VALUE) {
-
-                        throw new RuntimeException(
-                                "text string too large"
-                        );
-                    }
-
-                    ensure(
-                            (int) length
-                    );
-
-                    String text =
-                            new String(
-                                    data,
-                                    pos,
-                                    (int) length,
-                                    StandardCharsets.UTF_8
-                            );
-
-                    addAnalysis(
-                            indent
-                                    + "@"
-                                    + offset
-                                    + " TEXT \""
-                                    + text
-                                    + "\""
-                    );
-
-                    pos +=
-                            (int) length;
-
-                    break;
-                }
-
-                case 4: {
-
-                    long count =
-                            readAdditional(ai);
-
-                    addAnalysis(
-                            indent
-                                    + "@"
-                                    + offset
-                                    + " ARRAY count="
-                                    + count
-                    );
-
-                    if (count >
-                            500) {
-
-                        throw new RuntimeException(
-                                "array too large"
-                        );
-                    }
-
-                    for (int i = 0;
-                         i < count;
-                         i++) {
-
-                        addAnalysis(
-                                indent
-                                        + "  ["
-                                        + i
-                                        + "]"
-                        );
-
-                        parseItem(
-                                depth + 1
-                        );
-                    }
-
-                    break;
-                }
-
-                case 5: {
-
-                    long pairs =
-                            readAdditional(ai);
-
-                    addAnalysis(
-                            indent
-                                    + "@"
-                                    + offset
-                                    + " MAP pairs="
-                                    + pairs
-                    );
-
-                    if (pairs >
-                            500) {
-
-                        throw new RuntimeException(
-                                "map too large"
-                        );
-                    }
-
-                    for (int i = 0;
-                         i < pairs;
-                         i++) {
-
-                        addAnalysis(
-                                indent
-                                        + "  KEY"
-                        );
-
-                        parseItem(
-                                depth + 1
-                        );
-
-                        addAnalysis(
-                                indent
-                                        + "  VALUE"
-                        );
-
-                        parseItem(
-                                depth + 1
-                        );
-                    }
-
-                    break;
-                }
-
-                case 6: {
-
-                    long tag =
-                            readAdditional(ai);
-
-                    addAnalysis(
-                            indent
-                                    + "@"
-                                    + offset
-                                    + " TAG "
-                                    + tag
-                    );
-
-                    parseItem(
-                            depth + 1
-                    );
-
-                    break;
-                }
-
-                case 7: {
-
-                    if (ai == 20) {
-
-                        addAnalysis(
-                                indent
-                                        + "@"
-                                        + offset
-                                        + " FALSE"
-                        );
-
-                    } else if (ai == 21) {
-
-                        addAnalysis(
-                                indent
-                                        + "@"
-                                        + offset
-                                        + " TRUE"
-                        );
-
-                    } else if (ai == 22) {
-
-                        addAnalysis(
-                                indent
-                                        + "@"
-                                        + offset
-                                        + " NULL"
-                        );
-
-                    } else if (ai == 23) {
-
-                        addAnalysis(
-                                indent
-                                        + "@"
-                                        + offset
-                                        + " UNDEFINED"
-                        );
-
-                    } else {
-
-                        addAnalysis(
-                                indent
-                                        + "@"
-                                        + offset
-                                        + " SIMPLE/FLOAT ai="
-                                        + ai
-                        );
-                    }
-
-                    break;
-                }
-
-                default:
-
-                    throw new RuntimeException(
-                            "unknown CBOR major type "
-                                    + major
-                    );
-            }
-        }
-
-        private long readAdditional(
-                int ai) {
-
-            if (ai < 24)
-                return ai;
-
-            if (ai == 24) {
-
-                ensure(1);
-
-                return data[pos++] &
-                        0xFFL;
-            }
-
-            if (ai == 25) {
-
-                ensure(2);
-
-                long result =
-                        ((data[pos] & 0xFFL) << 8)
-                                |
-                                (data[pos + 1] & 0xFFL);
-
-                pos += 2;
-
-                return result;
-            }
-
-            if (ai == 26) {
-
-                ensure(4);
-
-                long result =
-                        ((data[pos] & 0xFFL) << 24)
-                                |
-                                ((data[pos + 1] & 0xFFL) << 16)
-                                |
-                                ((data[pos + 2] & 0xFFL) << 8)
-                                |
-                                (data[pos + 3] & 0xFFL);
-
-                pos += 4;
-
-                return result;
-            }
-
-            if (ai == 27) {
-
-                ensure(8);
-
-                long result = 0;
-
-                for (int i = 0;
-                     i < 8;
-                     i++) {
-
-                    result =
-                            (result << 8)
-                                    |
-                                    (data[pos + i]
-                                            & 0xFFL);
-                }
-
-                pos += 8;
-
-                return result;
-            }
-
-            if (ai == 31) {
-
-                throw new RuntimeException(
-                        "indefinite-length CBOR not implemented"
-                );
-            }
-
-            throw new RuntimeException(
-                    "unsupported additional info "
-                            + ai
-            );
-        }
-
-        private void ensure(
-                int length) {
-
-            if (length < 0 ||
-                    pos + length >
-                            data.length) {
-
-                throw new RuntimeException(
-                        "EOF at "
-                                + pos
-                                + " need "
-                                + length
-                );
-            }
-        }
-    }
-
-    private void addAnalysis(
-            String line) {
-
-        append(line);
-        writeAnalysis(line);
-    }
-
-    /*
-     * ================================================================
-     * F6 ANALYSIS
-     * ================================================================
-     */
-
-    private static class F6Analysis {
-
-        int count;
-        int runs;
-    }
-
-    private F6Analysis analyseF6(
-            byte[] data) {
-
-        F6Analysis result =
-                new F6Analysis();
-
-        boolean inRun = false;
-
-        for (byte b : data) {
-
-            if ((b & 0xFF) == 0xF6) {
-
-                result.count++;
-
-                if (!inRun) {
-
-                    result.runs++;
-                    inRun = true;
-                }
-
-            } else {
-
-                inRun = false;
-            }
-        }
-
-        return result;
-    }
-
-    private void analyseF6Fragment(
-            byte[] data) {
-
-        int count = 0;
-
-        for (byte b : data) {
-
-            if ((b & 0xFF) == 0xF6)
-                count++;
-        }
-
-        append(
-                "F6 COUNT IN FRAGMENT="
-                        + count
-        );
-
-        writeAnalysis(
-                "F6 COUNT IN FRAGMENT="
-                        + count
-        );
-    }
-
-    /*
-     * ================================================================
-     * PERMISSION HELPERS
-     * ================================================================
-     */
-
-    private boolean hasBluetoothConnectPermission() {
-
-        if (Build.VERSION.SDK_INT <
-                Build.VERSION_CODES.S) {
-
-            return checkSelfPermission(
-                    Manifest.permission.BLUETOOTH
-            ) == PackageManager.PERMISSION_GRANTED;
-        }
-
-        return checkSelfPermission(
-                Manifest.permission.BLUETOOTH_CONNECT
-        ) == PackageManager.PERMISSION_GRANTED;
-    }
-
-    /*
-     * ================================================================
-     * UTILITY
-     * ================================================================
-     */
-
-    private byte[] firstBytes(
-            byte[] b,
-            int count) {
-
-        count =
-                Math.min(
-                        count,
-                        b.length
-                );
-
-        byte[] result =
-                new byte[count];
-
-        System.arraycopy(
-                b,
-                0,
-                result,
-                0,
-                count
-        );
-
-        return result;
-    }
-
-    private byte[] lastBytes(
-            byte[] b,
-            int count) {
-
-        count =
-                Math.min(
-                        count,
-                        b.length
-                );
-
-        byte[] result =
-                new byte[count];
-
-        System.arraycopy(
-                b,
-                b.length - count,
-                result,
-                0,
-                count
-        );
-
-        return result;
-    }
-
-    private String hexRange(
-            int start,
-            int end) {
-
-        if (start < 0)
-            start = 0;
-
-        if (end > 1000000)
-            end = 1000000;
-
-        if (end <= start)
-            return "";
-
-        byte[] x =
-                new byte[end - start];
-
-        System.arraycopy(
-                getCurrentCborData(),
-                start,
-                x,
-                0,
-                x.length
-        );
-
-        return Protocol.hex(x);
-    }
-
-    /*
-     * The CBOR reader uses this helper only while decoding.
-     * It is replaced by the direct data reference below.
-     */
-    private byte[] currentCborData;
-
-    private byte[] getCurrentCborData() {
-
-        return currentCborData;
-    }
-
-    /*
-     * ================================================================
-     * TEXT LOG
-     * ================================================================
-     */
-
-    private void append(
-            String text) {
-
-        String timestamp =
-                new SimpleDateFormat(
-                        "HH:mm:ss",
-                        Locale.US
-                ).format(
-                        new Date()
-                );
-
-        String line =
-                timestamp
-                        + "  "
-                        + text;
-
-        runOnUiThread(
-                () -> {
-
-                    if (logView != null) {
-
-                        logView.append(
-                                line
-                                        + "\n"
-                        );
-
-                        if (scroll != null) {
-
-                            scroll.post(
-                                    () -> scroll.fullScroll(
-                                            ScrollView.FOCUS_DOWN
-                                    )
-                            );
-                        }
-                    }
-                }
-        );
-
-        saveRawTextLog(line);
-    }
-
-    private void saveRawTextLog(
-            String line) {
-
-        try {
-
-            File dir =
-                    getExternalFilesDir(null);
-
-            if (dir == null)
-                return;
-
-            if (rawLogFile == null) {
-
-                rawLogFile =
-                        new File(
-                                dir,
-                                "labrador_log_"
-                                        + System.currentTimeMillis()
-                                        + ".txt"
-                        );
-            }
-
-            FileWriter fw =
-                    new FileWriter(
-                            rawLogFile,
-                            true
-                    );
-
-            fw.write(line);
-            fw.write("\n");
-            fw.close();
-
-        } catch (Exception ignored) {
-        }
-    }
 
     @Override
     protected void onDestroy() {
 
-        handler.removeCallbacksAndMessages(
-                null
-        );
-
         try {
-
-            if (scanner != null &&
-                    scanning) {
-
-                scanner.stopScan(
-                        scanCallback
-                );
-            }
-
+            unregisterReceiver(
+                    bondReceiver);
         } catch (Exception ignored) {
         }
 
         try {
-
             if (gatt != null) {
-
                 gatt.close();
-                gatt = null;
             }
-
         } catch (Exception ignored) {
         }
 
