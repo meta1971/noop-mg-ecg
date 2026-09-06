@@ -871,17 +871,22 @@ public class MainActivity extends Activity {
     private static class CborParser {
 
         byte[] data;
-        int pos = 0;
+        int pos;
 
         List<String> lines = new ArrayList<>();
 
         CborParser(byte[] data) {
+            this(data, 0);
+        }
+
+        CborParser(byte[] data, int startOffset) {
             this.data = data;
+            this.pos = startOffset;
         }
 
         void parseTopLevel() {
 
-            add("CBOR parse begins at offset 0");
+            add("CBOR parse begins at offset " + pos);
 
             try {
                 parseItem(0);
@@ -1099,6 +1104,24 @@ public class MainActivity extends Activity {
         return out;
     }
 
+    /*
+     * Finds the first 0xA7 (CBOR map, 7 pairs) byte in the buffer.
+     *
+     * Every identity burst captured so far has one at offset 37
+     * within its first fragment, but this scans rather than
+     * hardcoding 37, since fragment sizes/order could vary.
+     */
+    private int findFirstCborMapOffset(byte[] b) {
+
+        for (int i = 0; i < b.length; i++) {
+            if ((b[i] & 0xff) == 0xA7) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
     private void runFullCborAnalysisOnCompletion() {
 
         if (labradorFragments.isEmpty()) {
@@ -1121,12 +1144,29 @@ public class MainActivity extends Activity {
         line("========== STRUCTURAL CBOR ANALYSIS ==========");
         writeAnalysis("========== STRUCTURAL CBOR ANALYSIS ==========");
 
-        CborParser parser = new CborParser(combined);
-        parser.parseTopLevel();
+        int mapOffset = findFirstCborMapOffset(combined);
 
-        for (String s : parser.lines) {
-            line(s);
-            writeAnalysis(s);
+        if (mapOffset < 0) {
+
+            line("NO CBOR MAP MARKER (0xA7) FOUND IN REASSEMBLED DATA");
+            writeAnalysis(
+                    "NO CBOR MAP MARKER (0xA7) FOUND IN REASSEMBLED DATA");
+
+        } else {
+
+            line("Starting structural parse at confirmed map offset " +
+                    mapOffset);
+            writeAnalysis(
+                    "Starting structural parse at confirmed map offset " +
+                            mapOffset);
+
+            CborParser parser = new CborParser(combined, mapOffset);
+            parser.parseTopLevel();
+
+            for (String s : parser.lines) {
+                line(s);
+                writeAnalysis(s);
+            }
         }
 
         F6Analysis f6 = analyseF6(combined);
