@@ -97,6 +97,14 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * Automated cmd sweep state
+     * ------------------------------------------------------------------
+     */
+    private boolean sweepActive = false;
+    private int sweepCmd = 0;
+
+    /*
+     * ------------------------------------------------------------------
      * Persistent raw log file
      * ------------------------------------------------------------------
      */
@@ -395,6 +403,8 @@ public class MainActivity extends Activity {
 
             line("services discovered status=" +
                     status);
+
+            dumpAllServices(g);
 
             BluetoothGattService s =
                     g.getService(svc);
@@ -1180,6 +1190,146 @@ public class MainActivity extends Activity {
     }
 
     /*
+     * ------------------------------------------------------------------
+     * Full GATT enumeration - dumps every service/characteristic the
+     * strap exposes, not just the fd4b one we've been filtering to.
+     * Runs automatically on every connect.
+     * ------------------------------------------------------------------
+     */
+
+    private void dumpAllServices(BluetoothGatt g) {
+
+        line("");
+        line("========== FULL GATT ENUMERATION ==========");
+        logRaw("GATT_ENUM_BEGIN");
+
+        List<BluetoothGattService> services = g.getServices();
+
+        line("TOTAL SERVICES=" + services.size());
+        logRaw("GATT_ENUM total_services=" + services.size());
+
+        for (BluetoothGattService s : services) {
+
+            line("SERVICE " + s.getUuid());
+            logRaw("GATT_ENUM SERVICE=" + s.getUuid());
+
+            for (BluetoothGattCharacteristic c : s.getCharacteristics()) {
+
+                String propsStr = describeProps(c.getProperties());
+
+                line("  CHAR " + c.getUuid() + " props=" + propsStr);
+                logRaw("GATT_ENUM   CHAR=" + c.getUuid() +
+                        " props=" + propsStr);
+
+                for (BluetoothGattDescriptor d : c.getDescriptors()) {
+
+                    line("    DESC " + d.getUuid());
+                    logRaw("GATT_ENUM     DESC=" + d.getUuid());
+                }
+            }
+        }
+
+        line("========== END GATT ENUMERATION ==========");
+        logRaw("GATT_ENUM_END");
+    }
+
+    private String describeProps(int props) {
+
+        StringBuilder sb = new StringBuilder();
+
+        if ((props & BluetoothGattCharacteristic.PROPERTY_READ) != 0)
+            sb.append("READ ");
+        if ((props & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0)
+            sb.append("WRITE ");
+        if ((props & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0)
+            sb.append("WRITE_NR ");
+        if ((props & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0)
+            sb.append("NOTIFY ");
+        if ((props & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0)
+            sb.append("INDICATE ");
+        if ((props & BluetoothGattCharacteristic.PROPERTY_BROADCAST) != 0)
+            sb.append("BROADCAST ");
+        if ((props & BluetoothGattCharacteristic.PROPERTY_SIGNED_WRITE) != 0)
+            sb.append("SIGNED_WRITE ");
+        if ((props & BluetoothGattCharacteristic.PROPERTY_EXTENDED_PROPS) != 0)
+            sb.append("EXTENDED ");
+
+        String out = sb.toString().trim();
+
+        return out.isEmpty() ? "(none)" : out;
+    }
+
+    private void manualGattDump() {
+
+        if (gatt == null) {
+            line("NOT CONNECTED - cannot dump GATT");
+            return;
+        }
+
+        dumpAllServices(gatt);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Automated cmd sweep - walks type=0x23, cmd 0x00-0xFF, arg=0x00,
+     * one per second, logging any reply. Turns hours of manual
+     * type/cmd guessing into one unattended run.
+     * ------------------------------------------------------------------
+     */
+
+    private void startCmdSweep() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot sweep");
+            return;
+        }
+
+        sweepActive = true;
+        sweepCmd = 0;
+
+        line("");
+        line("*** CMD SWEEP BEGIN: type=0x23, cmd 0x00-0xFF, arg=0x00 ***");
+        logRaw("SWEEP_BEGIN");
+
+        runSweepStep();
+    }
+
+    private void stopCmdSweep() {
+
+        sweepActive = false;
+
+        line("*** CMD SWEEP STOPPED at cmd=0x" +
+                String.format("%02X", sweepCmd) + " ***");
+        logRaw("SWEEP_STOPPED at=" + sweepCmd);
+    }
+
+    private void runSweepStep() {
+
+        if (!sweepActive) {
+            return;
+        }
+
+        if (sweepCmd > 0xFF) {
+            sweepActive = false;
+            line("*** CMD SWEEP COMPLETE ***");
+            logRaw("SWEEP_COMPLETE");
+            return;
+        }
+
+        int thisCmd = sweepCmd;
+
+        line("SWEEP: trying cmd=0x" +
+                String.format("%02X", thisCmd) +
+                " (" + thisCmd + "/255)");
+
+        sendCustom(0x23, thisCmd, 0x00);
+
+        sweepCmd++;
+
+        mainH.postDelayed(this::runSweepStep, 1000);
+    }
+
+    /*
      * Recording-complete packet currently observed:
      *
      * characteristic 0004
@@ -1911,6 +2061,21 @@ public class MainActivity extends Activity {
                         });
 
         root.addView(sendClockBtn);
+
+        Button gattDumpBtn = btn(
+                "DUMP ALL GATT SERVICES",
+                v -> manualGattDump());
+        root.addView(gattDumpBtn);
+
+        Button startSweepBtn = btn(
+                "START CMD SWEEP (0x00-0xFF)",
+                v -> startCmdSweep());
+        root.addView(startSweepBtn);
+
+        Button stopSweepBtn = btn(
+                "STOP SWEEP",
+                v -> stopCmdSweep());
+        root.addView(stopSweepBtn);
 
         log =
                 new TextView(this);
