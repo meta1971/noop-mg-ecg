@@ -1655,3 +1655,941 @@ public class MainActivity extends Activity {
         }
 
         if (Build.VERSION.SDK_INT >= 31 &&
+                checkSelfPermission(
+                        Manifest.permission
+                                .BLUETOOTH_CONNECT)
+                        != PackageManager.PERMISSION_GRANTED) {
+
+            return;
+        }
+
+        enqueue(() -> {
+
+            line("subscribe " +
+                    shortUuid(c.getUuid()));
+
+            g.setCharacteristicNotification(
+                    c,
+                    true);
+
+            BluetoothGattDescriptor d =
+                    c.getDescriptor(
+                            UUID.fromString(
+                                    "00002902-0000-1000-8000-00805f9b34fb"));
+
+            if (d != null) {
+
+                d.setValue(
+                        BluetoothGattDescriptor
+                                .ENABLE_NOTIFICATION_VALUE);
+
+                if (!g.writeDescriptor(d)) {
+
+                    line("writeDescriptor() " +
+                            "rejected " +
+                            shortUuid(c.getUuid()));
+
+                    opDone();
+                }
+
+            } else {
+
+                line("NO CCCD for " +
+                        shortUuid(c.getUuid()));
+
+                opDone();
+            }
+        });
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Timestamp scan
+     * ------------------------------------------------------------------
+     */
+
+    private void scanForTimestamps(
+            byte[] value) {
+
+        long now =
+                System.currentTimeMillis() / 1000L;
+
+        long lo =
+                now - 7L * 86400L;
+
+        long hi =
+                now + 7L * 86400L;
+
+        for (int i = 0;
+             i + 4 <= value.length;
+             i++) {
+
+            long v =
+                    Protocol.u32le(
+                            value,
+                            i);
+
+            if (v > lo && v < hi) {
+
+                line(String.format(
+                        "TS-CANDIDATE @%d: %d (%s)",
+                        i,
+                        v,
+                        new Date(v * 1000L)));
+            }
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * UI
+     * ------------------------------------------------------------------
+     */
+
+    @Override
+    protected void onCreate(Bundle b) {
+
+        super.onCreate(b);
+
+        adapter =
+                ((BluetoothManager)
+                        getSystemService(
+                                BLUETOOTH_SERVICE))
+                        .getAdapter();
+
+        buildUi();
+        requestPerms();
+
+        initRawLogFile();
+
+        line("Raw log file: " +
+                rawLogFile.getAbsolutePath());
+
+        registerReceiver(
+                bondReceiver,
+                new IntentFilter(
+                        BluetoothDevice
+                                .ACTION_BOND_STATE_CHANGED));
+    }
+
+    private void buildUi() {
+
+        LinearLayout root =
+                new LinearLayout(this);
+
+        root.setOrientation(
+                LinearLayout.VERTICAL);
+
+        root.setPadding(
+                20,
+                20,
+                20,
+                20);
+
+        root.setBackgroundColor(0xFF121212);
+
+        /*
+         * ------------------------------------------------------------
+         * Fixed header: title + connection-state status bar.
+         * ------------------------------------------------------------
+         */
+        TextView title =
+                new TextView(this);
+
+        title.setText("LABRADOR MG ECG");
+        title.setTextSize(20);
+        title.setTextColor(0xFFFFFFFF);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+
+        root.addView(
+                title,
+                new LinearLayout.LayoutParams(
+                        -1,
+                        -2));
+
+        statusBar = new TextView(this);
+        statusBar.setText("○ NOT CONNECTED");
+        statusBar.setTextSize(14);
+        statusBar.setTextColor(0xFFB0B0B0);
+        statusBar.setPadding(0, 8, 0, 20);
+
+        root.addView(
+                statusBar,
+                new LinearLayout.LayoutParams(
+                        -1,
+                        -2));
+
+        /*
+         * ------------------------------------------------------------
+         * Primary action grid - fixed height, always visible, never
+         * scrolls. Same callbacks as before, just arranged in a
+         * compact 2-column layout instead of one long vertical list.
+         * ------------------------------------------------------------
+         */
+        scanBtn = btn("SCAN / CONNECT", v -> scan());
+        root.addView(
+                scanBtn,
+                new LinearLayout.LayoutParams(
+                        -1,
+                        -2));
+
+        LinearLayout row1 =
+                new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button c1 =
+                btn(
+                        "SELECT WRIST",
+                        v -> send(
+                                0x7B,
+                                0,
+                                "SELECT_WRIST"));
+
+        Button c4 =
+                btn(
+                        "FILTER ON",
+                        v -> send(
+                                0x8B,
+                                1,
+                                "FILTERED_ON"));
+
+        row1.addView(
+                c1,
+                new LinearLayout.LayoutParams(0, -2, 1));
+        row1.addView(
+                c4,
+                new LinearLayout.LayoutParams(0, -2, 1));
+
+        root.addView(
+                row1,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout row2 =
+                new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button c3 =
+                btn(
+                        "RAW SAVE ON",
+                        v -> send(
+                                0x7D,
+                                1,
+                                "RAW_SAVE_ON"));
+
+        Button c2 =
+                btn(
+                        "START",
+                        v -> {
+
+                            labradorActive = true;
+                            recordingComplete = false;
+                            labradorPacketCount = 0;
+
+                            line("");
+                            line("*** STARTING " +
+                                    "LABRADOR CAPTURE ***");
+
+                            send(
+                                    0x7C,
+                                    1,
+                                    "LABRADOR_START");
+                        });
+
+        row2.addView(
+                c3,
+                new LinearLayout.LayoutParams(0, -2, 1));
+        row2.addView(
+                c2,
+                new LinearLayout.LayoutParams(0, -2, 1));
+
+        root.addView(
+                row2,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout row3 =
+                new LinearLayout(this);
+        row3.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button runExperimentBtn = btn(
+                "EXPERIMENT 3x",
+                v -> runLabradorExperiment());
+
+        Button stop =
+                btn(
+                        "STOP",
+                        v -> {
+
+                            labradorActive = false;
+
+                            line("");
+                            line("*** LABRADOR STOP ***");
+
+                            send(
+                                    0x7C,
+                                    0,
+                                    "LABRADOR_STOP");
+                        });
+
+        row3.addView(
+                runExperimentBtn,
+                new LinearLayout.LayoutParams(0, -2, 1));
+        row3.addView(
+                stop,
+                new LinearLayout.LayoutParams(0, -2, 1));
+
+        root.addView(
+                row3,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        /*
+         * ------------------------------------------------------------
+         * Secondary / advanced controls - same buttons and inputs as
+         * before, unchanged logic, just moved into their own smaller,
+         * independently scrollable panel so they never crowd out the
+         * log below. Every field assignment here matches exactly
+         * what existed before this redesign.
+         * ------------------------------------------------------------
+         */
+        LinearLayout controls =
+                new LinearLayout(this);
+
+        controls.setOrientation(
+                LinearLayout.VERTICAL);
+
+        Button c5 =
+                btn(
+                        "0x3F SPO2 STREAM ON",
+                        v -> send(
+                                0x3F,
+                                1,
+                                "SPO2_ON"));
+
+        controls.addView(c5);
+
+        /*
+         * Controlled 3x-START experiment controls.
+         */
+        experimentIntervalInput = new EditText(this);
+        experimentIntervalInput.setHint(
+                "seconds between STARTs, e.g. 40");
+        experimentIntervalInput.setText("40");
+        experimentIntervalInput.setSingleLine(true);
+        experimentIntervalInput.setTextColor(0xFFFFFFFF);
+        experimentIntervalInput.setHintTextColor(0xFF888888);
+        controls.addView(experimentIntervalInput);
+
+        autoPullCheckbox = new CheckBox(this);
+        autoPullCheckbox.setText(
+                "Auto-PULL (0x2F 01 00) after 3rd completion");
+        autoPullCheckbox.setTextColor(0xFFDDDDDD);
+        autoPullCheckbox.setOnCheckedChangeListener(
+                (btn2, checked) ->
+                        autoPullAfterExperiment = checked);
+        controls.addView(autoPullCheckbox);
+
+        /*
+         * Pull is now explicit rather than automatic.
+         *
+         * This is important for reverse engineering:
+         * we want a clean before/after boundary.
+         */
+        Button pull =
+                btn(
+                        "0x2F PULL 01 00",
+                        v -> {
+
+                            line("");
+                            line("*** MANUAL PULL ***");
+
+                            sendCustom(
+                                    0x2F,
+                                    0x01,
+                                    0x00);
+                        });
+
+        controls.addView(pull);
+
+        customInput =
+                new EditText(this);
+
+        customInput.setHint(
+                "type cmd arg hex, " +
+                        "e.g. 2F 01 00");
+
+        customInput.setSingleLine(true);
+        customInput.setTextColor(0xFFFFFFFF);
+        customInput.setHintTextColor(0xFF888888);
+
+        controls.addView(customInput);
+
+        Button sendCustomBtn =
+                btn(
+                        "SEND CUSTOM FRAME",
+                        v -> {
+
+                            String text =
+                                    customInput
+                                            .getText()
+                                            .toString()
+                                            .trim();
+
+                            String[] parts =
+                                    text.split("\\s+");
+
+                            if (parts.length != 3) {
+
+                                line(
+                                        "custom frame needs " +
+                                        "exactly 3 hex bytes: " +
+                                        "type cmd arg");
+
+                                return;
+                            }
+
+                            try {
+
+                                int t =
+                                        Integer.parseInt(
+                                                parts[0],
+                                                16);
+
+                                int cv =
+                                        Integer.parseInt(
+                                                parts[1],
+                                                16);
+
+                                int av =
+                                        Integer.parseInt(
+                                                parts[2],
+                                                16);
+
+                                sendCustom(
+                                        t,
+                                        cv,
+                                        av);
+
+                            } catch (Exception e) {
+
+                                line(
+                                        "parse error: " +
+                                        e.getMessage());
+                            }
+                        });
+
+        controls.addView(sendCustomBtn);
+
+        /*
+         * Fast-iteration SET_CLOCK guess: type + cmd only,
+         * current Unix time is filled in automatically as the
+         * 4-byte argument.
+         */
+        clockInput = new EditText(this);
+
+        clockInput.setHint(
+                "type cmd hex for clock guess, e.g. 23 2C");
+
+        clockInput.setSingleLine(true);
+        clockInput.setTextColor(0xFFFFFFFF);
+        clockInput.setHintTextColor(0xFF888888);
+
+        controls.addView(clockInput);
+
+        Button sendClockBtn =
+                btn(
+                        "SET_CLOCK NOW (fill time + send)",
+                        v -> {
+
+                            String text =
+                                    clockInput
+                                            .getText()
+                                            .toString()
+                                            .trim();
+
+                            String[] parts =
+                                    text.split("\\s+");
+
+                            if (parts.length != 2) {
+
+                                line(
+                                        "clock guess needs " +
+                                        "exactly 2 hex bytes: " +
+                                        "type cmd");
+
+                                return;
+                            }
+
+                            try {
+
+                                int t =
+                                        Integer.parseInt(
+                                                parts[0],
+                                                16);
+
+                                int cv =
+                                        Integer.parseInt(
+                                                parts[1],
+                                                16);
+
+                                sendClockGuess(t, cv);
+
+                            } catch (Exception e) {
+
+                                line(
+                                        "parse error: " +
+                                        e.getMessage());
+                            }
+                        });
+
+        controls.addView(sendClockBtn);
+
+        Button gattDumpBtn = btn(
+                "DUMP ALL GATT SERVICES",
+                v -> manualGattDump());
+        controls.addView(gattDumpBtn);
+
+        Button startSweepBtn = btn(
+                "START CMD SWEEP (0x00-0xFF)",
+                v -> startCmdSweep());
+        controls.addView(startSweepBtn);
+
+        Button stopSweepBtn = btn(
+                "STOP SWEEP",
+                v -> stopCmdSweep());
+        controls.addView(stopSweepBtn);
+
+        ScrollView controlsScroll =
+                new ScrollView(this);
+
+        controlsScroll.addView(controls);
+
+        root.addView(
+                controlsScroll,
+                new LinearLayout.LayoutParams(
+                        -1,
+                        0,
+                        1));
+
+        /*
+         * ------------------------------------------------------------
+         * Log section: label, CLEAR/SAVE/COPY row, then the log
+         * itself - given by far the largest weight so it dominates
+         * the screen regardless of how many controls exist above it.
+         * ------------------------------------------------------------
+         */
+        TextView logLabel =
+                new TextView(this);
+
+        logLabel.setText("LOG");
+        logLabel.setTextSize(14);
+        logLabel.setTextColor(0xFF888888);
+        logLabel.setPadding(0, 20, 0, 6);
+
+        root.addView(
+                logLabel,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout logButtonsRow =
+                new LinearLayout(this);
+        logButtonsRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button clearLogBtn =
+                btn("CLEAR LOG", v -> clearLog());
+        Button saveLogBtn =
+                btn("SAVE LOG", v -> saveLogSnapshot());
+        Button copyLogBtn =
+                btn("COPY LOG", v -> copyLogToClipboard());
+
+        logButtonsRow.addView(
+                clearLogBtn,
+                new LinearLayout.LayoutParams(0, -2, 1));
+        logButtonsRow.addView(
+                saveLogBtn,
+                new LinearLayout.LayoutParams(0, -2, 1));
+        logButtonsRow.addView(
+                copyLogBtn,
+                new LinearLayout.LayoutParams(0, -2, 1));
+
+        root.addView(
+                logButtonsRow,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        log =
+                new TextView(this);
+
+        log.setTextIsSelectable(true);
+        log.setTextSize(12);
+        log.setTextColor(0xFFEFEFEF);
+        log.setBackgroundColor(0xFF1A1A1A);
+        log.setPadding(16, 16, 16, 16);
+
+        scrollView =
+                new ScrollView(this);
+
+        scrollView.addView(log);
+
+        root.addView(
+                scrollView,
+                new LinearLayout.LayoutParams(
+                        -1,
+                        0,
+                        4));
+
+        setContentView(root);
+    }
+
+    private Button btn(
+            String text,
+            View.OnClickListener listener) {
+
+        Button b =
+                new Button(this);
+
+        b.setText(text);
+        b.setTextColor(0xFFFFFFFF);
+        b.setTextSize(15);
+        b.setBackgroundColor(0xFF2A2A2A);
+        b.setPadding(16, 28, 16, 28);
+        b.setOnClickListener(listener);
+
+        return b;
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Permissions
+     * ------------------------------------------------------------------
+     */
+
+    private void requestPerms() {
+
+        if (Build.VERSION.SDK_INT >= 31) {
+
+            ArrayList<String> p =
+                    new ArrayList<>();
+
+            if (checkSelfPermission(
+                    Manifest.permission
+                            .BLUETOOTH_SCAN)
+                    != PackageManager.PERMISSION_GRANTED) {
+
+                p.add(
+                        Manifest.permission
+                                .BLUETOOTH_SCAN);
+            }
+
+            if (checkSelfPermission(
+                    Manifest.permission
+                            .BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED) {
+
+                p.add(
+                        Manifest.permission
+                                .BLUETOOTH_CONNECT);
+            }
+
+            if (!p.isEmpty()) {
+
+                requestPermissions(
+                        p.toArray(
+                                new String[0]),
+                        REQ);
+            }
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * BLE scanning
+     * ------------------------------------------------------------------
+     */
+
+    private void stopScanning() {
+
+        if (scanner != null) {
+
+            try {
+                scanner.stopScan(sc);
+            } catch (Exception ignored) {
+            }
+
+            scanner = null;
+
+            line("SCAN STOP");
+        }
+    }
+
+    private void scan() {
+
+        if (Build.VERSION.SDK_INT >= 31 &&
+                checkSelfPermission(
+                        Manifest.permission
+                                .BLUETOOTH_SCAN)
+                        != PackageManager.PERMISSION_GRANTED) {
+
+            requestPerms();
+            return;
+        }
+
+        scanner =
+                adapter.getBluetoothLeScanner();
+
+        line("SCANNING 10s...");
+        updateStatus("● SCANNING...");
+
+        ScanFilter f =
+                new ScanFilter.Builder()
+                        .setServiceUuid(
+                                new android.os.ParcelUuid(
+                                        svc))
+                        .build();
+
+        ScanSettings ss =
+                new ScanSettings.Builder()
+                        .setScanMode(
+                                ScanSettings
+                                        .SCAN_MODE_LOW_LATENCY)
+                        .build();
+
+        scanner.startScan(
+                Collections.singletonList(f),
+                ss,
+                sc);
+
+        new Handler(
+                Looper.getMainLooper())
+                .postDelayed(
+                        this::stopScanning,
+                        10000);
+    }
+
+    private final ScanCallback sc =
+            new ScanCallback() {
+
+        @Override
+        public void onScanResult(
+                int type,
+                ScanResult r) {
+
+            BluetoothDevice d =
+                    r.getDevice();
+
+            line(
+                    "FOUND " +
+                    d.getName() +
+                    " " +
+                    d.getAddress() +
+                    " RSSI=" +
+                    r.getRssi());
+
+            updateStatus("● FOUND " + d.getName());
+
+            if (gatt == null &&
+                    pendingDevice == null) {
+
+                if (Build.VERSION.SDK_INT >= 31 &&
+                        checkSelfPermission(
+                                Manifest.permission
+                                        .BLUETOOTH_CONNECT)
+                                != PackageManager.PERMISSION_GRANTED) {
+
+                    return;
+                }
+
+                stopScanning();
+
+                if (d.getBondState() ==
+                        BluetoothDevice.BOND_BONDED) {
+
+                    line(
+                            "ALREADY BONDED, " +
+                            "CONNECTING " +
+                            d.getAddress());
+
+                    updateStatus("● CONNECTING " + d.getName());
+
+                    gatt =
+                            d.connectGatt(
+                                    MainActivity.this,
+                                    false,
+                                    cb,
+                                    BluetoothDevice
+                                            .TRANSPORT_LE);
+
+                } else {
+
+                    line(
+                            "NOT BONDED - " +
+                            "requesting bond " +
+                            d.getAddress());
+
+                    updateStatus("● BONDING " + d.getName());
+
+                    pendingDevice = d;
+
+                    boolean started =
+                            d.createBond();
+
+                    if (!started) {
+
+                        line(
+                                "createBond() " +
+                                "returned false");
+
+                        pendingDevice = null;
+                    }
+                }
+            }
+        }
+    };
+
+    /*
+     * ------------------------------------------------------------------
+     * Logging
+     * ------------------------------------------------------------------
+     */
+
+    private String shortUuid(UUID u) {
+
+        return u.toString()
+                .substring(4, 8);
+    }
+
+    /*
+     * Fixed status-bar update - UI only, no BLE state changes here.
+     * Called from existing BLE callbacks below to reflect connection
+     * state; it does not alter what those callbacks decide to do.
+     */
+    private void updateStatus(String s) {
+
+        runOnUiThread(() -> {
+            if (statusBar != null) {
+                statusBar.setText(s);
+            }
+        });
+    }
+
+    private void clearLog() {
+
+        runOnUiThread(() -> {
+            if (log != null) {
+                log.setText("");
+            }
+        });
+
+        line("(log cleared on screen - saved files are untouched)");
+    }
+
+    private void saveLogSnapshot() {
+
+        java.io.File dir = getExternalFilesDir(null);
+
+        if (dir == null) {
+            line("SAVE LOG ERROR: external files directory unavailable");
+            return;
+        }
+
+        long stamp = System.currentTimeMillis() / 1000L;
+
+        java.io.File snapshot = new java.io.File(
+                dir, "labrador_snapshot_" + stamp + ".txt");
+
+        String content = log == null ? "" : log.getText().toString();
+
+        try (java.io.FileWriter fw = new java.io.FileWriter(snapshot)) {
+
+            fw.write(content);
+
+            line("LOG SNAPSHOT SAVED:");
+            line(snapshot.getAbsolutePath());
+
+            Toast.makeText(this,
+                    "Log saved: " + snapshot.getName(),
+                    Toast.LENGTH_SHORT).show();
+
+        } catch (Exception e) {
+
+            line("SAVE LOG ERROR: " + e);
+        }
+    }
+
+    private void copyLogToClipboard() {
+
+        String content = log == null ? "" : log.getText().toString();
+
+        ClipboardManager cm =
+                (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+
+        ClipData clip = ClipData.newPlainText("labrador_log", content);
+
+        if (cm != null) {
+            cm.setPrimaryClip(clip);
+        }
+
+        line("(log copied to clipboard)");
+
+        Toast.makeText(this,
+                "Log copied to clipboard",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    private void line(String s) {
+
+        runOnUiThread(() -> {
+
+            String old =
+                    log == null
+                            ? ""
+                            : log.getText()
+                            .toString();
+
+            if (old.length() > 20000) {
+
+                old =
+                        old.substring(
+                                old.length() - 16000);
+            }
+
+            if (log != null) {
+
+                log.setText(
+                        old +
+                        String.format(
+                                "\n%tT  %s",
+                                new Date(),
+                                s));
+            }
+
+            if (scrollView != null) {
+
+                scrollView.post(() ->
+                        scrollView.fullScroll(
+                                View.FOCUS_DOWN));
+            }
+        });
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Cleanup
+     * ------------------------------------------------------------------
+     */
+
+    @Override
+    protected void onDestroy() {
+
+        try {
+            unregisterReceiver(
+                    bondReceiver);
+        } catch (Exception ignored) {
+        }
+
+        try {
+            if (gatt != null) {
+                gatt.close();
+            }
+        } catch (Exception ignored) {
+        }
+
+        super.onDestroy();
+    }
+}
