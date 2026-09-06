@@ -1319,6 +1319,11 @@ public class MainActivity extends Activity {
             int arg,
             String name) {
 
+        if (opcode == 0x7C && arg == 1) {
+            labradorFragments.clear();
+            line("(cleared any stale 0007 fragments before this START)");
+        }
+
         sendNamed(
                 0x23,
                 opcode,
