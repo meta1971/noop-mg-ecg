@@ -94,6 +94,24 @@ public class MainActivity extends Activity {
             UUID.fromString("00002A27-0000-1000-8000-00805f9b34fb");
 
     /*
+     * ------------------------------------------------------------------
+     * Two standard DIS characteristics never queried before this
+     * point - System ID and PnP ID. PnP ID in particular carries a
+     * structured Vendor ID/Product ID/Product Version, which is a
+     * much more likely candidate for what NOOP's own "DIS attestation"
+     * check (issue #891 - "the strap has not attested itself an MG
+     * over DIS") actually inspects, versus the loosely-formatted
+     * Model Number text string ("MG") we've been reading and trusting
+     * all session.
+     * ------------------------------------------------------------------
+     */
+    private final UUID systemIdChar =
+            UUID.fromString("00002A23-0000-1000-8000-00805f9b34fb");
+
+    private final UUID pnpIdChar =
+            UUID.fromString("00002A50-0000-1000-8000-00805f9b34fb");
+
+    /*
      * Serialize BLE operations.
      */
     private final ArrayDeque<Runnable> opQueue =
@@ -178,6 +196,25 @@ public class MainActivity extends Activity {
     private java.io.File realtimeEcgBinaryFile;
     private final List<byte[]> realtimeEcgFragments = new ArrayList<>();
     private int realtimeEcgTotalBytes = 0;
+
+    /*
+     * Explicit tracking for the firmware's own "MAX86176: Set ECG ON"
+     * console line, so its presence/absence is a clear, reported
+     * fact rather than something that could silently scroll by
+     * unnoticed in a long log.
+     */
+    private boolean maxEcgOnSeen = false;
+
+    /*
+     * Heartbeat so a long silent window during an armed ECG session
+     * is visibly confirmed as "still listening, nothing arrived" -
+     * distinguishable from the app/log having stopped. Uses the same
+     * generation-guard pattern as the pull-ack loop, for the same
+     * reason: immune to any stray duplicate callback.
+     */
+    private boolean ecgListenActive = false;
+    private int ecgListenGeneration = 0;
+    private long ecgListenStartedAtMs = 0;
 
     /*
      * ------------------------------------------------------------------
@@ -705,8 +742,15 @@ public class MainActivity extends Activity {
                 handleHistoricalBurstFrame(uuid, value);
             } else if (envType == 0x32 && envCmd == 0x02) {
                 dumpAsciiRuns(value);
+                checkForEcgConsoleConfirmation(value);
             } else if (envType == 43) {
                 handleRealtimeEcgFrame(uuid, value);
+            } else if (envType == 0x24 &&
+                    (envCmd == 119 || envCmd == 121)) {
+                line("*** DEVICE_CONFIG_VALUE REPLY (cmd=" +
+                        envCmd + ") - see ASCII/hex above for content ***");
+                logRaw("DEVICE_CONFIG_VALUE_REPLY cmd=" + envCmd +
+                        " raw=" + Protocol.hex(value));
             }
         }
 
@@ -930,6 +974,30 @@ public class MainActivity extends Activity {
                     "ASCII   @%d \"%s\"",
                     start,
                     run.toString()));
+        }
+    }
+
+    /*
+     * Explicit check for the firmware's own "MAX86176: Set ECG ON"
+     * console line - the strap's real analog-front-end confirmation
+     * that generation actually started, confirmed from NOOP's own
+     * PR #1727. Kept separate from the generic dumpAsciiRuns() print
+     * so its presence or absence is a clear, tracked fact rather than
+     * something that could scroll by unnoticed in a long log.
+     */
+    private void checkForEcgConsoleConfirmation(byte[] v) {
+
+        String text = new String(
+                v, java.nio.charset.StandardCharsets.US_ASCII);
+
+        if (text.contains("MAX86176") && text.contains("ECG ON")) {
+
+            maxEcgOnSeen = true;
+
+            line("*** CONFIRMED: firmware console logged " +
+                    "\"MAX86176: Set ECG ON\" ***");
+
+            logRaw("MAX86176_SET_ECG_ON_CONFIRMED");
         }
     }
 
@@ -1924,6 +1992,7 @@ public class MainActivity extends Activity {
         realtimeEcgFragments.clear();
         realtimeEcgTotalBytes = 0;
         realtimeEcgBinaryFile = null;
+        maxEcgOnSeen = false;
 
         line("");
         line("*** REAL ECG START: TOGGLE_LABRADOR_FILTERED(139)=1 " +
@@ -1940,6 +2009,14 @@ public class MainActivity extends Activity {
         mainH.postDelayed(() ->
                 send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION_START"),
                 600);
+
+        ecgListenActive = true;
+        ecgListenGeneration++;
+        ecgListenStartedAtMs = System.currentTimeMillis();
+
+        final int myGen = ecgListenGeneration;
+
+        mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
     }
 
     private void stopRealEcg() {
@@ -1949,12 +2026,44 @@ public class MainActivity extends Activity {
             return;
         }
 
+        ecgListenActive = false;
+        ecgListenGeneration++;
+
         line("");
         line("*** REAL ECG STOP: mainControlECGDataGeneration(124)=1 " +
                 "(arg=0 is refused on real hardware) ***");
-        logRaw("REAL_ECG_STOP");
+        line("*** SUMMARY: MAX86176 Set ECG ON " +
+                (maxEcgOnSeen ? "SEEN" : "NOT SEEN") +
+                " - type=43 frames: " + realtimeEcgFragments.size() +
+                " (" + realtimeEcgTotalBytes + " bytes) ***");
+        logRaw("REAL_ECG_STOP maxEcgOnSeen=" + maxEcgOnSeen +
+                " type43Frames=" + realtimeEcgFragments.size() +
+                " type43Bytes=" + realtimeEcgTotalBytes);
 
         send(0x7C, 1, "MAIN_CONTROL_ECG_DATA_GENERATION_STOP");
+    }
+
+    /*
+     * Purely diagnostic - confirms the app is still alive and
+     * listening during a long silent window, so "nothing arrived"
+     * and "the app/log stopped working" are never ambiguous. Uses
+     * the same generation-guard pattern as the pull-ack loop.
+     */
+    private void runEcgListenHeartbeat(int myGen) {
+
+        if (!ecgListenActive || myGen != ecgListenGeneration) {
+            return;
+        }
+
+        long elapsedS = (System.currentTimeMillis() -
+                ecgListenStartedAtMs) / 1000L;
+
+        line("(still listening for type=43... " + elapsedS +
+                "s since start, " + realtimeEcgFragments.size() +
+                " frames so far, MAX86176 line " +
+                (maxEcgOnSeen ? "seen" : "not seen yet") + ")");
+
+        mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
     }
 
     /*
@@ -2382,6 +2491,8 @@ public class MainActivity extends Activity {
         queueRead(g, dis.getCharacteristic(serialNumberChar));
         queueRead(g, dis.getCharacteristic(hardwareRevisionChar));
         queueRead(g, dis.getCharacteristic(firmwareRevisionChar));
+        queueRead(g, dis.getCharacteristic(systemIdChar));
+        queueRead(g, dis.getCharacteristic(pnpIdChar));
     }
 
     private void queueRead(
@@ -2420,8 +2531,45 @@ public class MainActivity extends Activity {
         if (serialNumberChar.equals(u)) return "Serial Number";
         if (hardwareRevisionChar.equals(u)) return "Hardware Revision";
         if (firmwareRevisionChar.equals(u)) return "Firmware Revision";
+        if (systemIdChar.equals(u)) return "System ID";
+        if (pnpIdChar.equals(u)) return "PnP ID";
 
         return null;
+    }
+
+    /*
+     * System ID and PnP ID are structured binary fields, not text -
+     * decoding them as UTF-8 (like the other five DIS strings) would
+     * just produce garbage. PnP ID especially is worth decoding
+     * properly: Vendor ID Source(1) + Vendor ID(2 LE) +
+     * Product ID(2 LE) + Product Version(2 LE), 7 bytes total - a
+     * real candidate for the machine-readable "variant" NOOP's own
+     * DIS-attestation check (issue #891) inspects.
+     */
+    private void logStructuredDeviceInfo(
+            UUID uuid,
+            String label,
+            byte[] value) {
+
+        line(label + ": (" + Protocol.hex(value) + ")");
+        logRaw("DEVICE_INFO " + label + "_hex=" + Protocol.hex(value));
+
+        if (pnpIdChar.equals(uuid) && value.length >= 7) {
+
+            int vendorIdSource = value[0] & 0xff;
+            int vendorId = (value[1] & 0xff) | ((value[2] & 0xff) << 8);
+            int productId = (value[3] & 0xff) | ((value[4] & 0xff) << 8);
+            int productVersion = (value[5] & 0xff) |
+                    ((value[6] & 0xff) << 8);
+
+            String detail = String.format(
+                    "  vendorIdSource=0x%02X vendorId=0x%04X " +
+                            "productId=0x%04X productVersion=0x%04X",
+                    vendorIdSource, vendorId, productId, productVersion);
+
+            line(detail);
+            logRaw("DEVICE_INFO PnP_ID" + detail);
+        }
     }
 
     private void handleCharacteristicRead(
@@ -2435,14 +2583,22 @@ public class MainActivity extends Activity {
 
             if (status == BluetoothGatt.GATT_SUCCESS && value != null) {
 
-                String text = new String(
-                        value,
-                        java.nio.charset.StandardCharsets.UTF_8);
+                if (systemIdChar.equals(c.getUuid()) ||
+                        pnpIdChar.equals(c.getUuid())) {
 
-                line(label + ": \"" + text + "\" (" +
-                        Protocol.hex(value) + ")");
+                    logStructuredDeviceInfo(c.getUuid(), label, value);
 
-                logRaw("DEVICE_INFO " + label + "=" + text);
+                } else {
+
+                    String text = new String(
+                            value,
+                            java.nio.charset.StandardCharsets.UTF_8);
+
+                    line(label + ": \"" + text + "\" (" +
+                            Protocol.hex(value) + ")");
+
+                    logRaw("DEVICE_INFO " + label + "=" + text);
+                }
 
             } else {
 
