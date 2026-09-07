@@ -138,6 +138,23 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * Real historical-data pull state (SET_CLOCK -> GET_CLOCK ->
+     * GET_DATA_RANGE -> SEND_HISTORICAL_DATA -> repeated ACK), reverse
+     * engineered from a real NOOP-app BLE HCI snoop capture against
+     * this same strap. Completely separate mechanism from Labrador
+     * START/STOP - this is what the real app actually uses to
+     * retrieve data over DATA_NOTIFY (0005).
+     * ------------------------------------------------------------------
+     */
+    private boolean pullAckActive = false;
+    private int pullAckCounter = 0;
+
+    private java.io.File historicalBinaryFile;
+    private final List<byte[]> historicalFragments = new ArrayList<>();
+    private int historicalTotalBytes = 0;
+
+    /*
+     * ------------------------------------------------------------------
      * Persistent raw log file
      * ------------------------------------------------------------------
      */
@@ -643,6 +660,26 @@ public class MainActivity extends Activity {
          */
         if (hrMeasurement.equals(c.getUuid())) {
             parseHeartRate(value);
+        }
+
+        /*
+         * Real historical-data burst (type=0x2F cmd=0x80) and its
+         * accompanying human-readable firmware debug log
+         * (type=0x32 cmd=0x02) - both identified from a real NOOP
+         * app BLE snoop capture. These can arrive on any subscribed
+         * channel, not just 0007, so this check is channel-agnostic
+         * and reads the envelope's type/cmd bytes directly.
+         */
+        if (value.length >= 11 && (value[0] & 0xff) == 0xAA) {
+
+            int envType = value[8] & 0xff;
+            int envCmd = value[10] & 0xff;
+
+            if (envType == 0x2F && envCmd == 0x80) {
+                handleHistoricalBurstFrame(uuid, value);
+            } else if (envType == 0x32 && envCmd == 0x02) {
+                dumpAsciiRuns(value);
+            }
         }
 
         /*
@@ -1408,6 +1445,202 @@ public class MainActivity extends Activity {
     }
 
     /*
+     * ------------------------------------------------------------------
+     * Real historical-data pull - reverse engineered from a real NOOP
+     * app BLE HCI snoop capture against this same strap. The real app
+     * never touches LABRADOR_START/PULL at all for retrieval; instead:
+     *
+     *   0x0A  SET_CLOCK             (4-byte epoch arg)
+     *   0x0B  GET_CLOCK             (zero-byte arg)
+     *   0x22  GET_DATA_RANGE        (zero-byte arg)
+     *   0x16  SEND_HISTORICAL_DATA  (zero-byte arg) - triggers the burst
+     *   0x17  CONTINUE/ACK          (1-byte incrementing counter,
+     *                                sent repeatedly ~350ms apart while
+     *                                the burst is in progress)
+     *
+     * The burst payload itself arrives as type=0x2F cmd=0x80
+     * notifications on DATA_NOTIFY (fd4b0005) - the channel that has
+     * never once fired in any of our own earlier attempts.
+     * ------------------------------------------------------------------
+     */
+
+    /*
+     * Sends a genuinely zero-length-argument frame via
+     * Protocol.labradorBytes(), for the three real commands that use
+     * no argument at all (0x0B, 0x22, 0x16) - confirmed byte-for-byte
+     * from the real snoop capture. This is distinct from send()/
+     * sendCustom(), which always emit a 1-byte argument.
+     */
+    private void sendZeroArg(int cmd, String name) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labradorBytes(
+                    0x23, cmd, new byte[0], thisSeq);
+
+            logRaw("TX name=" + name +
+                    " cmd=0x" + String.format("%02X", cmd) +
+                    " (zero-arg)" +
+                    " seq=0x" + String.format("%02X",
+                            thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX " + name + " (zero-arg)");
+            line("TX CMD =0x" + String.format("%02X", cmd));
+            line("TX SEQ =0x" + String.format("%02X",
+                    thisSeq & 0xff));
+            line("TX LEN =" + f.length);
+            line("TX RAW =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (" + name + ")");
+                opDone();
+            }
+        });
+    }
+
+    private void prepareHistoricalCaptureFile() {
+
+        java.io.File dir = getExternalFilesDir(null);
+
+        if (dir == null) {
+            line("ERROR: external files directory unavailable");
+            return;
+        }
+
+        long stamp = System.currentTimeMillis() / 1000L;
+
+        historicalBinaryFile = new java.io.File(
+                dir, "historical_bin_" + stamp + ".bin");
+
+        line("HISTORICAL BINARY FILE:");
+        line(historicalBinaryFile.getAbsolutePath());
+    }
+
+    private void saveHistoricalFragment(byte[] data) {
+
+        if (historicalBinaryFile == null) {
+            prepareHistoricalCaptureFile();
+        }
+
+        try (java.io.FileOutputStream fos =
+                     new java.io.FileOutputStream(
+                             historicalBinaryFile, true)) {
+
+            fos.write(data);
+
+        } catch (Exception e) {
+            line("HISTORICAL SAVE ERROR: " + e);
+        }
+    }
+
+    private void handleHistoricalBurstFrame(
+            String uuid,
+            byte[] value) {
+
+        historicalFragments.add(value);
+        historicalTotalBytes += value.length;
+        saveHistoricalFragment(value);
+
+        logRaw("HIST_BURST len=" + value.length +
+                " raw=" + Protocol.hex(value));
+
+        /*
+         * Bursts can run to 1000+ frames in under 30s (confirmed in
+         * the real capture) - logging every single one to the
+         * on-screen view would flood the UI. Every frame is still
+         * saved to the .bin file and the persistent raw log
+         * regardless; only the on-screen summary is throttled.
+         */
+        if (historicalFragments.size() % 20 == 1) {
+
+            line("HIST BURST #" + historicalFragments.size() +
+                    " ch=" + uuid +
+                    " len=" + value.length +
+                    " totalBytes=" + historicalTotalBytes);
+        }
+    }
+
+    private void startRealHistoricalPull() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot pull");
+            return;
+        }
+
+        historicalFragments.clear();
+        historicalTotalBytes = 0;
+        historicalBinaryFile = null;
+
+        line("");
+        line("*** REAL HISTORICAL PULL: SET_CLOCK -> GET_CLOCK -> " +
+                "GET_DATA_RANGE -> SEND_HISTORICAL_DATA ***");
+        logRaw("REAL_PULL_BEGIN");
+
+        sendClockGuess(0x23, 0x0A);
+        sendZeroArg(0x0B, "GET_CLOCK");
+        sendZeroArg(0x22, "GET_DATA_RANGE");
+        sendZeroArg(0x16, "SEND_HISTORICAL_DATA");
+
+        pullAckActive = true;
+        pullAckCounter = 0;
+
+        mainH.postDelayed(this::runPullAckStep, 350);
+    }
+
+    private void stopPullAckLoop() {
+
+        pullAckActive = false;
+
+        line("*** PULL ACK LOOP STOPPED - " +
+                historicalFragments.size() + " burst frames, " +
+                historicalTotalBytes + " bytes captured ***");
+
+        logRaw("PULL_ACK_STOPPED frames=" + historicalFragments.size() +
+                " bytes=" + historicalTotalBytes);
+    }
+
+    private void runPullAckStep() {
+
+        if (!pullAckActive) {
+            return;
+        }
+
+        sendCustom(0x23, 0x17, pullAckCounter & 0xFF);
+
+        pullAckCounter++;
+
+        if (pullAckCounter > 200) {
+
+            pullAckActive = false;
+
+            line("*** PULL ACK LOOP COMPLETE (200 cycles) - " +
+                    historicalFragments.size() + " burst frames, " +
+                    historicalTotalBytes + " bytes captured ***");
+
+            logRaw("PULL_ACK_COMPLETE frames=" +
+                    historicalFragments.size() +
+                    " bytes=" + historicalTotalBytes);
+
+            return;
+        }
+
+        mainH.postDelayed(this::runPullAckStep, 350);
+    }
+
+    /*
      * Recording-complete packet currently observed:
      *
      * characteristic 0004
@@ -2168,6 +2401,21 @@ public class MainActivity extends Activity {
 
         controls.setOrientation(
                 LinearLayout.VERTICAL);
+
+        /*
+         * Real historical pull promoted to the very top - this is
+         * the highest-priority tool now, reverse engineered from a
+         * real NOOP app snoop capture against this same strap.
+         */
+        Button realPullBtn = btn(
+                "REAL HISTORICAL PULL (SET_CLOCK...SEND_HIST_DATA)",
+                v -> startRealHistoricalPull());
+        controls.addView(realPullBtn);
+
+        Button stopPullBtn = btn(
+                "STOP PULL ACK LOOP",
+                v -> stopPullAckLoop());
+        controls.addView(stopPullBtn);
 
         /*
          * Sweep and GATT dump promoted to the top of this panel -
