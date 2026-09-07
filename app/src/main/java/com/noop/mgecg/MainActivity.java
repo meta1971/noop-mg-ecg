@@ -1447,6 +1447,170 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * SET/GET_DEVICE_CONFIG_VALUE - confirmed byte-exact from a real
+     * NOOP debug-menu exchange against this same strap (session
+     * 2026-09-07 09:06). cmd=119 (0x77) SET, cmd=121 (0x79) GET -
+     * the same 0x79 we guessed correctly by opcode back in the
+     * earlier config-value sweep, but with the WRONG argument shape:
+     * it's not a single numeric key byte, it's a string key in a
+     * fixed 32-byte null-padded field, which is why that sweep got
+     * zero replies despite guessing the right opcode.
+     *
+     * Confirmed layout:
+     *   byte 0        = 0x01 (prefix)
+     *   bytes 1-32     = ASCII key, null-padded to 32 bytes
+     *   byte 33 (SET only) = value byte
+     *
+     * GET_DEVICE_CONFIG_VALUE total = 33 bytes (no value byte)
+     * SET_DEVICE_CONFIG_VALUE total = 34 bytes
+     * ------------------------------------------------------------------
+     */
+
+    private static final int DEVICE_CONFIG_KEY_FIELD_LEN = 32;
+
+    private byte[] buildDeviceConfigArg(String key, Integer valueByteOrNull) {
+
+        byte[] keyBytes = key.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+
+        if (keyBytes.length > DEVICE_CONFIG_KEY_FIELD_LEN) {
+            throw new IllegalArgumentException(
+                    "key too long for 32-byte field: " + key);
+        }
+
+        int totalLen = 1 + DEVICE_CONFIG_KEY_FIELD_LEN +
+                (valueByteOrNull != null ? 1 : 0);
+
+        byte[] out = new byte[totalLen];
+
+        out[0] = 0x01;
+
+        System.arraycopy(keyBytes, 0, out, 1, keyBytes.length);
+
+        /*
+         * Remaining bytes in the 32-byte field are already 0x00 -
+         * Java zero-initialises new byte arrays.
+         */
+
+        if (valueByteOrNull != null) {
+            out[totalLen - 1] = (byte) (int) valueByteOrNull;
+        }
+
+        return out;
+    }
+
+    private void getDeviceConfigValue(String key) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        byte[] arg = buildDeviceConfigArg(key, null);
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labradorBytes(0x23, 121, arg, thisSeq);
+
+            logRaw("TX GET_DEVICE_CONFIG_VALUE key=" + key +
+                    " seq=0x" + String.format("%02X", thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX GET_DEVICE_CONFIG_VALUE key=\"" + key + "\"");
+            line("TX LEN =" + f.length);
+            line("TX RAW =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected " +
+                        "(GET_DEVICE_CONFIG_VALUE)");
+                opDone();
+            }
+        });
+    }
+
+    private void setDeviceConfigValue(String key, int valueByte) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        byte[] arg = buildDeviceConfigArg(key, valueByte);
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labradorBytes(0x23, 119, arg, thisSeq);
+
+            logRaw("TX SET_DEVICE_CONFIG_VALUE key=" + key +
+                    " value=0x" + String.format("%02X", valueByte) +
+                    " seq=0x" + String.format("%02X", thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX SET_DEVICE_CONFIG_VALUE key=\"" + key +
+                    "\" value=0x" + String.format("%02X", valueByte));
+            line("TX LEN =" + f.length);
+            line("TX RAW =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected " +
+                        "(SET_DEVICE_CONFIG_VALUE)");
+                opDone();
+            }
+        });
+    }
+
+    /*
+     * One-tap: set the confirmed ECG raw-data gate, read it back for
+     * confirmation, then START a Labrador capture with the gate on -
+     * something we've never actually tried before, since every prior
+     * START happened with the gate presumably still off.
+     */
+    private void enableEcgGateThenStart() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot enable ECG gate");
+            return;
+        }
+
+        line("");
+        line("*** ENABLE ECG GATE, THEN START ***");
+        logRaw("ECG_GATE_SEQUENCE_BEGIN");
+
+        setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
+        getDeviceConfigValue("enable_raw_data_w_ecg");
+
+        /*
+         * Small buffer so the strap has processed the config write
+         * before we START - the real app's own exchange showed the
+         * write ack and read-back both landing well under this.
+         */
+        mainH.postDelayed(() -> {
+
+            labradorActive = true;
+            recordingComplete = false;
+            labradorPacketCount = 0;
+
+            line("");
+            line("*** STARTING LABRADOR CAPTURE (ECG gate on) ***");
+
+            send(0x7C, 1, "LABRADOR_START (ECG gate on)");
+
+        }, 800);
+    }
+
+    /*
+     * ------------------------------------------------------------------
      * Real historical-data pull - reverse engineered from a real NOOP
      * app BLE HCI snoop capture against this same strap. The real app
      * never touches LABRADOR_START/PULL at all for retrieval; instead:
@@ -2424,6 +2588,45 @@ public class MainActivity extends Activity {
 
         controls.setOrientation(
                 LinearLayout.VERTICAL);
+
+        /*
+         * ECG gate controls promoted to the very top - this is now
+         * the highest-priority tool, built from a confirmed real
+         * byte-exact exchange against this same strap.
+         */
+        Button ecgGateStartBtn = btn(
+                "ENABLE ECG GATE + START",
+                v -> enableEcgGateThenStart());
+        controls.addView(ecgGateStartBtn);
+
+        Button ecgGateSetGetBtn = btn(
+                "SET+GET ECG GATE (validation only)",
+                v -> {
+                    setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
+                    getDeviceConfigValue("enable_raw_data_w_ecg");
+                });
+        controls.addView(ecgGateSetGetBtn);
+
+        EditText configKeyInput = new EditText(this);
+        configKeyInput.setHint("device config key, e.g. enable_raw_data_w_ecg");
+        configKeyInput.setText("enable_raw_data_w_ecg");
+        configKeyInput.setSingleLine(true);
+        configKeyInput.setTextColor(0xFFFFFFFF);
+        configKeyInput.setHintTextColor(0xFF888888);
+        controls.addView(configKeyInput);
+
+        Button getConfigValueBtn = btn(
+                "GET CONFIG VALUE (key above)",
+                v -> {
+                    String key = configKeyInput.getText()
+                            .toString().trim();
+                    if (key.isEmpty()) {
+                        line("enter a key first");
+                        return;
+                    }
+                    getDeviceConfigValue(key);
+                });
+        controls.addView(getConfigValueBtn);
 
         /*
          * Real historical pull promoted to the very top - this is
