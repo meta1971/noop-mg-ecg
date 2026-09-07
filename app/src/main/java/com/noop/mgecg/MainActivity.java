@@ -148,6 +148,7 @@ public class MainActivity extends Activity {
      */
     private boolean pullAckActive = false;
     private int pullAckCounter = 0;
+    private int pullGeneration = 0;
 
     private java.io.File historicalBinaryFile;
     private final List<byte[]> historicalFragments = new ArrayList<>();
@@ -1603,13 +1604,18 @@ public class MainActivity extends Activity {
 
         pullAckActive = true;
         pullAckCounter = 0;
+        pullGeneration++;
 
-        mainH.postDelayed(this::runPullAckStep, 350);
+        final int myGeneration = pullGeneration;
+
+        mainH.postDelayed(
+                () -> runPullAckStep(myGeneration), 350);
     }
 
     private void stopPullAckLoop() {
 
         pullAckActive = false;
+        pullGeneration++;
 
         line("*** PULL ACK LOOP STOPPED - " +
                 historicalFragments.size() + " burst frames, " +
@@ -1619,9 +1625,18 @@ public class MainActivity extends Activity {
                 " bytes=" + historicalTotalBytes);
     }
 
-    private void runPullAckStep() {
+    /*
+     * generation guards against ANY stray duplicate callback ever
+     * running concurrently with a newer (or stopped) pull, no
+     * matter what causes the duplicate - a double-tap, a Doze/
+     * battery-optimisation quirk, or anything else. Once
+     * pullGeneration no longer matches what this specific chain
+     * was stamped with, it silently stops - it cannot un-stop
+     * itself or race with a fresher chain.
+     */
+    private void runPullAckStep(int myGeneration) {
 
-        if (!pullAckActive) {
+        if (!pullAckActive || myGeneration != pullGeneration) {
             return;
         }
 
@@ -1644,7 +1659,8 @@ public class MainActivity extends Activity {
             return;
         }
 
-        mainH.postDelayed(this::runPullAckStep, 350);
+        mainH.postDelayed(
+                () -> runPullAckStep(myGeneration), 350);
     }
 
     /*
