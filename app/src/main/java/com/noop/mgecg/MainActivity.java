@@ -1580,6 +1580,13 @@ public class MainActivity extends Activity {
             return;
         }
 
+        if (pullAckActive) {
+            line("PULL ALREADY IN PROGRESS - ignoring duplicate " +
+                    "start (tap STOP PULL ACK LOOP first if you " +
+                    "want to restart)");
+            return;
+        }
+
         historicalFragments.clear();
         historicalTotalBytes = 0;
         historicalBinaryFile = null;
