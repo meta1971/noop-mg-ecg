@@ -2169,6 +2169,27 @@ public class MainActivity extends Activity {
         controls.setOrientation(
                 LinearLayout.VERTICAL);
 
+        /*
+         * Sweep and GATT dump promoted to the top of this panel -
+         * these are the highest-priority tools right now, worth
+         * seeing immediately rather than after scrolling past
+         * everything else.
+         */
+        Button gattDumpBtn = btn(
+                "DUMP ALL GATT SERVICES",
+                v -> manualGattDump());
+        controls.addView(gattDumpBtn);
+
+        Button startSweepBtn = btn(
+                "GET CONFIG VALUE SWEEP (0x79, key 0x00-0x1F)",
+                v -> startCmdSweep());
+        controls.addView(startSweepBtn);
+
+        Button stopSweepBtn = btn(
+                "STOP SWEEP",
+                v -> stopCmdSweep());
+        controls.addView(stopSweepBtn);
+
         Button c5 =
                 btn(
                         "0x3F SPO2 STREAM ON",
@@ -2354,21 +2375,6 @@ public class MainActivity extends Activity {
                         });
 
         controls.addView(sendClockBtn);
-
-        Button gattDumpBtn = btn(
-                "DUMP ALL GATT SERVICES",
-                v -> manualGattDump());
-        controls.addView(gattDumpBtn);
-
-        Button startSweepBtn = btn(
-                "GET CONFIG VALUE SWEEP (0x79, key 0x00-0x1F)",
-                v -> startCmdSweep());
-        controls.addView(startSweepBtn);
-
-        Button stopSweepBtn = btn(
-                "STOP SWEEP",
-                v -> stopCmdSweep());
-        controls.addView(stopSweepBtn);
 
         ScrollView controlsScroll =
                 new ScrollView(this);
