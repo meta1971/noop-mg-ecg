@@ -156,6 +156,31 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * Real ECG generation - confirmed from NOOP's own public GitHub
+     * (ryanbr/noop, PR #1727), cross-validated three ways on real MG
+     * hardware: an isolation test, a 10-cycle reliability run, and the
+     * strap's own firmware console log ("MAX86176: Set ECG ON") firing
+     * once per real start. cmd=0x7C (124) is mainControlECGDataGeneration:
+     *
+     *   arg=0  REFUSED outright (FAILURE ack)
+     *   arg=1  SUCCESS ack, but actually STOPS generation
+     *   arg=2  SUCCESS ack, actually STARTS generation
+     *
+     * Prerequisite: TOGGLE_LABRADOR_FILTERED (cmd=0x8B=139) must be ON
+     * first, or the real data stream stays silent even with arg=2 -
+     * confirmed by an isolation test with three negative controls.
+     *
+     * Real data arrives as type=43 (0x2B) REALTIME_RAW_DATA
+     * notifications - a completely different envelope type from
+     * anything filtered for earlier this session.
+     * ------------------------------------------------------------------
+     */
+    private java.io.File realtimeEcgBinaryFile;
+    private final List<byte[]> realtimeEcgFragments = new ArrayList<>();
+    private int realtimeEcgTotalBytes = 0;
+
+    /*
+     * ------------------------------------------------------------------
      * Persistent raw log file
      * ------------------------------------------------------------------
      */
@@ -680,6 +705,8 @@ public class MainActivity extends Activity {
                 handleHistoricalBurstFrame(uuid, value);
             } else if (envType == 0x32 && envCmd == 0x02) {
                 dumpAsciiRuns(value);
+            } else if (envType == 43) {
+                handleRealtimeEcgFrame(uuid, value);
             }
         }
 
@@ -1828,6 +1855,109 @@ public class MainActivity extends Activity {
     }
 
     /*
+     * ------------------------------------------------------------------
+     * Real ECG start/stop - see field-declaration comment above for the
+     * full confirmed background (NOOP PR #1727).
+     * ------------------------------------------------------------------
+     */
+
+    private void prepareRealtimeEcgCaptureFile() {
+
+        java.io.File dir = getExternalFilesDir(null);
+
+        if (dir == null) {
+            line("ERROR: external files directory unavailable");
+            return;
+        }
+
+        long stamp = System.currentTimeMillis() / 1000L;
+
+        realtimeEcgBinaryFile = new java.io.File(
+                dir, "realtime_ecg_bin_" + stamp + ".bin");
+
+        line("REALTIME ECG BINARY FILE:");
+        line(realtimeEcgBinaryFile.getAbsolutePath());
+    }
+
+    private void saveRealtimeEcgFragment(byte[] data) {
+
+        if (realtimeEcgBinaryFile == null) {
+            prepareRealtimeEcgCaptureFile();
+        }
+
+        try (java.io.FileOutputStream fos =
+                     new java.io.FileOutputStream(
+                             realtimeEcgBinaryFile, true)) {
+
+            fos.write(data);
+
+        } catch (Exception e) {
+            line("REALTIME ECG SAVE ERROR: " + e);
+        }
+    }
+
+    private void handleRealtimeEcgFrame(
+            String uuid,
+            byte[] value) {
+
+        realtimeEcgFragments.add(value);
+        realtimeEcgTotalBytes += value.length;
+        saveRealtimeEcgFragment(value);
+
+        logRaw("REALTIME_ECG len=" + value.length +
+                " raw=" + Protocol.hex(value));
+
+        line("*** REALTIME_RAW_DATA (type=43) #" +
+                realtimeEcgFragments.size() +
+                " ch=" + uuid +
+                " len=" + value.length +
+                " totalBytes=" + realtimeEcgTotalBytes + " ***");
+    }
+
+    private void startRealEcg() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot start ECG");
+            return;
+        }
+
+        realtimeEcgFragments.clear();
+        realtimeEcgTotalBytes = 0;
+        realtimeEcgBinaryFile = null;
+
+        line("");
+        line("*** REAL ECG START: TOGGLE_LABRADOR_FILTERED(139)=1 " +
+                "-> mainControlECGDataGeneration(124)=2 ***");
+        logRaw("REAL_ECG_START_BEGIN");
+
+        send(0x8B, 1, "TOGGLE_LABRADOR_FILTERED_ON");
+
+        /*
+         * Confirmed prerequisite ordering from the isolation test:
+         * filtered-on must land before the generation-start send, or
+         * the type=43 stream stays silent even with the correct arg.
+         */
+        mainH.postDelayed(() ->
+                send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION_START"),
+                600);
+    }
+
+    private void stopRealEcg() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot stop ECG");
+            return;
+        }
+
+        line("");
+        line("*** REAL ECG STOP: mainControlECGDataGeneration(124)=1 " +
+                "(arg=0 is refused on real hardware) ***");
+        logRaw("REAL_ECG_STOP");
+
+        send(0x7C, 1, "MAIN_CONTROL_ECG_DATA_GENERATION_STOP");
+    }
+
+    /*
      * Recording-complete packet currently observed:
      *
      * characteristic 0004
@@ -1886,7 +2016,7 @@ public class MainActivity extends Activity {
         experimentCompletionsSeen = 0;
 
         line("");
-        line("*** EXPERIMENT BEGIN: 3x LABRADOR_START, " +
+        line("*** EXPERIMENT BEGIN: 3x REAL ECG START, " +
                 (intervalMs / 1000) + "s apart ***");
 
         logRaw("EXPERIMENT_BEGIN interval_ms=" + intervalMs +
@@ -1942,11 +2072,25 @@ public class MainActivity extends Activity {
         int n = experimentStartsSent;
 
         line("");
-        line("*** EXPERIMENT: firing START #" + n + " of 3 ***");
+        line("*** EXPERIMENT: firing REAL ECG START #" + n + " of 3 ***");
 
         logRaw("EXPERIMENT_START_FIRING n=" + n);
 
-        send(0x7C, 1, "EXPERIMENT_LABRADOR_START_" + n);
+        /*
+         * Corrected to the validated real start sequence (NOOP PR
+         * #1727): FILTER ON, then a beat later, arg=2 - not the old
+         * arg=1 send, which is now confirmed to just stop/no-op
+         * generation rather than start it. Deliberately does NOT
+         * clear realtimeEcgFragments between cycles, so repeated
+         * starts accumulate into one capture - useful for testing
+         * whether each cycle independently produces real data.
+         */
+        send(0x8B, 1, "EXPERIMENT_FILTERED_ON_" + n);
+
+        mainH.postDelayed(() ->
+                send(0x7C, 2,
+                        "EXPERIMENT_ECG_GENERATION_START_" + n),
+                600);
 
         if (experimentStartsSent < 3) {
 
@@ -2511,21 +2655,14 @@ public class MainActivity extends Activity {
 
         Button c2 =
                 btn(
-                        "START",
+                        "ECG START (real)",
                         v -> {
 
                             labradorActive = true;
                             recordingComplete = false;
                             labradorPacketCount = 0;
 
-                            line("");
-                            line("*** STARTING " +
-                                    "LABRADOR CAPTURE ***");
-
-                            send(
-                                    0x7C,
-                                    1,
-                                    "LABRADOR_START");
+                            startRealEcg();
                         });
 
         row2.addView(
@@ -2549,18 +2686,12 @@ public class MainActivity extends Activity {
 
         Button stop =
                 btn(
-                        "STOP",
+                        "ECG STOP (real)",
                         v -> {
 
                             labradorActive = false;
 
-                            line("");
-                            line("*** LABRADOR STOP ***");
-
-                            send(
-                                    0x7C,
-                                    0,
-                                    "LABRADOR_STOP");
+                            stopRealEcg();
                         });
 
         row3.addView(
