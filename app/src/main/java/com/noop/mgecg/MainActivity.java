@@ -182,6 +182,18 @@ public class MainActivity extends Activity {
     private int historicalTotalBytes = 0;
 
     /*
+     * The real 8-byte progress cursor, confirmed from judes.club's
+     * primary-source writeup: every status frame embeds this, and it
+     * must be echoed back verbatim as the 0x17 ack payload or the
+     * offload stalls after one chunk. We extract it from the firmware's
+     * own "Trim: 0xBBBBBBBB:OOOOOOOO" debug-text line (already decoded
+     * by dumpAsciiRuns()) rather than parsing raw status-frame bytes,
+     * since the text is already proven reliable this session. null
+     * until the first Trim line is seen.
+     */
+    private byte[] lastKnownCursor = null;
+
+    /*
      * ------------------------------------------------------------------
      * Real ECG generation - confirmed from NOOP's own public GitHub
      * (ryanbr/noop, PR #1727), cross-validated three ways on real MG
@@ -759,6 +771,7 @@ public class MainActivity extends Activity {
             } else if (envType == 0x32 && envCmd == 0x02) {
                 dumpAsciiRuns(value);
                 checkForEcgConsoleConfirmation(value);
+                extractCursorFromDebugText(value);
             } else if (envType == 43) {
                 handleRealtimeEcgFrame(uuid, value);
             } else if (envType == 0x24 &&
@@ -1015,6 +1028,55 @@ public class MainActivity extends Activity {
 
             logRaw("MAX86176_SET_ECG_ON_CONFIRMED");
         }
+    }
+
+    /*
+     * Extracts the real progress cursor from a "Trim: 0xBBBBBBBB:OOOOOOOO"
+     * debug-text line (confirmed format from the firmware's own console
+     * output, seen repeatedly this session in "History burst success"
+     * messages). Packs the two 4-byte values as an 8-byte little-endian
+     * cursor, matching this protocol's general byte-order convention,
+     * and stores it for the next 0x17 ack to echo back verbatim.
+     */
+    private static final java.util.regex.Pattern TRIM_PATTERN =
+            java.util.regex.Pattern.compile(
+                    "Trim:\\s*0x([0-9A-Fa-f]{8}):([0-9A-Fa-f]{8})");
+
+    private void extractCursorFromDebugText(byte[] v) {
+
+        String text = new String(
+                v, java.nio.charset.StandardCharsets.US_ASCII);
+
+        java.util.regex.Matcher m = TRIM_PATTERN.matcher(text);
+
+        if (!m.find()) {
+            return;
+        }
+
+        long blockIndex = Long.parseLong(m.group(1), 16);
+        long byteOffset = Long.parseLong(m.group(2), 16);
+
+        byte[] cursor = new byte[8];
+
+        cursor[0] = (byte) (blockIndex & 0xFF);
+        cursor[1] = (byte) ((blockIndex >> 8) & 0xFF);
+        cursor[2] = (byte) ((blockIndex >> 16) & 0xFF);
+        cursor[3] = (byte) ((blockIndex >> 24) & 0xFF);
+        cursor[4] = (byte) (byteOffset & 0xFF);
+        cursor[5] = (byte) ((byteOffset >> 8) & 0xFF);
+        cursor[6] = (byte) ((byteOffset >> 16) & 0xFF);
+        cursor[7] = (byte) ((byteOffset >> 24) & 0xFF);
+
+        lastKnownCursor = cursor;
+
+        line("*** REAL CURSOR CAPTURED: block=0x" +
+                String.format("%08X", blockIndex) +
+                " offset=0x" + String.format("%08X", byteOffset) +
+                " - next 0x17 ack will echo it ***");
+
+        logRaw("CURSOR_CAPTURED block=" + blockIndex +
+                " offset=" + byteOffset +
+                " raw=" + Protocol.hex(cursor));
     }
 
     /*
@@ -1866,13 +1928,14 @@ public class MainActivity extends Activity {
         historicalFragments.clear();
         historicalTotalBytes = 0;
         historicalBinaryFile = null;
+        lastKnownCursor = null;
 
         line("");
         line("*** REAL HISTORICAL PULL: SET_CLOCK -> GET_CLOCK -> " +
                 "GET_DATA_RANGE -> SEND_HISTORICAL_DATA ***");
         logRaw("REAL_PULL_BEGIN");
 
-        sendClockGuess(0x23, 0x0A);
+        sendRealSetClock();
         sendZeroArg(0x0B, "GET_CLOCK");
         sendZeroArg(0x22, "GET_DATA_RANGE");
         sendZeroArg(0x16, "SEND_HISTORICAL_DATA");
@@ -1908,6 +1971,15 @@ public class MainActivity extends Activity {
      * pullGeneration no longer matches what this specific chain
      * was stamped with, it silently stops - it cannot un-stop
      * itself or race with a fresher chain.
+     *
+     * Corrected per judes.club's primary-source writeup: the real
+     * ack echoes the strap's own 8-byte progress cursor verbatim,
+     * with a fixed b3=0x01 marker - not a blind local counter in a
+     * 1-byte arg, which is what this sent before. Falls back to the
+     * old counter-based send ONLY if no real cursor has been
+     * captured yet (e.g. right at the very start, before any debug-
+     * text status line has arrived), so the loop still does
+     * something reasonable before real cursor data exists.
      */
     private void runPullAckStep(int myGeneration) {
 
@@ -1915,7 +1987,22 @@ public class MainActivity extends Activity {
             return;
         }
 
-        sendCustom(0x23, 0x17, pullAckCounter & 0xFF);
+        if (lastKnownCursor != null) {
+
+            byte[] b3AndCursor = new byte[9];
+            b3AndCursor[0] = 0x01;
+            System.arraycopy(lastKnownCursor, 0, b3AndCursor, 1, 8);
+
+            sendManualCommand(0x17, b3AndCursor,
+                    "CURSOR_ACK (real, echoing captured Trim value)");
+
+        } else {
+
+            line("(no real cursor captured yet - falling back to " +
+                    "counter-based ack for this cycle)");
+
+            sendCustom(0x23, 0x17, pullAckCounter & 0xFF);
+        }
 
         pullAckCounter++;
 
@@ -1936,6 +2023,120 @@ public class MainActivity extends Activity {
 
         mainH.postDelayed(
                 () -> runPullAckStep(myGeneration), 350);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * WHOOP 5/MG "R22" deep-data unlock - confirmed byte-exact from
+     * judes.club's primary-source writeup ("Cracking the WHOOP 5.0
+     * over Bluetooth"), the same source NOOP's own docs cite. Real
+     * confirmed sequence: GET_HELLO, GET_ADVERTISING_NAME, then 15x
+     * SET_CONFIG writes (one per flag). No cmd=0x73 step exists in
+     * this primary source - an earlier guess at one has been removed.
+     *
+     * GET_HELLO, GET_ADVERTISING_NAME, and SET_CONFIG all use a FIXED
+     * b3=0x01 marker byte (not length-based) - see buildManualFrame()
+     * above. Our existing CLIENT_HELLO handshake already produces the
+     * same 0x91 identity replies GET_HELLO would, so it isn't
+     * duplicated here.
+     *
+     * SET_CONFIG (cmd=0x78) body: flag name as ASCII, NUL-padded to
+     * 32 bytes, then a 1-byte ASCII value ('1'/'2'), then 7 zero
+     * bytes - 40 bytes total, sent as b3(0x01) + that 40-byte body.
+     *
+     * CRITICAL: confirmed on-wrist gated - the strap must be
+     * genuinely worn, not just BLE-connected, for the r22 stream to
+     * flow at all.
+     *
+     * We have ~10 of the real 15 flag names (the primary source
+     * lists these and says "a handful more" beyond them) - sent
+     * with all we have rather than waiting for full certainty.
+     * ------------------------------------------------------------------
+     */
+
+    private static final int R22_FLAG_NAME_FIELD_LEN = 32;
+
+    private static final String[] R22_FLAGS = {
+        "enable_r22_packets",
+        "enable_r22_v2_packets",
+        "enable_r22_v3_packets",
+        "enable_r22_v5_packets",
+        "enable_r22_v6_packets",
+        "enable_r22_v8_packets",
+        "make_hrfm_visible",
+        "hr_ch_switching",
+        "enable_passive_strap_fit_gen5",
+        "enable_sig11_during_sleep",
+    };
+
+    private byte[] buildR22FlagBody(String flagName, char asciiValue) {
+
+        byte[] nameBytes = flagName.getBytes(
+                java.nio.charset.StandardCharsets.US_ASCII);
+
+        if (nameBytes.length > R22_FLAG_NAME_FIELD_LEN) {
+            throw new IllegalArgumentException(
+                    "flag name too long for 32-byte field: " + flagName);
+        }
+
+        byte[] body = new byte[40];
+
+        System.arraycopy(nameBytes, 0, body, 0, nameBytes.length);
+        /* remaining name-field bytes are already 0x00 */
+
+        body[32] = (byte) asciiValue;
+        /* body[33..39] are already 0x00 - the 7 trailing zero bytes */
+
+        return body;
+    }
+
+    private void sendR22Flag(String flagName, char asciiValue) {
+
+        byte[] body = buildR22FlagBody(flagName, asciiValue);
+
+        byte[] b3AndBody = new byte[1 + body.length];
+        b3AndBody[0] = 0x01;
+        System.arraycopy(body, 0, b3AndBody, 1, body.length);
+
+        sendManualCommand(0x78, b3AndBody,
+                "SET_CONFIG flag=\"" + flagName + "\" value='" +
+                        asciiValue + "'");
+    }
+
+    private void sendGetAdvertisingName() {
+        sendManualCommand(0x8D, new byte[]{0x01}, "GET_ADVERTISING_NAME");
+    }
+
+    /*
+     * One-tap: GET_ADVERTISING_NAME, then the ~10 confirmed R22 flags,
+     * ~80ms apart (matching the real app's timing), each write-with-
+     * response. Not the full real 15-flag burst - the remaining
+     * names weren't recoverable - but a substantially more complete
+     * attempt than the single-flag version tried earlier.
+     */
+    private void sendR22UnlockPartial() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot send R22 unlock");
+            return;
+        }
+
+        line("");
+        line("*** R22 UNLOCK: GET_ADVERTISING_NAME -> " +
+                R22_FLAGS.length + " of ~15 real flags - " +
+                "STRAP MUST BE WORN ***");
+        logRaw("R22_UNLOCK_BEGIN flags=" + R22_FLAGS.length);
+
+        sendGetAdvertisingName();
+
+        for (int i = 0; i < R22_FLAGS.length; i++) {
+
+            String flag = R22_FLAGS[i];
+            long delayMs = 80L * (i + 1);
+
+            mainH.postDelayed(
+                    () -> sendR22Flag(flag, '1'), delayMs);
+        }
     }
 
     /*
@@ -2220,6 +2421,133 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * Manual frame builder - for commands where the byte right after
+     * cmd (called "b3" in the primary judes.club writeup) is a FIXED
+     * marker value, not an auto-computed payload length. Our existing
+     * Protocol.labrador()/labradorBytes() helpers always compute that
+     * byte as the given argument's length, which is correct for the
+     * commands we validated earlier (GET/SET_DEVICE_CONFIG_VALUE,
+     * GET_CLOCK, GET_DATA_RANGE, SEND_HISTORICAL_DATA) but wrong for
+     * GET_HELLO/GET_ADVERTISING_NAME/SET_CONFIG/the 0x17 cursor ack,
+     * which all use a fixed b3=0x01 regardless of what follows.
+     *
+     * CRC16-Modbus here is a direct port of the validated Swift
+     * reference (poly 0x8005 reflected, init 0xFFFF, refin/refout,
+     * xorout 0). CRC32 uses java.util.zip.CRC32, which is the
+     * standard zlib/IEEE 802.3 CRC32 the same source confirms this
+     * protocol's trailer uses.
+     * ------------------------------------------------------------------
+     */
+
+    private int crc16Modbus(byte[] bytes) {
+
+        int crc = 0xFFFF;
+
+        for (byte bb : bytes) {
+
+            crc ^= (bb & 0xFF);
+
+            for (int i = 0; i < 8; i++) {
+
+                if ((crc & 1) != 0) {
+                    crc = (crc >>> 1) ^ 0xA001;
+                } else {
+                    crc = crc >>> 1;
+                }
+            }
+        }
+
+        return crc & 0xFFFF;
+    }
+
+    private byte[] buildManualFrame(
+            int type,
+            int seq,
+            int cmd,
+            byte[] b3AndPayload) {
+
+        int innerLen = 3 + b3AndPayload.length;
+
+        byte[] inner = new byte[innerLen];
+        inner[0] = (byte) type;
+        inner[1] = (byte) seq;
+        inner[2] = (byte) cmd;
+        System.arraycopy(
+                b3AndPayload, 0, inner, 3, b3AndPayload.length);
+
+        java.util.zip.CRC32 crc32 = new java.util.zip.CRC32();
+        crc32.update(inner);
+        long crc32Val = crc32.getValue();
+
+        int declLen = innerLen + 4;
+
+        byte[] headerPre = new byte[6];
+        headerPre[0] = (byte) 0xAA;
+        headerPre[1] = 0x01;
+        headerPre[2] = (byte) (declLen & 0xFF);
+        headerPre[3] = (byte) ((declLen >> 8) & 0xFF);
+        headerPre[4] = 0x00;
+        headerPre[5] = 0x01;
+
+        int crc16 = crc16Modbus(headerPre);
+
+        byte[] frame = new byte[8 + innerLen + 4];
+        System.arraycopy(headerPre, 0, frame, 0, 6);
+        frame[6] = (byte) (crc16 & 0xFF);
+        frame[7] = (byte) ((crc16 >> 8) & 0xFF);
+        System.arraycopy(inner, 0, frame, 8, innerLen);
+        frame[8 + innerLen]     = (byte) (crc32Val & 0xFF);
+        frame[8 + innerLen + 1] = (byte) ((crc32Val >> 8) & 0xFF);
+        frame[8 + innerLen + 2] = (byte) ((crc32Val >> 16) & 0xFF);
+        frame[8 + innerLen + 3] = (byte) ((crc32Val >> 24) & 0xFF);
+
+        return frame;
+    }
+
+    private void sendManualCommand(
+            int cmd,
+            byte[] b3AndPayload,
+            String name) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = buildManualFrame(
+                    0x23, thisSeq, cmd, b3AndPayload);
+
+            logRaw("TX (manual) name=" + name +
+                    " cmd=0x" + String.format("%02X", cmd) +
+                    " seq=0x" + String.format("%02X",
+                            thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX " + name + " (manual frame)");
+            line("TX CMD =0x" + String.format("%02X", cmd));
+            line("TX SEQ =0x" + String.format("%02X",
+                    thisSeq & 0xff));
+            line("TX LEN =" + f.length);
+            line("TX RAW =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (" + name + ")");
+                opDone();
+            }
+        });
+    }
+
+    /*
+     * ------------------------------------------------------------------
      * Protocol transmission
      * ------------------------------------------------------------------
      */
@@ -2372,6 +2700,60 @@ public class MainActivity extends Activity {
                         type,
                         opcode,
                         arg));
+    }
+
+    /*
+     * Corrected SET_CLOCK - confirmed from NOOP's own protocol docs to
+     * be an 8-byte payload ([seconds u32 LE][subseconds u32 LE]), not
+     * the 4-byte epoch-only guess above. Per that same doc: "a wrong-
+     * length payload is ack'd but not latched, leaving the RTC lost
+     * and breaking history" - meaning every SET_CLOCK this session
+     * before this fix likely silently failed to actually take effect
+     * despite appearing to succeed.
+     */
+    private void sendRealSetClock() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+        final long epochNow = System.currentTimeMillis() / 1000L;
+
+        enqueue(() -> {
+
+            byte[] body = new byte[8];
+
+            body[0] = (byte) (epochNow & 0xFF);
+            body[1] = (byte) ((epochNow >> 8) & 0xFF);
+            body[2] = (byte) ((epochNow >> 16) & 0xFF);
+            body[3] = (byte) ((epochNow >> 24) & 0xFF);
+            /* body[4..7] = subseconds, left as 0 - we have no
+               sub-second-accurate clock source worth encoding here */
+
+            byte[] f = Protocol.labradorBytes(0x23, 0x0A, body, thisSeq);
+
+            logRaw("TX SET_CLOCK (corrected 8-byte) epoch=" + epochNow +
+                    " seq=0x" + String.format("%02X", thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX SET_CLOCK (corrected 8-byte)");
+            line("TX EPOCH=" + epochNow +
+                    " (" + new Date(epochNow * 1000L) + ")");
+            line("TX LEN  =" + f.length);
+            line("TX RAW  =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (SET_CLOCK)");
+                opDone();
+            }
+        });
     }
 
     /*
@@ -2920,6 +3302,19 @@ public class MainActivity extends Activity {
 
         controls.setOrientation(
                 LinearLayout.VERTICAL);
+
+        /*
+         * R22 unlock promoted to the very top - the highest-priority
+         * tool now, confirmed three independent ways in NOOP's own
+         * docs. Only sends the one confirmed flag (enable_r22_packets)
+         * of the real 15, but it's named as the single most
+         * load-bearing one.
+         */
+        Button r22Btn = btn(
+                "SEND R22 UNLOCK (10 flags, corrected frames - " +
+                        "STRAP MUST BE WORN)",
+                v -> sendR22UnlockPartial());
+        controls.addView(r22Btn);
 
         /*
          * ECG gate controls promoted to the very top - this is now
