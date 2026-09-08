@@ -125,6 +125,15 @@ public class MainActivity extends Activity {
     private Runnable timeoutRunnable;
 
     /*
+     * Callback for whatever operation is currently in flight on the
+     * write characteristic, invoked from the real onCharacteristicWrite()
+     * ack - not a timer. Lets one send() explicitly chain off another
+     * send()'s confirmed completion, rather than relying on the shared
+     * queue's serialization being the only thing enforcing order.
+     */
+    private Runnable pendingWriteCallback;
+
+    /*
      * Labrador capture state.
      */
     private boolean labradorActive = false;
@@ -593,7 +602,14 @@ public class MainActivity extends Activity {
                     " status=" +
                     status);
 
+            Runnable cb = pendingWriteCallback;
+            pendingWriteCallback = null;
+
             opDone();
+
+            if (cb != null) {
+                cb.run();
+            }
         }
 
         @Override
@@ -1996,19 +2012,12 @@ public class MainActivity extends Activity {
 
         line("");
         line("*** REAL ECG START: TOGGLE_LABRADOR_FILTERED(139)=1 " +
-                "-> mainControlECGDataGeneration(124)=2 ***");
+                "-> mainControlECGDataGeneration(124)=2, chained off " +
+                "the real write ack (not a timer) ***");
         logRaw("REAL_ECG_START_BEGIN");
 
-        send(0x8B, 1, "TOGGLE_LABRADOR_FILTERED_ON");
-
-        /*
-         * Confirmed prerequisite ordering from the isolation test:
-         * filtered-on must land before the generation-start send, or
-         * the type=43 stream stays silent even with the correct arg.
-         */
-        mainH.postDelayed(() ->
-                send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION_START"),
-                600);
+        sendWithCallback(0x8B, 1, "TOGGLE_LABRADOR_FILTERED_ON", () ->
+                send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION_START"));
 
         ecgListenActive = true;
         ecgListenGeneration++;
@@ -2220,6 +2229,21 @@ public class MainActivity extends Activity {
             int arg,
             String name) {
 
+        sendWithCallback(opcode, arg, name, null);
+    }
+
+    /*
+     * Same as send(), but onWriteComplete fires from the REAL GATT
+     * write-ack (onCharacteristicWrite()) for this specific frame, not
+     * a timer - lets one command explicitly chain off another's
+     * confirmed completion.
+     */
+    private void sendWithCallback(
+            int opcode,
+            int arg,
+            String name,
+            Runnable onWriteComplete) {
+
         if (opcode == 0x7C && arg == 1) {
             labradorFragments.clear();
             line("(cleared any stale 0007 fragments before this START)");
@@ -2229,7 +2253,8 @@ public class MainActivity extends Activity {
                 0x23,
                 opcode,
                 arg,
-                name);
+                name,
+                onWriteComplete);
     }
 
     private void sendNamed(
@@ -2237,6 +2262,16 @@ public class MainActivity extends Activity {
             int opcode,
             int arg,
             String name) {
+
+        sendNamed(type, opcode, arg, name, null);
+    }
+
+    private void sendNamed(
+            int type,
+            int opcode,
+            int arg,
+            String name,
+            Runnable onWriteComplete) {
 
         if (gatt == null ||
                 cmdWrite == null) {
@@ -2298,6 +2333,14 @@ public class MainActivity extends Activity {
 
             cmdWrite.setValue(f);
 
+            /*
+             * Set right before the actual write call, not earlier -
+             * this operation may sit queued for a while before its
+             * turn comes up, and we only want the callback tied to
+             * THIS specific write's real ack.
+             */
+            pendingWriteCallback = onWriteComplete;
+
             if (!gatt.writeCharacteristic(
                     cmdWrite)) {
 
@@ -2305,6 +2348,8 @@ public class MainActivity extends Activity {
                         "rejected (" +
                         name +
                         ")");
+
+                pendingWriteCallback = null;
 
                 opDone();
             }
