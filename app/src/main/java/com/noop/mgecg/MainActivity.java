@@ -3317,9 +3317,25 @@ public class MainActivity extends Activity {
         controls.addView(r22Btn);
 
         /*
-         * ECG gate controls promoted to the very top - this is now
-         * the highest-priority tool, built from a confirmed real
-         * byte-exact exchange against this same strap.
+         * Real historical pull moved directly below R22 UNLOCK -
+         * these two are now the actual recommended test sequence
+         * (unlock, then pull), so keeping them adjacent means
+         * reaching the second one never needs any scrolling.
+         */
+        Button realPullBtn = btn(
+                "REAL HISTORICAL PULL (SET_CLOCK...SEND_HIST_DATA)",
+                v -> startRealHistoricalPull());
+        controls.addView(realPullBtn);
+
+        Button stopPullBtn = btn(
+                "STOP PULL ACK LOOP",
+                v -> stopPullAckLoop());
+        controls.addView(stopPullBtn);
+
+        /*
+         * ECG gate controls - earlier, less fruitful experimentation
+         * than the R22/historical-pull pair above, so no longer
+         * given top billing, but kept available.
          */
         Button ecgGateStartBtn = btn(
                 "ENABLE ECG GATE + START",
@@ -3354,21 +3370,6 @@ public class MainActivity extends Activity {
                     getDeviceConfigValue(key);
                 });
         controls.addView(getConfigValueBtn);
-
-        /*
-         * Real historical pull promoted to the very top - this is
-         * the highest-priority tool now, reverse engineered from a
-         * real NOOP app snoop capture against this same strap.
-         */
-        Button realPullBtn = btn(
-                "REAL HISTORICAL PULL (SET_CLOCK...SEND_HIST_DATA)",
-                v -> startRealHistoricalPull());
-        controls.addView(realPullBtn);
-
-        Button stopPullBtn = btn(
-                "STOP PULL ACK LOOP",
-                v -> stopPullAckLoop());
-        controls.addView(stopPullBtn);
 
         /*
          * Sweep and GATT dump promoted to the top of this panel -
@@ -3587,13 +3588,19 @@ public class MainActivity extends Activity {
                 new LinearLayout.LayoutParams(
                         -1,
                         0,
-                        1));
+                        3));
 
         /*
          * ------------------------------------------------------------
          * Log section: label, CLEAR/SAVE/COPY row, then the log
-         * itself - given by far the largest weight so it dominates
-         * the screen regardless of how many controls exist above it.
+         * itself. Weight rebalanced from 4 down to 2 (controls raised
+         * from 1 to 3, above) - with ~18 buttons/inputs now
+         * accumulated in the controls panel over this session, the
+         * old 1:4 ratio rendered it too small to reach buttons like
+         * REAL HISTORICAL PULL without an easy-to-miss scroll nested
+         * inside it, which read as "buttons not visible". The log
+         * remains reachable in full via SAVE LOG/COPY LOG regardless
+         * of its on-screen height.
          * ------------------------------------------------------------
          */
         TextView logLabel =
@@ -3652,7 +3659,7 @@ public class MainActivity extends Activity {
                 new LinearLayout.LayoutParams(
                         -1,
                         0,
-                        4));
+                        2));
 
         setContentView(root);
     }
