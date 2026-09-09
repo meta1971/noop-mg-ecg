@@ -1745,9 +1745,14 @@ public class MainActivity extends Activity {
 
     /*
      * One-tap: set the confirmed ECG raw-data gate, read it back for
-     * confirmation, then START a Labrador capture with the gate on -
-     * something we've never actually tried before, since every prior
-     * START happened with the gate presumably still off.
+     * confirmation, then START using the validated real sequence.
+     *
+     * FIXED: this previously sent arg=1, which we've since confirmed
+     * (PR #1727, cross-validated multiple ways) actually STOPS/no-ops
+     * generation rather than starting it - meaning this button was
+     * self-defeating since that correction. Now sends the confirmed
+     * real start (TOGGLE_LABRADOR_FILTERED=1, real-ack-chained into
+     * mainControlECGDataGeneration=2), matching ECG START (real).
      */
     private void enableEcgGateThenStart() {
 
@@ -1757,7 +1762,7 @@ public class MainActivity extends Activity {
         }
 
         line("");
-        line("*** ENABLE ECG GATE, THEN START ***");
+        line("*** ENABLE ECG GATE, THEN START (real sequence) ***");
         logRaw("ECG_GATE_SEQUENCE_BEGIN");
 
         setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
@@ -1770,16 +1775,123 @@ public class MainActivity extends Activity {
          */
         mainH.postDelayed(() -> {
 
+            realtimeEcgFragments.clear();
+            realtimeEcgTotalBytes = 0;
+            realtimeEcgBinaryFile = null;
+            maxEcgOnSeen = false;
+
             labradorActive = true;
             recordingComplete = false;
             labradorPacketCount = 0;
 
             line("");
-            line("*** STARTING LABRADOR CAPTURE (ECG gate on) ***");
+            line("*** STARTING (ECG gate on, real start sequence) ***");
 
-            send(0x7C, 1, "LABRADOR_START (ECG gate on)");
+            sendWithCallback(0x8B, 1,
+                    "TOGGLE_LABRADOR_FILTERED_ON (gate-then-start)", () ->
+                    send(0x7C, 2,
+                            "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                    "(gate-then-start)"));
+
+            ecgListenActive = true;
+            ecgListenGeneration++;
+            ecgListenStartedAtMs = System.currentTimeMillis();
+
+            final int myGen = ecgListenGeneration;
+
+            mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
 
         }, 800);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * FULL COMBINED ECG ATTEMPT - chains three things this session has
+     * separately validated as real and correct, but never tried
+     * together in the same connection:
+     *
+     *   1. R22 unlock (confirmed to genuinely change what data the
+     *      strap sends - validated at scale: accelerometer magnitude
+     *      0.98-1.00 and plausible HR across 180 real frames)
+     *   2. The enable_raw_data_w_ecg gate (confirmed byte-exact real
+     *      exchange, separate narrower mechanism from R22)
+     *   3. The confirmed real ECG start sequence (TOGGLE_LABRADOR_
+     *      FILTERED=1 real-ack-chained into mainControlECGDataGener-
+     *      ation=2 - correct per NOOP PR #1727, sent correctly per
+     *      multiple verified raw-wire captures this session)
+     *
+     * Every ECG attempt so far ran without R22 unlocked first. Every
+     * R22 test was for historical/motion data, never combined with an
+     * ECG attempt. This is the first test of whether ECG specifically
+     * sits behind the same broader R22 gate - a real, motivated,
+     * previously-untested combination, not a new guess.
+     * ------------------------------------------------------------------
+     */
+    private void runFullCombinedEcgAttempt() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run combined attempt");
+            return;
+        }
+
+        line("");
+        line("*** FULL COMBINED ECG ATTEMPT: R22 UNLOCK -> ECG GATE -> " +
+                "REAL ECG START - STRAP MUST BE WORN ***");
+        logRaw("FULL_COMBINED_ECG_ATTEMPT_BEGIN");
+
+        sendGetAdvertisingName();
+
+        for (int i = 0; i < R22_FLAGS.length; i++) {
+
+            String flag = R22_FLAGS[i];
+            long delayMs = 80L * (i + 1);
+
+            mainH.postDelayed(() -> sendR22Flag(flag, '1'), delayMs);
+        }
+
+        long afterR22Ms = 80L * (R22_FLAGS.length + 2);
+
+        mainH.postDelayed(() -> {
+
+            line("*** R22 unlock burst done - now setting ECG gate ***");
+
+            setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
+            getDeviceConfigValue("enable_raw_data_w_ecg");
+
+        }, afterR22Ms);
+
+        long beforeEcgMs = afterR22Ms + 800;
+
+        mainH.postDelayed(() -> {
+
+            realtimeEcgFragments.clear();
+            realtimeEcgTotalBytes = 0;
+            realtimeEcgBinaryFile = null;
+            maxEcgOnSeen = false;
+
+            labradorActive = true;
+            recordingComplete = false;
+            labradorPacketCount = 0;
+
+            line("");
+            line("*** NOW SENDING REAL ECG START - TOUCH THE CLASP " +
+                    "NOW IF NOT ALREADY TOUCHING ***");
+
+            sendWithCallback(0x8B, 1,
+                    "TOGGLE_LABRADOR_FILTERED_ON (combined attempt)", () ->
+                    send(0x7C, 2,
+                            "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                    "(combined attempt)"));
+
+            ecgListenActive = true;
+            ecgListenGeneration++;
+            ecgListenStartedAtMs = System.currentTimeMillis();
+
+            final int myGen = ecgListenGeneration;
+
+            mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
+
+        }, beforeEcgMs);
     }
 
     /*
@@ -3439,11 +3551,22 @@ public class MainActivity extends Activity {
                 LinearLayout.VERTICAL);
 
         /*
-         * R22 unlock promoted to the very top - the highest-priority
-         * tool now, confirmed three independent ways in NOOP's own
-         * docs. Only sends the one confirmed flag (enable_r22_packets)
-         * of the real 15, but it's named as the single most
-         * load-bearing one.
+         * FULL COMBINED ECG ATTEMPT - the single highest-priority
+         * test now. Chains R22 unlock + the ECG gate + the confirmed
+         * real ECG start sequence together, something never tried
+         * this whole session. Placed above even R22 UNLOCK, since
+         * this supersedes running that alone for ECG purposes.
+         */
+        Button combinedBtn = btn(
+                "FULL COMBINED ECG ATTEMPT (R22+gate+real start) - " +
+                        "WEAR + TOUCH CLASP",
+                v -> runFullCombinedEcgAttempt());
+        controls.addView(combinedBtn);
+
+        /*
+         * R22 unlock - still useful on its own for historical/motion
+         * data specifically, confirmed three independent ways in
+         * NOOP's own docs.
          */
         Button r22Btn = btn(
                 "SEND R22 UNLOCK (10 flags, corrected frames - " +
