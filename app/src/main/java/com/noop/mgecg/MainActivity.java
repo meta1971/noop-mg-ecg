@@ -1981,6 +1981,75 @@ public class MainActivity extends Activity {
      * text status line has arrived), so the loop still does
      * something reasonable before real cursor data exists.
      */
+    /*
+     * Fixes a real bug: the generation guard in runPullAckStep() only
+     * checked pullAckActive/pullGeneration at SCHEDULING time, not at
+     * the moment a queued write actually reaches the front of the
+     * shared BLE queue. If writes take longer than the 350ms gap
+     * between acks (easy to happen while a large burst is also
+     * arriving and being logged), a backlog of already-queued sends
+     * builds up - and nothing stopped that backlog from draining out
+     * one by one even after STOP was pressed, since enqueue()/
+     * drainQueue() has no knowledge of pull-loop state at all.
+     *
+     * This re-checks the SAME guard condition again, right at actual
+     * execution time inside the enqueued closure - if the pull was
+     * stopped (or a newer pull started) while this was sitting in
+     * the backlog, it's skipped rather than sent, and opDone() is
+     * still called so the rest of the queue keeps draining normally.
+     */
+    private void sendPullAckGenerationChecked(
+            int cmd,
+            byte[] b3AndPayload,
+            String name,
+            int myGeneration) {
+
+        if (gatt == null || cmdWrite == null) {
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            if (!pullAckActive || myGeneration != pullGeneration) {
+
+                line("(skipping stale queued " + name +
+                        " - pull was stopped/restarted before " +
+                        "this reached the front of the queue)");
+
+                opDone();
+                return;
+            }
+
+            byte[] f = buildManualFrame(
+                    0x23, thisSeq, cmd, b3AndPayload);
+
+            logRaw("TX (manual) name=" + name +
+                    " cmd=0x" + String.format("%02X", cmd) +
+                    " seq=0x" + String.format("%02X",
+                            thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX " + name + " (manual frame)");
+            line("TX CMD =0x" + String.format("%02X", cmd));
+            line("TX SEQ =0x" + String.format("%02X",
+                    thisSeq & 0xff));
+            line("TX LEN =" + f.length);
+            line("TX RAW =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (" + name + ")");
+                opDone();
+            }
+        });
+    }
+
     private void runPullAckStep(int myGeneration) {
 
         if (!pullAckActive || myGeneration != pullGeneration) {
@@ -1993,15 +2062,19 @@ public class MainActivity extends Activity {
             b3AndCursor[0] = 0x01;
             System.arraycopy(lastKnownCursor, 0, b3AndCursor, 1, 8);
 
-            sendManualCommand(0x17, b3AndCursor,
-                    "CURSOR_ACK (real, echoing captured Trim value)");
+            sendPullAckGenerationChecked(0x17, b3AndCursor,
+                    "CURSOR_ACK (real, echoing captured Trim value)",
+                    myGeneration);
 
         } else {
 
             line("(no real cursor captured yet - falling back to " +
                     "counter-based ack for this cycle)");
 
-            sendCustom(0x23, 0x17, pullAckCounter & 0xFF);
+            byte[] counterArg = { (byte) (pullAckCounter & 0xFF) };
+
+            sendPullAckGenerationChecked(0x17, counterArg,
+                    "FALLBACK_COUNTER_ACK", myGeneration);
         }
 
         pullAckCounter++;
@@ -2017,6 +2090,7 @@ public class MainActivity extends Activity {
             logRaw("PULL_ACK_COMPLETE frames=" +
                     historicalFragments.size() +
                     " bytes=" + historicalTotalBytes);
+
 
             return;
         }
