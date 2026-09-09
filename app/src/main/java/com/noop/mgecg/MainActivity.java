@@ -1896,6 +1896,90 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * BANK-TO-FLASH TEST - directly tests NOOP's own current, still-
+     * open leading hypothesis (issue #891b): "the 5/MG banks Labrador
+     * ECG to flash rather than streaming it [live]... has anyone seen
+     * an unrecognised record type in a 5/MG offload? Nobody can
+     * answer that today."
+     *
+     * Everything up to now assumed real-time delivery via type=43. If
+     * that hypothesis is right instead, the samples would never
+     * appear there at all - they'd surface later, in the SAME
+     * historical-offload mechanism already validated for R22 motion/
+     * HR data, as a record shape we've never specifically looked for.
+     *
+     * Sequence: real ECG start (touch clasp), hold, real ECG stop,
+     * then immediately the real historical pull - watching every
+     * returned record for anything that doesn't match the familiar
+     * R22 shape (flagged automatically by decodeR22HistoricalFields()/
+     * flagIfUnrecognizedRecordShape() above).
+     * ------------------------------------------------------------------
+     */
+    private void runBankToFlashTest() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run bank-to-flash test");
+            return;
+        }
+
+        line("");
+        line("*** BANK-TO-FLASH TEST: REAL ECG START -> HOLD -> STOP -> " +
+                "REAL HISTORICAL PULL - STRAP MUST BE WORN, TOUCH CLASP " +
+                "NOW ***");
+        logRaw("BANK_TO_FLASH_TEST_BEGIN");
+
+        realtimeEcgFragments.clear();
+        realtimeEcgTotalBytes = 0;
+        realtimeEcgBinaryFile = null;
+        maxEcgOnSeen = false;
+
+        labradorActive = true;
+        recordingComplete = false;
+        labradorPacketCount = 0;
+
+        sendWithCallback(0x8B, 1,
+                "TOGGLE_LABRADOR_FILTERED_ON (bank-to-flash test)", () ->
+                send(0x7C, 2,
+                        "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                "(bank-to-flash test)"));
+
+        ecgListenActive = true;
+        ecgListenGeneration++;
+        ecgListenStartedAtMs = System.currentTimeMillis();
+
+        final int myGen = ecgListenGeneration;
+
+        mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
+
+        /*
+         * 35s hold (matches the real app's Heart Screener window with
+         * a small margin), then stop, then immediately pull - no
+         * pause in between, since if generation genuinely writes to
+         * flash mid-session, the freshest possible pull gives it the
+         * best chance of showing up before anything else overwrites
+         * or ages it out.
+         */
+        mainH.postDelayed(() -> {
+
+            ecgListenActive = false;
+            ecgListenGeneration++;
+
+            line("");
+            line("*** BANK-TO-FLASH TEST: stopping ECG, then pulling " +
+                    "history immediately ***");
+            logRaw("BANK_TO_FLASH_TEST_STOP_THEN_PULL");
+
+            send(0x7C, 1,
+                    "MAIN_CONTROL_ECG_DATA_GENERATION_STOP " +
+                            "(bank-to-flash test)");
+
+            mainH.postDelayed(this::startRealHistoricalPull, 1000);
+
+        }, 35000);
+    }
+
+    /*
+     * ------------------------------------------------------------------
      * Real historical-data pull - reverse engineered from a real NOOP
      * app BLE HCI snoop capture against this same strap. The real app
      * never touches LABRADOR_START/PULL at all for retrieval; instead:
@@ -2058,9 +2142,52 @@ public class MainActivity extends Activity {
         return Float.intBitsToFloat(bits);
     }
 
+    /*
+     * Flags any historical record that doesn't match the familiar
+     * R22 motion+HR shape, rather than silently treating everything
+     * as the same known type. Directly motivated by NOOP's own
+     * current leading hypothesis (issue #891b, still open as of this
+     * session): the 5/MG may bank Labrador ECG samples to internal
+     * flash rather than streaming them live via type=43, in which
+     * case they'd surface here, in the historical offload, as a
+     * record type we've never specifically looked for. A plausible
+     * accel magnitude near 1.0g is a reasonable "looks like the
+     * known shape" check; anything outside that band gets called
+     * out explicitly instead of blending into the routine log.
+     */
+    private void flagIfUnrecognizedRecordShape(
+            byte[] value, double accelMag, int heartRate) {
+
+        boolean magPlausible = accelMag > 0.5 && accelMag < 2.0;
+        boolean hrPlausible = heartRate >= 30 && heartRate <= 220;
+
+        if (!magPlausible || !hrPlausible) {
+
+            line("*** POSSIBLE UNRECOGNIZED RECORD - doesn't match " +
+                    "known R22 shape (mag=" +
+                    String.format("%.3f", accelMag) +
+                    " hr=" + heartRate +
+                    ") - worth manual review, per NOOP issue #891b's " +
+                    "banked-to-flash hypothesis ***");
+
+            logRaw("UNRECOGNIZED_RECORD_SHAPE len=" + value.length +
+                    " mag=" + String.format("%.4f", accelMag) +
+                    " hr=" + heartRate +
+                    " raw=" + Protocol.hex(value));
+        }
+    }
+
     private void decodeR22HistoricalFields(byte[] value) {
 
         if (value.length < 54) {
+
+            line("*** POSSIBLE UNRECOGNIZED RECORD - too short (" +
+                    value.length + " bytes) for the known R22 shape " +
+                    "(needs >=54) - worth manual review ***");
+
+            logRaw("UNRECOGNIZED_RECORD_SHAPE_SHORT len=" + value.length +
+                    " raw=" + Protocol.hex(value));
+
             return;
         }
 
@@ -2082,6 +2209,8 @@ public class MainActivity extends Activity {
                 "R22_DECODE accel_x=%.4f accel_y=%.4f accel_z=%.4f " +
                         "mag=%.4f hr=%d",
                 accelX, accelY, accelZ, mag, heartRate));
+
+        flagIfUnrecognizedRecordShape(value, mag, heartRate);
     }
 
     private void startRealHistoricalPull() {
@@ -3551,11 +3680,26 @@ public class MainActivity extends Activity {
                 LinearLayout.VERTICAL);
 
         /*
-         * FULL COMBINED ECG ATTEMPT - the single highest-priority
-         * test now. Chains R22 unlock + the ECG gate + the confirmed
-         * real ECG start sequence together, something never tried
-         * this whole session. Placed above even R22 UNLOCK, since
-         * this supersedes running that alone for ECG purposes.
+         * BANK-TO-FLASH TEST - now the single highest-priority test.
+         * Directly derived from NOOP's own current, still-open
+         * leading hypothesis (issue #891b): ECG may be banked to
+         * flash rather than streamed live, meaning every prior
+         * type=43-focused test this session may have been watching
+         * the wrong channel entirely. Placed above even the combined
+         * attempt, since this tests a fundamentally different theory
+         * of where the data goes, not just a different way of asking
+         * for it.
+         */
+        Button bankToFlashBtn = btn(
+                "BANK-TO-FLASH TEST (ECG start/stop, then pull history) " +
+                        "- WEAR + TOUCH CLASP",
+                v -> runBankToFlashTest());
+        controls.addView(bankToFlashBtn);
+
+        /*
+         * FULL COMBINED ECG ATTEMPT - chains R22 unlock + the ECG
+         * gate + the confirmed real ECG start sequence together,
+         * something never tried this whole session before it.
          */
         Button combinedBtn = btn(
                 "FULL COMBINED ECG ATTEMPT (R22+gate+real start) - " +
@@ -4141,6 +4285,8 @@ public class MainActivity extends Activity {
 
     /*
      * Fixed status-bar update - UI only, no BLE state changes here.
+     * Called from existing BLE callbacks below to reflect connection
+     * state; it does* Fixed status-bar update - UI only, no BLE state changes here.
      * Called from existing BLE callbacks below to reflect connection
      * state; it does not alter what those callbacks decide to do.
      */
