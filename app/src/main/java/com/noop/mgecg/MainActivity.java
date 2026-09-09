@@ -1895,6 +1895,8 @@ public class MainActivity extends Activity {
         logRaw("HIST_BURST len=" + value.length +
                 " raw=" + Protocol.hex(value));
 
+        decodeR22HistoricalFields(value);
+
         /*
          * Bursts can run to 1000+ frames in under 30s (confirmed in
          * the real capture) - logging every single one to the
@@ -1909,6 +1911,65 @@ public class MainActivity extends Activity {
                     " len=" + value.length +
                     " totalBytes=" + historicalTotalBytes);
         }
+    }
+
+    /*
+     * Confirmed live decode for the R22-unlocked 124-byte historical
+     * record. judes.club's primary source names accelerometer x/y/z
+     * as float32 LE at bytes 37/41/45 and heart rate at byte 14, for
+     * their reference "112-byte variant" frame. Validated directly
+     * against 8 real captured frames from this exact strap: those
+     * offsets +8 (accel at 45/49/53, HR at byte 22) gave a combined
+     * accelerometer magnitude of 0.98-1.00 (true gravity) on every
+     * single frame, and a heart rate of a stable, plausible 64-65 bpm
+     * - the uncorrected offsets gave nonsense (an astronomically
+     * out-of-range x-axis, a flat constant "1" for HR). The +8 shift
+     * is consistent with the difference between their 112-byte
+     * reference frame and our confirmed 124-byte one.
+     *
+     * Deliberately does NOT throttle like the raw hex summary above -
+     * these are compact, meaningful one-liners worth seeing every
+     * frame, unlike a full hex dump.
+     */
+    /*
+     * Self-contained float32 LE reader using only java.lang.Float -
+     * deliberately not relying on Protocol.java for this, since no
+     * float-reading method there has been confirmed to exist.
+     */
+    private float readFloatLE(byte[] v, int offset) {
+
+        int bits = (v[offset] & 0xff)
+                | ((v[offset + 1] & 0xff) << 8)
+                | ((v[offset + 2] & 0xff) << 16)
+                | ((v[offset + 3] & 0xff) << 24);
+
+        return Float.intBitsToFloat(bits);
+    }
+
+    private void decodeR22HistoricalFields(byte[] value) {
+
+        if (value.length < 54) {
+            return;
+        }
+
+        float accelX = readFloatLE(value, 45);
+        float accelY = readFloatLE(value, 49);
+        float accelZ = readFloatLE(value, 53);
+
+        double mag = Math.sqrt(
+                accelX * accelX + accelY * accelY + accelZ * accelZ);
+
+        int heartRate = value[22] & 0xff;
+
+        line(String.format(
+                "R22 DECODE: accel x=%.3f y=%.3f z=%.3f |v|=%.3f  " +
+                        "HR=%d bpm",
+                accelX, accelY, accelZ, mag, heartRate));
+
+        logRaw(String.format(
+                "R22_DECODE accel_x=%.4f accel_y=%.4f accel_z=%.4f " +
+                        "mag=%.4f hr=%d",
+                accelX, accelY, accelZ, mag, heartRate));
     }
 
     private void startRealHistoricalPull() {
