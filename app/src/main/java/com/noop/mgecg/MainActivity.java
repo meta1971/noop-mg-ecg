@@ -36,6 +36,8 @@ public class MainActivity extends Activity {
 
     private TextView log;
     private TextView statusBar;
+    private TextView field113Display;
+    private final ArrayDeque<Float> field113History = new ArrayDeque<>();
     private Button scanBtn;
     private EditText customInput;
     private EditText clockInput;
@@ -2318,15 +2320,36 @@ public class MainActivity extends Activity {
 
         int heartRate = value[22] & 0xff;
 
+        /*
+         * Unidentified field at bytes 113-116, float32 LE - found by
+         * scanning every unmapped byte across ~4900 real R22 frames
+         * for ones that vary too smoothly to be noise. Confirmed
+         * against real data: frame-to-frame change here averages 5x
+         * smaller than the same values would show if shuffled
+         * randomly (0.145 vs 0.735), which is real continuity, not a
+         * float32 reinterpretation of unrelated bytes landing in a
+         * plausible range by chance. Real range seen so far: -5.28 to
+         * -1.02. No confirmed meaning yet - logged live here so it can
+         * be watched against whatever you're doing while capturing.
+         */
+        Float field113 = null;
+
+        if (value.length >= 117) {
+            field113 = readFloatLE(value, 113);
+            updateField113Display(field113);
+        }
+
         line(String.format(
                 "R22 DECODE: accel x=%.3f y=%.3f z=%.3f |v|=%.3f  " +
-                        "HR=%d bpm",
-                accelX, accelY, accelZ, mag, heartRate));
+                        "HR=%d bpm  field113=%s",
+                accelX, accelY, accelZ, mag, heartRate,
+                field113 == null ? "n/a" : String.format("%.3f", field113)));
 
         logRaw(String.format(
                 "R22_DECODE accel_x=%.4f accel_y=%.4f accel_z=%.4f " +
-                        "mag=%.4f hr=%d",
-                accelX, accelY, accelZ, mag, heartRate));
+                        "mag=%.4f hr=%d field113=%s",
+                accelX, accelY, accelZ, mag, heartRate,
+                field113 == null ? "n/a" : String.format("%.4f", field113)));
 
         flagIfUnrecognizedRecordShape(value, mag, heartRate);
     }
@@ -2881,6 +2904,7 @@ public class MainActivity extends Activity {
         waveform188Records.clear();
         pullIdleCycles = 0;
         historyDrainedThisPull = false;
+        field113History.clear();
 
         ecgRanBeforeCurrentPull = ecgEverRunThisConnection;
         waveform88SeenThisPull = 0;
@@ -4255,6 +4279,25 @@ public class MainActivity extends Activity {
                         -2));
 
         /*
+         * Always-visible live readout for the unidentified R22 byte
+         * 113-116 field - separate from the scrolling log, which
+         * moves too fast during a burst to actually watch a value
+         * change in real time against something you're doing.
+         */
+        field113Display = new TextView(this);
+        field113Display.setText("field113: --");
+        field113Display.setTextSize(16);
+        field113Display.setTextColor(0xFF7FDBFF);
+        field113Display.setTypeface(null, android.graphics.Typeface.BOLD);
+        field113Display.setPadding(0, 0, 0, 16);
+
+        root.addView(
+                field113Display,
+                new LinearLayout.LayoutParams(
+                        -1,
+                        -2));
+
+        /*
          * ------------------------------------------------------------
          * Primary action grid - fixed height, always visible, never
          * scrolls. Same callbacks as before, just arranged in a
@@ -4992,6 +5035,46 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> {
             if (statusBar != null) {
                 statusBar.setText(s);
+            }
+        });
+    }
+
+    /*
+     * Live readout for the unidentified R22 byte 113-116 field.
+     * Keeps a short rolling history (last 20 values) purely to show
+     * a trend arrow - up/down/flat compared to ~20 frames ago - since
+     * a single instantaneous number doesn't show whether it's
+     * drifting with whatever you're doing. No meaning is assumed
+     * beyond "this is the raw decoded value and its recent direction".
+     */
+    private void updateField113Display(float value) {
+
+        field113History.addLast(value);
+
+        while (field113History.size() > 20) {
+            field113History.removeFirst();
+        }
+
+        float oldest = field113History.peekFirst();
+        float delta = value - oldest;
+
+        String trend;
+
+        if (Math.abs(delta) < 0.05f) {
+            trend = "flat";
+        } else if (delta > 0) {
+            trend = "up";
+        } else {
+            trend = "down";
+        }
+
+        String text = String.format(Locale.US,
+                "field113: %.3f  (%s over last %d)",
+                value, trend, field113History.size());
+
+        runOnUiThread(() -> {
+            if (field113Display != null) {
+                field113Display.setText(text);
             }
         });
     }
