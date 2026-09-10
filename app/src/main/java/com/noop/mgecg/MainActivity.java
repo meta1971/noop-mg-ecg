@@ -227,6 +227,31 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * Waveform-188 tracking - simpler than the 88-byte case since we
+     * don't yet have a confirmed "block size" for this shape (the one
+     * real capture showed a repeated batch of 5 sub-ids followed by a
+     * long unbroken climb, not a clean 0-9 wraparound). So rather than
+     * guess a grouping, every distinct (non-duplicate) frame is kept
+     * in arrival order and written out flat; dedup is by exact raw
+     * byte match, not by sub-id, since sub-id alone isn't guaranteed
+     * unique across a long pull for this shape.
+     * ------------------------------------------------------------------
+     */
+    private static class Waveform188Record {
+        final int subId;
+        final int[] samples;
+        Waveform188Record(int subId, int[] samples) {
+            this.subId = subId;
+            this.samples = samples;
+        }
+    }
+
+    private final Set<String> seenWaveform188RawHex = new LinkedHashSet<>();
+    private final List<Waveform188Record> waveform188Records =
+            new ArrayList<>();
+
+    /*
+     * ------------------------------------------------------------------
      * Pull auto-stop, idle-based rather than a fixed cycle count. The
      * old fixed 200-cycle cutoff could stop a transfer that was still
      * genuinely active - exactly what nearly happened here, since the
@@ -241,7 +266,10 @@ public class MainActivity extends Activity {
      */
     private static final int IDLE_CYCLE_LIMIT = 600;      // ~3.5min at 350ms/cycle
     private static final int SAFETY_CYCLE_LIMIT = 6000;  // ~35min, runaway guard only
-    private int pullIdleCycles = 0;
+    private int pullIdleCycles = 0;   // cycles since the last NEW HIST_BURST
+                                        // frame specifically - NOT reset by
+                                        // status-31 pings (see decodeStatusFrame31)
+    private boolean historyDrainedThisPull = false;
 
     /*
      * ------------------------------------------------------------------
@@ -2169,11 +2197,15 @@ public class MainActivity extends Activity {
             waveform88SeenThisPull++;
             decodeWaveform88(value);
 
+        } else if (value.length == 188) {
+
+            decodeWaveform188(value);
+
         } else {
 
             line("*** UNKNOWN HISTORICAL RECORD LENGTH=" + value.length +
-                    " - neither the known R22 (124) nor waveform-88 " +
-                    "(88) shape ***");
+                    " - neither the known R22 (124), waveform-88 (88), " +
+                    "nor waveform-188 (188) shape ***");
 
             logRaw("UNRECOGNIZED_RECORD_SHAPE_UNKNOWN_LENGTH len=" +
                     value.length + " raw=" + Protocol.hex(value));
@@ -2407,6 +2439,183 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * Dedicated decoder for the 188-byte historical record shape,
+     * same envelope (type=0x2F cmd=0x80) as R22 and waveform-88, only
+     * the length and internal layout differ again. Deliberately
+     * conservative: an earlier attempt reused the 88-byte record's
+     * field offsets (session tag, channel tag, offset counter) here
+     * and got garbage - two inconsistent "session tags" and an
+     * implausible billion-scale "offset" - which means that layout
+     * does NOT transfer to this shape. So rather than assert field
+     * boundaries we haven't verified, this treats everything from
+     * byte 12 to byte 183 (172 bytes = 86 int16 LE values) as one
+     * flat sample array with no assumed sub-header, and additionally
+     * reports a candidate 3-way split (each ~29 samples) since an
+     * earlier look at real captures showed three visually distinct,
+     * smoothly-drifting value bands there - that split is logged as
+     * a candidate for future analysis, not a confirmed channel layout.
+     *
+     *   bytes  0- 7  frame header (AA 01 [declLen LE] 00 01 [crc16])
+     *   byte   8     type  (0x2F)
+     *   byte   9     seq   (NOT type-specific - see note below)
+     *   byte  10     cmd   (0x80)
+     *   byte  11     sub-id - climbs across a pull; NOT bounded to
+     *                0-9 like the 88-byte shape (one real capture
+     *                showed a repeated batch of 5 followed by a long
+     *                unbroken climb), so no fixed "block size" is
+     *                assumed here
+     *   bytes 12-183 172 bytes = 86 x int16 LE, undecoded beyond that
+     *   bytes 184-187 CRC32 trailer
+     *
+     * NOTE on byte 9 ("seq"): a larger capture showed this jumping
+     * unpredictably even within one record shape (215, 216, 22, 23...),
+     * which is far more consistent with a single BLE-layer packet
+     * counter shared across every notification type on the connection
+     * than a per-shape tag - an earlier read of this byte as "fixed
+     * per record type" was based on too small a sample and doesn't
+     * hold up.
+     * ------------------------------------------------------------------
+     */
+    private void decodeWaveform188(byte[] v) {
+
+        if (v.length != 188) {
+            line("*** decodeWaveform188 called with len=" + v.length +
+                    " (expected 188) - skipping ***");
+            return;
+        }
+
+        String rawHex = Protocol.hex(v);
+
+        if (!seenWaveform188RawHex.add(rawHex)) {
+            // exact duplicate retransmission - already recorded
+            return;
+        }
+
+        int subId = v[11] & 0xff;
+
+        int[] samples = new int[86];
+
+        for (int i = 0; i < 86; i++) {
+
+            int lo = v[12 + i * 2] & 0xff;
+            int hi = v[13 + i * 2];              // signed on purpose
+
+            samples[i] = (hi << 8) | lo;
+        }
+
+        int min = samples[0];
+        int max = samples[0];
+        long sum = 0;
+
+        for (int s : samples) {
+            if (s < min) min = s;
+            if (s > max) max = s;
+            sum += s;
+        }
+
+        double mean = sum / 86.0;
+
+        // candidate 3-way split - unconfirmed grouping, logged only
+        // as a lead for future analysis
+        int third = samples.length / 3;
+        double[] segMeans = new double[3];
+
+        for (int seg = 0; seg < 3; seg++) {
+
+            int start = seg * third;
+            int end = (seg == 2) ? samples.length : start + third;
+
+            long segSum = 0;
+            for (int i = start; i < end; i++) {
+                segSum += samples[i];
+            }
+
+            segMeans[seg] = segSum / (double) (end - start);
+        }
+
+        line(String.format(Locale.US,
+                "WAVEFORM-188 subId=%d min=%d max=%d pp=%d mean=%.1f " +
+                        "candidateSegMeans(3x~29)=[%.1f, %.1f, %.1f]",
+                subId, min, max, max - min, mean,
+                segMeans[0], segMeans[1], segMeans[2]));
+
+        StringBuilder sampleStr = new StringBuilder();
+
+        for (int i = 0; i < samples.length; i++) {
+            if (i > 0) {
+                sampleStr.append(',');
+            }
+            sampleStr.append(samples[i]);
+        }
+
+        logRaw("WAVEFORM188 subId=" + subId +
+                " samples=" + sampleStr.toString());
+
+        waveform188Records.add(new Waveform188Record(subId, samples));
+    }
+
+    private void saveReconstructedWaveform188() {
+
+        if (waveform188Records.isEmpty()) {
+
+            line("(no waveform-188 records captured this pull - " +
+                    "nothing to reconstruct)");
+
+            return;
+        }
+
+        java.io.File dir = getExternalFilesDir(null);
+
+        if (dir == null) {
+            line("ERROR: external files directory unavailable for " +
+                    "waveform-188 reconstruction");
+            return;
+        }
+
+        long stamp = System.currentTimeMillis() / 1000L;
+
+        java.io.File out = new java.io.File(
+                dir, "reconstructed_waveform188_" + stamp + ".csv");
+
+        try (java.io.FileWriter fw = new java.io.FileWriter(out)) {
+
+            fw.write("recordIndex,subId,sampleIndexInRecord,flatIndex," +
+                    "value\n");
+
+            int flatIndex = 0;
+
+            for (int r = 0; r < waveform188Records.size(); r++) {
+
+                Waveform188Record rec = waveform188Records.get(r);
+
+                for (int s = 0; s < rec.samples.length; s++) {
+
+                    fw.write(r + "," + rec.subId + "," + s + "," +
+                            flatIndex + "," + rec.samples[s] + "\n");
+
+                    flatIndex++;
+                }
+            }
+
+            line("*** RECONSTRUCTED WAVEFORM-188 SAVED: " +
+                    waveform188Records.size() + " record(s), " +
+                    flatIndex + " total samples ***");
+
+            line(out.getAbsolutePath());
+
+            logRaw("WAVEFORM188_RECONSTRUCTED records=" +
+                    waveform188Records.size() +
+                    " samples=" + flatIndex +
+                    " path=" + out.getAbsolutePath());
+
+        } catch (Exception e) {
+
+            line("WAVEFORM188 RECONSTRUCTION SAVE ERROR: " + e);
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
      * Dedicated decoder for the type=0x31 cmd=0x02 status frame first
      * seen this session - arrives only AFTER the real historical burst
      * has finished, not interleaved with it, so it looks like a
@@ -2428,7 +2637,17 @@ public class MainActivity extends Activity {
      */
     private void decodeStatusFrame31(byte[] v) {
 
-        pullIdleCycles = 0;
+        /*
+         * Deliberately does NOT reset pullIdleCycles here anymore.
+         * A larger capture showed these arrive roughly every ~4s
+         * continuously throughout a pull, independent of whether new
+         * history is still coming in - they kept firing even during
+         * long stretches with no new HIST_BURST frames. Counting them
+         * as "history still active" would mean the idle/drained
+         * detector could never fire as long as these pings continue,
+         * which defeats its purpose. Idle time is now tracked purely
+         * against real HIST_BURST activity - see handleHistoricalBurstFrame.
+         */
 
         if (v.length != 36) {
 
@@ -2619,7 +2838,8 @@ public class MainActivity extends Activity {
                 "(persists across app launches) ***");
 
         line("this pull: ECG ran first = " + ecgRanBeforeCurrentPull +
-                " | waveform-88 frames seen = " + waveform88SeenThisPull);
+                " | waveform-88 frames seen = " + waveform88SeenThisPull +
+                " | history drained = " + historyDrainedThisPull);
 
         line("ALL-TIME  no-ECG-first pulls:   " + noEcgSaw + "/" +
                 noEcgTotal + " saw waveform-88");
@@ -2630,6 +2850,7 @@ public class MainActivity extends Activity {
         logRaw("WAVEFORM88_CONTROL_SUMMARY " +
                 "this_pull_ecg_first=" + ecgRanBeforeCurrentPull +
                 " this_pull_seen=" + waveform88SeenThisPull +
+                " history_drained=" + historyDrainedThisPull +
                 " all_no_ecg=" + noEcgSaw + "/" + noEcgTotal +
                 " all_with_ecg=" + withEcgSaw + "/" + withEcgTotal);
     }
@@ -2656,7 +2877,10 @@ public class MainActivity extends Activity {
         currentWaveformBlock.clear();
         completedWaveformBlocks.clear();
         waveformOutputFile = null;
+        seenWaveform188RawHex.clear();
+        waveform188Records.clear();
         pullIdleCycles = 0;
+        historyDrainedThisPull = false;
 
         ecgRanBeforeCurrentPull = ecgEverRunThisConnection;
         waveform88SeenThisPull = 0;
@@ -2688,15 +2912,17 @@ public class MainActivity extends Activity {
         pullAckActive = false;
         pullGeneration++;
 
-        line("*** PULL ACK LOOP STOPPED - " +
-                historicalFragments.size() + " burst frames, " +
-                historicalTotalBytes + " bytes captured ***");
+        line("*** PULL ACK LOOP STOPPED (manual - history NOT " +
+                "confirmed drained) - " + historicalFragments.size() +
+                " burst frames, " + historicalTotalBytes +
+                " bytes captured ***");
 
         logRaw("PULL_ACK_STOPPED frames=" + historicalFragments.size() +
                 " bytes=" + historicalTotalBytes);
 
         recordPullOutcomeAndSummarize();
         saveReconstructedWaveform();
+        saveReconstructedWaveform188();
     }
 
     /*
@@ -2824,19 +3050,22 @@ public class MainActivity extends Activity {
         if (pullIdleCycles >= IDLE_CYCLE_LIMIT) {
 
             pullAckActive = false;
+            historyDrainedThisPull = true;
 
-            line("*** PULL ACK LOOP AUTO-STOPPED - idle for " +
+            line("*** HISTORY DRAINED - no new burst frames for " +
                     IDLE_CYCLE_LIMIT + " cycles (~" +
-                    (IDLE_CYCLE_LIMIT * 350 / 1000) + "s), " +
+                    (IDLE_CYCLE_LIMIT * 350 / 1000) + "s), even if " +
+                    "status-31 pings kept arriving in that window - " +
                     historicalFragments.size() + " burst frames, " +
                     historicalTotalBytes + " bytes captured ***");
 
-            logRaw("PULL_ACK_IDLE_STOP frames=" +
+            logRaw("HISTORY_DRAINED frames=" +
                     historicalFragments.size() +
                     " bytes=" + historicalTotalBytes);
 
             recordPullOutcomeAndSummarize();
             saveReconstructedWaveform();
+            saveReconstructedWaveform188();
 
             return;
         }
@@ -2847,9 +3076,10 @@ public class MainActivity extends Activity {
 
             line("*** PULL ACK LOOP SAFETY-STOPPED at " +
                     SAFETY_CYCLE_LIMIT + " cycles (runaway guard, " +
-                    "not a real limit) - " +
-                    historicalFragments.size() + " burst frames, " +
-                    historicalTotalBytes + " bytes captured ***");
+                    "not a real limit - history NOT confirmed drained) " +
+                    "- " + historicalFragments.size() +
+                    " burst frames, " + historicalTotalBytes +
+                    " bytes captured ***");
 
             logRaw("PULL_ACK_SAFETY_STOP frames=" +
                     historicalFragments.size() +
@@ -2857,6 +3087,7 @@ public class MainActivity extends Activity {
 
             recordPullOutcomeAndSummarize();
             saveReconstructedWaveform();
+            saveReconstructedWaveform188();
 
             return;
         }
