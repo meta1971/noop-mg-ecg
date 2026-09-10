@@ -195,6 +195,56 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * Waveform-88 ECG-control tracking - persists across app launches
+     * (SharedPreferences) so a no-ECG control pull and an ECG-then-pull
+     * run, done in separate sessions on separate days, can still be
+     * compared. ecgEverRunThisConnection resets on every fresh GATT
+     * connection; ecgRanBeforeCurrentPull is a snapshot of it taken the
+     * moment a pull starts, since that's the meaningful "was this a
+     * control or not" boundary - not whatever happens to be true by
+     * the time the pull finishes.
+     * ------------------------------------------------------------------
+     */
+    private boolean ecgEverRunThisConnection = false;
+    private boolean ecgRanBeforeCurrentPull = false;
+    private int waveform88SeenThisPull = 0;
+
+    /*
+     * ------------------------------------------------------------------
+     * Waveform-88 block reconstruction - a "block" is the 10 sub-
+     * records (subId 0-9) that make up one continuous waveform chunk.
+     * A subId reappearing with byte-identical content is a genuine
+     * retransmission and is ignored; reappearing with DIFFERENT
+     * content means a new block has started reusing subId numbers,
+     * so whatever's collected so far gets archived first. Reset at
+     * the start of every pull.
+     * ------------------------------------------------------------------
+     */
+    private final Map<Integer, int[]> currentWaveformBlock = new TreeMap<>();
+    private final List<Map<Integer, int[]>> completedWaveformBlocks =
+            new ArrayList<>();
+    private java.io.File waveformOutputFile;
+
+    /*
+     * ------------------------------------------------------------------
+     * Pull auto-stop, idle-based rather than a fixed cycle count. The
+     * old fixed 200-cycle cutoff could stop a transfer that was still
+     * genuinely active - exactly what nearly happened here, since the
+     * type=0x31 status frames only start appearing once the real
+     * burst is already finished, and are worth watching past the
+     * point a fixed count would have cut off. pullIdleCycles resets
+     * on ANY relevant activity (a history burst frame or a 0x31
+     * status frame); IDLE_CYCLE_LIMIT is the real stop condition.
+     * SAFETY_CYCLE_LIMIT is a generous runaway guard only, not a
+     * target - it should essentially never be hit in practice.
+     * ------------------------------------------------------------------
+     */
+    private static final int IDLE_CYCLE_LIMIT = 600;      // ~3.5min at 350ms/cycle
+    private static final int SAFETY_CYCLE_LIMIT = 6000;  // ~35min, runaway guard only
+    private int pullIdleCycles = 0;
+
+    /*
+     * ------------------------------------------------------------------
      * Real ECG generation - confirmed from NOOP's own public GitHub
      * (ryanbr/noop, PR #1727), cross-validated three ways on real MG
      * hardware: an isolation test, a 10-cycle reliability run, and the
@@ -531,6 +581,8 @@ public class MainActivity extends Activity {
                 recordingComplete = false;
 
                 experimentActive = false;
+
+                ecgEverRunThisConnection = false;
             }
         }
 
@@ -774,6 +826,8 @@ public class MainActivity extends Activity {
                 extractCursorFromDebugText(value);
             } else if (envType == 43) {
                 handleRealtimeEcgFrame(uuid, value);
+            } else if (envType == 0x31 && envCmd == 0x02) {
+                decodeStatusFrame31(value);
             } else if (envType == 0x24 &&
                     (envCmd == 119 || envCmd == 121)) {
                 line("*** DEVICE_CONFIG_VALUE REPLY (cmd=" +
@@ -1784,6 +1838,8 @@ public class MainActivity extends Activity {
             recordingComplete = false;
             labradorPacketCount = 0;
 
+            ecgEverRunThisConnection = true;
+
             line("");
             line("*** STARTING (ECG gate on, real start sequence) ***");
 
@@ -1873,6 +1929,8 @@ public class MainActivity extends Activity {
             recordingComplete = false;
             labradorPacketCount = 0;
 
+            ecgEverRunThisConnection = true;
+
             line("");
             line("*** NOW SENDING REAL ECG START - TOUCH THE CLASP " +
                     "NOW IF NOT ALREADY TOUCHING ***");
@@ -1936,6 +1994,8 @@ public class MainActivity extends Activity {
         labradorActive = true;
         recordingComplete = false;
         labradorPacketCount = 0;
+
+        ecgEverRunThisConnection = true;
 
         sendWithCallback(0x8B, 1,
                 "TOGGLE_LABRADOR_FILTERED_ON (bank-to-flash test)", () ->
@@ -2088,10 +2148,36 @@ public class MainActivity extends Activity {
         historicalTotalBytes += value.length;
         saveHistoricalFragment(value);
 
+        pullIdleCycles = 0;
+
         logRaw("HIST_BURST len=" + value.length +
                 " raw=" + Protocol.hex(value));
 
-        decodeR22HistoricalFields(value);
+        /*
+         * Route by actual frame length rather than applying the R22
+         * decoder to everything - it was previously being run against
+         * the 88-byte waveform-candidate frames too and producing
+         * garbage (mag=Infinity, hr=0), since those simply aren't the
+         * R22 shape at all.
+         */
+        if (value.length == 124) {
+
+            decodeR22HistoricalFields(value);
+
+        } else if (value.length == 88) {
+
+            waveform88SeenThisPull++;
+            decodeWaveform88(value);
+
+        } else {
+
+            line("*** UNKNOWN HISTORICAL RECORD LENGTH=" + value.length +
+                    " - neither the known R22 (124) nor waveform-88 " +
+                    "(88) shape ***");
+
+            logRaw("UNRECOGNIZED_RECORD_SHAPE_UNKNOWN_LENGTH len=" +
+                    value.length + " raw=" + Protocol.hex(value));
+        }
 
         /*
          * Bursts can run to 1000+ frames in under 30s (confirmed in
@@ -2213,6 +2299,341 @@ public class MainActivity extends Activity {
         flagIfUnrecognizedRecordShape(value, mag, heartRate);
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * Dedicated decoder for the 88-byte historical record shape first
+     * flagged this session as structurally distinct from R22 (same
+     * envelope type=0x2F cmd=0x80, only the length and internal layout
+     * differ). Boundaries below were derived directly against a real
+     * captured frame using the declared-length field and the CRC32
+     * trailer position, not assumed:
+     *
+     *   bytes  0- 7  frame header (AA 01 [declLen LE] 00 01 [crc16])
+     *   byte   8     type  (0x2F)
+     *   byte   9     seq
+     *   byte  10     cmd   (0x80)
+     *   byte  11     sub-record id - seen cycling 0x00-0x09
+     *   bytes 12-16  5 bytes, undecoded (candidate: timestamp/counter)
+     *   bytes 17-20  4 bytes, constant 8A 6A 47 01 on every frame
+     *                captured so far (candidate: session/recording id)
+     *   bytes 21-22  2 bytes, constant 02 00 on every frame captured
+     *                so far (candidate: channel/stream id)
+     *   bytes 23-26  4-byte little-endian counter - NOT monotonic with
+     *                the sub-record id in the one capture seen so far
+     *                (candidate: per-channel flash offset, unconfirmed)
+     *   bytes 27-82  56 bytes = 28 x int16 little-endian values
+     *                (candidate: raw ADC/waveform samples, unconfirmed)
+     *   byte  83     1 trailing byte, undecoded
+     *   bytes 84-87  CRC32 trailer - the standard frame trailer this
+     *                whole protocol uses, same as everywhere else
+     *
+     * A parallel analysis pass floated "30 samples" for this frame,
+     * which double-counts: it miscounted where the real CRC32 trailer
+     * starts and folded 4 of those trailer bytes into what it called
+     * payload, inflating 28 real samples into 30. The count here is
+     * anchored to the same declared-length field this app already
+     * uses everywhere else to find frame boundaries, so it should be
+     * trusted over that "30" figure.
+     * ------------------------------------------------------------------
+     */
+    private void decodeWaveform88(byte[] v) {
+
+        if (v.length != 88) {
+            line("*** decodeWaveform88 called with len=" + v.length +
+                    " (expected 88) - skipping ***");
+            return;
+        }
+
+        int subId = v[11] & 0xff;
+
+        byte[] field5 = Arrays.copyOfRange(v, 12, 17);
+        byte[] sessionTag = Arrays.copyOfRange(v, 17, 21);
+        byte[] channelTag = Arrays.copyOfRange(v, 21, 23);
+
+        long offsetCounter = (v[23] & 0xffL)
+                | ((v[24] & 0xffL) << 8)
+                | ((v[25] & 0xffL) << 16)
+                | ((v[26] & 0xffL) << 24);
+
+        int[] samples = new int[28];
+
+        for (int i = 0; i < 28; i++) {
+
+            int lo = v[27 + i * 2] & 0xff;
+            int hi = v[28 + i * 2];              // signed on purpose
+
+            samples[i] = (hi << 8) | lo;
+        }
+
+        int trailingByte = v[83] & 0xff;
+
+        int min = samples[0];
+        int max = samples[0];
+        long sum = 0;
+
+        for (int s : samples) {
+            if (s < min) min = s;
+            if (s > max) max = s;
+            sum += s;
+        }
+
+        double mean = sum / 28.0;
+
+        line(String.format(Locale.US,
+                "WAVEFORM-88 subId=%d offset=%d min=%d max=%d pp=%d " +
+                        "mean=%.1f trailByte=0x%02X",
+                subId, offsetCounter, min, max, max - min, mean,
+                trailingByte));
+
+        StringBuilder sampleStr = new StringBuilder();
+
+        for (int i = 0; i < samples.length; i++) {
+            if (i > 0) {
+                sampleStr.append(',');
+            }
+            sampleStr.append(samples[i]);
+        }
+
+        logRaw("WAVEFORM88 subId=" + subId +
+                " field5=" + Protocol.hex(field5) +
+                " session=" + Protocol.hex(sessionTag) +
+                " channel=" + Protocol.hex(channelTag) +
+                " offset=" + offsetCounter +
+                " trailByte=0x" + String.format("%02X", trailingByte) +
+                " samples=" + sampleStr.toString());
+
+        recordWaveformSample(subId, samples);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Dedicated decoder for the type=0x31 cmd=0x02 status frame first
+     * seen this session - arrives only AFTER the real historical burst
+     * has finished, not interleaved with it, so it looks like a
+     * trailing status/heartbeat rather than a mid-transfer flow
+     * control cursor. 36 bytes total; byte 11 (within a fixed 21-byte
+     * payload starting at byte 11) climbs slowly across the 5 samples
+     * captured so far (15,17,20,22,25); bytes 15-16 also move but do
+     * NOT progress monotonically (16056, 29163, 13107, 29491, 13107 -
+     * oscillating/repeating, not a second counter); everything from
+     * byte 17 onward has been a constant 15-byte tail in every sample
+     * seen. No ASCII content anywhere in this frame, so it's not
+     * something extractCursorFromDebugText() would ever match (that
+     * looks for "Trim:" text inside type=0x32 frames specifically).
+     * Only 5 real samples exist so far (one capture, cut short by a
+     * manual stop) - not enough to say what byte 11 or the
+     * oscillating field actually track. This just logs every field
+     * cleanly so a longer capture has something to compare against.
+     * ------------------------------------------------------------------
+     */
+    private void decodeStatusFrame31(byte[] v) {
+
+        pullIdleCycles = 0;
+
+        if (v.length != 36) {
+
+            line("*** type=0x31 cmd=0x02 frame with unexpected " +
+                    "length=" + v.length + " (expected 36) - " +
+                    "dumping raw only ***");
+
+            logRaw("STATUS31_UNEXPECTED_LENGTH len=" + v.length +
+                    " raw=" + Protocol.hex(v));
+
+            return;
+        }
+
+        int counter = v[11] & 0xff;
+
+        int oscillating = (v[15] & 0xff) | ((v[16] & 0xff) << 8);
+
+        byte[] tail = Arrays.copyOfRange(v, 17, 32);
+
+        line(String.format(Locale.US,
+                "STATUS-31 counter=%d oscillating16=%d (0x%04X) " +
+                        "tail=%s",
+                counter, oscillating, oscillating, Protocol.hex(tail)));
+
+        logRaw("STATUS31 counter=" + counter +
+                " oscillating16=" + oscillating +
+                " tail=" + Protocol.hex(tail) +
+                " raw=" + Protocol.hex(v));
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Waveform-88 block reconstruction - see field-declaration comment
+     * above for the archiving rules.
+     * ------------------------------------------------------------------
+     */
+    private void recordWaveformSample(int subId, int[] samples) {
+
+        int[] existing = currentWaveformBlock.get(subId);
+
+        if (existing != null && Arrays.equals(existing, samples)) {
+            // exact duplicate retransmission - already have it
+            return;
+        }
+
+        if (existing != null) {
+            // subId reused with DIFFERENT content mid-block - a new
+            // block has started; archive whatever we have first.
+            archiveCurrentWaveformBlock();
+        }
+
+        currentWaveformBlock.put(subId, samples);
+
+        if (currentWaveformBlock.size() == 10) {
+            archiveCurrentWaveformBlock();
+        }
+    }
+
+    private void archiveCurrentWaveformBlock() {
+
+        if (currentWaveformBlock.isEmpty()) {
+            return;
+        }
+
+        completedWaveformBlocks.add(new TreeMap<>(currentWaveformBlock));
+        currentWaveformBlock.clear();
+    }
+
+    /*
+     * Writes every completed (and any still-partial, now archived)
+     * waveform block to a CSV, ordered by block then subId then
+     * sample index - stitching the 28-sample sub-records into one
+     * flat, continuous series per block, ready to plot.
+     */
+    private void saveReconstructedWaveform() {
+
+        archiveCurrentWaveformBlock();
+
+        if (completedWaveformBlocks.isEmpty()) {
+
+            line("(no waveform-88 records captured this pull - " +
+                    "nothing to reconstruct)");
+
+            return;
+        }
+
+        java.io.File dir = getExternalFilesDir(null);
+
+        if (dir == null) {
+            line("ERROR: external files directory unavailable for " +
+                    "waveform reconstruction");
+            return;
+        }
+
+        long stamp = System.currentTimeMillis() / 1000L;
+
+        waveformOutputFile = new java.io.File(
+                dir, "reconstructed_waveform_" + stamp + ".csv");
+
+        try (java.io.FileWriter fw =
+                     new java.io.FileWriter(waveformOutputFile)) {
+
+            fw.write("block,subId,sampleIndexInBlock,flatIndex,value\n");
+
+            int flatIndex = 0;
+
+            for (int b = 0; b < completedWaveformBlocks.size(); b++) {
+
+                Map<Integer, int[]> block = completedWaveformBlocks.get(b);
+
+                for (Map.Entry<Integer, int[]> e : block.entrySet()) {
+
+                    int subId = e.getKey();
+                    int[] samples = e.getValue();
+
+                    for (int s = 0; s < samples.length; s++) {
+
+                        fw.write(b + "," + subId + "," + s + "," +
+                                flatIndex + "," + samples[s] + "\n");
+
+                        flatIndex++;
+                    }
+                }
+            }
+
+            line("*** RECONSTRUCTED WAVEFORM SAVED: " +
+                    completedWaveformBlocks.size() + " block(s), " +
+                    flatIndex + " total samples ***");
+
+            line(waveformOutputFile.getAbsolutePath());
+
+            for (int b = 0; b < completedWaveformBlocks.size(); b++) {
+
+                line("  block " + b + ": " +
+                        completedWaveformBlocks.get(b).size() +
+                        "/10 sub-records present");
+            }
+
+            logRaw("WAVEFORM_RECONSTRUCTED blocks=" +
+                    completedWaveformBlocks.size() +
+                    " samples=" + flatIndex +
+                    " path=" + waveformOutputFile.getAbsolutePath());
+
+        } catch (Exception e) {
+
+            line("WAVEFORM RECONSTRUCTION SAVE ERROR: " + e);
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Waveform-88 / ECG control-comparison summary - persisted via
+     * SharedPreferences so runs done on different days/launches still
+     * accumulate into one running tally. Called once a pull finishes,
+     * however it finishes (full completion or manual stop).
+     * ------------------------------------------------------------------
+     */
+    private void recordPullOutcomeAndSummarize() {
+
+        SharedPreferences prefs =
+                getSharedPreferences(
+                        "labrador_ecg_control", MODE_PRIVATE);
+
+        String totalKey = ecgRanBeforeCurrentPull
+                ? "pulls_with_ecg_total"
+                : "pulls_no_ecg_total";
+
+        String sawKey = ecgRanBeforeCurrentPull
+                ? "pulls_with_ecg_saw_waveform88"
+                : "pulls_no_ecg_saw_waveform88";
+
+        int total = prefs.getInt(totalKey, 0) + 1;
+        int saw = prefs.getInt(sawKey, 0) +
+                (waveform88SeenThisPull > 0 ? 1 : 0);
+
+        prefs.edit()
+                .putInt(totalKey, total)
+                .putInt(sawKey, saw)
+                .apply();
+
+        int noEcgTotal = prefs.getInt("pulls_no_ecg_total", 0);
+        int noEcgSaw = prefs.getInt("pulls_no_ecg_saw_waveform88", 0);
+        int withEcgTotal = prefs.getInt("pulls_with_ecg_total", 0);
+        int withEcgSaw = prefs.getInt("pulls_with_ecg_saw_waveform88", 0);
+
+        line("");
+        line("*** WAVEFORM-88 / ECG CONTROL SUMMARY " +
+                "(persists across app launches) ***");
+
+        line("this pull: ECG ran first = " + ecgRanBeforeCurrentPull +
+                " | waveform-88 frames seen = " + waveform88SeenThisPull);
+
+        line("ALL-TIME  no-ECG-first pulls:   " + noEcgSaw + "/" +
+                noEcgTotal + " saw waveform-88");
+
+        line("ALL-TIME  ECG-first pulls:      " + withEcgSaw + "/" +
+                withEcgTotal + " saw waveform-88");
+
+        logRaw("WAVEFORM88_CONTROL_SUMMARY " +
+                "this_pull_ecg_first=" + ecgRanBeforeCurrentPull +
+                " this_pull_seen=" + waveform88SeenThisPull +
+                " all_no_ecg=" + noEcgSaw + "/" + noEcgTotal +
+                " all_with_ecg=" + withEcgSaw + "/" + withEcgTotal);
+    }
+
     private void startRealHistoricalPull() {
 
         if (gatt == null || cmdWrite == null) {
@@ -2232,9 +2653,19 @@ public class MainActivity extends Activity {
         historicalBinaryFile = null;
         lastKnownCursor = null;
 
+        currentWaveformBlock.clear();
+        completedWaveformBlocks.clear();
+        waveformOutputFile = null;
+        pullIdleCycles = 0;
+
+        ecgRanBeforeCurrentPull = ecgEverRunThisConnection;
+        waveform88SeenThisPull = 0;
+
         line("");
         line("*** REAL HISTORICAL PULL: SET_CLOCK -> GET_CLOCK -> " +
-                "GET_DATA_RANGE -> SEND_HISTORICAL_DATA ***");
+                "GET_DATA_RANGE -> SEND_HISTORICAL_DATA (ECG ran " +
+                "first this connection = " + ecgRanBeforeCurrentPull +
+                ") ***");
         logRaw("REAL_PULL_BEGIN");
 
         sendRealSetClock();
@@ -2263,6 +2694,9 @@ public class MainActivity extends Activity {
 
         logRaw("PULL_ACK_STOPPED frames=" + historicalFragments.size() +
                 " bytes=" + historicalTotalBytes);
+
+        recordPullOutcomeAndSummarize();
+        saveReconstructedWaveform();
     }
 
     /*
@@ -2380,19 +2814,49 @@ public class MainActivity extends Activity {
         }
 
         pullAckCounter++;
+        pullIdleCycles++;
 
-        if (pullAckCounter > 200) {
+        /*
+         * No fixed cycle cap anymore - see the field-declaration
+         * comment above for why. Idle stop is the real condition;
+         * the safety limit is a runaway guard only.
+         */
+        if (pullIdleCycles >= IDLE_CYCLE_LIMIT) {
 
             pullAckActive = false;
 
-            line("*** PULL ACK LOOP COMPLETE (200 cycles) - " +
+            line("*** PULL ACK LOOP AUTO-STOPPED - idle for " +
+                    IDLE_CYCLE_LIMIT + " cycles (~" +
+                    (IDLE_CYCLE_LIMIT * 350 / 1000) + "s), " +
                     historicalFragments.size() + " burst frames, " +
                     historicalTotalBytes + " bytes captured ***");
 
-            logRaw("PULL_ACK_COMPLETE frames=" +
+            logRaw("PULL_ACK_IDLE_STOP frames=" +
                     historicalFragments.size() +
                     " bytes=" + historicalTotalBytes);
 
+            recordPullOutcomeAndSummarize();
+            saveReconstructedWaveform();
+
+            return;
+        }
+
+        if (pullAckCounter > SAFETY_CYCLE_LIMIT) {
+
+            pullAckActive = false;
+
+            line("*** PULL ACK LOOP SAFETY-STOPPED at " +
+                    SAFETY_CYCLE_LIMIT + " cycles (runaway guard, " +
+                    "not a real limit) - " +
+                    historicalFragments.size() + " burst frames, " +
+                    historicalTotalBytes + " bytes captured ***");
+
+            logRaw("PULL_ACK_SAFETY_STOP frames=" +
+                    historicalFragments.size() +
+                    " bytes=" + historicalTotalBytes);
+
+            recordPullOutcomeAndSummarize();
+            saveReconstructedWaveform();
 
             return;
         }
@@ -2587,6 +3051,8 @@ public class MainActivity extends Activity {
         realtimeEcgBinaryFile = null;
         maxEcgOnSeen = false;
 
+        ecgEverRunThisConnection = true;
+
         line("");
         line("*** REAL ECG START: TOGGLE_LABRADOR_FILTERED(139)=1 " +
                 "-> mainControlECGDataGeneration(124)=2, chained off " +
@@ -2780,6 +3246,8 @@ public class MainActivity extends Activity {
          * starts accumulate into one capture - useful for testing
          * whether each cycle independently produces real data.
          */
+        ecgEverRunThisConnection = true;
+
         send(0x8B, 1, "EXPERIMENT_FILTERED_ON_" + n);
 
         mainH.postDelayed(() ->
@@ -4285,8 +4753,6 @@ public class MainActivity extends Activity {
 
     /*
      * Fixed status-bar update - UI only, no BLE state changes here.
-     * Called from existing BLE callbacks below to reflect connection
-     * state; it does* Fixed status-bar update - UI only, no BLE state changes here.
      * Called from existing BLE callbacks below to reflect connection
      * state; it does not alter what those callbacks decide to do.
      */
