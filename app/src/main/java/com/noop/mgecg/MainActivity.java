@@ -2203,6 +2203,36 @@ public class MainActivity extends Activity {
 
             decodeWaveform188(value);
 
+        } else if (value.length == 1584) {
+
+            /*
+             * The "layout v16" flash-banked ECG record - named and
+             * documented in NOOP's own upstream issue #1100 as the
+             * real historical ECG storage record, distinct from
+             * everything we've decoded so far (R22/waveform-88/
+             * waveform-188 are all much shorter). That same issue
+             * reports it coming back EMPTY on firmware 50.40.1.0
+             * (matching this unit's firmware) even with the clasp
+             * circuit properly closed - so an empty/all-zero result
+             * here would match a real, already-documented negative,
+             * not necessarily something we did wrong. Flagged
+             * explicitly rather than falling into the generic
+             * unknown-length bucket, specifically so it's never
+             * missed if it does show up.
+             */
+            int nonZero = 0;
+            for (byte b : value) {
+                if (b != 0) {
+                    nonZero++;
+                }
+            }
+
+            line("*** V16 FLASH ECG RECORD (len=1584) SEEN - " +
+                    nonZero + "/" + value.length + " non-zero bytes ***");
+
+            logRaw("V16_FLASH_ECG_RECORD len=1584 nonZeroBytes=" +
+                    nonZero + " raw=" + Protocol.hex(value));
+
         } else {
 
             line("*** UNKNOWN HISTORICAL RECORD LENGTH=" + value.length +
@@ -3276,6 +3306,79 @@ public class MainActivity extends Activity {
         }
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * Real type=43 REALTIME_RAW_DATA decoder - layout confirmed via
+     * NOOP's own upstream repo (PR #1765), verified there across 315
+     * real records on a WHOOP MG (same hw revision, WS50_r00, as this
+     * unit): 240 bytes total.
+     *
+     *   bytes  0- 7   frame header (byte 8 is the inner record's type)
+     *   bytes  8-23   inner header/envelope (unused here)
+     *   bytes 24-33   constant 5 x int16 LE sub-header - CONFIRMED NOT
+     *                 waveform, do not treat these as signal
+     *   bytes 34-235  101 x int16 LE samples - THE ACTUAL ECG WAVEFORM
+     *   bytes 236-239 CRC32 trailer
+     *
+     * We have never actually received a type=43 frame this whole
+     * session, so this decoder is unverified against our own real
+     * data - it's wired in now so that the moment one arrives, it's
+     * decoded properly instead of just hex-dumped.
+     * ------------------------------------------------------------------
+     */
+    private void decodeRealtimeEcg240(byte[] v) {
+
+        if (v.length != 240) {
+
+            line("*** type=43 frame len=" + v.length +
+                    " (expected 240 per upstream's confirmed layout) - " +
+                    "structure below assumes 240, treat with caution ***");
+
+            logRaw("REALTIME_ECG_UNEXPECTED_LENGTH len=" + v.length +
+                    " raw=" + Protocol.hex(v));
+
+            return;
+        }
+
+        int[] samples = new int[101];
+
+        for (int i = 0; i < 101; i++) {
+
+            int lo = v[34 + i * 2] & 0xff;
+            int hi = v[35 + i * 2];              // signed on purpose
+
+            samples[i] = (hi << 8) | lo;
+        }
+
+        int min = samples[0];
+        int max = samples[0];
+        long sum = 0;
+
+        for (int s : samples) {
+            if (s < min) min = s;
+            if (s > max) max = s;
+            sum += s;
+        }
+
+        double mean = sum / 101.0;
+
+        line(String.format(Locale.US,
+                "*** REAL ECG WAVEFORM DECODED: 101 samples  " +
+                        "min=%d max=%d pp=%d mean=%.1f ***",
+                min, max, max - min, mean));
+
+        StringBuilder sampleStr = new StringBuilder();
+
+        for (int i = 0; i < samples.length; i++) {
+            if (i > 0) {
+                sampleStr.append(',');
+            }
+            sampleStr.append(samples[i]);
+        }
+
+        logRaw("REALTIME_ECG_DECODED samples=" + sampleStr.toString());
+    }
+
     private void handleRealtimeEcgFrame(
             String uuid,
             byte[] value) {
@@ -3292,6 +3395,8 @@ public class MainActivity extends Activity {
                 " ch=" + uuid +
                 " len=" + value.length +
                 " totalBytes=" + realtimeEcgTotalBytes + " ***");
+
+        decodeRealtimeEcg240(value);
     }
 
     private void startRealEcg() {
