@@ -2039,15 +2039,23 @@ public class MainActivity extends Activity {
         mainH.postDelayed(() -> {
 
             line("*** R22 unlock burst done - now setting ECG gate " +
-                    "via the confirmed-working mechanism ***");
+                    "via the confirmed-working mechanism, ECG start " +
+                    "now chained off its REAL write ack, not a fixed " +
+                    "delay guess ***");
 
-            sendR22Flag("enable_raw_data_w_ecg", '1');
+            sendR22Flag("enable_raw_data_w_ecg", '1', () ->
+                    fireRealEcgStartAfterGateConfirmed());
 
         }, afterR22Ms);
+    }
 
-        long beforeEcgMs = afterR22Ms + 800;
-
-        mainH.postDelayed(() -> {
+    /*
+     * Split out so it can be reached either from the timed R22-burst
+     * callback above (via the gate write's real ack) or, in future,
+     * any other path that needs the same real ECG start sequence
+     * once the gate is confirmed sent.
+     */
+    private void fireRealEcgStartAfterGateConfirmed() {
 
             realtimeEcgFragments.clear();
             realtimeEcgTotalBytes = 0;
@@ -2077,8 +2085,6 @@ public class MainActivity extends Activity {
             final int myGen = ecgListenGeneration;
 
             mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
-
-        }, beforeEcgMs);
     }
 
     /*
@@ -3403,6 +3409,12 @@ public class MainActivity extends Activity {
 
     private void sendR22Flag(String flagName, char asciiValue) {
 
+        sendR22Flag(flagName, asciiValue, null);
+    }
+
+    private void sendR22Flag(
+            String flagName, char asciiValue, Runnable onWriteComplete) {
+
         byte[] body = buildR22FlagBody(flagName, asciiValue);
 
         byte[] b3AndBody = new byte[1 + body.length];
@@ -3411,7 +3423,8 @@ public class MainActivity extends Activity {
 
         sendManualCommand(0x78, b3AndBody,
                 "SET_CONFIG flag=\"" + flagName + "\" value='" +
-                        asciiValue + "'");
+                        asciiValue + "'",
+                onWriteComplete);
     }
 
     private void sendGetAdvertisingName() {
@@ -3938,6 +3951,28 @@ public class MainActivity extends Activity {
             byte[] b3AndPayload,
             String name) {
 
+        sendManualCommand(cmd, b3AndPayload, name, null);
+    }
+
+    /*
+     * Same as sendManualCommand(), but onWriteComplete fires from the
+     * REAL GATT write-ack for this specific frame, not a fixed-delay
+     * guess. Added after finding a real timing bug: the combined ECG
+     * attempt used independently-scheduled postDelayed() calls for
+     * "send the gate" and "start ECG", which assumed a fixed queue-
+     * drain speed. A real capture showed the gate's actual write went
+     * out only ~30ms before TOGGLE_LABRADOR_FILTERED_ON fired - nowhere
+     * near the intended 800ms buffer - because the BLE queue was still
+     * busy with earlier R22 flag sends and the two delays weren't
+     * chained to each other, just to the same start time. Chaining
+     * off the real ack removes that guesswork entirely.
+     */
+    private void sendManualCommand(
+            int cmd,
+            byte[] b3AndPayload,
+            String name,
+            Runnable onWriteComplete) {
+
         if (gatt == null || cmdWrite == null) {
             line("NOT CONNECTED");
             return;
@@ -3968,8 +4003,11 @@ public class MainActivity extends Activity {
                     BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
             cmdWrite.setValue(f);
 
+            pendingWriteCallback = onWriteComplete;
+
             if (!gatt.writeCharacteristic(cmdWrite)) {
                 line("writeCharacteristic() rejected (" + name + ")");
+                pendingWriteCallback = null;
                 opDone();
             }
         });
