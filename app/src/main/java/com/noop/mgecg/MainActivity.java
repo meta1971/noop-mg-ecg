@@ -323,6 +323,17 @@ public class MainActivity extends Activity {
     private boolean maxEcgOnSeen = false;
 
     /*
+     * Tracks real COMMAND_RESPONSE outcomes for the three ECG commands
+     * this attempt, so the final verdict can be reported using the
+     * exact same categories the real NOOP app's own Whoop5EcgProbe
+     * uses (NoReplies / DataRequestRefused / AcceptedButSilent /
+     * etc.) instead of us re-deriving an ad-hoc summary each time.
+     * Keyed by cmd (139/124/125) -> result code (0-3, or -1 unmapped).
+     */
+    private final Map<Integer, Integer> ecgCommandResponsesThisAttempt =
+            new HashMap<>();
+
+    /*
      * Heartbeat so a long silent window during an armed ECG session
      * is visibly confirmed as "still listening, nothing arrived" -
      * distinguishable from the app/log having stopped. Uses the same
@@ -923,6 +934,48 @@ public class MainActivity extends Activity {
                         envCmd + ") - see ASCII/hex above for content ***");
                 logRaw("DEVICE_CONFIG_VALUE_REPLY cmd=" + envCmd +
                         " raw=" + Protocol.hex(value));
+            } else if (envType == 0x24 &&
+                    (envCmd == 139 || envCmd == 124 || envCmd == 125)) {
+
+                /*
+                 * A REAL COMMAND_RESPONSE for one of the three ECG
+                 * commands - confirmed via the real NOOP source
+                 * (Whoop5EcgProbe.kt) to be packet type 36 (0x24),
+                 * with the actual result code at byte 12 of the full
+                 * frame: 0=FAILURE, 1=SUCCESS, 2=PENDING, 3=UNSUPPORTED.
+                 * Every log collected before this fix showed ZERO of
+                 * these for any of the three ECG opcodes - meaning we
+                 * were never even getting application-layer
+                 * acknowledgment, only the low-level BLE write ack.
+                 * This is the first time that distinction is actually
+                 * checked and reported.
+                 */
+                String cmdName = envCmd == 139
+                        ? "TOGGLE_REALTIME_FILTERED_ECG"
+                        : envCmd == 124
+                        ? "MAIN_CONTROL_ECG_DATA_GENERATION"
+                        : "TOGGLE_SAVE_RAW_ECG";
+
+                int resultCode = value.length > 12 ? (value[12] & 0xff) : -1;
+
+                String resultLabel;
+                switch (resultCode) {
+                    case 0: resultLabel = "FAILURE(0)"; break;
+                    case 1: resultLabel = "SUCCESS(1)"; break;
+                    case 2: resultLabel = "PENDING(2)"; break;
+                    case 3: resultLabel = "UNSUPPORTED(3)"; break;
+                    default: resultLabel = "unmapped(" + resultCode + ")";
+                }
+
+                line("*** REAL COMMAND_RESPONSE for " + cmdName +
+                        " (cmd=" + envCmd + "): " + resultLabel + " ***");
+
+                logRaw("ECG_COMMAND_RESPONSE cmd=" + envCmd +
+                        " name=" + cmdName +
+                        " result=" + resultLabel);
+
+                recordEcgCommandResponse(envCmd, resultCode);
+
             } else if (envType != 0x2F && envType != 0x32 &&
                     envType != 43 && envType != 0x31 &&
                     envType != 0x24) {
@@ -1182,6 +1235,92 @@ public class MainActivity extends Activity {
                     "\"MAX86176: Set ECG ON\" ***");
 
             logRaw("MAX86176_SET_ECG_ON_CONFIRMED");
+        }
+    }
+
+    private void recordEcgCommandResponse(int cmd, int resultCode) {
+        ecgCommandResponsesThisAttempt.put(cmd, resultCode);
+    }
+
+    /*
+     * Reports the final verdict for this ECG attempt using the same
+     * categories NOOP's own Whoop5EcgProbe.kt defines - so "what
+     * actually happened" is named precisely instead of re-derived
+     * ad hoc each time. Call this once, right after ECG STOP.
+     */
+    private void reportEcgAttemptVerdict() {
+
+        line("");
+        line("=== ECG ATTEMPT VERDICT (NOOP Whoop5EcgProbe categories) ===");
+
+        if (ecgCommandResponsesThisAttempt.isEmpty()) {
+
+            line("*** VERDICT: NoReplies - no COMMAND_RESPONSE arrived " +
+                    "at all for any of the 3 ECG commands. The strap " +
+                    "answered nothing at the application layer - only " +
+                    "the low-level BLE write ack was ever confirmed. ***");
+
+            logRaw("ECG_VERDICT=NoReplies");
+            return;
+        }
+
+        boolean anyFailure = false;
+        boolean anyUnsupported = false;
+        StringBuilder detail = new StringBuilder();
+
+        for (Map.Entry<Integer, Integer> e : ecgCommandResponsesThisAttempt.entrySet()) {
+
+            int cmd = e.getKey();
+            int result = e.getValue();
+
+            String cmdName = cmd == 139 ? "TOGGLE_REALTIME_FILTERED_ECG"
+                    : cmd == 124 ? "MAIN_CONTROL_ECG_DATA_GENERATION"
+                    : "TOGGLE_SAVE_RAW_ECG";
+
+            detail.append(cmdName).append("=").append(result).append(" ");
+
+            if (result == 0) anyFailure = true;
+            if (result == 3) anyUnsupported = true;
+        }
+
+        line("Responses seen: " + detail);
+
+        if (anyUnsupported) {
+
+            line("*** VERDICT: OpcodeUnsupported - the firmware does " +
+                    "not implement one of these opcodes at all. ***");
+
+            logRaw("ECG_VERDICT=OpcodeUnsupported detail=" + detail);
+
+        } else if (anyFailure) {
+
+            line("*** VERDICT: a command was REFUSED (FAILURE). If " +
+                    "that command asks for realtime ECG data, this is " +
+                    "DataRequestRefused - the firmware knows the opcode " +
+                    "and refused to run it. If not, this is just " +
+                    "CommandRefused and says nothing about the block " +
+                    "question. ***");
+
+            logRaw("ECG_VERDICT=Refused detail=" + detail);
+
+        } else if (!maxEcgOnSeen &&
+                (realtimeEcgFragments == null || realtimeEcgFragments.isEmpty())) {
+
+            line("*** VERDICT: AcceptedButSilent - every command that " +
+                    "replied returned SUCCESS, yet no ECG packet arrived. " +
+                    "This does not identify a cause - data banked to " +
+                    "flash rather than streamed, an entitlement gate, or " +
+                    "an electrode circuit that never closed would all " +
+                    "look exactly like this. ***");
+
+            logRaw("ECG_VERDICT=AcceptedButSilent detail=" + detail);
+
+        } else {
+
+            line("*** VERDICT: Inconclusive - mixed/unexpected result " +
+                    "codes. See detail above. ***");
+
+            logRaw("ECG_VERDICT=Inconclusive detail=" + detail);
         }
     }
 
@@ -2009,6 +2148,7 @@ public class MainActivity extends Activity {
         mainH.postDelayed(() -> {
 
             realtimeEcgFragments.clear();
+            ecgCommandResponsesThisAttempt.clear();
             realtimeEcgTotalBytes = 0;
             realtimeEcgBinaryFile = null;
             maxEcgOnSeen = false;
@@ -2023,10 +2163,12 @@ public class MainActivity extends Activity {
             line("*** STARTING (ECG gate on, real start sequence) ***");
 
             sendWithCallback(0x8B, 1,
-                    "TOGGLE_LABRADOR_FILTERED_ON (gate-then-start)", () ->
+                    "TOGGLE_REALTIME_FILTERED_ECG_ON (gate-then-start)", () ->
+                    sendWithCallback(0x7D, 1,
+                            "TOGGLE_SAVE_RAW_ECG_ON (gate-then-start)", () ->
                     send(0x7C, 2,
                             "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
-                                    "(gate-then-start)"));
+                                    "(gate-then-start)")));
 
             ecgListenActive = true;
             ecgListenGeneration++;
@@ -2062,6 +2204,182 @@ public class MainActivity extends Activity {
      * previously-untested combination, not a new guess.
      * ------------------------------------------------------------------
      */
+
+    /*
+     * ------------------------------------------------------------------
+     * ULTIMATE ECG ATTEMPT - four genuinely untried ideas combined,
+     * none of which are repeats of anything tried so far:
+     *
+     *   1. Explicitly stops SpO2/PPG streaming first. MAX86176 is one
+     *      physical chip doing both PPG and ECG - if it's implicitly
+     *      left in PPG mode from earlier in the session, a mode
+     *      switch to ECG might silently fail with no PPG-off step
+     *      first. Never tried.
+     *   2. A real settling delay after START, before prompting for
+     *      contact - analog front ends often need genuine warm-up
+     *      time. Every prior attempt touched at or before START.
+     *   3. Periodic re-sends of START (arg=2) every 5s through the
+     *      hold, in case a one-time enable isn't enough and the
+     *      hardware needs periodic refresh to stay powered.
+     *   4. Probes arg=3 once, after the normal 0/1/2 are already
+     *      known - not expected to do anything useful, but any
+     *      distinct ACK/response from an undocumented value is more
+     *      information than silence.
+     * ------------------------------------------------------------------
+     */
+    private void runUltimateEcgAttempt() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run ultimate attempt");
+            return;
+        }
+
+        line("");
+        line("*** ULTIMATE ECG ATTEMPT: SPO2 OFF -> R22+GATE -> START -> " +
+                "WAIT FOR WARM-UP -> TOUCH -> PERIODIC RE-KICK - " +
+                "STRAP MUST BE WORN ***");
+        logRaw("ULTIMATE_ECG_ATTEMPT_BEGIN");
+
+        line("--- step 1: explicit SPO2/PPG stream OFF (mode reset) ---");
+        sendCustom(0x3F, 0x3F, 0x00);
+
+        mainH.postDelayed(() -> {
+
+            sendGetAdvertisingName();
+
+            for (int i = 0; i < R22_FLAGS.length; i++) {
+
+                String flag = R22_FLAGS[i];
+                long delayMs = 80L * (i + 1);
+
+                mainH.postDelayed(() -> sendR22Flag(flag, '1'), delayMs);
+            }
+
+            long afterR22Ms = 80L * (R22_FLAGS.length + 2);
+
+            mainH.postDelayed(() -> {
+
+                line("--- step 2: setting ECG gate, waiting for its " +
+                        "real echo ---");
+
+                pendingEcgGateConfirmationFlagName = "enable_raw_data_w_ecg";
+                pendingEcgGateConfirmationCallback = () -> {
+
+                    line("--- step 3: gate confirmed - sending real " +
+                            "START now, but NOT prompting for contact " +
+                            "yet - waiting 5s for AFE warm-up first ---");
+
+                    realtimeEcgFragments.clear();
+                    ecgCommandResponsesThisAttempt.clear();
+                    realtimeEcgTotalBytes = 0;
+                    realtimeEcgBinaryFile = null;
+                    maxEcgOnSeen = false;
+
+                    labradorActive = true;
+                    recordingComplete = false;
+                    labradorPacketCount = 0;
+
+                    ecgEverRunThisConnection = true;
+
+                    sendWithCallback(0x8B, 1,
+                            "TOGGLE_REALTIME_FILTERED_ECG_ON (ultimate)", () ->
+                            sendWithCallback(0x7D, 1,
+                                    "TOGGLE_SAVE_RAW_ECG_ON (ultimate)", () ->
+                            send(0x7C, 2,
+                                    "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                            "(ultimate, kick 1)")));
+
+                    ecgListenActive = true;
+                    ecgListenGeneration++;
+                    ecgListenStartedAtMs = System.currentTimeMillis();
+
+                    final int myGen = ecgListenGeneration;
+
+                    mainH.postDelayed(
+                            () -> runEcgListenHeartbeat(myGen), 5000);
+
+                    mainH.postDelayed(() -> {
+
+                        line("");
+                        line("*** WARM-UP WAIT DONE - TOUCH THE CLASP " +
+                                "NOW ***");
+
+                    }, 5000);
+
+                    /*
+                     * Periodic re-kick every 5s through a 40s hold -
+                     * step 3 of the idea list.
+                     */
+                    for (int k = 1; k <= 8; k++) {
+
+                        long kickDelay = 5000L * k;
+                        int kickNum = k + 1;
+
+                        mainH.postDelayed(() -> {
+
+                            if (ecgListenActive) {
+
+                                line("--- periodic re-kick #" + kickNum +
+                                        " (arg=2) ---");
+
+                                send(0x7C, 2,
+                                        "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                                "(ultimate, kick " +
+                                                kickNum + ")");
+                            }
+
+                        }, kickDelay);
+                    }
+                };
+
+                sendR22Flag("enable_raw_data_w_ecg", '1');
+
+                mainH.postDelayed(() -> {
+
+                    if (pendingEcgGateConfirmationCallback != null) {
+
+                        line("*** gate echo TIMED OUT after 3s - " +
+                                "proceeding anyway ***");
+
+                        logRaw("ECG_GATE_ECHO_TIMEOUT flag=" +
+                                "enable_raw_data_w_ecg");
+
+                        Runnable cb = pendingEcgGateConfirmationCallback;
+
+                        pendingEcgGateConfirmationCallback = null;
+                        pendingEcgGateConfirmationFlagName = null;
+
+                        cb.run();
+                    }
+
+                }, 3000);
+
+            }, afterR22Ms);
+
+        }, 500);
+    }
+
+    /*
+     * Sends the one probe value nobody's tried - arg=3 on cmd 0x7C,
+     * once, well after a normal stop, purely to see if an
+     * undocumented argument produces a distinct ACK/response instead
+     * of silence. Not expected to do anything useful by itself.
+     */
+    private void probeUndocumentedEcgArg() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot probe");
+            return;
+        }
+
+        line("");
+        line("*** PROBING UNDOCUMENTED cmd=0x7C arg=3 (not 0/1/2) - " +
+                "watching for ANY distinct response ***");
+        logRaw("ECG_ARG_PROBE_BEGIN arg=3");
+
+        send(0x7C, 3, "MAIN_CONTROL_ECG_DATA_GENERATION_PROBE_ARG3");
+    }
+
     private void runFullCombinedEcgAttempt() {
 
         if (gatt == null || cmdWrite == null) {
@@ -2134,10 +2452,61 @@ public class MainActivity extends Activity {
      * callback above (via the gate write's real ack) or, in future,
      * any other path that needs the same real ECG start sequence
      * once the gate is confirmed sent.
+     *
+     * UPDATED: now sends THREE toggles, not two. Decompiling the real
+     * NOOP app (v11.6.0) found its actual ECG-start path calls three
+     * named commands in this order - TOGGLE_REALTIME_FILTERED_ECG_CMD
+     * (0x8B), TOGGLE_SAVE_RAW_ECG_CMD (0x7D), then
+     * MAIN_CONTROL_ECG_DATA_GENERATION_CMD (0x7C) - verified by
+     * disassembling the actual bytecode of each method
+     * (Whoop5Ecg.toggleRealtimeFilteredEcgFrame/toggleSaveRawEcgFrame/
+     * mainControlEcgDataGenerationFrame) and reading the literal
+     * opcode constant each one loads, cross-checked against the two
+     * opcodes we already knew were correct (0x8B and 0x7C both
+     * decoded exactly right, giving real confidence in the same
+     * method finding 0x7D for the one we didn't know). We already had
+     * 0x7D in our own UI as an unrelated "RAW SAVE ON" button,
+     * completely disconnected from any ECG sequence, this whole
+     * session - every prior attempt sent 2 of these 3 real commands.
      */
     private void fireRealEcgStartAfterGateConfirmed() {
 
+            /*
+             * Real-time bond re-verification, mirroring the actual
+             * NOOP app's ecgGatesAllow() gate found in its real
+             * source (BLEManager.swift) - it explicitly re-checks
+             * state.encryptedBond immediately before allowing ANY ECG
+             * command through, rather than trusting a historical
+             * connect-time check. We've never done this - only ever
+             * checked bond state once, at connect. Doesn't hurt to
+             * verify it's still genuinely bonded right now, in case
+             * something silently degraded since connect.
+             */
+            if (gatt != null && gatt.getDevice() != null) {
+
+                int currentBondState = gatt.getDevice().getBondState();
+
+                line("*** PRE-ECG BOND CHECK (mirroring the real app's " +
+                        "ecgGatesAllow gate): bondState=" +
+                        currentBondState + " (10=NONE,11=BONDING,12=BONDED) " +
+                        "***");
+
+                logRaw("PRE_ECG_BOND_CHECK bondState=" + currentBondState);
+
+                if (currentBondState != BluetoothDevice.BOND_BONDED) {
+
+                    line("*** WARNING: bond state is NOT BONDED right now " +
+                            "- proceeding anyway to see what happens, but " +
+                            "this would be refused by the real app's own " +
+                            "gate ***");
+
+                    logRaw("PRE_ECG_BOND_CHECK_FAILED bondState=" +
+                            currentBondState);
+                }
+            }
+
             realtimeEcgFragments.clear();
+            ecgCommandResponsesThisAttempt.clear();
             realtimeEcgTotalBytes = 0;
             realtimeEcgBinaryFile = null;
             maxEcgOnSeen = false;
@@ -2149,14 +2518,17 @@ public class MainActivity extends Activity {
             ecgEverRunThisConnection = true;
 
             line("");
-            line("*** NOW SENDING REAL ECG START - TOUCH THE CLASP " +
-                    "NOW IF NOT ALREADY TOUCHING ***");
+            line("*** NOW SENDING REAL ECG START (3 toggles, including " +
+                    "the previously-missing TOGGLE_SAVE_RAW_ECG=0x7D) - " +
+                    "TOUCH THE CLASP NOW IF NOT ALREADY TOUCHING ***");
 
             sendWithCallback(0x8B, 1,
-                    "TOGGLE_LABRADOR_FILTERED_ON (combined attempt)", () ->
+                    "TOGGLE_REALTIME_FILTERED_ECG_ON (combined attempt)", () ->
+                    sendWithCallback(0x7D, 1,
+                            "TOGGLE_SAVE_RAW_ECG_ON (combined attempt)", () ->
                     send(0x7C, 2,
                             "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
-                                    "(combined attempt)"));
+                                    "(combined attempt)")));
 
             ecgListenActive = true;
             ecgListenGeneration++;
@@ -2202,6 +2574,7 @@ public class MainActivity extends Activity {
         logRaw("BANK_TO_FLASH_TEST_BEGIN");
 
         realtimeEcgFragments.clear();
+        ecgCommandResponsesThisAttempt.clear();
         realtimeEcgTotalBytes = 0;
         realtimeEcgBinaryFile = null;
         maxEcgOnSeen = false;
@@ -2213,10 +2586,12 @@ public class MainActivity extends Activity {
         ecgEverRunThisConnection = true;
 
         sendWithCallback(0x8B, 1,
-                "TOGGLE_LABRADOR_FILTERED_ON (bank-to-flash test)", () ->
+                "TOGGLE_REALTIME_FILTERED_ECG_ON (bank-to-flash test)", () ->
+                sendWithCallback(0x7D, 1,
+                        "TOGGLE_SAVE_RAW_ECG_ON (bank-to-flash test)", () ->
                 send(0x7C, 2,
                         "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
-                                "(bank-to-flash test)"));
+                                "(bank-to-flash test)")));
 
         ecgListenActive = true;
         ecgListenGeneration++;
@@ -3725,6 +4100,7 @@ public class MainActivity extends Activity {
         }
 
         realtimeEcgFragments.clear();
+        ecgCommandResponsesThisAttempt.clear();
         realtimeEcgTotalBytes = 0;
         realtimeEcgBinaryFile = null;
         maxEcgOnSeen = false;
@@ -3732,13 +4108,15 @@ public class MainActivity extends Activity {
         ecgEverRunThisConnection = true;
 
         line("");
-        line("*** REAL ECG START: TOGGLE_LABRADOR_FILTERED(139)=1 " +
-                "-> mainControlECGDataGeneration(124)=2, chained off " +
+        line("*** REAL ECG START: TOGGLE_REALTIME_FILTERED_ECG(139)=1 -> " +
+                "TOGGLE_SAVE_RAW_ECG(125)=1 -> " +
+                "mainControlECGDataGeneration(124)=2, chained off " +
                 "the real write ack (not a timer) ***");
         logRaw("REAL_ECG_START_BEGIN");
 
-        sendWithCallback(0x8B, 1, "TOGGLE_LABRADOR_FILTERED_ON", () ->
-                send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION_START"));
+        sendWithCallback(0x8B, 1, "TOGGLE_REALTIME_FILTERED_ECG_ON", () ->
+                sendWithCallback(0x7D, 1, "TOGGLE_SAVE_RAW_ECG_ON", () ->
+                send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION_START")));
 
         ecgListenActive = true;
         ecgListenGeneration++;
@@ -3769,6 +4147,8 @@ public class MainActivity extends Activity {
         logRaw("REAL_ECG_STOP maxEcgOnSeen=" + maxEcgOnSeen +
                 " type43Frames=" + realtimeEcgFragments.size() +
                 " type43Bytes=" + realtimeEcgTotalBytes);
+
+        reportEcgAttemptVerdict();
 
         send(0x7C, 1, "MAIN_CONTROL_ECG_DATA_GENERATION_STOP");
     }
@@ -4916,6 +5296,23 @@ public class MainActivity extends Activity {
                         "WEAR + TOUCH CLASP",
                 v -> runFullCombinedEcgAttempt());
         controls.addView(combinedBtn);
+
+        /*
+         * ULTIMATE ECG ATTEMPT - four new, previously-untried ideas:
+         * explicit SpO2/PPG-off mode reset, a real warm-up delay
+         * before touch, periodic START re-kicks through the hold,
+         * and a separate probe of an undocumented argument value.
+         */
+        Button ultimateBtn = btn(
+                "ULTIMATE ECG ATTEMPT (SpO2-off + warmup + re-kick) - " +
+                        "WEAR, WAIT FOR TOUCH PROMPT",
+                v -> runUltimateEcgAttempt());
+        controls.addView(ultimateBtn);
+
+        Button probeArgBtn = btn(
+                "PROBE UNDOCUMENTED cmd=0x7C arg=3",
+                v -> probeUndocumentedEcgArg());
+        controls.addView(probeArgBtn);
 
         /*
          * R22 unlock - still useful on its own for historical/motion
