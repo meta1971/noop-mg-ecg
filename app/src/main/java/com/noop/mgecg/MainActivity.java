@@ -836,6 +836,20 @@ public class MainActivity extends Activity {
         scanForTimestamps(value);
 
         /*
+         * MAX86176 console confirmation - deliberately checked on
+         * EVERY incoming frame regardless of envelope type, not just
+         * type=0x32 like before. We've already found three separate
+         * envelope types this session (0x31, 0x24-echoes, the waveform
+         * shapes) that our code had zero awareness of until we went
+         * looking - gating the one check that actually answers
+         * "did the scanner really start" behind a specific assumed
+         * type risked exactly the same blind spot. This runs
+         * unconditionally now so a real confirmation can't be missed
+         * just because it arrived somewhere we didn't expect.
+         */
+        checkForEcgConsoleConfirmation(value);
+
+        /*
          * Special handling for Labrador 0007 traffic.
          */
         if ("0007".equals(uuid)) {
@@ -866,7 +880,6 @@ public class MainActivity extends Activity {
                 handleHistoricalBurstFrame(uuid, value);
             } else if (envType == 0x32 && envCmd == 0x02) {
                 dumpAsciiRuns(value);
-                checkForEcgConsoleConfirmation(value);
                 extractCursorFromDebugText(value);
             } else if (envType == 43) {
                 handleRealtimeEcgFrame(uuid, value);
@@ -878,6 +891,18 @@ public class MainActivity extends Activity {
                         envCmd + ") - see ASCII/hex above for content ***");
                 logRaw("DEVICE_CONFIG_VALUE_REPLY cmd=" + envCmd +
                         " raw=" + Protocol.hex(value));
+            } else if (envType != 0x2F && envType != 0x32 &&
+                    envType != 43 && envType != 0x31 &&
+                    envType != 0x24) {
+
+                /*
+                 * A genuinely unrecognized envelope type - dump its
+                 * printable ASCII too (not just hex), the same way
+                 * type=0x32 already gets, since console-style debug
+                 * text could plausibly ride on a type we haven't
+                 * catalogued yet.
+                 */
+                dumpAsciiRuns(value);
             }
         }
 
