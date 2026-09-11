@@ -3312,6 +3312,73 @@ public class MainActivity extends Activity {
         "enable_sig11_during_sleep",
     };
 
+    /*
+     * ------------------------------------------------------------------
+     * Speculative ECG-specific flag names - none of these are confirmed
+     * to exist. They're built by pattern-matching the naming convention
+     * of the confirmed real R22_FLAGS above (enable_<feature>_packets,
+     * make_<feature>_visible, <feature>_ch_switching, enable_sig<N>_
+     * during_<state>), substituting ecg/afib/heart_screener wherever
+     * r22/hrfm/hr appeared. Sent via the same real SET_CONFIG mechanism
+     * (cmd=0x78) already confirmed to work for the real R22 flags, with
+     * a GET_DEVICE_CONFIG_VALUE read-back after each so a genuine
+     * difference (versus every other guess coming back identical/
+     * refused) would actually be visible in the log.
+     * ------------------------------------------------------------------
+     */
+    private static final String[] ECG_FLAG_GUESSES = {
+        "enable_ecg_packets",
+        "enable_ecg_v1_packets",
+        "enable_ecg_v2_packets",
+        "enable_ecg_raw_data",
+        "enable_ecg_stream",
+        "enable_realtime_ecg",
+        "enable_ecg_recording",
+        "make_ecg_visible",
+        "ecg_ch_switching",
+        "enable_heart_screener",
+        "heart_screener_enable",
+        "enable_afib_detection",
+        "afib_detection_enable",
+        "enable_lead_on_detection",
+        "enable_clasp_contact",
+        "enable_two_lead_ecg",
+        "enable_sig12_during_ecg",
+    };
+
+    private void sweepEcgFlagGuesses() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot sweep ECG flag guesses");
+            return;
+        }
+
+        line("");
+        line("*** SWEEPING " + ECG_FLAG_GUESSES.length + " SPECULATIVE " +
+                "ECG FLAG NAMES - none confirmed, watch for ANY reply " +
+                "that differs from the others ***");
+        logRaw("ECG_FLAG_GUESS_SWEEP_BEGIN count=" + ECG_FLAG_GUESSES.length);
+
+        for (int i = 0; i < ECG_FLAG_GUESSES.length; i++) {
+
+            String flag = ECG_FLAG_GUESSES[i];
+            long delayMs = 400L * i;
+
+            mainH.postDelayed(() -> {
+
+                line("--- guess: \"" + flag + "\" ---");
+                setDeviceConfigValue(flag, 0x31);
+                getDeviceConfigValue(flag);
+
+            }, delayMs);
+        }
+
+        long afterMs = 400L * ECG_FLAG_GUESSES.length + 500;
+
+        mainH.postDelayed(() ->
+                logRaw("ECG_FLAG_GUESS_SWEEP_COMPLETE"), afterMs);
+    }
+
     private byte[] buildR22FlagBody(String flagName, char asciiValue) {
 
         byte[] nameBytes = flagName.getBytes(
@@ -4741,6 +4808,11 @@ public class MainActivity extends Activity {
                 "TEST ECG GATE VALUE: raw 0x01 vs ASCII '1'",
                 v -> testEcgGateValueConvention());
         controls.addView(ecgGateValueTestBtn);
+
+        Button ecgFlagGuessSweepBtn = btn(
+                "SWEEP SPECULATIVE ECG FLAG NAMES (unconfirmed guesses)",
+                v -> sweepEcgFlagGuesses());
+        controls.addView(ecgFlagGuessSweepBtn);
 
         EditText configKeyInput = new EditText(this);
         configKeyInput.setHint("device config key, e.g. enable_raw_data_w_ecg");
