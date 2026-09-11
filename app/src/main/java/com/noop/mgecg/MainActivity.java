@@ -2533,39 +2533,49 @@ public class MainActivity extends Activity {
      * ------------------------------------------------------------------
      * Dedicated decoder for the 188-byte historical record shape,
      * same envelope (type=0x2F cmd=0x80) as R22 and waveform-88, only
-     * the length and internal layout differ again. Deliberately
-     * conservative: an earlier attempt reused the 88-byte record's
-     * field offsets (session tag, channel tag, offset counter) here
-     * and got garbage - two inconsistent "session tags" and an
-     * implausible billion-scale "offset" - which means that layout
-     * does NOT transfer to this shape. So rather than assert field
-     * boundaries we haven't verified, this treats everything from
-     * byte 12 to byte 183 (172 bytes = 86 int16 LE values) as one
-     * flat sample array with no assumed sub-header, and additionally
-     * reports a candidate 3-way split (each ~29 samples) since an
-     * earlier look at real captures showed three visually distinct,
-     * smoothly-drifting value bands there - that split is logged as
-     * a candidate for future analysis, not a confirmed channel layout.
+     * the length and internal layout differ again.
      *
-     *   bytes  0- 7  frame header (AA 01 [declLen LE] 00 01 [crc16])
-     *   byte   8     type  (0x2F)
-     *   byte   9     seq   (NOT type-specific - see note below)
-     *   byte  10     cmd   (0x80)
-     *   byte  11     sub-id - climbs across a pull; NOT bounded to
-     *                0-9 like the 88-byte shape (one real capture
-     *                showed a repeated batch of 5 followed by a long
-     *                unbroken climb), so no fixed "block size" is
-     *                assumed here
-     *   bytes 12-183 172 bytes = 86 x int16 LE, undecoded beyond that
-     *   bytes 184-187 CRC32 trailer
+     * These boundaries are no longer a single-sample guess - they're
+     * derived from a per-byte variance scan across 81 genuinely
+     * distinct real records collected over many sessions: every byte
+     * from 12-25 stays low-cardinality (structural) across all 81,
+     * while every byte from 26-175 is high-cardinality (real signal)
+     * without exception. An earlier pass got this wrong twice - once
+     * assuming samples started at byte 12 (based on the 88-byte
+     * shape's layout, which doesn't transfer), then again assuming
+     * byte 27-182/86 samples (based on a single record, which turned
+     * out to include contaminated header bytes at the front). This
+     * boundary is the first one checked against a large sample rather
+     * than one or two records.
      *
-     * NOTE on byte 9 ("seq"): a larger capture showed this jumping
-     * unpredictably even within one record shape (215, 216, 22, 23...),
-     * which is far more consistent with a single BLE-layer packet
-     * counter shared across every notification type on the connection
-     * than a per-shape tag - an earlier read of this byte as "fixed
-     * per record type" was based on too small a sample and doesn't
-     * hold up.
+     *   bytes  0- 7   frame header (AA 01 [declLen LE] 00 01 [crc16])
+     *   byte   8      type  (0x2F)
+     *   byte   9      seq   (shared BLE-layer counter, not type-specific)
+     *   byte  10      cmd   (0x80)
+     *   byte  11      sub-id - climbs across a pull, not bounded 0-9
+     *   bytes 12-25   14 bytes, low-cardinality across all 81 distinct
+     *                 records seen - structural/header, undecoded
+     *                 beyond that
+     *   bytes 26-175  150 bytes = 75 x int16 LE - THE REAL SAMPLES,
+     *                 confirmed high-cardinality across every one of
+     *                 the 81 distinct records
+     *   bytes 176-178 3 bytes, real but small-range (0-15ish) values
+     *                 that vary per record - clearly NOT samples (far
+     *                 too narrow a range vs. the sample region), some
+     *                 kind of separate counter/flag field, meaning
+     *                 undecoded
+     *   byte  179     constant 0 across all 81 records
+     *   byte  180     variable but on its own distinct small scale -
+     *                 undecoded
+     *   bytes 181-183 constant 0 across all 81 records
+     *   bytes 184-187 CRC32 trailer (confirmed high-cardinality, as a
+     *                 real checksum over varying content should be)
+     *
+     * The candidate 3-way segment split from before still holds up
+     * against this corrected boundary (25 samples each) - each third
+     * keeps a consistent relative ordering and drifts smoothly across
+     * records, still consistent with a multi-channel signal - but it
+     * remains a candidate grouping, not a confirmed channel layout.
      * ------------------------------------------------------------------
      */
     private void decodeWaveform188(byte[] v) {
@@ -2585,15 +2595,18 @@ public class MainActivity extends Activity {
 
         int subId = v[11] & 0xff;
 
-        int[] samples = new int[86];
+        int[] samples = new int[75];
 
-        for (int i = 0; i < 86; i++) {
+        for (int i = 0; i < 75; i++) {
 
-            int lo = v[12 + i * 2] & 0xff;
-            int hi = v[13 + i * 2];              // signed on purpose
+            int lo = v[26 + i * 2] & 0xff;
+            int hi = v[27 + i * 2];              // signed on purpose
 
             samples[i] = (hi << 8) | lo;
         }
+
+        byte[] smallField = Arrays.copyOfRange(v, 176, 179);
+        int byte180 = v[180] & 0xff;
 
         int min = samples[0];
         int max = samples[0];
@@ -2605,11 +2618,11 @@ public class MainActivity extends Activity {
             sum += s;
         }
 
-        double mean = sum / 86.0;
+        double mean = sum / 75.0;
 
-        // candidate 3-way split - unconfirmed grouping, logged only
-        // as a lead for future analysis
-        int third = samples.length / 3;
+        // candidate 3-way split (25 each) - still a candidate grouping,
+        // now checked against the corrected boundary
+        int third = 25;
         double[] segMeans = new double[3];
 
         for (int seg = 0; seg < 3; seg++) {
@@ -2627,9 +2640,11 @@ public class MainActivity extends Activity {
 
         line(String.format(Locale.US,
                 "WAVEFORM-188 subId=%d min=%d max=%d pp=%d mean=%.1f " +
-                        "candidateSegMeans(3x~29)=[%.1f, %.1f, %.1f]",
+                        "candidateSegMeans(3x25)=[%.1f, %.1f, %.1f] " +
+                        "smallField=%s byte180=%d",
                 subId, min, max, max - min, mean,
-                segMeans[0], segMeans[1], segMeans[2]));
+                segMeans[0], segMeans[1], segMeans[2],
+                Protocol.hex(smallField), byte180));
 
         StringBuilder sampleStr = new StringBuilder();
 
@@ -2641,6 +2656,8 @@ public class MainActivity extends Activity {
         }
 
         logRaw("WAVEFORM188 subId=" + subId +
+                " smallField=" + Protocol.hex(smallField) +
+                " byte180=" + byte180 +
                 " samples=" + sampleStr.toString());
 
         waveform188Records.add(new Waveform188Record(subId, samples));
