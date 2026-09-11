@@ -1944,11 +1944,12 @@ public class MainActivity extends Activity {
         }
 
         line("");
-        line("*** ENABLE ECG GATE, THEN START (real sequence) ***");
+        line("*** ENABLE ECG GATE, THEN START (real sequence, gate now " +
+                "set via the CONFIRMED-WORKING SET_CONFIG mechanism, " +
+                "not the old never-once-echoed one) ***");
         logRaw("ECG_GATE_SEQUENCE_BEGIN");
 
-        setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
-        getDeviceConfigValue("enable_raw_data_w_ecg");
+        sendR22Flag("enable_raw_data_w_ecg", '1');
 
         /*
          * Small buffer so the strap has processed the config write
@@ -2037,10 +2038,10 @@ public class MainActivity extends Activity {
 
         mainH.postDelayed(() -> {
 
-            line("*** R22 unlock burst done - now setting ECG gate ***");
+            line("*** R22 unlock burst done - now setting ECG gate " +
+                    "via the confirmed-working mechanism ***");
 
-            setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
-            getDeviceConfigValue("enable_raw_data_w_ecg");
+            sendR22Flag("enable_raw_data_w_ecg", '1');
 
         }, afterR22Ms);
 
@@ -4836,11 +4837,8 @@ public class MainActivity extends Activity {
         controls.addView(ecgGateStartBtn);
 
         Button ecgGateSetGetBtn = btn(
-                "SET+GET ECG GATE (validation only)",
-                v -> {
-                    setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
-                    getDeviceConfigValue("enable_raw_data_w_ecg");
-                });
+                "SET ECG GATE (confirmed-working mechanism)",
+                v -> sendR22Flag("enable_raw_data_w_ecg", '1'));
         controls.addView(ecgGateSetGetBtn);
 
         Button ecgGateValueTestBtn = btn(
