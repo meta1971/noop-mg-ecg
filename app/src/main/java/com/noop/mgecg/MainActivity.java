@@ -1877,6 +1877,49 @@ public class MainActivity extends Activity {
      * real start (TOGGLE_LABRADOR_FILTERED=1, real-ack-chained into
      * mainControlECGDataGeneration=2), matching ECG START (real).
      */
+    /*
+     * ------------------------------------------------------------------
+     * Tests whether the ECG gate's value convention is really ASCII
+     * digit (0x31 = '1'), as we've assumed by analogy with the R22
+     * SET_CONFIG flags - or whether that assumption was never actually
+     * valid for THIS command. enable_raw_data_w_ecg goes through
+     * SET/GET_DEVICE_CONFIG_VALUE (cmd 119/121), a different command
+     * from the R22 flags (cmd 120/0x78) where ASCII-digit was
+     * independently confirmed by the community writeup. We carried
+     * that convention over here without ever checking it - this sends
+     * BOTH raw 0x01 and ASCII 0x31, with a GET read-back after each,
+     * so the two responses can be compared directly instead of
+     * continuing to assume one of them is right.
+     * ------------------------------------------------------------------
+     */
+    private void testEcgGateValueConvention() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot test ECG gate value");
+            return;
+        }
+
+        line("");
+        line("*** TESTING ECG GATE VALUE CONVENTION: raw 0x01 vs " +
+                "ASCII 0x31 ('1') ***");
+        logRaw("ECG_GATE_VALUE_TEST_BEGIN");
+
+        line("--- sending raw 0x01 ---");
+        setDeviceConfigValue("enable_raw_data_w_ecg", 0x01);
+        getDeviceConfigValue("enable_raw_data_w_ecg");
+
+        mainH.postDelayed(() -> {
+
+            line("--- sending ASCII 0x31 ('1') ---");
+            setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
+            getDeviceConfigValue("enable_raw_data_w_ecg");
+
+            logRaw("ECG_GATE_VALUE_TEST_BOTH_SENT - compare the two " +
+                    "DEVICE_CONFIG_VALUE_REPLY lines above/below");
+
+        }, 1500);
+    }
+
     private void enableEcgGateThenStart() {
 
         if (gatt == null || cmdWrite == null) {
@@ -4654,6 +4697,11 @@ public class MainActivity extends Activity {
                     getDeviceConfigValue("enable_raw_data_w_ecg");
                 });
         controls.addView(ecgGateSetGetBtn);
+
+        Button ecgGateValueTestBtn = btn(
+                "TEST ECG GATE VALUE: raw 0x01 vs ASCII '1'",
+                v -> testEcgGateValueConvention());
+        controls.addView(ecgGateValueTestBtn);
 
         EditText configKeyInput = new EditText(this);
         configKeyInput.setHint("device config key, e.g. enable_raw_data_w_ecg");
