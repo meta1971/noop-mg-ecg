@@ -38,6 +38,8 @@ public class MainActivity extends Activity {
     private TextView statusBar;
     private TextView field113Display;
     private final ArrayDeque<Float> field113History = new ArrayDeque<>();
+    private TextView byte180Display;
+    private final ArrayDeque<Integer> byte180History = new ArrayDeque<>();
     private Button scanBtn;
     private EditText customInput;
     private EditText clockInput;
@@ -814,6 +816,20 @@ public class MainActivity extends Activity {
         line("CHANNEL " + uuid);
         line("LENGTH  " + value.length);
         line("RAW     " + Protocol.hex(value));
+
+        /*
+         * Every RX event now also persists here unconditionally - not
+         * just the ones with dedicated handlers below. This was the
+         * same class of gap the bonding sequence had: something only
+         * ever went to the on-screen line() view and silently never
+         * reached the file a real capture gets analyzed from. Found
+         * this time via the ECG gate value test, whose actual RX
+         * reaction (a Labrador identity broadcast) only showed up in
+         * a SAVE LOG snapshot, never in this file.
+         */
+        logRaw("RX_GENERIC channel=" + uuid +
+                " len=" + value.length +
+                " raw=" + Protocol.hex(value));
 
         /*
          * Existing generic protocol summary.
@@ -2651,6 +2667,8 @@ public class MainActivity extends Activity {
         byte[] smallField = Arrays.copyOfRange(v, 176, 179);
         int byte180 = v[180] & 0xff;
 
+        updateByte180Display(byte180);
+
         int min = samples[0];
         int max = samples[0];
         long sum = 0;
@@ -3034,6 +3052,7 @@ public class MainActivity extends Activity {
         pullIdleCycles = 0;
         historyDrainedThisPull = false;
         field113History.clear();
+        byte180History.clear();
 
         ecgRanBeforeCurrentPull = ecgEverRunThisConnection;
         waveform88SeenThisPull = 0;
@@ -4502,6 +4521,26 @@ public class MainActivity extends Activity {
                         -2));
 
         /*
+         * Live readout for waveform-188's byte180 field - shown
+         * alongside field113 since the two correlated (r=0.843) in a
+         * first analysis pass. Watching both together during a
+         * deliberate move/still test is the way to tell whether that
+         * correlation is real or just shared time-drift.
+         */
+        byte180Display = new TextView(this);
+        byte180Display.setText("byte180: --");
+        byte180Display.setTextSize(16);
+        byte180Display.setTextColor(0xFFFFB347);
+        byte180Display.setTypeface(null, android.graphics.Typeface.BOLD);
+        byte180Display.setPadding(0, 0, 0, 16);
+
+        root.addView(
+                byte180Display,
+                new LinearLayout.LayoutParams(
+                        -1,
+                        -2));
+
+        /*
          * ------------------------------------------------------------
          * Primary action grid - fixed height, always visible, never
          * scrolls. Same callbacks as before, just arranged in a
@@ -5301,6 +5340,44 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> {
             if (field113Display != null) {
                 field113Display.setText(text);
+            }
+        });
+    }
+
+    /*
+     * Live readout for waveform-188's byte180 - same rolling-trend
+     * approach as field113. History window is smaller (10 vs 20)
+     * since waveform-188 records arrive far less often per pull than
+     * R22 frames do.
+     */
+    private void updateByte180Display(int value) {
+
+        byte180History.addLast(value);
+
+        while (byte180History.size() > 10) {
+            byte180History.removeFirst();
+        }
+
+        int oldest = byte180History.peekFirst();
+        int delta = value - oldest;
+
+        String trend;
+
+        if (Math.abs(delta) < 3) {
+            trend = "flat";
+        } else if (delta > 0) {
+            trend = "up";
+        } else {
+            trend = "down";
+        }
+
+        String text = String.format(Locale.US,
+                "byte180: %d  (%s over last %d)",
+                value, trend, byte180History.size());
+
+        runOnUiThread(() -> {
+            if (byte180Display != null) {
+                byte180Display.setText(text);
             }
         });
     }
