@@ -138,6 +138,20 @@ public class MainActivity extends Activity {
     private Runnable pendingWriteCallback;
 
     /*
+     * Waits for the REAL application-layer confirmation of a specific
+     * SET_CONFIG flag - the strap's own echo of that exact flag name
+     * on channel 0003 - not just the BLE-layer write ack. Added after
+     * finding those two are genuinely different moments: the write ack
+     * fires in ~30ms (just "the bytes went out"), while the real echo
+     * confirming the strap processed it can arrive tens of ms later -
+     * late enough that chaining off the write ack alone still let
+     * TOGGLE_LABRADOR_FILTERED_ON fire before the gate's real
+     * confirmation had come back.
+     */
+    private String pendingEcgGateConfirmationFlagName;
+    private Runnable pendingEcgGateConfirmationCallback;
+
+    /*
      * Labrador capture state.
      */
     private boolean labradorActive = false;
@@ -831,6 +845,8 @@ public class MainActivity extends Activity {
                 " len=" + value.length +
                 " raw=" + Protocol.hex(value));
 
+        checkPendingEcgGateConfirmation(value);
+
         /*
          * Existing generic protocol summary.
          */
@@ -1166,6 +1182,40 @@ public class MainActivity extends Activity {
                     "\"MAX86176: Set ECG ON\" ***");
 
             logRaw("MAX86176_SET_ECG_ON_CONFIRMED");
+        }
+    }
+
+    /*
+     * Fires a real, waiting callback the moment the strap's own echo
+     * of a specific SET_CONFIG flag name actually arrives, rather than
+     * the BLE-layer write ack, which fires earlier and doesn't mean
+     * the strap has actually processed the value yet. See the field
+     * declaration comment above for the full context.
+     */
+    private void checkPendingEcgGateConfirmation(byte[] v) {
+
+        if (pendingEcgGateConfirmationCallback == null
+                || pendingEcgGateConfirmationFlagName == null) {
+            return;
+        }
+
+        String text = new String(
+                v, java.nio.charset.StandardCharsets.US_ASCII);
+
+        if (text.contains(pendingEcgGateConfirmationFlagName)) {
+
+            line("*** REAL ECG GATE CONFIRMATION ECHO RECEIVED for \"" +
+                    pendingEcgGateConfirmationFlagName + "\" ***");
+
+            logRaw("ECG_GATE_REAL_ECHO_CONFIRMED flag=" +
+                    pendingEcgGateConfirmationFlagName);
+
+            Runnable cb = pendingEcgGateConfirmationCallback;
+
+            pendingEcgGateConfirmationCallback = null;
+            pendingEcgGateConfirmationFlagName = null;
+
+            cb.run();
         }
     }
 
@@ -2039,12 +2089,42 @@ public class MainActivity extends Activity {
         mainH.postDelayed(() -> {
 
             line("*** R22 unlock burst done - now setting ECG gate " +
-                    "via the confirmed-working mechanism, ECG start " +
-                    "now chained off its REAL write ack, not a fixed " +
-                    "delay guess ***");
+                    "via the confirmed-working mechanism - ECG start " +
+                    "now waits for the REAL application-layer echo " +
+                    "confirming this exact flag, not just the BLE " +
+                    "write ack (which fires too early to mean anything) ***");
 
-            sendR22Flag("enable_raw_data_w_ecg", '1', () ->
-                    fireRealEcgStartAfterGateConfirmed());
+            pendingEcgGateConfirmationFlagName = "enable_raw_data_w_ecg";
+            pendingEcgGateConfirmationCallback =
+                    this::fireRealEcgStartAfterGateConfirmed;
+
+            sendR22Flag("enable_raw_data_w_ecg", '1');
+
+            /*
+             * Safety fallback only - if the real echo somehow never
+             * arrives within 3s, proceed anyway rather than hang
+             * forever, but log plainly that this was a timeout, not
+             * a real confirmation.
+             */
+            mainH.postDelayed(() -> {
+
+                if (pendingEcgGateConfirmationCallback != null) {
+
+                    line("*** ECG gate echo TIMED OUT after 3s - " +
+                            "proceeding anyway, but this was NOT a " +
+                            "real confirmation ***");
+
+                    logRaw("ECG_GATE_ECHO_TIMEOUT flag=enable_raw_data_w_ecg");
+
+                    Runnable cb = pendingEcgGateConfirmationCallback;
+
+                    pendingEcgGateConfirmationCallback = null;
+                    pendingEcgGateConfirmationFlagName = null;
+
+                    cb.run();
+                }
+
+            }, 3000);
 
         }, afterR22Ms);
     }
