@@ -3418,6 +3418,45 @@ public class MainActivity extends Activity {
     }
 
     /*
+     * ------------------------------------------------------------------
+     * Tests whether enable_raw_data_w_ecg was sent through the wrong
+     * command this whole time. It's been sent via SET_DEVICE_CONFIG_
+     * VALUE (cmd 0x77) - a different, largely unresponsive command -
+     * based on an assumption made before the real R22 flag mechanism
+     * (SET_CONFIG, cmd 0x78) was ever confirmed. It shares the exact
+     * naming convention of the 10 confirmed-real R22 flags
+     * (enable_r22_packets, enable_passive_strap_fit_gen5, ...), all of
+     * which get an immediate, confirmed echo reply through cmd 0x78 -
+     * something 0x77 has never once produced for this key. This sends
+     * it through the mechanism that actually works, at both '1' and
+     * '2' (mirroring the confirmed start/restart split found for the
+     * ECG generation command itself), watching specifically for the
+     * same kind of echo the real flags get.
+     * ------------------------------------------------------------------
+     */
+    private void testEcgGateViaRealFlagMechanism() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot test");
+            return;
+        }
+
+        line("");
+        line("*** TESTING enable_raw_data_w_ecg VIA THE REAL SET_CONFIG " +
+                "MECHANISM (cmd 0x78), not SET_DEVICE_CONFIG_VALUE " +
+                "(cmd 0x77) - watch channel 0003 for an echo ***");
+        logRaw("ECG_GATE_VIA_REAL_FLAG_MECHANISM_BEGIN");
+
+        sendR22Flag("enable_raw_data_w_ecg", '1');
+
+        mainH.postDelayed(() ->
+                sendR22Flag("enable_raw_data_w_ecg", '2'), 800);
+
+        mainH.postDelayed(() ->
+                logRaw("ECG_GATE_VIA_REAL_FLAG_MECHANISM_BOTH_SENT"), 1600);
+    }
+
+    /*
      * One-tap: GET_ADVERTISING_NAME, then the ~10 confirmed R22 flags,
      * ~80ms apart (matching the real app's timing), each write-with-
      * response. Not the full real 15-flag burst - the remaining
@@ -4813,6 +4852,11 @@ public class MainActivity extends Activity {
                 "SWEEP SPECULATIVE ECG FLAG NAMES (unconfirmed guesses)",
                 v -> sweepEcgFlagGuesses());
         controls.addView(ecgFlagGuessSweepBtn);
+
+        Button ecgGateViaRealMechBtn = btn(
+                "TEST enable_raw_data_w_ecg VIA REAL FLAG MECHANISM (0x78)",
+                v -> testEcgGateViaRealFlagMechanism());
+        controls.addView(ecgGateViaRealMechBtn);
 
         EditText configKeyInput = new EditText(this);
         configKeyInput.setHint("device config key, e.g. enable_raw_data_w_ecg");
