@@ -525,6 +525,9 @@ public class MainActivity extends Activity {
                     (d != null ? d.getAddress() : "?") +
                     ")");
 
+            logRaw("BOND_STATE " + label +
+                    " addr=" + (d != null ? d.getAddress() : "?"));
+
             if (state == BluetoothDevice.BOND_BONDED
                     && pendingDevice != null
                     && d != null
@@ -536,6 +539,9 @@ public class MainActivity extends Activity {
                 pendingDevice = null;
 
                 line("CONNECTING (post-bond) " +
+                        toConnect.getAddress());
+
+                logRaw("CONNECTING_POST_BOND addr=" +
                         toConnect.getAddress());
 
                 updateStatus("● CONNECTING " + toConnect.getName());
@@ -551,6 +557,9 @@ public class MainActivity extends Activity {
 
                 line("BONDING FAILED/CANCELLED - " +
                         "not connecting");
+
+                logRaw("BONDING_FAILED_OR_CANCELLED addr=" +
+                        (d != null ? d.getAddress() : "?"));
 
                 pendingDevice = null;
             }
@@ -577,10 +586,14 @@ public class MainActivity extends Activity {
                     " status=" +
                     status);
 
+            logRaw("GATT_STATE_CHANGE state=" + state +
+                    " status=" + status);
+
             if (state ==
                     BluetoothProfile.STATE_CONNECTED) {
 
                 line("GATT CONNECTED");
+                logRaw("GATT_CONNECTED");
                 updateStatus("● CONNECTED");
                 g.discoverServices();
 
@@ -588,6 +601,7 @@ public class MainActivity extends Activity {
                     BluetoothProfile.STATE_DISCONNECTED) {
 
                 line("GATT DISCONNECTED");
+                logRaw("GATT_DISCONNECTED");
                 updateStatus("○ DISCONNECTED");
 
                 try {
@@ -4991,6 +5005,7 @@ public class MainActivity extends Activity {
             scanner = null;
 
             line("SCAN STOP");
+            logRaw("SCAN_STOP");
         }
     }
 
@@ -5010,6 +5025,7 @@ public class MainActivity extends Activity {
                 adapter.getBluetoothLeScanner();
 
         line("SCANNING 10s...");
+        logRaw("SCAN_START");
         updateStatus("● SCANNING...");
 
         ScanFilter f =
@@ -5057,6 +5073,11 @@ public class MainActivity extends Activity {
                     " RSSI=" +
                     r.getRssi());
 
+            logRaw("SCAN_FOUND name=" + d.getName() +
+                    " addr=" + d.getAddress() +
+                    " rssi=" + r.getRssi() +
+                    " bondStateAtScan=" + d.getBondState());
+
             updateStatus("● FOUND " + d.getName());
 
             if (gatt == null &&
@@ -5081,6 +5102,9 @@ public class MainActivity extends Activity {
                             "CONNECTING " +
                             d.getAddress());
 
+                    logRaw("ALREADY_BONDED_CONNECTING addr=" +
+                            d.getAddress());
+
                     updateStatus("● CONNECTING " + d.getName());
 
                     gatt =
@@ -5098,6 +5122,9 @@ public class MainActivity extends Activity {
                             "requesting bond " +
                             d.getAddress());
 
+                    logRaw("NOT_BONDED_REQUESTING_BOND addr=" +
+                            d.getAddress());
+
                     updateStatus("● BONDING " + d.getName());
 
                     pendingDevice = d;
@@ -5105,11 +5132,15 @@ public class MainActivity extends Activity {
                     boolean started =
                             d.createBond();
 
+                    logRaw("CREATE_BOND_CALLED result=" + started);
+
                     if (!started) {
 
                         line(
                                 "createBond() " +
                                 "returned false");
+
+                        logRaw("CREATE_BOND_RETURNED_FALSE");
 
                         pendingDevice = null;
                     }
