@@ -977,6 +977,26 @@ public class MainActivity extends Activity {
 
                 recordEcgCommandResponse(envCmd, resultCode);
 
+            } else if (envType == 0x24) {
+
+                /*
+                 * A COMMAND_RESPONSE (type 0x24) for an opcode not in
+                 * any of our named sets above - exactly what a hit
+                 * from the neighboring-opcode sweep would look like.
+                 * Flagged explicitly and distinctly so it can't blend
+                 * into the raw log unnoticed.
+                 */
+                int resultCode = value.length > 12 ? (value[12] & 0xff) : -1;
+
+                line("*** GENERIC COMMAND_RESPONSE for UNMAPPED cmd=" +
+                        envCmd + " (0x" + String.format("%02X", envCmd) +
+                        "): result byte=" + resultCode + " - THIS MAY " +
+                        "BE A REAL HIT, INVESTIGATE ***");
+
+                logRaw("GENERIC_COMMAND_RESPONSE cmd=" + envCmd +
+                        " resultByte=" + resultCode +
+                        " raw=" + Protocol.hex(value));
+
             } else if (envType != 0x2F && envType != 0x32 &&
                     envType != 43 && envType != 0x31 &&
                     envType != 0x24) {
@@ -2793,6 +2813,8 @@ public class MainActivity extends Activity {
                     "MAIN_CONTROL_ECG_DATA_GENERATION_STOP " +
                             "(bank-to-flash test)");
 
+            reportEcgAttemptVerdict();
+
             mainH.postDelayed(this::startRealHistoricalPull, 1000);
 
         }, 35000);
@@ -3978,6 +4000,65 @@ public class MainActivity extends Activity {
         "enable_sig12_during_ecg",
     };
 
+    /*
+     * ------------------------------------------------------------------
+     * Sweeps the safe, non-destructive opcodes immediately neighboring
+     * the known ECG cluster (123/124/125/139), on the hypothesis that
+     * firmware 50.40.1.0 may have remapped or dropped these opcodes
+     * from its dispatcher entirely rather than keeping them mapped and
+     * gating the feature behind them - which would produce exactly our
+     * symptom (zero COMMAND_RESPONSE, not a SUCCESS-then-silence) where
+     * every other reported case in #891 gets a real SUCCESS ack.
+     * Opcode remapping between firmware generations on this platform
+     * is independently confirmed real (docs/PROTOCOL.md: SET_CLOCK/
+     * GET_CLOCK/GET_HELLO sit at different numbers on MAVERICK vs the
+     * 4.0). Deliberately excludes the confirmed-destructive opcodes
+     * (25 FORCE_TRIM, 32 POWER_CYCLE_STRAP, 36/37/38 firmware, 45
+     * ENTER_BLE_DFU, 99, 142/143/144) and everything already tested
+     * (119/120/121/123/124/125/139).
+     * ------------------------------------------------------------------
+     */
+    private static final int[] NEIGHBORING_OPCODES_TO_SWEEP = {
+        122, 126, 127, 128, 129, 130, 131, 132, 133,
+        134, 135, 136, 137, 138, 140, 141,
+    };
+
+    private void sweepNeighboringOpcodes() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot sweep neighboring opcodes");
+            return;
+        }
+
+        line("");
+        line("*** SWEEPING " + NEIGHBORING_OPCODES_TO_SWEEP.length +
+                " SAFE NEIGHBORING OPCODES (destructive ones excluded) " +
+                "- watching for ANY COMMAND_RESPONSE, in case the real " +
+                "ECG opcodes moved on this firmware ***");
+        logRaw("NEIGHBORING_OPCODE_SWEEP_BEGIN count=" +
+                NEIGHBORING_OPCODES_TO_SWEEP.length);
+
+        for (int i = 0; i < NEIGHBORING_OPCODES_TO_SWEEP.length; i++) {
+
+            int cmd = NEIGHBORING_OPCODES_TO_SWEEP[i];
+            long delayMs = 500L * i;
+
+            mainH.postDelayed(() -> {
+
+                line("--- probing cmd=" + cmd + " (0x" +
+                        String.format("%02X", cmd) + ") ---");
+
+                send(cmd, 1, "NEIGHBORING_OPCODE_PROBE_" + cmd);
+
+            }, delayMs);
+        }
+
+        long afterMs = 500L * NEIGHBORING_OPCODES_TO_SWEEP.length + 500;
+
+        mainH.postDelayed(() ->
+                logRaw("NEIGHBORING_OPCODE_SWEEP_COMPLETE"), afterMs);
+    }
+
     private void sweepEcgFlagGuesses() {
 
         if (gatt == null || cmdWrite == null) {
@@ -3987,8 +4068,14 @@ public class MainActivity extends Activity {
 
         line("");
         line("*** SWEEPING " + ECG_FLAG_GUESSES.length + " SPECULATIVE " +
-                "ECG FLAG NAMES - none confirmed, watch for ANY reply " +
-                "that differs from the others ***");
+                "ECG FLAG NAMES via the CONFIRMED-WORKING SET_CONFIG " +
+                "mechanism (cmd 0x78) - the original version of this " +
+                "sweep used SET_DEVICE_CONFIG_VALUE (cmd 0x77/0x79), " +
+                "which we later proved never replies to ANYTHING, even " +
+                "confirmed-real keys, making every prior run of this " +
+                "sweep uninformative regardless of the guesses' " +
+                "validity. Watching channel 0003 for a real echo this " +
+                "time ***");
         logRaw("ECG_FLAG_GUESS_SWEEP_BEGIN count=" + ECG_FLAG_GUESSES.length);
 
         for (int i = 0; i < ECG_FLAG_GUESSES.length; i++) {
@@ -3999,8 +4086,7 @@ public class MainActivity extends Activity {
             mainH.postDelayed(() -> {
 
                 line("--- guess: \"" + flag + "\" ---");
-                setDeviceConfigValue(flag, 0x31);
-                getDeviceConfigValue(flag);
+                sendR22Flag(flag, '1');
 
             }, delayMs);
         }
@@ -5494,6 +5580,11 @@ public class MainActivity extends Activity {
                 "TEST BOTH SELECT_WRIST VALUES (0 vs 1)",
                 v -> testBothWristValues());
         controls.addView(wristValueTestBtn);
+
+        Button neighboringOpcodeSweepBtn = btn(
+                "SWEEP NEIGHBORING OPCODES (maybe ECG moved on this fw)",
+                v -> sweepNeighboringOpcodes());
+        controls.addView(neighboringOpcodeSweepBtn);
 
         /*
          * R22 unlock - still useful on its own for historical/motion
