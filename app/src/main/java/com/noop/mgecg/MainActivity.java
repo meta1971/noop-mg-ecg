@@ -2380,6 +2380,112 @@ public class MainActivity extends Activity {
         send(0x7C, 3, "MAIN_CONTROL_ECG_DATA_GENERATION_PROBE_ARG3");
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * Tests a specific sequence suggested externally (not from any
+     * verified source - no citation for this exact procedure exists
+     * in the real NOOP source, the hardware teardown, or any community
+     * thread we've found): R22+gate flags -> arg=3 probe -> a 1.5s
+     * wait -> ONE non-repeated START -> a long listen window BEFORE
+     * any historical pull. Genuinely untried in this exact shape
+     * (single kick with a preceding probe+wait, no history pull
+     * beforehand), so worth a clean test even though the claimed
+     * mechanism behind it isn't something we can verify.
+     * ------------------------------------------------------------------
+     */
+    private void runSuggestedSequenceTest() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run suggested sequence");
+            return;
+        }
+
+        line("");
+        line("*** TESTING EXTERNALLY-SUGGESTED SEQUENCE: flags -> " +
+                "gate -> arg=3 probe -> wait 1.5s -> ONE start (no " +
+                "repeats) -> long listen, NO pull until type=43 seen - " +
+                "WEAR + TOUCH CLASP ***");
+        logRaw("SUGGESTED_SEQUENCE_TEST_BEGIN");
+
+        for (int i = 0; i < R22_FLAGS.length; i++) {
+
+            String flag = R22_FLAGS[i];
+            long delayMs = 80L * (i + 1);
+
+            mainH.postDelayed(() -> sendR22Flag(flag, '1'), delayMs);
+        }
+
+        long afterR22Ms = 80L * (R22_FLAGS.length + 2);
+
+        mainH.postDelayed(() -> {
+
+            pendingEcgGateConfirmationFlagName = "enable_raw_data_w_ecg";
+            pendingEcgGateConfirmationCallback = () -> {
+
+                line("--- gate confirmed - sending arg=3 probe, then " +
+                        "waiting 1.5s before the single real start ---");
+
+                send(0x7C, 3,
+                        "MAIN_CONTROL_ECG_DATA_GENERATION_PROBE_ARG3 " +
+                                "(suggested sequence)");
+
+                mainH.postDelayed(() -> {
+
+                    realtimeEcgFragments.clear();
+                    ecgCommandResponsesThisAttempt.clear();
+                    realtimeEcgTotalBytes = 0;
+                    realtimeEcgBinaryFile = null;
+                    maxEcgOnSeen = false;
+
+                    labradorActive = true;
+                    recordingComplete = false;
+                    labradorPacketCount = 0;
+
+                    ecgEverRunThisConnection = true;
+
+                    line("--- sending the ONE real start now - no " +
+                            "repeats, per the suggested sequence ---");
+
+                    sendWithCallback(0x8B, 1,
+                            "TOGGLE_REALTIME_FILTERED_ECG_ON (suggested)",
+                            () -> sendWithCallback(0x7D, 1,
+                            "TOGGLE_SAVE_RAW_ECG_ON (suggested)", () ->
+                            send(0x7C, 2,
+                                    "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                            "(suggested, single, no repeat)")));
+
+                    ecgListenActive = true;
+                    ecgListenGeneration++;
+                    ecgListenStartedAtMs = System.currentTimeMillis();
+
+                    final int myGen = ecgListenGeneration;
+
+                    mainH.postDelayed(
+                            () -> runEcgListenHeartbeat(myGen), 5000);
+
+                }, 1500);
+            };
+
+            sendR22Flag("enable_raw_data_w_ecg", '1');
+
+            mainH.postDelayed(() -> {
+
+                if (pendingEcgGateConfirmationCallback != null) {
+
+                    line("*** gate echo TIMED OUT - proceeding anyway ***");
+                    logRaw("ECG_GATE_ECHO_TIMEOUT flag=enable_raw_data_w_ecg");
+
+                    Runnable cb = pendingEcgGateConfirmationCallback;
+                    pendingEcgGateConfirmationCallback = null;
+                    pendingEcgGateConfirmationFlagName = null;
+                    cb.run();
+                }
+
+            }, 3000);
+
+        }, afterR22Ms);
+    }
+
     private void runFullCombinedEcgAttempt() {
 
         if (gatt == null || cmdWrite == null) {
@@ -5313,6 +5419,12 @@ public class MainActivity extends Activity {
                 "PROBE UNDOCUMENTED cmd=0x7C arg=3",
                 v -> probeUndocumentedEcgArg());
         controls.addView(probeArgBtn);
+
+        Button suggestedSeqBtn = btn(
+                "TEST SUGGESTED SEQUENCE (flags->probe->wait->1 start) - " +
+                        "WEAR+TOUCH",
+                v -> runSuggestedSequenceTest());
+        controls.addView(suggestedSeqBtn);
 
         /*
          * R22 unlock - still useful on its own for historical/motion
