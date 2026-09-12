@@ -98,6 +98,32 @@ public class MainActivity extends Activity {
             UUID.fromString("00002A27-0000-1000-8000-00805f9b34fb");
 
     /*
+     * Generic Attribute Service / Service Changed - never subscribed
+     * before now. Standard BLE mechanism for the peripheral to
+     * announce that its own GATT database changed. If contact/wear
+     * state ever triggers any structural change in what the strap
+     * exposes, this is the one thing that would announce it, and
+     * we've been deaf to it the whole investigation.
+     */
+    private final UUID gattService =
+            UUID.fromString("00001801-0000-1000-8000-00805f9b34fb");
+
+    private final UUID serviceChangedChar =
+            UUID.fromString("00002A05-0000-1000-8000-00805f9b34fb");
+
+    /*
+     * Battery Service / Battery Level - we've subscribed to its
+     * NOTIFY before, but never explicitly READ it. Low probability
+     * of reacting to touch, but free to check and completes the
+     * picture of every standard characteristic actually watched.
+     */
+    private final UUID battService =
+            UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb");
+
+    private final UUID battLevelChar =
+            UUID.fromString("00002A19-0000-1000-8000-00805f9b34fb");
+
+    /*
      * ------------------------------------------------------------------
      * Two standard DIS characteristics never queried before this
      * point - System ID and PnP ID. PnP ID in particular carries a
@@ -136,6 +162,13 @@ public class MainActivity extends Activity {
      * queue's serialization being the only thing enforcing order.
      */
     private Runnable pendingWriteCallback;
+
+    /*
+     * Continuous RSSI monitoring flag - true for the whole life of a
+     * connection, false once disconnected, so the polling loop in
+     * onReadRemoteRssi() knows when to stop rescheduling itself.
+     */
+    private boolean rssiMonitoringActive = false;
 
     /*
      * Waits for the REAL application-layer confirmation of a specific
@@ -631,6 +664,8 @@ public class MainActivity extends Activity {
                 logRaw("GATT_DISCONNECTED");
                 updateStatus("○ DISCONNECTED");
 
+                rssiMonitoringActive = false;
+
                 try {
                     g.close();
                 } catch (Exception ignored) {
@@ -665,9 +700,20 @@ public class MainActivity extends Activity {
             line("services discovered status=" +
                     status);
 
+            rssiMonitoringActive = true;
+            g.readRemoteRssi();
+            schedulePeriodicBatteryRead(g);
+
             dumpAllServices(g);
 
+            mainH.postDelayed(() -> {
+                if (gatt != null && rssiMonitoringActive) {
+                    schedulePeriodicGattReEnum(gatt);
+                }
+            }, 30000);
+
             subscribeHeartRateIfPresent(g);
+            subscribeServiceChangedIfPresent(g);
             readDeviceInfoIfPresent(g);
 
             BluetoothGattService s =
@@ -724,6 +770,85 @@ public class MainActivity extends Activity {
                     }
                 });
             }
+        }
+
+        @Override
+        public void onReadRemoteRssi(
+                BluetoothGatt g,
+                int rssi,
+                int status) {
+
+            /*
+             * Continuous RSSI monitoring - a physically distinct
+             * channel from everything else we've watched all
+             * investigation (frame content). Body tissue near the
+             * antenna/clasp can measurably affect RF coupling, so
+             * this is checked as its own dimension, logged
+             * continuously so it can be correlated against the
+             * MARK_TOUCH_START/END timestamps independent of
+             * whatever the strap chooses to send us.
+             */
+            logRaw("RSSI value=" + rssi + " status=" + status);
+
+            if (rssiMonitoringActive) {
+
+                mainH.postDelayed(() -> {
+                    if (gatt != null && rssiMonitoringActive) {
+                        gatt.readRemoteRssi();
+                    }
+                }, 1000);
+            }
+        }
+
+        @Override
+        public void onMtuChanged(
+                BluetoothGatt g,
+                int mtu,
+                int status) {
+
+            /*
+             * Never logged before this point despite clearly being
+             * negotiated already (we've reliably seen 244-byte
+             * notification payloads, which can't fit in the default
+             * 23-byte MTU) - most likely peer-initiated, since we've
+             * never called requestMtu() ourselves. Added purely for
+             * visibility; not expected to be touch-differential since
+             * this normally negotiates once, early in the connection.
+             */
+            line("MTU changed to " + mtu + " status=" + status);
+            logRaw("MTU_CHANGED mtu=" + mtu + " status=" + status);
+        }
+
+        @Override
+        public void onPhyUpdate(
+                BluetoothGatt g,
+                int txPhy,
+                int rxPhy,
+                int status) {
+
+            /*
+             * Passive - we never request a PHY change ourselves, this
+             * only fires if something (peer-initiated or a stack
+             * default) changes it. A subsystem powering on internally
+             * and needing more throughput is exactly the kind of
+             * thing that could trigger this, and it's a channel
+             * nothing else we've built could have caught.
+             */
+            line("*** PHY UPDATE: txPhy=" + txPhy + " rxPhy=" + rxPhy +
+                    " status=" + status + " ***");
+            logRaw("PHY_UPDATE txPhy=" + txPhy + " rxPhy=" + rxPhy +
+                    " status=" + status);
+        }
+
+        @Override
+        public void onPhyRead(
+                BluetoothGatt g,
+                int txPhy,
+                int rxPhy,
+                int status) {
+
+            logRaw("PHY_READ txPhy=" + txPhy + " rxPhy=" + rxPhy +
+                    " status=" + status);
         }
 
         @Override
@@ -934,6 +1059,45 @@ public class MainActivity extends Activity {
                         envCmd + ") - see ASCII/hex above for content ***");
                 logRaw("DEVICE_CONFIG_VALUE_REPLY cmd=" + envCmd +
                         " raw=" + Protocol.hex(value));
+            } else if (envType == 0x24 && envCmd == 128) {
+
+                /*
+                 * GET_FF_VALUE reply - the real, authoritative
+                 * read-back for the SET_FF_VALUE/SET_CONFIG (120)
+                 * namespace. Payload after the header is expected to
+                 * mirror the SET_FF_VALUE echo shape: [0x01][32-byte
+                 * NUL-padded key][value byte]. Decoded explicitly so
+                 * the actual stored value is visible directly, not
+                 * left as raw hex to parse by hand.
+                 */
+                String keyEchoed = "";
+                int storedValue = -1;
+
+                if (value.length >= 13 + 1 + 32 + 1 &&
+                        value[13] == 0x01) {
+
+                    StringBuilder kb = new StringBuilder();
+
+                    for (int i = 0; i < 32; i++) {
+                        int b = value[14 + i] & 0xff;
+                        if (b == 0) break;
+                        kb.append((char) b);
+                    }
+
+                    keyEchoed = kb.toString();
+                    storedValue = value[14 + 32] & 0xff;
+                }
+
+                line("*** GET_FF_VALUE REPLY: key=\"" + keyEchoed +
+                        "\" storedValue=" + storedValue +
+                        " (0x" + String.format("%02X", storedValue) +
+                        ") - THIS IS THE REAL STORED STATE, not an " +
+                        "echo of what we wrote ***");
+
+                logRaw("GET_FF_VALUE_REPLY key=" + keyEchoed +
+                        " storedValue=" + storedValue +
+                        " raw=" + Protocol.hex(value));
+
             } else if (envType == 0x24 &&
                     (envCmd == 139 || envCmd == 124 || envCmd == 125 ||
                             envCmd == 123)) {
@@ -1832,6 +1996,31 @@ public class MainActivity extends Activity {
      * ------------------------------------------------------------------
      */
 
+    /*
+     * Periodic full GATT re-enumeration, every 30s for the life of
+     * the connection - a backstop for Service Changed, since some
+     * peripherals don't reliably send that indication even when
+     * their structure genuinely changes. Piggybacks on the same
+     * rssiMonitoringActive lifetime as the other periodic checks.
+     */
+    private void schedulePeriodicGattReEnum(BluetoothGatt g) {
+
+        if (!rssiMonitoringActive) {
+            return;
+        }
+
+        line("--- periodic GATT re-enumeration (30s interval) ---");
+        logRaw("PERIODIC_GATT_REENUM_BEGIN");
+        dumpAllServices(g);
+        logRaw("PERIODIC_GATT_REENUM_END");
+
+        mainH.postDelayed(() -> {
+            if (gatt != null && rssiMonitoringActive) {
+                schedulePeriodicGattReEnum(gatt);
+            }
+        }, 30000);
+    }
+
     private void dumpAllServices(BluetoothGatt g) {
 
         line("");
@@ -2050,6 +2239,58 @@ public class MainActivity extends Activity {
             if (!gatt.writeCharacteristic(cmdWrite)) {
                 line("writeCharacteristic() rejected " +
                         "(GET_DEVICE_CONFIG_VALUE)");
+                opDone();
+            }
+        });
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * GET_FF_VALUE (cmd=128/0x80) - the REAL, authoritative read-back
+     * verb for the SET_FF_VALUE/SET_CONFIG (cmd=120) namespace we've
+     * actually been writing enable_raw_data_w_ecg through. Found
+     * directly in the real NOOP source (R22Disable.kt): a completely
+     * different opcode from GET_DEVICE_CONFIG_VALUE (121), which
+     * belongs to the SEPARATE SET_DEVICE_CONFIG_VALUE (119) namespace
+     * we abandoned earlier. Their own code explicitly does not trust
+     * a SET_FF_VALUE echo as proof of a real stored change - only a
+     * 128 read-back counts as state. We've never sent this opcode at
+     * all until now. Request body mirrors GET_DEVICE_CONFIG_VALUE's
+     * own shape (0x01 + 32-byte NUL-padded key), by symmetry with the
+     * sibling namespace's GET verb - not independently confirmed, but
+     * the most reasonable inference available.
+     * ------------------------------------------------------------------
+     */
+    private void getFeatureFlagValue(String key) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        byte[] arg = buildDeviceConfigArg(key, null);
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labradorBytes(0x23, 128, arg, thisSeq);
+
+            logRaw("TX GET_FF_VALUE key=" + key +
+                    " seq=0x" + String.format("%02X", thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX GET_FF_VALUE key=\"" + key + "\" (the REAL " +
+                    "read-back verb, cmd=128 - never sent before now)");
+            line("TX LEN =" + f.length);
+            line("TX RAW =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (GET_FF_VALUE)");
                 opDone();
             }
         });
@@ -2386,6 +2627,27 @@ public class MainActivity extends Activity {
      * undocumented argument produces a distinct ACK/response instead
      * of silence. Not expected to do anything useful by itself.
      */
+    /*
+     * ------------------------------------------------------------------
+     * Precise touch markers - a real gap in every prior contact test.
+     * These just log a clearly-tagged timestamp the instant they're
+     * tapped, so any RX event (or any change in one) can be checked
+     * against the EXACT moment contact started/stopped, rather than
+     * estimated from wall-clock guesses. No BLE traffic sent.
+     * ------------------------------------------------------------------
+     */
+    private void markTouchStart() {
+        line("");
+        line("*** MARK: TOUCH START ***");
+        logRaw("MARK_TOUCH_START");
+    }
+
+    private void markTouchEnd() {
+        line("");
+        line("*** MARK: TOUCH END ***");
+        logRaw("MARK_TOUCH_END");
+    }
+
     private void probeUndocumentedEcgArg() {
 
         if (gatt == null || cmdWrite == null) {
@@ -2568,6 +2830,85 @@ public class MainActivity extends Activity {
             }, 3000);
 
         }, afterR22Ms);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * CONTACT-FIRST ECG ATTEMPT - tests whether contact needs to be
+     * established and settled BEFORE the command sequence, not at or
+     * after it as every prior attempt has done. Motivated by the
+     * MAX86176's own datasheet: it features "ultra-low power DC
+     * lead-on detection during standby mode" - a real, chip-level
+     * autonomous contact-detection feature that operates before the
+     * full ECG acquisition pipeline ever spins up. If the firmware's
+     * higher-level "start generation" command only means something
+     * once the chip has already latched a lead-on state itself,
+     * touching at/after START (every attempt so far) could be too
+     * late relative to whatever the chip needs to have already
+     * settled internally.
+     *
+     * Sequence: prompt for contact now, wait 5s for it to settle,
+     * THEN run the normal R22+gate+start sequence while contact
+     * continues throughout - not tested in this order before.
+     * ------------------------------------------------------------------
+     */
+    private void runContactFirstEcgAttempt() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run contact-first attempt");
+            return;
+        }
+
+        line("");
+        line("*** CONTACT-FIRST ECG ATTEMPT - TOUCH THE CLASP NOW, " +
+                "BEFORE ANYTHING IS SENT - hold steady, waiting 5s for " +
+                "it to settle before the command sequence starts ***");
+        logRaw("CONTACT_FIRST_ATTEMPT_BEGIN");
+
+        mainH.postDelayed(() -> {
+
+            line("*** contact settle wait done - now running the " +
+                    "normal R22+gate+start sequence - KEEP TOUCHING ***");
+            logRaw("CONTACT_FIRST_SEQUENCE_NOW_SENDING");
+
+            for (int i = 0; i < R22_FLAGS.length; i++) {
+
+                String flag = R22_FLAGS[i];
+                long delayMs = 80L * (i + 1);
+
+                mainH.postDelayed(() -> sendR22Flag(flag, '1'), delayMs);
+            }
+
+            long afterR22Ms = 80L * (R22_FLAGS.length + 2);
+
+            mainH.postDelayed(() -> {
+
+                pendingEcgGateConfirmationFlagName = "enable_raw_data_w_ecg";
+                pendingEcgGateConfirmationCallback =
+                        this::fireRealEcgStartAfterGateConfirmed;
+
+                sendR22Flag("enable_raw_data_w_ecg", '1');
+
+                mainH.postDelayed(() -> {
+
+                    if (pendingEcgGateConfirmationCallback != null) {
+
+                        line("*** gate echo TIMED OUT - proceeding " +
+                                "anyway ***");
+                        logRaw("ECG_GATE_ECHO_TIMEOUT flag=" +
+                                "enable_raw_data_w_ecg");
+
+                        Runnable cb = pendingEcgGateConfirmationCallback;
+                        pendingEcgGateConfirmationCallback = null;
+                        pendingEcgGateConfirmationFlagName = null;
+                        cb.run();
+                    }
+
+                }, 3000);
+
+            }, afterR22Ms);
+
+        }, 5000);
     }
 
     private void runFullCombinedEcgAttempt() {
@@ -5148,6 +5489,68 @@ public class MainActivity extends Activity {
         subscribe(g, c);
     }
 
+    private void subscribeServiceChangedIfPresent(BluetoothGatt g) {
+
+        BluetoothGattService gatt1801 = g.getService(gattService);
+
+        if (gatt1801 == null) {
+            return;
+        }
+
+        BluetoothGattCharacteristic c =
+                gatt1801.getCharacteristic(serviceChangedChar);
+
+        if (c == null) {
+            return;
+        }
+
+        line("Generic Attribute Service Changed found - subscribing " +
+                "(never watched before this point)");
+        subscribe(g, c);
+    }
+
+    private void readBatteryLevelIfPresent(BluetoothGatt g) {
+
+        BluetoothGattService batt = g.getService(battService);
+
+        if (batt == null) {
+            return;
+        }
+
+        BluetoothGattCharacteristic c =
+                batt.getCharacteristic(battLevelChar);
+
+        if (c == null) {
+            return;
+        }
+
+        line("Battery Service found - reading level explicitly " +
+                "(never read before this point, only subscribed)");
+        queueRead(g, c);
+    }
+
+    /*
+     * Re-reads battery level every 20s for the life of the connection,
+     * not just once at connect - low probability of reacting to touch,
+     * but a single reading can't show a differential at all. Piggybacks
+     * on the same rssiMonitoringActive flag rather than adding a second
+     * one, since both should run for exactly the same lifetime.
+     */
+    private void schedulePeriodicBatteryRead(BluetoothGatt g) {
+
+        if (!rssiMonitoringActive) {
+            return;
+        }
+
+        readBatteryLevelIfPresent(g);
+
+        mainH.postDelayed(() -> {
+            if (gatt != null && rssiMonitoringActive) {
+                schedulePeriodicBatteryRead(gatt);
+            }
+        }, 20000);
+    }
+
     private void readDeviceInfoIfPresent(BluetoothGatt g) {
 
         BluetoothGattService dis = g.getService(disService);
@@ -5477,6 +5880,26 @@ public class MainActivity extends Activity {
                         -1,
                         -2));
 
+        /*
+         * Touch markers placed right at the top, outside the
+         * scrollable grid below, so they're always one tap away
+         * during a live contact test - no hunting through buttons
+         * at the exact moment contact starts or stops.
+         */
+        LinearLayout markerRow = new LinearLayout(this);
+        markerRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button touchStartBtn = btn("MARK TOUCH START", v -> markTouchStart());
+        Button touchEndBtn = btn("MARK TOUCH END", v -> markTouchEnd());
+
+        markerRow.addView(touchStartBtn,
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        markerRow.addView(touchEndBtn,
+                new LinearLayout.LayoutParams(0, -2, 1f));
+
+        root.addView(markerRow,
+                new LinearLayout.LayoutParams(-1, -2));
+
         LinearLayout row1 =
                 new LinearLayout(this);
         row1.setOrientation(LinearLayout.HORIZONTAL);
@@ -5616,6 +6039,16 @@ public class MainActivity extends Activity {
         controls.addView(combinedBtn);
 
         /*
+         * CONTACT-FIRST ECG ATTEMPT - touch established and settled
+         * BEFORE the command sequence, not at/after it like every
+         * other attempt.
+         */
+        Button contactFirstBtn = btn(
+                "CONTACT-FIRST ECG ATTEMPT - TOUCH NOW, BEFORE TAPPING",
+                v -> runContactFirstEcgAttempt());
+        controls.addView(contactFirstBtn);
+
+        /*
          * ULTIMATE ECG ATTEMPT - four new, previously-untried ideas:
          * explicit SpO2/PPG-off mode reset, a real warm-up delay
          * before touch, periodic START re-kicks through the hold,
@@ -5694,6 +6127,12 @@ public class MainActivity extends Activity {
                 "SET ECG GATE (confirmed-working mechanism)",
                 v -> sendR22Flag("enable_raw_data_w_ecg", '1'));
         controls.addView(ecgGateSetGetBtn);
+
+        Button ecgGateRealReadBackBtn = btn(
+                "GET REAL STORED VALUE (GET_FF_VALUE 128, never sent " +
+                        "before now)",
+                v -> getFeatureFlagValue("enable_raw_data_w_ecg"));
+        controls.addView(ecgGateRealReadBackBtn);
 
         Button ecgGateValueTestBtn = btn(
                 "TEST ECG GATE VALUE: raw 0x01 vs ASCII '1'",
