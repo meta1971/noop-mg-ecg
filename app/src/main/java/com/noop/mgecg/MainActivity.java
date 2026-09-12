@@ -4023,6 +4023,68 @@ public class MainActivity extends Activity {
         134, 135, 136, 137, 138, 140, 141,
     };
 
+    /*
+     * ------------------------------------------------------------------
+     * Extends the neighboring-opcode sweep into the high-140s/150s -
+     * motivated directly by confirming cmd=145 is GET_HELLO's reply
+     * (the CLIENT_HELLO ack we've seen since the start of this whole
+     * investigation) and by the #891 thread's own docs/PROTOCOL.md
+     * excerpt: this exact MAVERICK/5-MG firmware family remaps
+     * SET_CLOCK->146, GET_CLOCK->147, GET_HELLO->145 - a confirmed,
+     * real example of this firmware clustering remapped commands
+     * right above where the first sweep stopped (141). If ECG moved
+     * anywhere, this is a far more motivated place to look than
+     * blind guessing.
+     *
+     * Genuinely less-charted territory than the first sweep - we only
+     * know 142/143/144 are destructive, nothing confirms 148+ is
+     * safe the way 122-141 mostly was. Kept to the gentle arg=1
+     * convention throughout, same as every known-safe toggle, and
+     * capped at 160 rather than sweeping further blind.
+     * ------------------------------------------------------------------
+     */
+    private static final int[] HIGH_RANGE_OPCODES_TO_SWEEP = {
+        148, 149, 150, 151, 152, 153, 154, 155,
+        156, 157, 158, 159, 160,
+    };
+
+    private void sweepHighRangeOpcodes() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot sweep high-range opcodes");
+            return;
+        }
+
+        line("");
+        line("*** SWEEPING " + HIGH_RANGE_OPCODES_TO_SWEEP.length +
+                " OPCODES IN THE 148-160 RANGE - motivated by confirmed " +
+                "clock-family remapping to 145/146/147 on this exact " +
+                "firmware family. Less-charted than the first sweep - " +
+                "watching closely ***");
+        logRaw("HIGH_RANGE_OPCODE_SWEEP_BEGIN count=" +
+                HIGH_RANGE_OPCODES_TO_SWEEP.length);
+
+        for (int i = 0; i < HIGH_RANGE_OPCODES_TO_SWEEP.length; i++) {
+
+            int cmd = HIGH_RANGE_OPCODES_TO_SWEEP[i];
+            long delayMs = 600L * i;
+
+            mainH.postDelayed(() -> {
+
+                line("--- probing cmd=" + cmd + " (0x" +
+                        String.format("%02X", cmd) + ") ---");
+
+                send(cmd, 1, "HIGH_RANGE_OPCODE_PROBE_" + cmd);
+
+            }, delayMs);
+        }
+
+        long afterMs = 600L * HIGH_RANGE_OPCODES_TO_SWEEP.length + 500;
+
+        mainH.postDelayed(() ->
+                logRaw("HIGH_RANGE_OPCODE_SWEEP_COMPLETE"), afterMs);
+    }
+
     private void sweepNeighboringOpcodes() {
 
         if (gatt == null || cmdWrite == null) {
@@ -5585,6 +5647,11 @@ public class MainActivity extends Activity {
                 "SWEEP NEIGHBORING OPCODES (maybe ECG moved on this fw)",
                 v -> sweepNeighboringOpcodes());
         controls.addView(neighboringOpcodeSweepBtn);
+
+        Button highRangeOpcodeSweepBtn = btn(
+                "SWEEP HIGH-RANGE OPCODES 148-160 (confirmed remap zone)",
+                v -> sweepHighRangeOpcodes());
+        controls.addView(highRangeOpcodeSweepBtn);
 
         /*
          * R22 unlock - still useful on its own for historical/motion
