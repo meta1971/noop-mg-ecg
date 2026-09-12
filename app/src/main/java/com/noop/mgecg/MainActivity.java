@@ -935,26 +935,27 @@ public class MainActivity extends Activity {
                 logRaw("DEVICE_CONFIG_VALUE_REPLY cmd=" + envCmd +
                         " raw=" + Protocol.hex(value));
             } else if (envType == 0x24 &&
-                    (envCmd == 139 || envCmd == 124 || envCmd == 125)) {
+                    (envCmd == 139 || envCmd == 124 || envCmd == 125 ||
+                            envCmd == 123)) {
 
                 /*
-                 * A REAL COMMAND_RESPONSE for one of the three ECG
-                 * commands - confirmed via the real NOOP source
-                 * (Whoop5EcgProbe.kt) to be packet type 36 (0x24),
-                 * with the actual result code at byte 12 of the full
-                 * frame: 0=FAILURE, 1=SUCCESS, 2=PENDING, 3=UNSUPPORTED.
-                 * Every log collected before this fix showed ZERO of
-                 * these for any of the three ECG opcodes - meaning we
-                 * were never even getting application-layer
-                 * acknowledgment, only the low-level BLE write ack.
-                 * This is the first time that distinction is actually
-                 * checked and reported.
+                 * A REAL COMMAND_RESPONSE for one of the four opcodes
+                 * the project's own EcgResearchAllowList groups as
+                 * PROBE_OPCODES = {123, 124, 125, 139} - SELECT_WRIST
+                 * included, per real PR discussion (#1969) noting its
+                 * right/left mapping is unverified and "one value the
+                 * measured firmware refuses" - meaning it gets a real,
+                 * differentiated response unlike our three ECG toggles.
+                 * Tracking it the same way to find out which value is
+                 * actually accepted on this unit.
                  */
                 String cmdName = envCmd == 139
                         ? "TOGGLE_REALTIME_FILTERED_ECG"
                         : envCmd == 124
                         ? "MAIN_CONTROL_ECG_DATA_GENERATION"
-                        : "TOGGLE_SAVE_RAW_ECG";
+                        : envCmd == 125
+                        ? "TOGGLE_SAVE_RAW_ECG"
+                        : "SELECT_WRIST";
 
                 int resultCode = value.length > 12 ? (value[12] & 0xff) : -1;
 
@@ -2393,6 +2394,69 @@ public class MainActivity extends Activity {
      * mechanism behind it isn't something we can verify.
      * ------------------------------------------------------------------
      */
+    /*
+     * ------------------------------------------------------------------
+     * Tests both SELECT_WRIST argument values (0 and 1) and reports
+     * which one actually gets accepted, per real PR discussion
+     * (#1969) noting the right/left mapping is unverified and one
+     * value is refused on real MG firmware. We've only ever sent
+     * arg=0 once, standalone, never checked whether it's the
+     * accepted or refused value, and never combined it with an ECG
+     * attempt despite the project's own allow-list grouping
+     * SELECT_WRIST as one of the four ECG probe opcodes.
+     * ------------------------------------------------------------------
+     */
+    private void testBothWristValues() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot test wrist values");
+            return;
+        }
+
+        line("");
+        line("*** TESTING BOTH SELECT_WRIST VALUES (0 and 1) - " +
+                "watching for COMMAND_RESPONSE to see which is " +
+                "accepted vs refused ***");
+        logRaw("WRIST_VALUE_TEST_BEGIN");
+
+        ecgCommandResponsesThisAttempt.remove(123);
+
+        send(0x7B, 0, "SELECT_WRIST_TEST_ARG0");
+
+        mainH.postDelayed(() -> {
+
+            Integer resultFor0 = ecgCommandResponsesThisAttempt.get(123);
+
+            line("--- arg=0 result: " +
+                    (resultFor0 == null ? "no COMMAND_RESPONSE" :
+                            resultFor0) + " ---");
+
+            logRaw("WRIST_VALUE_ARG0_RESULT=" +
+                    (resultFor0 == null ? "NoReply" : resultFor0));
+
+            ecgCommandResponsesThisAttempt.remove(123);
+
+            send(0x7B, 1, "SELECT_WRIST_TEST_ARG1");
+
+            mainH.postDelayed(() -> {
+
+                Integer resultFor1 = ecgCommandResponsesThisAttempt.get(123);
+
+                line("--- arg=1 result: " +
+                        (resultFor1 == null ? "no COMMAND_RESPONSE" :
+                                resultFor1) + " ---");
+
+                logRaw("WRIST_VALUE_ARG1_RESULT=" +
+                        (resultFor1 == null ? "NoReply" : resultFor1));
+
+                line("=== WRIST VALUE TEST DONE - compare the two " +
+                        "results above (0=FAILURE/1=SUCCESS/etc) ===");
+
+            }, 2000);
+
+        }, 2000);
+    }
+
     private void runSuggestedSequenceTest() {
 
         if (gatt == null || cmdWrite == null) {
@@ -5425,6 +5489,11 @@ public class MainActivity extends Activity {
                         "WEAR+TOUCH",
                 v -> runSuggestedSequenceTest());
         controls.addView(suggestedSeqBtn);
+
+        Button wristValueTestBtn = btn(
+                "TEST BOTH SELECT_WRIST VALUES (0 vs 1)",
+                v -> testBothWristValues());
+        controls.addView(wristValueTestBtn);
 
         /*
          * R22 unlock - still useful on its own for historical/motion
