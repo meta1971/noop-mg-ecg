@@ -1141,6 +1141,23 @@ public class MainActivity extends Activity {
 
                 recordEcgCommandResponse(envCmd, resultCode);
 
+            } else if (envType == 0x24 && envCmd == 120) {
+
+                /*
+                 * SET_FF_VALUE echo (cmd=120/0x78) - the confirmed-
+                 * working mechanism we've used constantly since early
+                 * in this investigation for R22 flags, the ECG gate,
+                 * and the enable_sig12 calibration test. Never had
+                 * its own named branch before now, so it was falling
+                 * through to the generic "may be a real hit" catch
+                 * below - alarming, but not a new finding each time;
+                 * just this echo, unlabeled.
+                 */
+                int resultCode = value.length > 12 ? (value[12] & 0xff) : -1;
+
+                logRaw("SET_FF_VALUE_ECHO cmd=120 resultByte=" +
+                        resultCode + " raw=" + Protocol.hex(value));
+
             } else if (envType == 0x24) {
 
                 /*
@@ -2342,6 +2359,164 @@ public class MainActivity extends Activity {
                     3000);
 
         }, 1500);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * DEVICE-CONFIG EXCHANGE DURING ACTIVE HISTORICAL PULL - found in a
+     * real export from the actual NOOP app: its own successful
+     * SET_DEVICE_CONFIG_VALUE(119)/GET_DEVICE_CONFIG_VALUE(121)
+     * exchange for enable_raw_data_w_ecg happened ~90s into the
+     * connection, DURING an active historical-data offload (chunks
+     * being acked back-to-back at that exact moment) - not sent in
+     * isolation right after connecting, which is how every one of our
+     * own attempts has done it. The request bytes are byte-for-byte
+     * identical to ours, so this timing/context difference is the
+     * one thing left to test directly: maybe this command only gets
+     * answered while the strap's backfill state machine is actively
+     * streaming, not when it's idle.
+     * ------------------------------------------------------------------
+     */
+    private void runDeviceConfigDuringActivePull() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this test");
+            return;
+        }
+
+        line("");
+        line("*** DEVICE-CONFIG EXCHANGE DURING ACTIVE PULL - starting " +
+                "historical pull, then interleaving the SET/GET " +
+                "DEVICE_CONFIG_VALUE exchange for enable_raw_data_w_ecg " +
+                "while it's actively streaming (matches how the real " +
+                "app's own successful exchange happened) ***");
+        logRaw("DEVICE_CONFIG_DURING_PULL_BEGIN");
+
+        sendR22UnlockPartial();
+
+        mainH.postDelayed(this::startRealHistoricalPull, 1500);
+
+        mainH.postDelayed(() -> {
+
+            line("--- pull should be actively streaming now - sending " +
+                    "the device-config exchange interleaved ---");
+            logRaw("DEVICE_CONFIG_DURING_PULL_SENDING_NOW");
+
+            setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
+
+            mainH.postDelayed(() ->
+                    getDeviceConfigValue("enable_raw_data_w_ecg"), 800);
+
+        }, 3500);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * DISABLE_ALARM (cmd=69/0x45) and TOGGLE_REALTIME_HR (cmd=3/0x03) -
+     * found directly in the real source (Enums.kt). Both are sent by
+     * the real app very early in every connection, right after
+     * CLIENT_HELLO acks - before SET_CLOCK, before DIS resolves,
+     * before anything else. We have never sent either. Found while
+     * tracing three separate real, confirmed-successful exports of
+     * the actual app's SET_DEVICE_CONFIG_VALUE(119)/
+     * GET_DEVICE_CONFIG_VALUE(121) exchange for enable_raw_data_w_ecg
+     * on this exact strap - the one thing all three shared that we've
+     * never replicated ourselves. The "during an active historical
+     * pull" hypothesis this replaces was directly falsified by one of
+     * those same exports (Backfill was explicitly skipped that
+     * session, and the gate still succeeded).
+     * ------------------------------------------------------------------
+     */
+    private void sendDisableAlarm() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        byte[] arg = {0x02, (byte) 0xFF};
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labradorBytes(0x23, 69, arg, thisSeq);
+
+            logRaw("TX DISABLE_ALARM raw=" + Protocol.hex(f));
+            line("TX DISABLE_ALARM (cmd=69, never sent before now)");
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (DISABLE_ALARM)");
+                opDone();
+            }
+        });
+    }
+
+    private void sendToggleRealtimeHr(int val) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labrador(0x23, 3, val, thisSeq);
+
+            logRaw("TX TOGGLE_REALTIME_HR val=" + val +
+                    " raw=" + Protocol.hex(f));
+            line("TX TOGGLE_REALTIME_HR val=" + val +
+                    " (cmd=3, never sent before now)");
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected " +
+                        "(TOGGLE_REALTIME_HR)");
+                opDone();
+            }
+        });
+    }
+
+    /*
+     * Replicates the real app's exact early-connection sequence
+     * (DISABLE_ALARM -> TOGGLE_REALTIME_HR(1)) before attempting the
+     * device-config exchange - testing whether this specific,
+     * previously-unreplicated precondition is what unlocks the reply.
+     */
+    private void runRealAppSequenceReplication() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this test");
+            return;
+        }
+
+        line("");
+        line("*** REPLICATING REAL APP'S EARLY SEQUENCE: " +
+                "DISABLE_ALARM -> TOGGLE_REALTIME_HR(1) -> then the " +
+                "device-config exchange for enable_raw_data_w_ecg ***");
+        logRaw("REAL_APP_SEQUENCE_REPLICATION_BEGIN");
+
+        sendDisableAlarm();
+
+        mainH.postDelayed(() -> sendToggleRealtimeHr(1), 500);
+
+        mainH.postDelayed(() -> {
+
+            line("--- now sending the device-config exchange ---");
+            setDeviceConfigValue("enable_raw_data_w_ecg", 0x31);
+
+            mainH.postDelayed(() ->
+                    getDeviceConfigValue("enable_raw_data_w_ecg"), 800);
+
+        }, 2000);
     }
 
     private void setDeviceConfigValue(String key, int valueByte) {
@@ -6286,6 +6461,18 @@ public class MainActivity extends Activity {
                         "on real hardware, #423/#103)",
                 v -> runFeatureFlagCalibrationTest());
         controls.addView(ffCalibrationBtn);
+
+        Button deviceConfigDuringPullBtn = btn(
+                "DEVICE_CONFIG EXCHANGE DURING ACTIVE PULL (matches " +
+                        "real app's successful timing)",
+                v -> runDeviceConfigDuringActivePull());
+        controls.addView(deviceConfigDuringPullBtn);
+
+        Button realAppSeqBtn = btn(
+                "REPLICATE REAL APP SEQUENCE (DISABLE_ALARM + " +
+                        "TOGGLE_REALTIME_HR first, then device-config)",
+                v -> runRealAppSequenceReplication());
+        controls.addView(realAppSeqBtn);
 
         Button ecgGateValueTestBtn = btn(
                 "TEST ECG GATE VALUE: raw 0x01 vs ASCII '1'",
