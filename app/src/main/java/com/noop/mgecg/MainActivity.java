@@ -2296,6 +2296,54 @@ public class MainActivity extends Activity {
         });
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * CALIBRATION TEST for GET_FF_VALUE(128), using the one key the
+     * real community has ALREADY confirmed gets a genuine read-back:
+     * "enable_sig12" is documented in the real source (R22Disable.kt)
+     * as moving from '2' (0x32) to '1' (0x31), CONFIRMED BY A REAL
+     * GET_FF_VALUE(128) READ BEFORE AND AFTER (#423, #103) - the only
+     * key with hardware proof this mechanism works at all.
+     *
+     * Our own two attempts to read enable_raw_data_w_ecg via
+     * GET_FF_VALUE(128) got zero reply both times. This test
+     * disambiguates why: if enable_sig12 ALSO comes back silent here,
+     * our inferred request format itself must be wrong. If it comes
+     * back with a real value, the format is right and the silence on
+     * the ECG gate specifically is the real, meaningful finding.
+     * ------------------------------------------------------------------
+     */
+    private void runFeatureFlagCalibrationTest() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run calibration test");
+            return;
+        }
+
+        line("");
+        line("*** CALIBRATION TEST: enable_sig12 via SET_FF_VALUE then " +
+                "GET_FF_VALUE(128) - this exact key/mechanism combo is " +
+                "documented as working on real hardware (#423/#103). " +
+                "If THIS comes back silent too, our GET_FF_VALUE request " +
+                "format is wrong, not the ECG gate's storage ***");
+        logRaw("FF_CALIBRATION_TEST_BEGIN key=enable_sig12");
+
+        sendR22Flag("enable_sig12", '1');
+
+        mainH.postDelayed(() -> {
+
+            line("--- now reading it back via GET_FF_VALUE(128) ---");
+            getFeatureFlagValue("enable_sig12");
+
+            mainH.postDelayed(() ->
+                    logRaw("FF_CALIBRATION_TEST_DONE - compare the " +
+                            "GET_FF_VALUE_REPLY line above (or its " +
+                            "absence) against this known-working case"),
+                    3000);
+
+        }, 1500);
+    }
+
     private void setDeviceConfigValue(String key, int valueByte) {
 
         if (gatt == null || cmdWrite == null) {
@@ -2909,6 +2957,89 @@ public class MainActivity extends Activity {
             }, afterR22Ms);
 
         }, 5000);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * CLEAN-SLATE ECG ATTEMPT - explicitly clears all ten R22 flags
+     * first (mirroring the real R22Disable mechanism: write '0' via
+     * SET_FF_VALUE, same opcode ECG uses), then runs ONLY the gate +
+     * 3-toggle sequence with nothing else active this session, with
+     * deliberately unhurried 2s pacing between each of the three
+     * toggles rather than near-instant timing. Isolates whether R22
+     * being active, or rushed timing between steps, could be masking
+     * something - every prior combined attempt enabled R22 first and
+     * moved through the three toggles within milliseconds of each
+     * other.
+     * ------------------------------------------------------------------
+     */
+    private void runCleanSlateEcgAttempt() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run clean-slate attempt");
+            return;
+        }
+
+        line("");
+        line("*** CLEAN-SLATE ECG ATTEMPT - clearing all R22 flags " +
+                "first, then ONLY gate+3-toggle, slowly paced. TOUCH " +
+                "NOW AND HOLD THROUGH THE WHOLE SEQUENCE ***");
+        logRaw("CLEAN_SLATE_ATTEMPT_BEGIN");
+
+        for (int i = 0; i < R22_FLAGS.length; i++) {
+
+            String flag = R22_FLAGS[i];
+            long delayMs = 300L * (i + 1);
+
+            mainH.postDelayed(() -> {
+                line("--- clearing: \"" + flag + "\" ---");
+                sendR22Flag(flag, '0');
+            }, delayMs);
+        }
+
+        long afterClearMs = 300L * (R22_FLAGS.length + 2);
+
+        mainH.postDelayed(() -> {
+
+            line("*** R22 flags cleared - now sending ONLY the ECG " +
+                    "gate + 3-toggle sequence, slowly paced ***");
+            logRaw("CLEAN_SLATE_SEQUENCE_NOW_SENDING");
+
+            pendingEcgGateConfirmationFlagName = "enable_raw_data_w_ecg";
+            pendingEcgGateConfirmationCallback = () -> {
+
+                mainH.postDelayed(() -> send(0x8B, 1,
+                        "TOGGLE_REALTIME_FILTERED_ECG_ON " +
+                                "(clean-slate)"), 2000);
+
+                mainH.postDelayed(() -> send(0x7D, 1,
+                        "TOGGLE_SAVE_RAW_ECG_ON (clean-slate)"), 4000);
+
+                mainH.postDelayed(() -> send(0x7C, 2,
+                        "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                "(clean-slate)"), 6000);
+            };
+
+            sendR22Flag("enable_raw_data_w_ecg", '1');
+
+            mainH.postDelayed(() -> {
+
+                if (pendingEcgGateConfirmationCallback != null) {
+
+                    line("*** gate echo TIMED OUT - proceeding " +
+                            "anyway ***");
+                    logRaw("ECG_GATE_ECHO_TIMEOUT flag=" +
+                            "enable_raw_data_w_ecg");
+
+                    Runnable cb = pendingEcgGateConfirmationCallback;
+                    pendingEcgGateConfirmationCallback = null;
+                    pendingEcgGateConfirmationFlagName = null;
+                    cb.run();
+                }
+
+            }, 3000);
+
+        }, afterClearMs);
     }
 
     private void runFullCombinedEcgAttempt() {
@@ -6010,6 +6141,9 @@ public class MainActivity extends Activity {
         controls.setOrientation(
                 LinearLayout.VERTICAL);
 
+        addSectionHeader(controls, "▼ ECG ATTEMPT SEQUENCES " +
+                "(full runs - wear + touch)");
+
         /*
          * BANK-TO-FLASH TEST - now the single highest-priority test.
          * Directly derived from NOOP's own current, still-open
@@ -6048,6 +6182,12 @@ public class MainActivity extends Activity {
                 v -> runContactFirstEcgAttempt());
         controls.addView(contactFirstBtn);
 
+        Button cleanSlateBtn = btn(
+                "CLEAN-SLATE ECG ATTEMPT (clears R22 first, slow pacing) " +
+                        "- TOUCH THROUGHOUT",
+                v -> runCleanSlateEcgAttempt());
+        controls.addView(cleanSlateBtn);
+
         /*
          * ULTIMATE ECG ATTEMPT - four new, previously-untried ideas:
          * explicit SpO2/PPG-off mode reset, a real warm-up delay
@@ -6059,6 +6199,9 @@ public class MainActivity extends Activity {
                         "WEAR, WAIT FOR TOUCH PROMPT",
                 v -> runUltimateEcgAttempt());
         controls.addView(ultimateBtn);
+
+        addSectionHeader(controls, "▼ OPCODE & ARGUMENT PROBES " +
+                "(quick, standalone)");
 
         Button probeArgBtn = btn(
                 "PROBE UNDOCUMENTED cmd=0x7C arg=3",
@@ -6085,6 +6228,8 @@ public class MainActivity extends Activity {
                 "SWEEP HIGH-RANGE OPCODES 148-160 (confirmed remap zone)",
                 v -> sweepHighRangeOpcodes());
         controls.addView(highRangeOpcodeSweepBtn);
+
+        addSectionHeader(controls, "▼ R22 / HISTORICAL PULL");
 
         /*
          * R22 unlock - still useful on its own for historical/motion
@@ -6113,6 +6258,8 @@ public class MainActivity extends Activity {
                 v -> stopPullAckLoop());
         controls.addView(stopPullBtn);
 
+        addSectionHeader(controls, "▼ ECG GATE DIAGNOSTICS");
+
         /*
          * ECG gate controls - earlier, less fruitful experimentation
          * than the R22/historical-pull pair above, so no longer
@@ -6134,6 +6281,12 @@ public class MainActivity extends Activity {
                 v -> getFeatureFlagValue("enable_raw_data_w_ecg"));
         controls.addView(ecgGateRealReadBackBtn);
 
+        Button ffCalibrationBtn = btn(
+                "CALIBRATE GET_FF_VALUE via enable_sig12 (known-working " +
+                        "on real hardware, #423/#103)",
+                v -> runFeatureFlagCalibrationTest());
+        controls.addView(ffCalibrationBtn);
+
         Button ecgGateValueTestBtn = btn(
                 "TEST ECG GATE VALUE: raw 0x01 vs ASCII '1'",
                 v -> testEcgGateValueConvention());
@@ -6148,6 +6301,8 @@ public class MainActivity extends Activity {
                 "TEST enable_raw_data_w_ecg VIA REAL FLAG MECHANISM (0x78)",
                 v -> testEcgGateViaRealFlagMechanism());
         controls.addView(ecgGateViaRealMechBtn);
+
+        addSectionHeader(controls, "▼ MANUAL / GENERIC TOOLS");
 
         EditText configKeyInput = new EditText(this);
         configKeyInput.setHint("device config key, e.g. enable_raw_data_w_ecg");
@@ -6478,6 +6633,25 @@ public class MainActivity extends Activity {
         b.setOnClickListener(listener);
 
         return b;
+    }
+
+    /*
+     * Visual section divider for the controls panel - purely
+     * cosmetic, no behavior change to anything around it. Added
+     * because the button list grew past 30 with no grouping at all,
+     * making it genuinely hard to find anything.
+     */
+    private void addSectionHeader(LinearLayout parent, String title) {
+
+        TextView header = new TextView(this);
+        header.setText(title);
+        header.setTextColor(0xFF7FDBFF);
+        header.setTextSize(14);
+        header.setTypeface(null, android.graphics.Typeface.BOLD);
+        header.setPadding(8, 36, 8, 12);
+
+        parent.addView(header,
+                new LinearLayout.LayoutParams(-1, -2));
     }
 
     /*
