@@ -6316,8 +6316,8 @@ public class MainActivity extends Activity {
         controls.setOrientation(
                 LinearLayout.VERTICAL);
 
-        addSectionHeader(controls, "▼ ECG ATTEMPT SEQUENCES " +
-                "(full runs - wear + touch)");
+        addSectionHeader(controls, "ECG ATTEMPT SEQUENCES " +
+                "(full runs - wear + touch)", 0xFFFF6B6B);
 
         /*
          * BANK-TO-FLASH TEST - now the single highest-priority test.
@@ -6334,7 +6334,7 @@ public class MainActivity extends Activity {
                 "BANK-TO-FLASH TEST (ECG start/stop, then pull history) " +
                         "- WEAR + TOUCH CLASP",
                 v -> runBankToFlashTest());
-        controls.addView(bankToFlashBtn);
+        addToCurrentSection(bankToFlashBtn);
 
         /*
          * FULL COMBINED ECG ATTEMPT - chains R22 unlock + the ECG
@@ -6345,7 +6345,7 @@ public class MainActivity extends Activity {
                 "FULL COMBINED ECG ATTEMPT (R22+gate+real start) - " +
                         "WEAR + TOUCH CLASP",
                 v -> runFullCombinedEcgAttempt());
-        controls.addView(combinedBtn);
+        addToCurrentSection(combinedBtn);
 
         /*
          * CONTACT-FIRST ECG ATTEMPT - touch established and settled
@@ -6355,13 +6355,13 @@ public class MainActivity extends Activity {
         Button contactFirstBtn = btn(
                 "CONTACT-FIRST ECG ATTEMPT - TOUCH NOW, BEFORE TAPPING",
                 v -> runContactFirstEcgAttempt());
-        controls.addView(contactFirstBtn);
+        addToCurrentSection(contactFirstBtn);
 
         Button cleanSlateBtn = btn(
                 "CLEAN-SLATE ECG ATTEMPT (clears R22 first, slow pacing) " +
                         "- TOUCH THROUGHOUT",
                 v -> runCleanSlateEcgAttempt());
-        controls.addView(cleanSlateBtn);
+        addToCurrentSection(cleanSlateBtn);
 
         /*
          * ULTIMATE ECG ATTEMPT - four new, previously-untried ideas:
@@ -6373,38 +6373,38 @@ public class MainActivity extends Activity {
                 "ULTIMATE ECG ATTEMPT (SpO2-off + warmup + re-kick) - " +
                         "WEAR, WAIT FOR TOUCH PROMPT",
                 v -> runUltimateEcgAttempt());
-        controls.addView(ultimateBtn);
+        addToCurrentSection(ultimateBtn);
 
-        addSectionHeader(controls, "▼ OPCODE & ARGUMENT PROBES " +
-                "(quick, standalone)");
+        addSectionHeader(controls, "OPCODE & ARGUMENT PROBES " +
+                "(quick, standalone)", 0xFFFFD166);
 
         Button probeArgBtn = btn(
                 "PROBE UNDOCUMENTED cmd=0x7C arg=3",
                 v -> probeUndocumentedEcgArg());
-        controls.addView(probeArgBtn);
+        addToCurrentSection(probeArgBtn);
 
         Button suggestedSeqBtn = btn(
                 "TEST SUGGESTED SEQUENCE (flags->probe->wait->1 start) - " +
                         "WEAR+TOUCH",
                 v -> runSuggestedSequenceTest());
-        controls.addView(suggestedSeqBtn);
+        addToCurrentSection(suggestedSeqBtn);
 
         Button wristValueTestBtn = btn(
                 "TEST BOTH SELECT_WRIST VALUES (0 vs 1)",
                 v -> testBothWristValues());
-        controls.addView(wristValueTestBtn);
+        addToCurrentSection(wristValueTestBtn);
 
         Button neighboringOpcodeSweepBtn = btn(
                 "SWEEP NEIGHBORING OPCODES (maybe ECG moved on this fw)",
                 v -> sweepNeighboringOpcodes());
-        controls.addView(neighboringOpcodeSweepBtn);
+        addToCurrentSection(neighboringOpcodeSweepBtn);
 
         Button highRangeOpcodeSweepBtn = btn(
                 "SWEEP HIGH-RANGE OPCODES 148-160 (confirmed remap zone)",
                 v -> sweepHighRangeOpcodes());
-        controls.addView(highRangeOpcodeSweepBtn);
+        addToCurrentSection(highRangeOpcodeSweepBtn);
 
-        addSectionHeader(controls, "▼ R22 / HISTORICAL PULL");
+        addSectionHeader(controls, "R22 / HISTORICAL PULL", 0xFF06D6A0);
 
         /*
          * R22 unlock - still useful on its own for historical/motion
@@ -6415,7 +6415,7 @@ public class MainActivity extends Activity {
                 "SEND R22 UNLOCK (10 flags, corrected frames - " +
                         "STRAP MUST BE WORN)",
                 v -> sendR22UnlockPartial());
-        controls.addView(r22Btn);
+        addToCurrentSection(r22Btn);
 
         /*
          * Real historical pull moved directly below R22 UNLOCK -
@@ -6426,14 +6426,14 @@ public class MainActivity extends Activity {
         Button realPullBtn = btn(
                 "REAL HISTORICAL PULL (SET_CLOCK...SEND_HIST_DATA)",
                 v -> startRealHistoricalPull());
-        controls.addView(realPullBtn);
+        addToCurrentSection(realPullBtn);
 
         Button stopPullBtn = btn(
                 "STOP PULL ACK LOOP",
                 v -> stopPullAckLoop());
-        controls.addView(stopPullBtn);
+        addToCurrentSection(stopPullBtn);
 
-        addSectionHeader(controls, "▼ ECG GATE DIAGNOSTICS");
+        addSectionHeader(controls, "ECG GATE DIAGNOSTICS", 0xFF7FDBFF);
 
         /*
          * ECG gate controls - earlier, less fruitful experimentation
@@ -6443,53 +6443,53 @@ public class MainActivity extends Activity {
         Button ecgGateStartBtn = btn(
                 "ENABLE ECG GATE + START",
                 v -> enableEcgGateThenStart());
-        controls.addView(ecgGateStartBtn);
+        addToCurrentSection(ecgGateStartBtn);
 
         Button ecgGateSetGetBtn = btn(
                 "SET ECG GATE (confirmed-working mechanism)",
                 v -> sendR22Flag("enable_raw_data_w_ecg", '1'));
-        controls.addView(ecgGateSetGetBtn);
+        addToCurrentSection(ecgGateSetGetBtn);
 
         Button ecgGateRealReadBackBtn = btn(
                 "GET REAL STORED VALUE (GET_FF_VALUE 128, never sent " +
                         "before now)",
                 v -> getFeatureFlagValue("enable_raw_data_w_ecg"));
-        controls.addView(ecgGateRealReadBackBtn);
+        addToCurrentSection(ecgGateRealReadBackBtn);
 
         Button ffCalibrationBtn = btn(
                 "CALIBRATE GET_FF_VALUE via enable_sig12 (known-working " +
                         "on real hardware, #423/#103)",
                 v -> runFeatureFlagCalibrationTest());
-        controls.addView(ffCalibrationBtn);
+        addToCurrentSection(ffCalibrationBtn);
 
         Button deviceConfigDuringPullBtn = btn(
                 "DEVICE_CONFIG EXCHANGE DURING ACTIVE PULL (matches " +
                         "real app's successful timing)",
                 v -> runDeviceConfigDuringActivePull());
-        controls.addView(deviceConfigDuringPullBtn);
+        addToCurrentSection(deviceConfigDuringPullBtn);
 
         Button realAppSeqBtn = btn(
                 "REPLICATE REAL APP SEQUENCE (DISABLE_ALARM + " +
                         "TOGGLE_REALTIME_HR first, then device-config)",
                 v -> runRealAppSequenceReplication());
-        controls.addView(realAppSeqBtn);
+        addToCurrentSection(realAppSeqBtn);
 
         Button ecgGateValueTestBtn = btn(
                 "TEST ECG GATE VALUE: raw 0x01 vs ASCII '1'",
                 v -> testEcgGateValueConvention());
-        controls.addView(ecgGateValueTestBtn);
+        addToCurrentSection(ecgGateValueTestBtn);
 
         Button ecgFlagGuessSweepBtn = btn(
                 "SWEEP SPECULATIVE ECG FLAG NAMES (unconfirmed guesses)",
                 v -> sweepEcgFlagGuesses());
-        controls.addView(ecgFlagGuessSweepBtn);
+        addToCurrentSection(ecgFlagGuessSweepBtn);
 
         Button ecgGateViaRealMechBtn = btn(
                 "TEST enable_raw_data_w_ecg VIA REAL FLAG MECHANISM (0x78)",
                 v -> testEcgGateViaRealFlagMechanism());
-        controls.addView(ecgGateViaRealMechBtn);
+        addToCurrentSection(ecgGateViaRealMechBtn);
 
-        addSectionHeader(controls, "▼ MANUAL / GENERIC TOOLS");
+        addSectionHeader(controls, "MANUAL / GENERIC TOOLS", 0xFFB388EB);
 
         EditText configKeyInput = new EditText(this);
         configKeyInput.setHint("device config key, e.g. enable_raw_data_w_ecg");
@@ -6497,7 +6497,7 @@ public class MainActivity extends Activity {
         configKeyInput.setSingleLine(true);
         configKeyInput.setTextColor(0xFFFFFFFF);
         configKeyInput.setHintTextColor(0xFF888888);
-        controls.addView(configKeyInput);
+        addToCurrentSection(configKeyInput);
 
         Button getConfigValueBtn = btn(
                 "GET CONFIG VALUE (key above)",
@@ -6510,7 +6510,7 @@ public class MainActivity extends Activity {
                     }
                     getDeviceConfigValue(key);
                 });
-        controls.addView(getConfigValueBtn);
+        addToCurrentSection(getConfigValueBtn);
 
         /*
          * Sweep and GATT dump promoted to the top of this panel -
@@ -6521,17 +6521,17 @@ public class MainActivity extends Activity {
         Button gattDumpBtn = btn(
                 "DUMP ALL GATT SERVICES",
                 v -> manualGattDump());
-        controls.addView(gattDumpBtn);
+        addToCurrentSection(gattDumpBtn);
 
         Button startSweepBtn = btn(
                 "GET CONFIG VALUE SWEEP (0x79, key 0x00-0x1F)",
                 v -> startCmdSweep());
-        controls.addView(startSweepBtn);
+        addToCurrentSection(startSweepBtn);
 
         Button stopSweepBtn = btn(
                 "STOP SWEEP",
                 v -> stopCmdSweep());
-        controls.addView(stopSweepBtn);
+        addToCurrentSection(stopSweepBtn);
 
         Button c5 =
                 btn(
@@ -6541,7 +6541,7 @@ public class MainActivity extends Activity {
                                 1,
                                 "SPO2_ON"));
 
-        controls.addView(c5);
+        addToCurrentSection(c5);
 
         /*
          * Controlled 3x-START experiment controls.
@@ -6553,7 +6553,7 @@ public class MainActivity extends Activity {
         experimentIntervalInput.setSingleLine(true);
         experimentIntervalInput.setTextColor(0xFFFFFFFF);
         experimentIntervalInput.setHintTextColor(0xFF888888);
-        controls.addView(experimentIntervalInput);
+        addToCurrentSection(experimentIntervalInput);
 
         autoPullCheckbox = new CheckBox(this);
         autoPullCheckbox.setText(
@@ -6562,7 +6562,7 @@ public class MainActivity extends Activity {
         autoPullCheckbox.setOnCheckedChangeListener(
                 (btn2, checked) ->
                         autoPullAfterExperiment = checked);
-        controls.addView(autoPullCheckbox);
+        addToCurrentSection(autoPullCheckbox);
 
         /*
          * Pull is now explicit rather than automatic.
@@ -6584,7 +6584,7 @@ public class MainActivity extends Activity {
                                     0x00);
                         });
 
-        controls.addView(pull);
+        addToCurrentSection(pull);
 
         customInput =
                 new EditText(this);
@@ -6597,7 +6597,7 @@ public class MainActivity extends Activity {
         customInput.setTextColor(0xFFFFFFFF);
         customInput.setHintTextColor(0xFF888888);
 
-        controls.addView(customInput);
+        addToCurrentSection(customInput);
 
         Button sendCustomBtn =
                 btn(
@@ -6653,7 +6653,7 @@ public class MainActivity extends Activity {
                             }
                         });
 
-        controls.addView(sendCustomBtn);
+        addToCurrentSection(sendCustomBtn);
 
         /*
          * Fast-iteration SET_CLOCK guess: type + cmd only,
@@ -6669,7 +6669,7 @@ public class MainActivity extends Activity {
         clockInput.setTextColor(0xFFFFFFFF);
         clockInput.setHintTextColor(0xFF888888);
 
-        controls.addView(clockInput);
+        addToCurrentSection(clockInput);
 
         Button sendClockBtn =
                 btn(
@@ -6717,7 +6717,7 @@ public class MainActivity extends Activity {
                             }
                         });
 
-        controls.addView(sendClockBtn);
+        addToCurrentSection(sendClockBtn);
 
         ScrollView controlsScroll =
                 new ScrollView(this);
@@ -6823,22 +6823,70 @@ public class MainActivity extends Activity {
     }
 
     /*
-     * Visual section divider for the controls panel - purely
-     * cosmetic, no behavior change to anything around it. Added
-     * because the button list grew past 30 with no grouping at all,
-     * making it genuinely hard to find anything.
+     * Collapsible, color-coded section system - replaces the plain
+     * text dividers. Each section header is now tappable: toggles a
+     * dedicated body container's visibility, so a category can be
+     * hidden entirely while working in another. Buttons/fields still
+     * route through addToCurrentSection() exactly like they used to
+     * add directly to the flat controls list - same order, same
+     * parent chain, just wrapped one level deeper so it can collapse.
      */
-    private void addSectionHeader(LinearLayout parent, String title) {
+    private LinearLayout currentSectionContainer;
+
+    private void addSectionHeader(LinearLayout parent, String title,
+            int accentColor) {
+
+        LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setPadding(8, 36, 8, 12);
+        headerRow.setBackgroundColor(0xFF1A1A1A);
+
+        TextView arrow = new TextView(this);
+        arrow.setText("▼");
+        arrow.setTextColor(accentColor);
+        arrow.setTextSize(14);
+        arrow.setPadding(0, 0, 16, 0);
 
         TextView header = new TextView(this);
         header.setText(title);
-        header.setTextColor(0xFF7FDBFF);
+        header.setTextColor(accentColor);
         header.setTextSize(14);
         header.setTypeface(null, android.graphics.Typeface.BOLD);
-        header.setPadding(8, 36, 8, 12);
 
-        parent.addView(header,
+        headerRow.addView(arrow);
+        headerRow.addView(header);
+        parent.addView(headerRow,
                 new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout sectionBody = new LinearLayout(this);
+        sectionBody.setOrientation(LinearLayout.VERTICAL);
+        sectionBody.setBackgroundColor(0xFF141414);
+        sectionBody.setPadding(4, 4, 4, 12);
+        parent.addView(sectionBody,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        headerRow.setOnClickListener(v -> {
+            boolean nowVisible = sectionBody.getVisibility() != android.view.View.VISIBLE;
+            sectionBody.setVisibility(
+                    nowVisible ? android.view.View.VISIBLE
+                            : android.view.View.GONE);
+            arrow.setText(nowVisible ? "▼" : "▶");
+        });
+
+        currentSectionContainer = sectionBody;
+    }
+
+    /*
+     * Drop-in replacement for the old controls.addView(v) calls -
+     * routes into whichever section container is currently active
+     * instead of the flat top-level list, so the collapse/expand
+     * behavior applies automatically to every button and field
+     * already written against that call shape. Every call site is
+     * confirmed to come after the first addSectionHeader call, so
+     * currentSectionContainer is always set by the time this runs.
+     */
+    private void addToCurrentSection(android.view.View v) {
+        currentSectionContainer.addView(v);
     }
 
     /*
