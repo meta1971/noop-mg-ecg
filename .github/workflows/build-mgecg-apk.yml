@@ -3,8 +3,6 @@ name: Build NOOP MG ECG Experimental APK
 on:
   workflow_dispatch:
   push:
-    paths:
-      - 'noop-mg-ecg/**'
 
 jobs:
   build:
@@ -32,11 +30,10 @@ jobs:
           gradle-version: '8.7'
 
       - name: assembleDebug
-        working-directory: noop-mg-ecg
         run: gradle assembleDebug --stacktrace
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: noop-mg-ecg-debug
-          path: noop-mg-ecg/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
