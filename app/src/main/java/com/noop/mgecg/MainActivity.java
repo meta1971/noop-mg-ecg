@@ -1114,6 +1114,112 @@ public class MainActivity extends Activity {
                         " raw=" + Protocol.hex(value));
 
             } else if (envType == 0x24 &&
+                    (envCmd == 117 || envCmd == 118 || envCmd == 115 ||
+                            envCmd == 116)) {
+
+                /*
+                 * Real key-walk reply, confirmed from #917 with
+                 * actual byte examples - two namespaces, same shape:
+                 * 117/118 = feature-flag keys, 115/116 = device-config
+                 * keys. START(117/115) reply: [revision][count LE
+                 * u16, or byte+pad - width genuinely ambiguous per
+                 * the PR itself]. SEND_NEXT(118/116) reply:
+                 * [const=0x01][index][validKey][key name ASCII if
+                 * valid, zero-padded otherwise].
+                 */
+                String namespace = (envCmd == 117 || envCmd == 118)
+                        ? "FEATURE_FLAG" : "DEVICE_CONFIG";
+
+                if (envCmd == 117 || envCmd == 115) {
+
+                    /*
+                     * CORRECTED per a real bug found and fixed in
+                     * #898/#907: a FAILURE(0) or PENDING(2) reply was
+                     * being misread as "successfully enumerated, zero
+                     * keys" because revision/count were printed
+                     * without checking the result code first. Only
+                     * SUCCESS(1) opens a real walk - anything else is
+                     * the verb declining, not an empty list.
+                     */
+                    int resultCode = value.length > 12 ?
+                            (value[12] & 0xff) : -1;
+
+                    if (resultCode != 1) {
+
+                        line("*** START_" + namespace + "_KEY_EXCHANGE " +
+                                "REPLY: resultCode=" + resultCode +
+                                " - NOT SUCCESS, this is the verb " +
+                                "declining/pending, NOT a real " +
+                                "revision/count - walk should not " +
+                                "proceed on this ***");
+                        logRaw("START_KEY_EXCHANGE_DECLINED namespace=" +
+                                namespace + " resultCode=" + resultCode +
+                                " raw=" + Protocol.hex(value));
+
+                    } else {
+
+                    int revision = value.length > 13 ?
+                            (value[13] & 0xff) : -1;
+                    int countByte = value.length > 14 ?
+                            (value[14] & 0xff) : -1;
+                    int countU16 = value.length > 15 ?
+                            countByte | ((value[15] & 0xff) << 8) :
+                            countByte;
+
+                    line("*** START_" + namespace + "_KEY_EXCHANGE " +
+                            "REPLY: revision=" + revision +
+                            " count(byte)=" + countByte +
+                            " count(u16)=" + countU16 +
+                            " - width genuinely ambiguous, both " +
+                            "printed ***");
+                    logRaw("START_KEY_EXCHANGE_REPLY namespace=" +
+                            namespace + " revision=" + revision +
+                            " countByte=" + countByte +
+                            " countU16=" + countU16 +
+                            " raw=" + Protocol.hex(value));
+
+                    }
+
+                } else {
+
+                    int index = value.length > 14 ?
+                            (value[14] & 0xff) : -1;
+                    boolean validKey = value.length > 15 &&
+                            value[15] != 0;
+
+                    String keyName = "";
+
+                    if (validKey) {
+                        StringBuilder kb = new StringBuilder();
+                        for (int i = 16; i < value.length - 4 &&
+                                i < 16 + 32; i++) {
+                            int b = value[i] & 0xff;
+                            if (b == 0) break;
+                            kb.append((char) b);
+                        }
+                        keyName = kb.toString();
+                    }
+
+                    boolean isEndMarker = index == 0xFF;
+
+                    line("*** SEND_NEXT_" + namespace + " REPLY: " +
+                            "index=" + index + " validKey=" + validKey +
+                            " key=\"" + keyName + "\"" +
+                            (isEndMarker ? " (0xFF END MARKER)" : "") +
+                            " ***");
+
+                    logRaw("SEND_NEXT_REPLY namespace=" + namespace +
+                            " index=" + index + " validKey=" + validKey +
+                            " key=" + keyName +
+                            " raw=" + Protocol.hex(value));
+
+                    if (validKey && !keyName.isEmpty()) {
+                        line("    >>> REAL KEY DISCOVERED: \"" +
+                                keyName + "\" <<<");
+                    }
+                }
+
+            } else if (envType == 0x24 &&
                     (envCmd == 139 || envCmd == 124 || envCmd == 125 ||
                             envCmd == 123)) {
 
@@ -2360,7 +2466,13 @@ public class MainActivity extends Activity {
                 "format is wrong, not the ECG gate's storage ***");
         logRaw("FF_CALIBRATION_TEST_BEGIN key=enable_sig12");
 
-        sendR22Flag("enable_sig12", '1');
+        /*
+         * Value comes from r22ValueFor() - confirmed '1' by #522, a
+         * later, more specific live-workout capture that corrected a
+         * transcription error in the original #103 capture (which
+         * had read this one flag as '2').
+         */
+        sendR22Flag("enable_sig12", r22ValueFor("enable_sig12"));
 
         mainH.postDelayed(() -> {
 
@@ -2378,9 +2490,121 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
-     * DEVICE-CONFIG EXCHANGE DURING ACTIVE HISTORICAL PULL - found in a
-     * real export from the actual NOOP app: its own successful
-     * SET_DEVICE_CONFIG_VALUE(119)/GET_DEVICE_CONFIG_VALUE(121)
+     * STAGED R22 DISABLE PROBE - matches the real, careful methodology
+     * from a merged PR (#932): '0' has NEVER been observed as a
+     * confirmed real off-value in the FEATURE-FLAG namespace
+     * specifically (120/128) - the assumption it works there is
+     * borrowed by convention from the DEVICE-CONFIG namespace
+     * (119/121), where it IS confirmed (the Broadcast-HR flag). Our
+     * own "clean-slate" test has been blindly writing '0' to all 16
+     * flags this entire investigation with no verification it does
+     * anything at all - the same category of silent-no-op bug #932
+     * found and fixed in the real app's own disable feature.
+     *
+     * This probes ONE flag first (enable_sig12 - the same probe key
+     * #932 used, for the same reason: it's the one flag with a
+     * confirmed hardware demonstration that a write to it moves
+     * stored state at all), reads it back, and only proceeds to the
+     * other 15 if that one genuinely changed. If GET_FF_VALUE stays
+     * silent (as it has for us every time), this at minimum stops us
+     * from ever again claiming "R22 cleared" without having checked.
+     * ------------------------------------------------------------------
+     */
+    private void runStagedR22DisableProbe() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run staged disable probe");
+            return;
+        }
+
+        line("");
+        line("*** STAGED R22 DISABLE PROBE - '0' has never been " +
+                "confirmed to work in the feature-flag namespace. " +
+                "Probing enable_sig12 alone first; only clearing the " +
+                "other 15 if the read-back confirms it actually " +
+                "changed ***");
+        logRaw("STAGED_R22_DISABLE_BEGIN probeKey=enable_sig12");
+
+        line("--- PROBE: writing '0' to enable_sig12 only ---");
+        sendR22Flag("enable_sig12", '0');
+
+        mainH.postDelayed(() -> {
+
+            line("--- reading it back via GET_FF_VALUE(128) - this " +
+                    "is the only thing that can confirm the probe, " +
+                    "not the write's own ack ***");
+            getFeatureFlagValue("enable_sig12");
+
+            /*
+             * We can't programmatically branch on the reply here
+             * (it's asynchronous and may never arrive), so this pauses
+             * long enough for a human to read the GET_FF_VALUE_REPLY
+             * line (or its absence) before deciding whether to
+             * proceed - matching #932's "gate" stage conceptually,
+             * just decided by the person running it rather than
+             * automatically.
+             */
+            mainH.postDelayed(() -> {
+
+                line("*** PROBE STAGE DONE - check the line above: " +
+                        "did GET_FF_VALUE_REPLY show enable_sig12 " +
+                        "storedValue=0 (i.e. 0x30)? If yes, tap " +
+                        "CONFIRM PROBE PASSED - CLEAR REMAINING 15 " +
+                        "below. If silent or unchanged, the probe " +
+                        "failed - do not claim R22 was cleared ***");
+                logRaw("STAGED_R22_DISABLE_PROBE_STAGE_DONE - " +
+                        "awaiting manual confirmation before clearing " +
+                        "remaining flags");
+
+            }, 3000);
+
+        }, 1500);
+    }
+
+    /*
+     * Second stage, run only if the probe above was manually confirmed
+     * to have actually changed the stored value - clears the
+     * remaining 15 flags. Deliberately a separate, manually-triggered
+     * step rather than automatic, so a silent/failed probe can never
+     * lead to a false "R22 cleared" claim.
+     */
+    private void confirmProbePassedClearRemaining() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot clear remaining flags");
+            return;
+        }
+
+        line("");
+        line("*** PROBE CONFIRMED PASSED - clearing remaining 15 " +
+                "R22 flags now ***");
+        logRaw("STAGED_R22_DISABLE_CLEARING_REMAINING");
+
+        int stepIndex = 0;
+
+        for (int i = 0; i < R22_FLAGS.length; i++) {
+
+            String flag = R22_FLAGS[i];
+
+            if (flag.equals("enable_sig12")) {
+                continue;
+            }
+
+            int thisStep = stepIndex++;
+            long delayMs = 300L * (thisStep + 1);
+
+            mainH.postDelayed(() -> {
+                line("--- clearing: \"" + flag + "\" ---");
+                sendR22Flag(flag, '0');
+            }, delayMs);
+        }
+
+        long afterMs = 300L * (stepIndex + 2);
+
+        mainH.postDelayed(() ->
+                logRaw("STAGED_R22_DISABLE_COMPLETE"), afterMs);
+    }
+
      * exchange for enable_raw_data_w_ecg happened ~90s into the
      * connection, DURING an active historical-data offload (chunks
      * being acked back-to-back at that exact moment) - not sent in
@@ -2752,7 +2976,8 @@ public class MainActivity extends Activity {
                 String flag = R22_FLAGS[i];
                 long delayMs = 80L * (i + 1);
 
-                mainH.postDelayed(() -> sendR22Flag(flag, '1'), delayMs);
+                mainH.postDelayed(
+                    () -> sendR22Flag(flag, r22ValueFor(flag)), delayMs);
             }
 
             long afterR22Ms = 80L * (R22_FLAGS.length + 2);
@@ -2996,7 +3221,8 @@ public class MainActivity extends Activity {
             String flag = R22_FLAGS[i];
             long delayMs = 80L * (i + 1);
 
-            mainH.postDelayed(() -> sendR22Flag(flag, '1'), delayMs);
+            mainH.postDelayed(
+                    () -> sendR22Flag(flag, r22ValueFor(flag)), delayMs);
         }
 
         long afterR22Ms = 80L * (R22_FLAGS.length + 2);
@@ -3114,7 +3340,8 @@ public class MainActivity extends Activity {
                 String flag = R22_FLAGS[i];
                 long delayMs = 80L * (i + 1);
 
-                mainH.postDelayed(() -> sendR22Flag(flag, '1'), delayMs);
+                mainH.postDelayed(
+                    () -> sendR22Flag(flag, r22ValueFor(flag)), delayMs);
             }
 
             long afterR22Ms = 80L * (R22_FLAGS.length + 2);
@@ -3251,7 +3478,8 @@ public class MainActivity extends Activity {
             String flag = R22_FLAGS[i];
             long delayMs = 80L * (i + 1);
 
-            mainH.postDelayed(() -> sendR22Flag(flag, '1'), delayMs);
+            mainH.postDelayed(
+                    () -> sendR22Flag(flag, r22ValueFor(flag)), delayMs);
         }
 
         long afterR22Ms = 80L * (R22_FLAGS.length + 2);
@@ -3643,6 +3871,63 @@ public class MainActivity extends Activity {
 
             line("*** V16 FLASH ECG RECORD (len=1584) SEEN - " +
                     nonZero + "/" + value.length + " non-zero bytes ***");
+
+            /*
+             * Full byte-level structure from a real, primary-source
+             * writeup (issue #1100, vishk23) - magic/sequence/
+             * timestamp header, 1559-byte payload, CRC32 trailer.
+             * Decoded explicitly so if this record ever appears here,
+             * we get its embedded timestamp for free - lets us
+             * correlate it precisely against our own MARK_TOUCH
+             * markers, the same way the real writeup correlated it
+             * against a held-electrode window.
+             */
+            if (value.length >= 1584) {
+
+                int magic = value[0] & 0xff;
+                int sequence = value[11] & 0xff;
+
+                long unixTs = (value[15] & 0xffL) |
+                        ((value[16] & 0xffL) << 8) |
+                        ((value[17] & 0xffL) << 16) |
+                        ((value[18] & 0xffL) << 24);
+
+                int const1 = value[19] & 0xff;
+                int const2 = value[20] & 0xff;
+
+                byte[] payload = Arrays.copyOfRange(value, 21, 1580);
+                int payloadNonZero = 0;
+                for (byte b : payload) {
+                    if (b != 0) {
+                        payloadNonZero++;
+                    }
+                }
+
+                java.util.Date recordDate = new java.util.Date(unixTs * 1000L);
+
+                line(String.format(Locale.US,
+                        "V16 STRUCTURE: magic=0x%02X seq=%d " +
+                                "unixTs=%d (%s) const=0x%02X 0x%02X " +
+                                "payloadNonZero=%d/1559",
+                        magic, sequence, unixTs, recordDate.toString(),
+                        const1, const2, payloadNonZero));
+
+                logRaw("V16_STRUCTURE magic=0x" +
+                        String.format("%02X", magic) +
+                        " seq=" + sequence +
+                        " unixTs=" + unixTs +
+                        " payloadNonZero=" + payloadNonZero + "/1559");
+
+                if (payloadNonZero > 0) {
+
+                    line("*** V16 PAYLOAD IS NON-ZERO - THIS IS A REAL " +
+                            "HIT, INVESTIGATE IMMEDIATELY - every prior " +
+                            "report of this record has been entirely " +
+                            "zero ***");
+                    logRaw("V16_PAYLOAD_NONZERO_HIT raw=" +
+                            Protocol.hex(value));
+                }
+            }
 
             logRaw("V16_FLASH_ECG_RECORD len=1584 nonZeroBytes=" +
                     nonZero + " raw=" + Protocol.hex(value));
@@ -4662,20 +4947,58 @@ public class MainActivity extends Activity {
 
     private static final int R22_FLAG_NAME_FIELD_LEN = 32;
 
+    /*
+     * CORRECTED against a real, complete 16-key enumeration (#761,
+     * vishk23, real WHOOP 5 MG WS50_r03, via START_FF_KEY_EXCHANGE
+     * 117 + SEND_NEXT_FF 118). We had only 10 of these 16 - missing
+     * v4, disable_pip_r26_packets, wear_detect_bias, ir_hw_switching,
+     * dorset_inhibit_wpt, and enable_sig12 entirely. This is now the
+     * complete, confirmed list - no more, no less, per that real
+     * hardware enumeration (which the strap's own count=16 confirms
+     * is exhaustive, not a guess).
+     */
     private static final String[] R22_FLAGS = {
         "enable_r22_packets",
         "enable_r22_v2_packets",
         "enable_r22_v3_packets",
+        "enable_r22_v4_packets",
         "enable_r22_v5_packets",
         "enable_r22_v6_packets",
         "enable_r22_v8_packets",
         "make_hrfm_visible",
+        "disable_pip_r26_packets",
+        "wear_detect_bias",
         "hr_ch_switching",
+        "ir_hw_switching",
         "enable_passive_strap_fit_gen5",
         "enable_sig11_during_sleep",
+        "dorset_inhibit_wpt",
+        "enable_sig12",
     };
 
     /*
+     * CORRECTED per-flag values, confirmed from real HCI captures of
+     * the ACTUAL OFFICIAL WHOOP APP itself - not a guess, not an
+     * enumeration, the real app's own captured traffic. Two captures:
+     * #103 (digitalerdude, history sync) established the baseline,
+     * and #522 (a later, more specific live-workout capture) caught
+     * and corrected a transcription error in #103's own read of
+     * enable_sig12. We had been sending '1' for every flag this
+     * entire investigation; the real app sends '2' for thirteen of
+     * them, and '1' for three: enable_r22_v4_packets,
+     * enable_passive_strap_fit_gen5, and enable_sig12 (corrected by
+     * #522 from an earlier, wrong '2' - the more specific capture
+     * wins over the first one where they conflict).
+     */
+    private char r22ValueFor(String flag) {
+        if (flag.equals("enable_r22_v4_packets") ||
+                flag.equals("enable_passive_strap_fit_gen5") ||
+                flag.equals("enable_sig12")) {
+            return '1';
+        }
+        return '2';
+    }
+
      * ------------------------------------------------------------------
      * Speculative ECG-specific flag names - none of these are confirmed
      * to exist. They're built by pattern-matching the naming convention
@@ -4792,6 +5115,243 @@ public class MainActivity extends Activity {
 
         mainH.postDelayed(() ->
                 logRaw("HIGH_RANGE_OPCODE_SWEEP_COMPLETE"), afterMs);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * FEATURE-FLAG KEY-WALK ENUMERATION - opcodes 117/118, found via a
+     * real merged PR (#917, "Separate the two enumeration terminators:
+     * don't stop a key walk on validKey=0") and confirmed by a real,
+     * complete enumeration on firmware 50.41.1.0 that found four
+     * previously-unknown flag names (enable_r22_v9_packets,
+     * enable_frizzle_burst_mode, ir_1x_enable, enable_rocky2) - keys
+     * that could never have been found by guessing, only by walking.
+     *
+     * This is DISTINCT from the SET/GET_DEVICE_CONFIG_VALUE(119/121)
+     * pair we already use for named-key read/write - 117/118 walk
+     * EVERY valid key sequentially, without needing to know its name
+     * in advance. Exact byte format is NOT confirmed from any source
+     * we've read - only the opcode numbers and the "SEND_NEXT walk,
+     * validKey terminator" concept are real. Implemented as a
+     * reasonable first attempt (incrementing index argument, by
+     * symmetry with how most other opcodes take a small integer arg)
+     * - the actual reply format, if any, will reveal itself via the
+     * generic COMMAND_RESPONSE catch already in place, the same way
+     * we've reverse-engineered other things from real bytes rather
+     * than guessing the decode up front.
+     * ------------------------------------------------------------------
+     */
+    /*
+     * ------------------------------------------------------------------
+     * FEATURE-FLAG KEY-WALK - CORRECTED to match the real, confirmed
+     * protocol from a merged PR (#917), not inference. Real examples
+     * from that PR:
+     *   START_FF_KEY_EXCHANGE(117) -> revision=1 count=2 raw=01 02 00
+     *   SEND_NEXT_FF(118) -> index=0 validKey=true
+     *       key="enable_r22_packets" raw=01 00 01 65 6e 61 62...
+     *   SEND_NEXT_FF(118) -> index=255 validKey=false
+     *       raw=01 ff 00 00 00 00 00  (end/empty marker)
+     *
+     * Two real corrections from our first attempt: 117 is called ONCE
+     * to start the exchange, not repeated - and 118 is called
+     * repeatedly with NO index argument at all, since the strap
+     * tracks its own cursor internally between calls. Reply shape:
+     * [const=0x01][index][validKey][key name ASCII if valid].
+     *
+     * Also newly confirmed: 115/116 is a SEPARATE, parallel walk pair
+     * for the device-config namespace (the 119/121 family) - a whole
+     * second enumerable space we didn't know existed until this PR.
+     * ------------------------------------------------------------------
+     */
+    private void sendStartFfKeyExchange() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labrador(0x23, 117, 1, thisSeq);
+
+            logRaw("TX START_FF_KEY_EXCHANGE raw=" + Protocol.hex(f));
+            line("TX START_FF_KEY_EXCHANGE (cmd=117, starts the walk - " +
+                    "call once, then SEND_NEXT repeatedly)");
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected " +
+                        "(START_FF_KEY_EXCHANGE)");
+                opDone();
+            }
+        });
+    }
+
+    private void sendNextFf() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labrador(0x23, 118, 1, thisSeq);
+
+            logRaw("TX SEND_NEXT_FF raw=" + Protocol.hex(f));
+            line("TX SEND_NEXT_FF (cmd=118, no index - strap tracks " +
+                    "its own cursor)");
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (SEND_NEXT_FF)");
+                opDone();
+            }
+        });
+    }
+
+    /*
+     * Parallel walk for the DEVICE-CONFIG namespace (115/116) -
+     * confirmed as a separate, real pair from the same #917 PR
+     * ("namespace-parameterised... deviceConfigNamespace = 115/116").
+     * Same reply shape as 117/118, different opcode pair.
+     */
+    private void sendStartDeviceConfigKeyExchange() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labrador(0x23, 115, 1, thisSeq);
+
+            logRaw("TX START_DEVICE_CONFIG_KEY_EXCHANGE raw=" +
+                    Protocol.hex(f));
+            line("TX START_DEVICE_CONFIG_KEY_EXCHANGE (cmd=115, " +
+                    "starts the device-config namespace walk)");
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected " +
+                        "(START_DEVICE_CONFIG_KEY_EXCHANGE)");
+                opDone();
+            }
+        });
+    }
+
+    private void sendNextDeviceConfig() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.labrador(0x23, 116, 1, thisSeq);
+
+            logRaw("TX SEND_NEXT_DEVICE_CONFIG raw=" + Protocol.hex(f));
+            line("TX SEND_NEXT_DEVICE_CONFIG (cmd=116, no index)");
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected " +
+                        "(SEND_NEXT_DEVICE_CONFIG)");
+                opDone();
+            }
+        });
+    }
+
+    private void sweepDeviceConfigKeyWalk() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot walk device-config keys");
+            return;
+        }
+
+        line("");
+        line("*** DEVICE-CONFIG KEY-WALK (cmd=115 once, then cmd=116 " +
+                "repeatedly) - the second, parallel namespace from " +
+                "#917. This is the same family enable_raw_data_w_ecg " +
+                "lives in (119/121) ***");
+        logRaw("DEVICE_CONFIG_KEY_WALK_BEGIN");
+
+        sendStartDeviceConfigKeyExchange();
+
+        int steps = 25;
+
+        for (int i = 0; i < steps; i++) {
+
+            int stepNum = i;
+            long delayMs = 800L * (i + 1);
+
+            mainH.postDelayed(() -> {
+                line("--- SEND_NEXT_DEVICE_CONFIG step " + stepNum +
+                        " ---");
+                sendNextDeviceConfig();
+            }, delayMs);
+        }
+
+        long afterMs = 800L * (steps + 1) + 500;
+
+        mainH.postDelayed(() ->
+                logRaw("DEVICE_CONFIG_KEY_WALK_COMPLETE"), afterMs);
+    }
+
+    private void sweepFeatureFlagKeyWalk() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot walk feature-flag keys");
+            return;
+        }
+
+        line("");
+        line("*** FEATURE-FLAG KEY-WALK (cmd=117 once, then cmd=118 " +
+                "repeatedly) - real protocol confirmed from #917, not " +
+                "inferred. Watching for real key names in the replies ***");
+        logRaw("FEATURE_FLAG_KEY_WALK_BEGIN");
+
+        sendStartFfKeyExchange();
+
+        int steps = 25;
+
+        for (int i = 0; i < steps; i++) {
+
+            int stepNum = i;
+            long delayMs = 800L * (i + 1);
+
+            mainH.postDelayed(() -> {
+                line("--- SEND_NEXT_FF step " + stepNum + " ---");
+                sendNextFf();
+            }, delayMs);
+        }
+
+        long afterMs = 800L * (steps + 1) + 500;
+
+        mainH.postDelayed(() ->
+                logRaw("FEATURE_FLAG_KEY_WALK_COMPLETE"), afterMs);
     }
 
     private void sweepNeighboringOpcodes() {
@@ -4980,7 +5540,7 @@ public class MainActivity extends Activity {
             long delayMs = 80L * (i + 1);
 
             mainH.postDelayed(
-                    () -> sendR22Flag(flag, '1'), delayMs);
+                    () -> sendR22Flag(flag, r22ValueFor(flag)), delayMs);
         }
     }
 
@@ -6530,6 +7090,30 @@ public class MainActivity extends Activity {
                 v -> runFeatureFlagCalibrationTest());
         addToCurrentSection(ffCalibrationBtn);
 
+        Button stagedDisableProbeBtn = btn(
+                "STAGED R22 DISABLE: PROBE enable_sig12 with '0' first " +
+                        "(is '0' even valid in this namespace?)",
+                v -> runStagedR22DisableProbe());
+        addToCurrentSection(stagedDisableProbeBtn);
+
+        Button confirmClearRemainingBtn = btn(
+                "CONFIRM PROBE PASSED - CLEAR REMAINING 15 (only tap " +
+                        "if GET_FF_VALUE above confirmed the change)",
+                v -> confirmProbePassedClearRemaining());
+        addToCurrentSection(confirmClearRemainingBtn);
+
+        Button featureFlagWalkBtn = btn(
+                "WALK ALL FEATURE-FLAG KEYS (cmd=117/118, real " +
+                        "enumeration mechanism, never sent before now)",
+                v -> sweepFeatureFlagKeyWalk());
+        addToCurrentSection(featureFlagWalkBtn);
+
+        Button deviceConfigWalkBtn = btn(
+                "WALK ALL DEVICE-CONFIG KEYS (cmd=115/116, the " +
+                        "namespace enable_raw_data_w_ecg lives in)",
+                v -> sweepDeviceConfigKeyWalk());
+        addToCurrentSection(deviceConfigWalkBtn);
+
         Button deviceConfigDuringPullBtn = btn(
                 "DEVICE_CONFIG EXCHANGE DURING ACTIVE PULL (matches " +
                         "real app's successful timing)",
@@ -7142,10 +7726,36 @@ public class MainActivity extends Activity {
 
                     pendingDevice = d;
 
-                    boolean started =
-                            d.createBond();
+                    /*
+                     * Distinguishing three outcomes explicitly, per a
+                     * real bug found and fixed in #1646: createBond()
+                     * needs BLUETOOTH_CONNECT, and an uncaught/
+                     * swallowed SecurityException was being
+                     * misreported as "the stack declined to pair" -
+                     * a confident claim about the strap for what was
+                     * actually a local permission problem. These are
+                     * genuinely different findings and share none of
+                     * their meaning.
+                     */
+                    boolean started;
 
-                    logRaw("CREATE_BOND_CALLED result=" + started);
+                    try {
+
+                        started = d.createBond();
+                        logRaw("CREATE_BOND_CALLED result=" + started);
+
+                    } catch (SecurityException se) {
+
+                        line("createBond() THREW SecurityException - " +
+                                "missing BLUETOOTH_CONNECT permission, " +
+                                "a LOCAL problem, not the strap " +
+                                "declining anything");
+                        logRaw("CREATE_BOND_THREW_SECURITY_EXCEPTION " +
+                                "msg=" + se.getMessage());
+
+                        pendingDevice = null;
+                        return;
+                    }
 
                     if (!started) {
 
