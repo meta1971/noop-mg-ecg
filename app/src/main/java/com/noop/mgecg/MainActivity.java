@@ -171,6 +171,14 @@ public class MainActivity extends Activity {
     private boolean rssiMonitoringActive = false;
 
     /*
+     * Guards against Android's BLE stack firing
+     * onConnectionStateChange(CONNECTED) twice in a row for the same
+     * connection - a real, confirmed bug (2 of 3 real logs checked
+     * showed it, ~10ms apart each time). Reset on every disconnect.
+     */
+    private boolean alreadyHandledThisConnection = false;
+
+    /*
      * Waits for the REAL application-layer confirmation of a specific
      * SET_CONFIG flag - the strap's own echo of that exact flag name
      * on channel 0003 - not just the BLE-layer write ack. Added after
@@ -667,6 +675,30 @@ public class MainActivity extends Activity {
             if (state ==
                     BluetoothProfile.STATE_CONNECTED) {
 
+                /*
+                 * CORRECTED: a real, reproducible bug caught by
+                 * cross-checking a real captured log - Android's own
+                 * BLE stack fires onConnectionStateChange(CONNECTED)
+                 * TWICE in a row (~10ms apart) on some connection
+                 * attempts, confirmed in 2 of 3 real logs checked.
+                 * Without this guard, discoverServices() (and
+                 * everything downstream of it - CLIENT_HELLO, R22,
+                 * every subscription) would fire twice per actual
+                 * connection, risking duplicate sends and general
+                 * protocol confusion nothing in this investigation
+                 * has ever specifically accounted for.
+                 */
+                if (alreadyHandledThisConnection) {
+
+                    line("(duplicate GATT_CONNECTED callback - " +
+                            "ignoring, already handled)");
+                    logRaw("GATT_CONNECTED_DUPLICATE_IGNORED");
+
+                    return;
+                }
+
+                alreadyHandledThisConnection = true;
+
                 line("GATT CONNECTED");
                 logRaw("GATT_CONNECTED");
                 updateStatus("● CONNECTED");
@@ -680,6 +712,7 @@ public class MainActivity extends Activity {
                 updateStatus("○ DISCONNECTED");
 
                 rssiMonitoringActive = false;
+                alreadyHandledThisConnection = false;
 
                 try {
                     g.close();
@@ -2763,6 +2796,90 @@ public class MainActivity extends Activity {
         }, 2000);
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * KEY-WALK SWEEPS WITH THE REAL APP'S EARLY-CONNECTION PRECONDITION
+     * - a genuine, previously-untried combination. DISABLE_ALARM +
+     * TOGGLE_REALTIME_HR (found tracing the real app's confirmed-
+     * successful enable_raw_data_w_ecg exchanges) has only ever been
+     * tested against that ONE named-key exchange (119/121). The
+     * key-walk enumeration mechanisms (115/116, 117/118) were built
+     * afterward, from a completely separate thread of this
+     * investigation (#917), and have never been tried WITH this same
+     * precondition - two real, separately-confirmed pieces that
+     * simply never got combined until now.
+     * ------------------------------------------------------------------
+     */
+    private void runKeyWalksWithRealAppPrecondition() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this test");
+            return;
+        }
+
+        line("");
+        line("*** KEY-WALK SWEEPS WITH REAL APP PRECONDITION: " +
+                "DISABLE_ALARM -> TOGGLE_REALTIME_HR(1) -> THEN both " +
+                "115/116 and 117/118 walks - never combined before now ***");
+        logRaw("KEY_WALK_WITH_PRECONDITION_BEGIN");
+
+        sendDisableAlarm();
+
+        mainH.postDelayed(() -> sendToggleRealtimeHr(1), 500);
+
+        mainH.postDelayed(() -> {
+
+            line("--- precondition sent - now walking DEVICE-CONFIG " +
+                    "keys (115/116) ---");
+
+            sendStartDeviceConfigKeyExchange();
+
+            int steps = 25;
+
+            for (int i = 0; i < steps; i++) {
+
+                int stepNum = i;
+                long delayMs = 800L * (i + 1);
+
+                mainH.postDelayed(() -> {
+                    line("--- SEND_NEXT_DEVICE_CONFIG step " + stepNum +
+                            " (with precondition) ---");
+                    sendNextDeviceConfig();
+                }, delayMs);
+            }
+
+            long afterDeviceConfigMs = 800L * (steps + 1) + 1000;
+
+            mainH.postDelayed(() -> {
+
+                line("--- device-config walk done - now walking " +
+                        "FEATURE-FLAG keys (117/118) ---");
+
+                sendStartFfKeyExchange();
+
+                for (int i = 0; i < steps; i++) {
+
+                    int stepNum = i;
+                    long delayMs = 800L * (i + 1);
+
+                    mainH.postDelayed(() -> {
+                        line("--- SEND_NEXT_FF step " + stepNum +
+                                " (with precondition) ---");
+                        sendNextFf();
+                    }, delayMs);
+                }
+
+                long afterFfMs = 800L * (steps + 1) + 500;
+
+                mainH.postDelayed(() ->
+                        logRaw("KEY_WALK_WITH_PRECONDITION_COMPLETE"),
+                        afterFfMs);
+
+            }, afterDeviceConfigMs);
+
+        }, 2000);
+    }
+
     private void setDeviceConfigValue(String key, int valueByte) {
 
         if (gatt == null || cmdWrite == null) {
@@ -4354,6 +4471,24 @@ public class MainActivity extends Activity {
                 dir, "reconstructed_waveform188_" + stamp + ".csv");
 
         try (java.io.FileWriter fw = new java.io.FileWriter(out)) {
+
+            /*
+             * Explicit disclaimer line, so this file can never be
+             * mistaken for R22, ADC, or ECG data by any tool or
+             * person reading it later - a real confusion that
+             * happened once already (an external tool relabeled this
+             * exact data "R22 Channel 1 raw ADC"). This is the
+             * waveform-188 historical record's confirmed real,
+             * high-cardinality signal region (byte offset 26-175,
+             * 75 x int16 LE per record) - genuine, non-garbage
+             * signal, but its physiological meaning (if any) remains
+             * UNIDENTIFIED. Not confirmed as accelerometer, PPG, or
+             * ECG. Not the 124-byte R22 record's field113 either.
+             */
+            fw.write("# WAVEFORM-188 - confirmed real signal, " +
+                    "UNIDENTIFIED meaning. NOT R22. NOT ADC. NOT " +
+                    "confirmed ECG. Do not relabel without checking " +
+                    "this file's own source comments first.\n");
 
             fw.write("recordIndex,subId,sampleIndexInRecord,flatIndex," +
                     "value\n");
@@ -7119,6 +7254,13 @@ public class MainActivity extends Activity {
                         "namespace enable_raw_data_w_ecg lives in)",
                 v -> sweepDeviceConfigKeyWalk());
         addToCurrentSection(deviceConfigWalkBtn);
+
+        Button keyWalksWithPreconditionBtn = btn(
+                "KEY-WALKS WITH REAL APP PRECONDITION (DISABLE_ALARM+" +
+                        "HR first, then BOTH walks - never combined " +
+                        "before now)",
+                v -> runKeyWalksWithRealAppPrecondition());
+        addToCurrentSection(keyWalksWithPreconditionBtn);
 
         Button deviceConfigDuringPullBtn = btn(
                 "DEVICE_CONFIG EXCHANGE DURING ACTIVE PULL (matches " +
