@@ -2605,6 +2605,11 @@ public class MainActivity extends Activity {
                 logRaw("STAGED_R22_DISABLE_COMPLETE"), afterMs);
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * DEVICE-CONFIG EXCHANGE DURING ACTIVE HISTORICAL PULL - found in a
+     * real export from the actual NOOP app: its own successful
+     * SET_DEVICE_CONFIG_VALUE(119)/GET_DEVICE_CONFIG_VALUE(121)
      * exchange for enable_raw_data_w_ecg happened ~90s into the
      * connection, DURING an active historical-data offload (chunks
      * being acked back-to-back at that exact moment) - not sent in
@@ -4999,6 +5004,7 @@ public class MainActivity extends Activity {
         return '2';
     }
 
+    /*
      * ------------------------------------------------------------------
      * Speculative ECG-specific flag names - none of these are confirmed
      * to exist. They're built by pattern-matching the naming convention
