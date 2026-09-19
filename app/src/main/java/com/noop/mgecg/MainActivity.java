@@ -245,6 +245,21 @@ public class MainActivity extends Activity {
     private byte[] lastKnownCursor = null;
 
     /*
+     * Tracks the most recent STATUS31 frame's own fields, separately
+     * from lastKnownCursor (which is sourced from parsed console
+     * text, not this frame). Lets us log both side by side whenever
+     * a CURSOR_ACK fires, and lets a dedicated test build the ACK
+     * arg directly from THIS frame's fields instead - testing the
+     * hypothesis (from external analysis of a real capture) that the
+     * historical-transfer cursor may need to echo STATUS31's own
+     * counter/oscillating/tail values, not whatever source currently
+     * feeds lastKnownCursor.
+     */
+    private Integer lastStatus31Counter = null;
+    private Integer lastStatus31Oscillating = null;
+    private byte[] lastStatus31Tail = null;
+
+    /*
      * ------------------------------------------------------------------
      * Waveform-88 ECG-control tracking - persists across app launches
      * (SharedPreferences) so a no-ECG control pull and an ECG-then-pull
@@ -4138,6 +4153,10 @@ public class MainActivity extends Activity {
 
         byte[] tail = Arrays.copyOfRange(v, 17, 32);
 
+        lastStatus31Counter = counter;
+        lastStatus31Oscillating = oscillating;
+        lastStatus31Tail = tail;
+
         line(String.format(Locale.US,
                 "STATUS-31 counter=%d oscillating16=%d (0x%04X) " +
                         "tail=%s",
@@ -4147,6 +4166,43 @@ public class MainActivity extends Activity {
                 " oscillating16=" + oscillating +
                 " tail=" + Protocol.hex(tail) +
                 " raw=" + Protocol.hex(v));
+    }
+
+    /*
+     * Builds a CURSOR_ACK arg directly from the most recent STATUS31
+     * frame's own fields (counter + oscillating16, little-endian, per
+     * the same 8-byte cursor shape the real ack uses) instead of
+     * lastKnownCursor's console-text-derived value. Tests the
+     * hypothesis directly rather than just logging a correlation.
+     */
+    private void sendCursorAckFromStatus31Fields() {
+
+        if (lastStatus31Counter == null) {
+            line("NO STATUS31 FRAME SEEN YET - cannot build ack from " +
+                    "its fields");
+            return;
+        }
+
+        byte[] arg = new byte[9];
+        arg[0] = 0x01;
+        arg[1] = (byte) (lastStatus31Counter & 0xFF);
+        arg[2] = (byte) (lastStatus31Oscillating & 0xFF);
+        arg[3] = (byte) ((lastStatus31Oscillating >> 8) & 0xFF);
+        System.arraycopy(lastStatus31Tail, 0, arg, 4, 5);
+
+        line("*** CURSOR_ACK BUILT FROM STATUS31's OWN FIELDS - " +
+                "counter=" + lastStatus31Counter + " oscillating16=" +
+                lastStatus31Oscillating + " (testing external " +
+                "hypothesis that this, not the console-text cursor, " +
+                "is what advances the transfer) ***");
+        logRaw("CURSOR_ACK_FROM_STATUS31_FIELDS counter=" +
+                lastStatus31Counter + " oscillating16=" +
+                lastStatus31Oscillating);
+
+        sendPullAckGenerationChecked(0x17, arg,
+                "CURSOR_ACK (built from STATUS31's own fields, " +
+                        "experimental)",
+                pullGeneration);
     }
 
     /*
@@ -4496,6 +4552,12 @@ public class MainActivity extends Activity {
             byte[] b3AndCursor = new byte[9];
             b3AndCursor[0] = 0x01;
             System.arraycopy(lastKnownCursor, 0, b3AndCursor, 1, 8);
+
+            logRaw("CURSOR_ACK_CORRELATION sendingCursor=" +
+                    Protocol.hex(lastKnownCursor) +
+                    " lastStatus31Counter=" + lastStatus31Counter +
+                    " lastStatus31Oscillating=" +
+                    lastStatus31Oscillating);
 
             sendPullAckGenerationChecked(0x17, b3AndCursor,
                     "CURSOR_ACK (real, echoing captured Trim value)",
@@ -6432,6 +6494,12 @@ public class MainActivity extends Activity {
                 "STOP PULL ACK LOOP",
                 v -> stopPullAckLoop());
         addToCurrentSection(stopPullBtn);
+
+        Button cursorFromStatus31Btn = btn(
+                "SEND ONE CURSOR_ACK FROM STATUS31's OWN FIELDS " +
+                        "(experimental)",
+                v -> sendCursorAckFromStatus31Fields());
+        addToCurrentSection(cursorFromStatus31Btn);
 
         addSectionHeader(controls, "ECG GATE DIAGNOSTICS", 0xFF7FDBFF);
 
