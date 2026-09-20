@@ -1115,10 +1115,97 @@ public class MainActivity extends Activity {
                 decodeStatusFrame31(value);
             } else if (envType == 0x24 &&
                     (envCmd == 119 || envCmd == 121)) {
-                line("*** DEVICE_CONFIG_VALUE REPLY (cmd=" +
-                        envCmd + ") - see ASCII/hex above for content ***");
-                logRaw("DEVICE_CONFIG_VALUE_REPLY cmd=" + envCmd +
-                        " raw=" + Protocol.hex(value));
+
+                /*
+                 * CORRECTED - previously just said "see ASCII/hex
+                 * above", far less rigorous than the GET_FF_VALUE
+                 * decoder despite being the SAME structure (per
+                 * #890: [0x01] + 32-byte NUL-padded key + value) and
+                 * being the exact namespace enable_raw_data_w_ecg
+                 * itself lives in. Now applies the same result-code
+                 * check (the #2193 bug pattern - a FAILURE reply can
+                 * echo the key with zero padding, indistinguishable
+                 * from a real empty value if the result code is
+                 * never checked) and multi-byte value reading (the
+                 * #907 bug pattern - values are not always single-
+                 * byte) that GET_FF_VALUE already has.
+                 */
+                int dcResultCode = value.length > 12 ?
+                        (value[12] & 0xff) : -1;
+                boolean dcResultIsSuccess = dcResultCode == 1;
+
+                String dcKeyEchoed = "";
+                String dcValueStr = "";
+
+                if (dcResultIsSuccess && value.length >= 13 + 1 + 32 &&
+                        value[13] == 0x01) {
+
+                    StringBuilder kb = new StringBuilder();
+
+                    for (int i = 0; i < 32; i++) {
+                        int b = value[14 + i] & 0xff;
+                        if (b == 0) break;
+                        kb.append((char) b);
+                    }
+
+                    dcKeyEchoed = kb.toString();
+
+                    StringBuilder vb = new StringBuilder();
+
+                    for (int i = 0; i < 32 &&
+                            14 + 32 + i < value.length; i++) {
+                        int b = value[14 + 32 + i] & 0xff;
+                        if (b == 0) break;
+                        vb.append((char) b);
+                    }
+
+                    dcValueStr = vb.toString();
+
+                    line("*** GET_DEVICE_CONFIG_VALUE REPLY (cmd=" +
+                            envCmd + "): key=\"" + dcKeyEchoed +
+                            "\" storedValue=\"" + dcValueStr +
+                            "\" - REAL STORED STATE ***");
+
+                    logRaw("DEVICE_CONFIG_VALUE_REPLY cmd=" + envCmd +
+                            " key=" + dcKeyEchoed +
+                            " storedValue=" + dcValueStr +
+                            " raw=" + Protocol.hex(value));
+
+                } else if (!dcResultIsSuccess &&
+                        value.length >= 13 + 1 + 32 && value[13] == 0x01) {
+
+                    StringBuilder kb = new StringBuilder();
+
+                    for (int i = 0; i < 32; i++) {
+                        int b = value[14 + i] & 0xff;
+                        if (b == 0) break;
+                        kb.append((char) b);
+                    }
+
+                    dcKeyEchoed = kb.toString();
+
+                    line("*** GET_DEVICE_CONFIG_VALUE REPLY (cmd=" +
+                            envCmd + "): key=\"" + dcKeyEchoed +
+                            "\" resultCode=" + dcResultCode + " - NOT " +
+                            "SUCCESS, this is a REFUSED/FAILED read, " +
+                            "NOT a real stored value ***");
+
+                    logRaw("DEVICE_CONFIG_VALUE_REFUSED cmd=" + envCmd +
+                            " key=" + dcKeyEchoed +
+                            " resultCode=" + dcResultCode +
+                            " raw=" + Protocol.hex(value));
+
+                } else {
+
+                    line("*** DEVICE_CONFIG_VALUE REPLY (cmd=" +
+                            envCmd + ") resultCode=" + dcResultCode +
+                            " - unrecognized shape, see hex above ***");
+
+                    logRaw("DEVICE_CONFIG_VALUE_REPLY cmd=" + envCmd +
+                            " resultCode=" + dcResultCode +
+                            " raw=" + Protocol.hex(value));
+                }
+
             } else if (envType == 0x24 && envCmd == 128) {
 
                 /*
@@ -1126,14 +1213,37 @@ public class MainActivity extends Activity {
                  * read-back for the SET_FF_VALUE/SET_CONFIG (120)
                  * namespace. Payload after the header is expected to
                  * mirror the SET_FF_VALUE echo shape: [0x01][32-byte
-                 * NUL-padded key][value byte]. Decoded explicitly so
+                 * NUL-padded key][value]. Decoded explicitly so
                  * the actual stored value is visible directly, not
                  * left as raw hex to parse by hand.
+                 *
+                 * CORRECTED: values are NOT always single-byte - a
+                 * real bug found in #907 ("max_collection_backlog
+                 * reads '0.0'" - a 3-character value truncated by a
+                 * single-byte reader). Now reads the FULL NUL-
+                 * terminated ASCII string after the key field, same
+                 * as the key itself, capped at 32 bytes as a sane
+                 * bound.
                  */
                 String keyEchoed = "";
-                int storedValue = -1;
+                String storedValueStr = "";
+                int storedValueSingleByte = -1;
 
-                if (value.length >= 13 + 1 + 32 + 1 &&
+                /*
+                 * CORRECTED per a real bug found and fixed in #2193:
+                 * a FAILURE reply echoes the requested key back with
+                 * zero padding, which - if the result code is never
+                 * checked - is indistinguishable from a genuine
+                 * stored value of empty/zero. Check the result code
+                 * (value[12], same position as every other
+                 * COMMAND_RESPONSE we decode) FIRST; only trust the
+                 * echoed value when it reads SUCCESS(1).
+                 */
+                int resultCode = value.length > 12 ?
+                        (value[12] & 0xff) : -1;
+                boolean resultIsSuccess = resultCode == 1;
+
+                if (resultIsSuccess && value.length >= 13 + 1 + 32 + 1 &&
                         value[13] == 0x01) {
 
                     StringBuilder kb = new StringBuilder();
@@ -1145,20 +1255,63 @@ public class MainActivity extends Activity {
                     }
 
                     keyEchoed = kb.toString();
-                    storedValue = value[14 + 32] & 0xff;
+
+                    StringBuilder vb = new StringBuilder();
+
+                    for (int i = 0; i < 32 &&
+                            14 + 32 + i < value.length; i++) {
+                        int b = value[14 + 32 + i] & 0xff;
+                        if (b == 0) break;
+                        vb.append((char) b);
+                    }
+
+                    storedValueStr = vb.toString();
+                    storedValueSingleByte = value[14 + 32] & 0xff;
+
+                } else if (!resultIsSuccess && value.length >= 13 + 1 + 32 &&
+                        value[13] == 0x01) {
+
+                    /*
+                     * A FAILURE (or other non-success) reply that
+                     * still echoes the key - exactly the shape #2193
+                     * warns about. Extract the key for context, but
+                     * NEVER claim a stored value from this reply.
+                     */
+                    StringBuilder kb = new StringBuilder();
+
+                    for (int i = 0; i < 32; i++) {
+                        int b = value[14 + i] & 0xff;
+                        if (b == 0) break;
+                        kb.append((char) b);
+                    }
+
+                    keyEchoed = kb.toString();
+
+                    line("*** GET_FF_VALUE REPLY: key=\"" + keyEchoed +
+                            "\" resultCode=" + resultCode + " - NOT " +
+                            "SUCCESS, this is a REFUSED/FAILED read, " +
+                            "NOT a real stored value of empty/zero " +
+                            "(the exact #2193 bug pattern) ***");
+
+                    logRaw("GET_FF_VALUE_REFUSED key=" + keyEchoed +
+                            " resultCode=" + resultCode +
+                            " raw=" + Protocol.hex(value));
+
+                    return;
                 }
 
                 line("*** GET_FF_VALUE REPLY: key=\"" + keyEchoed +
-                        "\" storedValue=" + storedValue +
-                        " (0x" + String.format("%02X", storedValue) +
+                        "\" storedValue=\"" + storedValueStr +
+                        "\" (firstByte=" + storedValueSingleByte +
+                        " 0x" + String.format("%02X", storedValueSingleByte) +
                         ") - THIS IS THE REAL STORED STATE, not an " +
                         "echo of what we wrote ***");
 
                 logRaw("GET_FF_VALUE_REPLY key=" + keyEchoed +
-                        " storedValue=" + storedValue +
+                        " storedValue=" + storedValueStr +
                         " raw=" + Protocol.hex(value));
 
-                updateLastFfValueDisplay(keyEchoed, storedValue);
+                updateLastFfValueDisplay(keyEchoed, storedValueStr);
 
             } else if (envType == 0x24 &&
                     (envCmd == 117 || envCmd == 118 || envCmd == 115 ||
@@ -3326,6 +3479,101 @@ public class MainActivity extends Activity {
 
     /*
      * ------------------------------------------------------------------
+     * EXIT_HIGH_FREQ_SYNC (cmd=97) - a safety-relevant gap: we added
+     * ENTER(96) without its exit counterpart, despite #1100's own
+     * explicit warning ("particularly given the existing note about
+     * straps found parked in high-frequency mode"). If ENTER ever
+     * does something real on this unit, this is how to cleanly back
+     * out rather than leaving the strap in an unknown state.
+     * ------------------------------------------------------------------
+     */
+    private void probeExitHighFreqSync() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot probe");
+            return;
+        }
+
+        line("");
+        line("*** SENDING EXIT_HIGH_FREQ_SYNC (cmd=97) - the safety " +
+                "counterpart to ENTER(96). Use this after ENTER if you " +
+                "want to back out cleanly ***");
+        logRaw("EXIT_HIGH_FREQ_SYNC_PROBE_BEGIN cmd=97");
+
+        send(97, 1, "EXIT_HIGH_FREQ_SYNC_PROBE");
+
+        mainH.postDelayed(() ->
+                logRaw("EXIT_HIGH_FREQ_SYNC_PROBE_DONE"), 3000);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * GET_BODY_LOCATION_AND_STATUS (cmd=84/0x54) - a real, confirmed
+     * read-only probe (issue #690, merged) we learned about but never
+     * actually implemented. Response format from the real decompiled
+     * parser: [revision][location][confidence][status], 4 bytes.
+     * Location enum: 0=UNKNOWN, 1=WRIST, 2=BICEP, 3=CALF,
+     * 4=SIDE_TORSO, 5=GLUTE, 7=ANKLE, 128=NOT_CONCLUSIVE,
+     * 160=UNKNOWN_GARMENT. Genuinely relevant to us: this is a
+     * completely separate, real wear/location-detection mechanism
+     * from anything we've tried on the ECG side - if it reports
+     * something other than WRIST, or a low confidence, that would be
+     * a real, independent signal about physical contact state we've
+     * never had before.
+     * ------------------------------------------------------------------
+     */
+    private void probeBodyLocationAndStatus() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot probe");
+            return;
+        }
+
+        line("");
+        line("*** PROBING GET_BODY_LOCATION_AND_STATUS (cmd=84) - a " +
+                "real, confirmed read-only wear/location probe (#690), " +
+                "never implemented before now ***");
+        logRaw("BODY_LOCATION_PROBE_BEGIN cmd=84");
+
+        send(84, 1, "GET_BODY_LOCATION_AND_STATUS_PROBE");
+
+        mainH.postDelayed(() ->
+                logRaw("BODY_LOCATION_PROBE_DONE - check above for the " +
+                        "COMMAND_RESPONSE; decode revision/location/" +
+                        "confidence/status from its raw hex"), 3000);
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * GET_EXTENDED_BATTERY_INFO (cmd=98/0x62) - directly adjacent to
+     * the ENTER_HIGH_FREQ_SYNC family above, same resolved numbering
+     * uncertainty (#592), never actually sent by us despite being
+     * discussed. Read-only, low-risk. Not expected to relate to ECG
+     * directly, but completes the family we just started probing and
+     * costs one round-trip.
+     * ------------------------------------------------------------------
+     */
+    private void probeExtendedBatteryInfo() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot probe");
+            return;
+        }
+
+        line("");
+        line("*** PROBING GET_EXTENDED_BATTERY_INFO (cmd=98) - same " +
+                "resolved-numbering family as cmd=96, never actually " +
+                "sent before now ***");
+        logRaw("EXTENDED_BATTERY_INFO_PROBE_BEGIN cmd=98");
+
+        send(98, 1, "GET_EXTENDED_BATTERY_INFO_PROBE");
+
+        mainH.postDelayed(() ->
+                logRaw("EXTENDED_BATTERY_INFO_PROBE_DONE"), 3000);
+    }
+
+    /*
+     * ------------------------------------------------------------------
      * Tests a specific sequence suggested externally (not from any
      * verified source - no citation for this exact procedure exists
      * in the real NOOP source, the hardware teardown, or any community
@@ -3392,8 +3640,13 @@ public class MainActivity extends Activity {
                 logRaw("WRIST_VALUE_ARG1_RESULT=" +
                         (resultFor1 == null ? "NoReply" : resultFor1));
 
-                line("=== WRIST VALUE TEST DONE - compare the two " +
-                        "results above (0=FAILURE/1=SUCCESS/etc) ===");
+                line("=== WRIST VALUE TEST DONE - IMPORTANT: per real " +
+                        "PR discussion (#907), SELECT_WRIST's convention " +
+                        "is INVERTED from normal expectation - " +
+                        "SUCCESS means a NO-OP (value already set), " +
+                        "FAILURE means it actually CHANGED something. " +
+                        "Read the two results above with that in mind, " +
+                        "not as pass/fail ===");
 
             }, 2000);
 
@@ -7266,6 +7519,25 @@ public class MainActivity extends Activity {
                 v -> probeEnterHighFreqSync());
         addToCurrentSection(highFreqSyncBtn);
 
+        Button exitHighFreqSyncBtn = btn(
+                "EXIT_HIGH_FREQ_SYNC (cmd=97) - safety counterpart, use " +
+                        "after ENTER to back out cleanly",
+                v -> probeExitHighFreqSync());
+        addToCurrentSection(exitHighFreqSyncBtn);
+
+        Button bodyLocationBtn = btn(
+                "PROBE GET_BODY_LOCATION_AND_STATUS (cmd=84) - real, " +
+                        "confirmed wear/location probe, never implemented " +
+                        "before now (#690)",
+                v -> probeBodyLocationAndStatus());
+        addToCurrentSection(bodyLocationBtn);
+
+        Button extBatteryBtn = btn(
+                "PROBE GET_EXTENDED_BATTERY_INFO (cmd=98) - same resolved " +
+                        "family as cmd=96, never sent before now (#592)",
+                v -> probeExtendedBatteryInfo());
+        addToCurrentSection(extBatteryBtn);
+
         Button suggestedSeqBtn = btn(
                 "TEST SUGGESTED SEQUENCE (flags->probe->wait->1 start) - " +
                         "WEAR+TOUCH",
@@ -8152,14 +8424,14 @@ public class MainActivity extends Activity {
      * display should NOT be quietly showing an old confirmation from
      * an earlier session).
      */
-    private void updateLastFfValueDisplay(String key, int storedValue) {
+    private void updateLastFfValueDisplay(String key, String storedValue) {
 
         String timestamp = new java.text.SimpleDateFormat(
                 "HH:mm:ss.SSS", Locale.US).format(new Date());
 
         String text = String.format(Locale.US,
-                "GET_FF_VALUE: \"%s\" = %d (0x%02X)  @ %s",
-                key, storedValue, storedValue, timestamp);
+                "GET_FF_VALUE: \"%s\" = \"%s\"  @ %s",
+                key, storedValue, timestamp);
 
         runOnUiThread(() -> {
             if (lastFfValueDisplay != null) {
