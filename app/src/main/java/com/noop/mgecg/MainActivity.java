@@ -40,6 +40,18 @@ public class MainActivity extends Activity {
     private final ArrayDeque<Float> field113History = new ArrayDeque<>();
     private TextView byte180Display;
     private final ArrayDeque<Integer> byte180History = new ArrayDeque<>();
+
+    /*
+     * Always-visible readout for the most recent GET_FF_VALUE_REPLY -
+     * same pattern as field113Display/byte180Display, for the same
+     * reason: during a live test (like the staged R22 disable probe)
+     * the log scrolls too fast to reliably spot one specific line
+     * before deciding whether to proceed. This makes that decision
+     * possible by just glancing at a fixed spot on screen instead of
+     * hunting through a fast-scrolling log.
+     */
+    private TextView lastFfValueDisplay;
+
     private Button scanBtn;
     private EditText customInput;
     private EditText clockInput;
@@ -1145,6 +1157,8 @@ public class MainActivity extends Activity {
                 logRaw("GET_FF_VALUE_REPLY key=" + keyEchoed +
                         " storedValue=" + storedValue +
                         " raw=" + Protocol.hex(value));
+
+                updateLastFfValueDisplay(keyEchoed, storedValue);
 
             } else if (envType == 0x24 &&
                     (envCmd == 117 || envCmd == 118 || envCmd == 115 ||
@@ -2558,6 +2572,20 @@ public class MainActivity extends Activity {
                 "changed ***");
         logRaw("STAGED_R22_DISABLE_BEGIN probeKey=enable_sig12");
 
+        /*
+         * Reset the always-visible readout to a clear "pending" state
+         * before this probe's own reply (if any) can arrive - so a
+         * stale reply left over from an earlier run/session can never
+         * be mistaken for confirmation of THIS probe.
+         */
+        runOnUiThread(() -> {
+            if (lastFfValueDisplay != null) {
+                lastFfValueDisplay.setText(
+                        "GET_FF_VALUE: (waiting for this probe's " +
+                                "reply...)");
+            }
+        });
+
         line("--- PROBE: writing '0' to enable_sig12 only ---");
         sendR22Flag("enable_sig12", '0');
 
@@ -3246,6 +3274,54 @@ public class MainActivity extends Activity {
         logRaw("ECG_ARG_PROBE_BEGIN arg=3");
 
         send(0x7C, 3, "MAIN_CONTROL_ECG_DATA_GENERATION_PROBE_ARG3");
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * ENTER_HIGH_FREQ_SYNC (cmd=96) - explicitly named by the real
+     * project's own maintainer as one of only TWO remaining real
+     * avenues on the v16 flash-ECG-record mystery (issue #1100's own
+     * closure comment: "the remaining open avenues are hardware-/
+     * protocol-gated - a device that actually populates ECG, and
+     * confirming the ENTER_HIGH_FREQ_SYNC opcode (#592)"). #1100
+     * itself declined to send this specific opcode due to unresolved
+     * numbering uncertainty between two competing RE sources (96/97/98
+     * vs 85/86/87, tracked in #592). That numbering has since settled
+     * on 96/97/98 (confirmed by #592's own PR trail - a real, shipped
+     * battery-voltage feature built directly on "command 98" as
+     * GET_EXTENDED_BATTERY_INFO), which removes the exact uncertainty
+     * that made #1100 avoid sending 96 to a real strap.
+     *
+     * Rationale for trying this: a 30-second ECG at 500Hz is tens of
+     * KB - #1100's own reasoning is that this is plausibly why the
+     * ordinary offload (v16/v18) never carries it, and
+     * ENTER_HIGH_FREQ_SYNC would be the natural transport for a
+     * large flash-resident record like that. Read-only in spirit
+     * (per #592's own framing) but genuinely untested on THIS unit -
+     * sent once, watched closely, not repeated blindly.
+     * ------------------------------------------------------------------
+     */
+    private void probeEnterHighFreqSync() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot probe");
+            return;
+        }
+
+        line("");
+        line("*** PROBING ENTER_HIGH_FREQ_SYNC (cmd=96) - explicitly " +
+                "named by the real project's own maintainer as one of " +
+                "only two remaining real avenues on the v16 flash-ECG " +
+                "mystery. Never sent before now - watching closely for " +
+                "ANY response or behavior change ***");
+        logRaw("ENTER_HIGH_FREQ_SYNC_PROBE_BEGIN cmd=96");
+
+        send(96, 1, "ENTER_HIGH_FREQ_SYNC_PROBE");
+
+        mainH.postDelayed(() ->
+                logRaw("ENTER_HIGH_FREQ_SYNC_PROBE_DONE - check above " +
+                        "for any COMMAND_RESPONSE or unexpected " +
+                        "notification"), 3000);
     }
 
     /*
@@ -4172,16 +4248,17 @@ public class MainActivity extends Activity {
         int heartRate = value[22] & 0xff;
 
         /*
-         * Unidentified field at bytes 113-116, float32 LE - found by
-         * scanning every unmapped byte across ~4900 real R22 frames
-         * for ones that vary too smoothly to be noise. Confirmed
-         * against real data: frame-to-frame change here averages 5x
-         * smaller than the same values would show if shuffled
-         * randomly (0.145 vs 0.735), which is real continuity, not a
-         * float32 reinterpretation of unrelated bytes landing in a
-         * plausible range by chance. Real range seen so far: -5.28 to
-         * -1.02. No confirmed meaning yet - logged live here so it can
-         * be watched against whatever you're doing while capturing.
+         * CONFIRMED MEANING - this was "unidentified field113", now
+         * resolved by a real, rigorous census (issue #845, ~18,650
+         * real v18 records, cross-validated against shuffle/circular-
+         * shift controls): a graded SIGNAL-QUALITY metric. Floors at
+         * -5.2869 when quality is GOOD; moves toward 0 as quality
+         * degrades, taking P(failed beat detection) from 18.3% (at
+         * the floor) to 78.0% (worst end). This is genuinely useful
+         * for us: during a touch/contact test, this field staying
+         * near its floor is real, confirmed evidence of good signal
+         * quality - not just "some mystery number that happens to
+         * move".
          */
         Float field113 = null;
 
@@ -4190,17 +4267,41 @@ public class MainActivity extends Activity {
             updateField113Display(field113);
         }
 
+        /*
+         * CONFIRMED companion field (issue #845) - a saturating 0-255
+         * confidence score for the HR/RR detection pipeline. 255 =
+         * maximum confidence; falls as quality degrades. Correlated
+         * r=-0.80 with field113 (both track the SAME underlying
+         * quality, from two independent bytes) - having both lets us
+         * cross-check one against the other rather than trusting a
+         * single number.
+         */
+        int hrConfidence = value.length > 40 ? (value[40] & 0xff) : -1;
+
+        /*
+         * CONFIRMED companion field (issue #845) - bit 0 is a real-
+         * time motion-artifact flag (byte-identical to @81 bit0 in
+         * the real census, 18,650/18,650 agreement). Set = motion is
+         * currently degrading beat detection.
+         */
+        int hrQualityFlags = value.length > 33 ? (value[33] & 0xff) : -1;
+        boolean motionArtifact = (hrQualityFlags & 0x01) != 0;
+
         line(String.format(
                 "R22 DECODE: accel x=%.3f y=%.3f z=%.3f |v|=%.3f  " +
-                        "HR=%d bpm  field113=%s",
+                        "HR=%d bpm  quality(field113)=%s  " +
+                        "hrConfidence=%d/255  motionArtifact=%b",
                 accelX, accelY, accelZ, mag, heartRate,
-                field113 == null ? "n/a" : String.format("%.3f", field113)));
+                field113 == null ? "n/a" : String.format("%.3f", field113),
+                hrConfidence, motionArtifact));
 
         logRaw(String.format(
                 "R22_DECODE accel_x=%.4f accel_y=%.4f accel_z=%.4f " +
-                        "mag=%.4f hr=%d field113=%s",
+                        "mag=%.4f hr=%d quality_field113=%s " +
+                        "hr_confidence=%d motion_artifact=%b",
                 accelX, accelY, accelZ, mag, heartRate,
-                field113 == null ? "n/a" : String.format("%.4f", field113)));
+                field113 == null ? "n/a" : String.format("%.4f", field113),
+                hrConfidence, motionArtifact));
 
         flagIfUnrecognizedRecordShape(value, mag, heartRate);
     }
@@ -6935,6 +7036,19 @@ public class MainActivity extends Activity {
                         -1,
                         -2));
 
+        lastFfValueDisplay = new TextView(this);
+        lastFfValueDisplay.setText("GET_FF_VALUE: (no reply yet)");
+        lastFfValueDisplay.setTextSize(16);
+        lastFfValueDisplay.setTextColor(0xFF7FFF7F);
+        lastFfValueDisplay.setTypeface(null, android.graphics.Typeface.BOLD);
+        lastFfValueDisplay.setPadding(0, 0, 0, 16);
+
+        root.addView(
+                lastFfValueDisplay,
+                new LinearLayout.LayoutParams(
+                        -1,
+                        -2));
+
         /*
          * ------------------------------------------------------------
          * Primary action grid - fixed height, always visible, never
@@ -7145,6 +7259,12 @@ public class MainActivity extends Activity {
                 "PROBE UNDOCUMENTED cmd=0x7C arg=3",
                 v -> probeUndocumentedEcgArg());
         addToCurrentSection(probeArgBtn);
+
+        Button highFreqSyncBtn = btn(
+                "PROBE ENTER_HIGH_FREQ_SYNC (cmd=96) - maintainer's own " +
+                        "named next step for the v16 flash mystery (#1100)",
+                v -> probeEnterHighFreqSync());
+        addToCurrentSection(highFreqSyncBtn);
 
         Button suggestedSeqBtn = btn(
                 "TEST SUGGESTED SEQUENCE (flags->probe->wait->1 start) - " +
@@ -8020,6 +8140,30 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> {
             if (byte180Display != null) {
                 byte180Display.setText(text);
+            }
+        });
+    }
+
+    /*
+     * Always-visible readout for the most recent GET_FF_VALUE_REPLY -
+     * timestamped so it's obvious at a glance whether this is a fresh
+     * reply or a stale one left over from before the current test
+     * started (e.g. if a probe genuinely got no reply this time, this
+     * display should NOT be quietly showing an old confirmation from
+     * an earlier session).
+     */
+    private void updateLastFfValueDisplay(String key, int storedValue) {
+
+        String timestamp = new java.text.SimpleDateFormat(
+                "HH:mm:ss.SSS", Locale.US).format(new Date());
+
+        String text = String.format(Locale.US,
+                "GET_FF_VALUE: \"%s\" = %d (0x%02X)  @ %s",
+                key, storedValue, storedValue, timestamp);
+
+        runOnUiThread(() -> {
+            if (lastFfValueDisplay != null) {
+                lastFfValueDisplay.setText(text);
             }
         });
     }
