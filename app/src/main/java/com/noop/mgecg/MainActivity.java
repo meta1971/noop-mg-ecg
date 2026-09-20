@@ -3882,6 +3882,224 @@ public class MainActivity extends Activity {
      * other.
      * ------------------------------------------------------------------
      */
+    /*
+     * ------------------------------------------------------------------
+     * REAL DOCUMENTED SEQUENCE ORDER - genuinely never tried before now.
+     * Every one of our combined ECG attempts (FULL_COMBINED,
+     * CONTACT_FIRST, CLEAN_SLATE, ULTIMATE, SUGGESTED_SEQUENCE) sends
+     * the gate + three toggles, but NONE of them send SELECT_WRIST
+     * first - despite issue #1100's own real, documented, confirmed
+     * turn-on sequence explicitly listing it as step one, before
+     * anything else:
+     *
+     *   select wrist (123) -> filtered (139=1) -> raw-save (125=1)
+     *       -> data-generation (124=2, start)
+     *
+     * We've tested SELECT_WRIST only in isolation (testBothWristValues)
+     * and the three toggles only without it. This sends the exact
+     * documented order, for the first time, with confirmed-good
+     * contact quality methodology (touch held throughout, corrected
+     * R22 values, proper gate-refusal reporting already in place).
+     * ------------------------------------------------------------------
+     */
+    /*
+     * ------------------------------------------------------------------
+     * REAL APP EXACT FLOW - PURE ECG, NO R22 - the single most
+     * important new test from decompiling the real app's actual ECG
+     * code path (ts1.a, the real LabradorServiceImpl). Traced through
+     * bs1.g -> zr1.d -> ts1.a in full: the real ECG-reading flow is
+     * SELECT_WRIST -> two ENABLE toggles (matching 139/125) -> THEN,
+     * as a SEPARATE, LATER USER ACTION (a different button tap in the
+     * real app's own UI, not fired in the same burst) -> the single
+     * START/STOP/RESTART command (124).
+     *
+     * CRITICALLY: R22_FLAGS never appear ANYWHERE in this real,
+     * decompiled code path. Every combined attempt we've ever run
+     * sent R22 first, based on third-party community assumptions -
+     * this is the first test that deliberately sends NONE, matching
+     * exactly what the real app's own ECG-specific code does.
+     *
+     * Split into two explicit stages (not one burst) to genuinely
+     * match the real app's two-stage UX - tap PREP, confirm/wait,
+     * THEN separately tap START - rather than assuming a fixed delay
+     * is equivalent to a real, separate user action.
+     * ------------------------------------------------------------------
+     */
+    private void runRealAppExactFlowPrep() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this test");
+            return;
+        }
+
+        line("");
+        line("*** REAL APP EXACT FLOW - STAGE 1: PREP (SELECT_WRIST + " +
+                "2 enable toggles, deliberately NO R22 flags - matches " +
+                "the real decompiled LabradorServiceImpl exactly). " +
+                "TOUCH NOW AND HOLD ***");
+        logRaw("REAL_APP_EXACT_FLOW_PREP_BEGIN");
+
+        send(0x7B, 0, "SELECT_WRIST (real app exact flow, stage 1)");
+
+        mainH.postDelayed(() ->
+                send(0x8B, 1,
+                        "TOGGLE_REALTIME_FILTERED_ECG_ON (real app " +
+                                "exact flow, stage 1 - matches f0/l0 " +
+                                "ENABLE toggle)"), 500);
+
+        mainH.postDelayed(() ->
+                send(0x7D, 1,
+                        "TOGGLE_SAVE_RAW_ECG_ON (real app exact flow, " +
+                                "stage 1 - matches f0/l0 ENABLE toggle)"),
+                1000);
+
+        mainH.postDelayed(() ->
+                logRaw("REAL_APP_EXACT_FLOW_PREP_DONE - now tap STAGE " +
+                        "2: START as a genuinely separate action, " +
+                        "matching the real app's own two-stage UX"),
+                1500);
+    }
+
+    private void runRealAppExactFlowStart() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this test");
+            return;
+        }
+
+        line("");
+        line("*** REAL APP EXACT FLOW - STAGE 2: START (the single " +
+                "u(v) command from ts1.a, sent as a genuinely separate " +
+                "action from prep) - KEEP TOUCHING ***");
+        logRaw("REAL_APP_EXACT_FLOW_START_BEGIN");
+
+        realtimeEcgFragments.clear();
+        ecgCommandResponsesThisAttempt.clear();
+        realtimeEcgTotalBytes = 0;
+        realtimeEcgBinaryFile = null;
+        maxEcgOnSeen = false;
+
+        labradorActive = true;
+        recordingComplete = false;
+        labradorPacketCount = 0;
+
+        ecgEverRunThisConnection = true;
+
+        send(0x7C, 2,
+                "MAIN_CONTROL_ECG_DATA_GENERATION_START (real app " +
+                        "exact flow, stage 2 - matches u(v.START))");
+
+        ecgListenActive = true;
+        ecgListenGeneration++;
+        ecgListenStartedAtMs = System.currentTimeMillis();
+
+        final int myGen = ecgListenGeneration;
+
+        mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
+    }
+
+    private void runRealDocumentedSequenceOrder() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this test");
+            return;
+        }
+
+        line("");
+        line("*** REAL DOCUMENTED SEQUENCE ORDER (#1100) - SELECT_WRIST " +
+                "FIRST, then filtered->raw-save->data-generation. Never " +
+                "tried in this order before now. TOUCH NOW AND HOLD " +
+                "THROUGH THE WHOLE SEQUENCE ***");
+        logRaw("REAL_DOCUMENTED_SEQUENCE_BEGIN");
+
+        line("--- step 1: SELECT_WRIST (never before sent as part of " +
+                "an actual combined attempt) ---");
+        send(0x7B, 0, "SELECT_WRIST (documented sequence, step 1)");
+
+        mainH.postDelayed(() -> {
+
+            line("--- step 2: R22 unlock (corrected values) ---");
+
+            for (int i = 0; i < R22_FLAGS.length; i++) {
+
+                String flag = R22_FLAGS[i];
+                long delayMs = 80L * (i + 1);
+
+                mainH.postDelayed(
+                        () -> sendR22Flag(flag, r22ValueFor(flag)),
+                        delayMs);
+            }
+
+            long afterR22Ms = 80L * (R22_FLAGS.length + 2);
+
+            mainH.postDelayed(() -> {
+
+                line("--- step 3: ECG gate ---");
+
+                pendingEcgGateConfirmationFlagName =
+                        "enable_raw_data_w_ecg";
+                pendingEcgGateConfirmationCallback = () -> {
+
+                    ecgEverRunThisConnection = true;
+
+                    realtimeEcgFragments.clear();
+                    ecgCommandResponsesThisAttempt.clear();
+                    realtimeEcgTotalBytes = 0;
+                    realtimeEcgBinaryFile = null;
+                    maxEcgOnSeen = false;
+
+                    labradorActive = true;
+                    recordingComplete = false;
+                    labradorPacketCount = 0;
+
+                    line("--- step 4: the three toggles, in the " +
+                            "documented order - SELECT_WRIST was " +
+                            "already sent as step 1 ---");
+
+                    sendWithCallback(0x8B, 1,
+                            "TOGGLE_REALTIME_FILTERED_ECG_ON " +
+                                    "(documented sequence)", () ->
+                            sendWithCallback(0x7D, 1,
+                                    "TOGGLE_SAVE_RAW_ECG_ON " +
+                                            "(documented sequence)", () ->
+                            send(0x7C, 2,
+                                    "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                            "(documented sequence)")));
+
+                    ecgListenActive = true;
+                    ecgListenGeneration++;
+                    ecgListenStartedAtMs = System.currentTimeMillis();
+
+                    final int myGen = ecgListenGeneration;
+
+                    mainH.postDelayed(
+                            () -> runEcgListenHeartbeat(myGen), 5000);
+                };
+
+                sendR22Flag("enable_raw_data_w_ecg", '1');
+
+                mainH.postDelayed(() -> {
+
+                    if (pendingEcgGateConfirmationCallback != null) {
+
+                        line("*** gate echo TIMED OUT - proceeding " +
+                                "anyway ***");
+                        logRaw("ECG_GATE_ECHO_TIMEOUT flag=" +
+                                "enable_raw_data_w_ecg");
+
+                        Runnable cb = pendingEcgGateConfirmationCallback;
+                        pendingEcgGateConfirmationCallback = null;
+                        pendingEcgGateConfirmationFlagName = null;
+                        cb.run();
+                    }
+
+                }, 3000);
+
+            }, afterR22Ms);
+
+        }, 1000);
+    }
+
     private void runCleanSlateEcgAttempt() {
 
         if (gatt == null || cmdWrite == null) {
@@ -3916,6 +4134,18 @@ public class MainActivity extends Activity {
 
             pendingEcgGateConfirmationFlagName = "enable_raw_data_w_ecg";
             pendingEcgGateConfirmationCallback = () -> {
+
+                /*
+                 * FIXED: this callback never set
+                 * ecgEverRunThisConnection, unlike every other
+                 * combined attempt - found by checking this exact
+                 * session's own control-summary output, which showed
+                 * "this_pull_ecg_first=false" despite ECG commands
+                 * having genuinely fired earlier in the same
+                 * connection. Any pull following a clean-slate run
+                 * was being silently miscategorized.
+                 */
+                ecgEverRunThisConnection = true;
 
                 mainH.postDelayed(() -> send(0x8B, 1,
                         "TOGGLE_REALTIME_FILTERED_ECG_ON " +
@@ -7506,6 +7736,43 @@ public class MainActivity extends Activity {
                         "- WEAR + TOUCH CLASP",
                 v -> runBankToFlashTest());
         addToCurrentSection(bankToFlashBtn);
+
+        /*
+         * REAL DOCUMENTED SEQUENCE ORDER - SELECT_WRIST has never been
+         * sent as part of an actual combined attempt before now,
+         * despite #1100's own real, documented sequence listing it as
+         * step one. Placed at the top since it's the newest, most
+         * directly-motivated untried combination.
+         */
+        Button documentedSeqBtn = btn(
+                "REAL DOCUMENTED SEQUENCE ORDER (SELECT_WRIST first, " +
+                        "per #1100 - never tried before now) - WEAR + " +
+                        "TOUCH CLASP",
+                v -> runRealDocumentedSequenceOrder());
+        addToCurrentSection(documentedSeqBtn);
+
+        /*
+         * REAL APP EXACT FLOW - the single most important new test
+         * from decompiling the real app's own ECG code path
+         * (ts1.a/LabradorServiceImpl). Deliberately sends NO R22
+         * flags at all - the real, traced code path never sends any -
+         * and splits prep/start into two genuinely separate taps,
+         * matching the real app's own two-stage UX rather than one
+         * rapid burst. Placed first since it's the most direct,
+         * best-evidenced test in the whole investigation.
+         */
+        Button realAppFlowPrepBtn = btn(
+                "REAL APP EXACT FLOW - STAGE 1: PREP (wrist+2 toggles, " +
+                        "deliberately NO R22 - from decompiled source) - " +
+                        "TOUCH NOW",
+                v -> runRealAppExactFlowPrep());
+        addToCurrentSection(realAppFlowPrepBtn);
+
+        Button realAppFlowStartBtn = btn(
+                "REAL APP EXACT FLOW - STAGE 2: START (tap only after " +
+                        "stage 1 completes, as a separate action)",
+                v -> runRealAppExactFlowStart());
+        addToCurrentSection(realAppFlowStartBtn);
 
         /*
          * FULL COMBINED ECG ATTEMPT - chains R22 unlock + the ECG
