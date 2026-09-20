@@ -1853,6 +1853,20 @@ public class MainActivity extends Activity {
      * the BLE-layer write ack, which fires earlier and doesn't mean
      * the strap has actually processed the value yet. See the field
      * declaration comment above for the full context.
+     *
+     * CORRECTED - a real, serious bug found by precisely checking a
+     * captured log: this only ever checked whether the flag NAME
+     * appeared in the echo text, never the result code. Verified
+     * against every session where the exact echo can be reconstructed
+     * (going back to September 11th): enable_raw_data_w_ecg's
+     * SET_CONFIG write consistently gets resultByte=0 (FAILURE),
+     * while every other R22 flag in the same burst gets resultByte=1
+     * (SUCCESS) - a real, distinct refusal, not a matching pattern.
+     * Every prior "ECG_GATE_REAL_ECHO_CONFIRMED" was a name match on
+     * a write that had actually been refused. Now checks the result
+     * code (byte 12, same position as every other COMMAND_RESPONSE)
+     * and reports plainly when the gate was refused rather than
+     * silently proceeding as if it had succeeded.
      */
     private void checkPendingEcgGateConfirmation(byte[] v) {
 
@@ -1866,11 +1880,38 @@ public class MainActivity extends Activity {
 
         if (text.contains(pendingEcgGateConfirmationFlagName)) {
 
-            line("*** REAL ECG GATE CONFIRMATION ECHO RECEIVED for \"" +
-                    pendingEcgGateConfirmationFlagName + "\" ***");
+            int gateResultCode = v.length > 12 ? (v[12] & 0xff) : -1;
 
-            logRaw("ECG_GATE_REAL_ECHO_CONFIRMED flag=" +
-                    pendingEcgGateConfirmationFlagName);
+            if (gateResultCode != 1) {
+
+                line("*** ECG GATE WRITE REFUSED for \"" +
+                        pendingEcgGateConfirmationFlagName +
+                        "\" - resultCode=" + gateResultCode +
+                        " (NOT SUCCESS). This is a REAL, DISTINCT " +
+                        "refusal - every other R22 flag in this same " +
+                        "burst gets resultByte=1. Every prior attempt " +
+                        "proceeded to START anyway because this check " +
+                        "only looked for the flag name, never the " +
+                        "result code - now fixed. Proceeding to START " +
+                        "regardless, so this can still be compared " +
+                        "against a genuinely-accepted run if one is " +
+                        "ever seen ***");
+
+                logRaw("ECG_GATE_WRITE_REFUSED flag=" +
+                        pendingEcgGateConfirmationFlagName +
+                        " resultCode=" + gateResultCode);
+
+            } else {
+
+                line("*** REAL ECG GATE CONFIRMATION ECHO RECEIVED for " +
+                        "\"" + pendingEcgGateConfirmationFlagName +
+                        "\" - resultCode=1 (SUCCESS), genuinely " +
+                        "accepted this time ***");
+
+                logRaw("ECG_GATE_REAL_ECHO_CONFIRMED flag=" +
+                        pendingEcgGateConfirmationFlagName +
+                        " resultCode=1");
+            }
 
             Runnable cb = pendingEcgGateConfirmationCallback;
 
