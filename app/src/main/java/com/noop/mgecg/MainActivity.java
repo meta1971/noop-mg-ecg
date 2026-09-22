@@ -764,6 +764,25 @@ public class MainActivity extends Activity {
             g.readRemoteRssi();
             schedulePeriodicBatteryRead(g);
 
+            /*
+             * Request the 2M PHY explicitly. Real finding from NOOP's
+             * own upstream (PR #537): the app never called
+             * setPreferredPhy() at all, so every connection ran on
+             * the older 1M PHY by default despite 2M (roughly double
+             * the symbol rate) being available since Bluetooth 5.
+             * Checked our own code - same gap, confirmed. This is
+             * about throughput, not acknowledgment - a slower PHY
+             * would still work, just more slowly - so it's unlikely
+             * to explain the ECG silence directly, but it's a real,
+             * low-risk improvement worth having regardless,
+             * especially given the v16 timing hypothesis where a
+             * faster offload burst could matter.
+             */
+            g.setPreferredPhy(
+                    BluetoothDevice.PHY_LE_2M_MASK,
+                    BluetoothDevice.PHY_LE_2M_MASK,
+                    BluetoothDevice.PHY_OPTION_NO_PREFERRED);
+
             dumpAllServices(g);
 
             mainH.postDelayed(() -> {
@@ -789,28 +808,26 @@ public class MainActivity extends Activity {
 
             line("fd4b service found");
 
-            subscribe(
-                    g,
-                    s.getCharacteristic(cmdN));
-
-            subscribe(
-                    g,
-                    s.getCharacteristic(eventN));
-
-            subscribe(
-                    g,
-                    s.getCharacteristic(dataN));
-
-            subscribe(
-                    g,
-                    s.getCharacteristic(extraN));
-
+            /*
+             * ORDER FIXED - per a real community finding (b-nnett/
+             * goose issue #60): the confirmed-working order is
+             * CLIENT_HELLO first, THEN subscribe to notifications.
+             * We had this backwards (subscribing to all four
+             * characteristics before ever sending the hello) since
+             * the very start of this investigation. Unlikely to be
+             * the whole explanation for our silence given we do get
+             * real responses for plenty of other opcodes already -
+             * but it's a genuine correctness issue worth fixing
+             * regardless, and matches the confirmed real order
+             * rather than something we assumed.
+             */
             if (cmdWrite != null) {
 
                 enqueue(() -> {
 
                     line("TX CLIENT_HELLO " +
-                            "(confirmed write)");
+                            "(confirmed write) - sent BEFORE " +
+                            "subscribing, per #60's confirmed order");
 
                     cmdWrite.setWriteType(
                             BluetoothGattCharacteristic
@@ -830,6 +847,22 @@ public class MainActivity extends Activity {
                     }
                 });
             }
+
+            subscribe(
+                    g,
+                    s.getCharacteristic(cmdN));
+
+            subscribe(
+                    g,
+                    s.getCharacteristic(eventN));
+
+            subscribe(
+                    g,
+                    s.getCharacteristic(dataN));
+
+            subscribe(
+                    g,
+                    s.getCharacteristic(extraN));
         }
 
         @Override
@@ -3998,6 +4031,210 @@ public class MainActivity extends Activity {
         mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * REAL APP EXACT FLOW WITH RETRY - a genuinely important discovery
+     * from an independent iOS decompile (Goose project's own research,
+     * of the real official WHOOP app): a confirmed real string,
+     * "failure_after_three_attempts", from LabradorReadingStrapInteractor
+     * .swift - the real app's own ECG state machine explicitly expects
+     * it may need UP TO THREE ATTEMPTS before succeeding, and only
+     * reports failure after all three fail.
+     *
+     * We have NEVER retried our own combined attempt - every test this
+     * entire investigation has been a single shot. If a single failed
+     * attempt is normal, even on working hardware, then our own single-
+     * shot tests may have been stopping exactly where the real app
+     * would have silently tried again. This runs PREP+START up to
+     * three times, stopping early only if real data actually arrives.
+     * ------------------------------------------------------------------
+     */
+    /*
+     * ------------------------------------------------------------------
+     * TWO-COMMAND TURN-ON (139 THEN 124, DELIBERATELY NO 125) - the
+     * exact, precise sequence stated in NOOP's own upstream PR #1765
+     * as what actually produced 315 REAL, confirmed type=43
+     * REALTIME_RAW_DATA records on a WHOOP MG (same hardware
+     * revision, WS50_r00, as this unit): "the packet the MG streams
+     * once the #1727 turn-on order (139 = 1 then 124 = 2) has opened
+     * the stream."
+     *
+     * Every combined attempt we have ever built - Ultimate,
+     * ContactFirst, CleanSlate, FullCombined, RealAppExactFlow, the
+     * retry variant, the documented-sequence variant - has always
+     * included 125 (TOGGLE_SAVE_RAW_ECG) as part of the sequence.
+     * Checked directly against our own code before writing this:
+     * confirmed, no exceptions. This is the first test that
+     * deliberately omits it, matching precisely what the one person
+     * in the whole thread who got real data actually sent.
+     * ------------------------------------------------------------------
+     */
+    private void runTwoCommandTurnOn() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this test");
+            return;
+        }
+
+        line("");
+        line("*** TWO-COMMAND TURN-ON (139 then 124, DELIBERATELY NO " +
+                "125) - the exact sequence #1765 states produced 315 " +
+                "real type=43 records on a matching WS50_r00 unit. " +
+                "TOUCH NOW AND HOLD ***");
+        logRaw("TWO_COMMAND_TURNON_BEGIN");
+
+        realtimeEcgFragments.clear();
+        ecgCommandResponsesThisAttempt.clear();
+        realtimeEcgTotalBytes = 0;
+        realtimeEcgBinaryFile = null;
+        maxEcgOnSeen = false;
+
+        labradorActive = true;
+        recordingComplete = false;
+        labradorPacketCount = 0;
+
+        ecgEverRunThisConnection = true;
+
+        sendWithCallback(0x8B, 1,
+                "TOGGLE_REALTIME_FILTERED_ECG_ON (two-command turn-on, " +
+                        "no 125)", () ->
+                send(0x7C, 2,
+                        "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                "(two-command turn-on, no 125)"));
+
+        ecgListenActive = true;
+        ecgListenGeneration++;
+        ecgListenStartedAtMs = System.currentTimeMillis();
+
+        final int myGen = ecgListenGeneration;
+
+        mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
+    }
+
+    private void runRealAppExactFlowWithRetry() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this test");
+            return;
+        }
+
+        line("");
+        line("*** REAL APP EXACT FLOW WITH RETRY - confirmed from a " +
+                "real string in the official app's own decompiled " +
+                "source (\"failure_after_three_attempts\") - the real " +
+                "app expects up to 3 attempts before giving up. We've " +
+                "only ever tried once. TOUCH NOW AND HOLD THROUGH ALL " +
+                "THREE ATTEMPTS ***");
+        logRaw("REAL_APP_EXACT_FLOW_RETRY_BEGIN");
+
+        attemptRealAppExactFlowOnce(1);
+    }
+
+    private void attemptRealAppExactFlowOnce(int attemptNumber) {
+
+        if (gatt == null || cmdWrite == null) {
+            return;
+        }
+
+        line("");
+        line("=== ATTEMPT " + attemptNumber + " of 3 ===");
+        logRaw("REAL_APP_EXACT_FLOW_ATTEMPT_" + attemptNumber + "_BEGIN");
+
+        send(0x7B, 0, "SELECT_WRIST (retry attempt " + attemptNumber + ")");
+
+        mainH.postDelayed(() ->
+                send(0x8B, 1,
+                        "TOGGLE_REALTIME_FILTERED_ECG_ON (retry attempt " +
+                                attemptNumber + ")"), 500);
+
+        mainH.postDelayed(() ->
+                send(0x7D, 1,
+                        "TOGGLE_SAVE_RAW_ECG_ON (retry attempt " +
+                                attemptNumber + ")"), 1000);
+
+        mainH.postDelayed(() -> {
+
+            realtimeEcgFragments.clear();
+            ecgCommandResponsesThisAttempt.clear();
+            realtimeEcgTotalBytes = 0;
+            realtimeEcgBinaryFile = null;
+            maxEcgOnSeen = false;
+
+            labradorActive = true;
+            recordingComplete = false;
+            labradorPacketCount = 0;
+
+            ecgEverRunThisConnection = true;
+
+            send(0x7C, 2,
+                    "MAIN_CONTROL_ECG_DATA_GENERATION_START (retry " +
+                            "attempt " + attemptNumber + ")");
+
+            ecgListenActive = true;
+            ecgListenGeneration++;
+            ecgListenStartedAtMs = System.currentTimeMillis();
+
+            final int myGen = ecgListenGeneration;
+
+            mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
+
+        }, 1500);
+
+        /*
+         * After a real listen window, stop this attempt and decide
+         * whether to retry. Only retries if NOTHING arrived - any
+         * real COMMAND_RESPONSE or type=43 data means this attempt is
+         * worth stopping on and reporting, not masking with a retry.
+         */
+        mainH.postDelayed(() -> {
+
+            boolean gotAnyResponse = !ecgCommandResponsesThisAttempt.isEmpty();
+            boolean gotAnyData = realtimeEcgFragments != null &&
+                    !realtimeEcgFragments.isEmpty();
+
+            send(0x7C, 1,
+                    "MAIN_CONTROL_ECG_DATA_GENERATION_STOP (retry " +
+                            "attempt " + attemptNumber + ")");
+
+            line("--- attempt " + attemptNumber + " done: gotResponse=" +
+                    gotAnyResponse + " gotData=" + gotAnyData + " ---");
+
+            logRaw("REAL_APP_EXACT_FLOW_ATTEMPT_" + attemptNumber +
+                    "_DONE gotResponse=" + gotAnyResponse +
+                    " gotData=" + gotAnyData);
+
+            if (gotAnyResponse || gotAnyData) {
+
+                line("*** ATTEMPT " + attemptNumber + " GOT SOMETHING - " +
+                        "STOPPING HERE, not retrying further ***");
+                logRaw("REAL_APP_EXACT_FLOW_RETRY_STOPPED_EARLY_ON_" +
+                        "ATTEMPT_" + attemptNumber);
+
+                reportEcgAttemptVerdict();
+
+            } else if (attemptNumber < 3) {
+
+                line("--- nothing this attempt - retrying (matches " +
+                        "the real app's own confirmed up-to-3-attempts " +
+                        "behavior) ---");
+
+                mainH.postDelayed(
+                        () -> attemptRealAppExactFlowOnce(attemptNumber + 1),
+                        2000);
+
+            } else {
+
+                line("*** ALL 3 ATTEMPTS EXHAUSTED, NOTHING RECEIVED - " +
+                        "matches the real app's own " +
+                        "\"failure_after_three_attempts\" outcome ***");
+                logRaw("REAL_APP_EXACT_FLOW_RETRY_ALL_3_EXHAUSTED");
+
+                reportEcgAttemptVerdict();
+            }
+
+        }, 25000);
+    }
+
     private void runRealDocumentedSequenceOrder() {
 
         if (gatt == null || cmdWrite == null) {
@@ -4548,6 +4785,44 @@ public class MainActivity extends Activity {
                 " raw=" + Protocol.hex(value));
 
         /*
+         * R17 OPTICAL/LABRADOR FILTERED CHECK - a record type we've
+         * NEVER once specifically looked for, found via an
+         * independent project's own real Rust protocol source
+         * (Goose). Their "packet_k" (their payload[1]) aligns
+         * exactly with our own confirmed hist_version@9 (#845) -
+         * meaning packet_k=17 corresponds to OUR absolute offset 9,
+         * with flags@21, sample_count@32, samples@34+. Checked
+         * directly on the layout-version byte, BEFORE length-based
+         * dispatch, so a record of this type is never missed even if
+         * its total length doesn't match one of our four known
+         * shapes (124/88/188/1584).
+         */
+        if (value.length > 9 && (value[9] & 0xff) == 17) {
+
+            int flags = value.length > 22 ?
+                    ((value[21] & 0xff) | ((value[22] & 0xff) << 8)) : -1;
+            boolean flagBit9 = (flags & (1 << 9)) != 0;
+            boolean flagBit11 = (flags & (1 << 11)) != 0;
+
+            int sampleCount = value.length > 33 ?
+                    ((value[32] & 0xff) | ((value[33] & 0xff) << 8)) : -1;
+
+            line("*** R17 OPTICAL/LABRADOR FILTERED RECORD DETECTED - " +
+                    "a type we've NEVER specifically looked for before " +
+                    "now (found via an independent project's real " +
+                    "Rust source) - flags=0x" +
+                    String.format("%04X", flags) +
+                    " bit9=" + flagBit9 + " bit11=" + flagBit11 +
+                    " sampleCount=" + sampleCount + " ***");
+
+            logRaw("R17_OPTICAL_LABRADOR_FILTERED len=" + value.length +
+                    " flags=0x" + String.format("%04X", flags) +
+                    " bit9=" + flagBit9 + " bit11=" + flagBit11 +
+                    " sampleCount=" + sampleCount +
+                    " raw=" + Protocol.hex(value));
+        }
+
+        /*
          * Route by actual frame length rather than applying the R22
          * decoder to everything - it was previously being run against
          * the 88-byte waveform-candidate frames too and producing
@@ -4570,19 +4845,41 @@ public class MainActivity extends Activity {
         } else if (value.length == 1584) {
 
             /*
-             * The "layout v16" flash-banked ECG record - named and
-             * documented in NOOP's own upstream issue #1100 as the
-             * real historical ECG storage record, distinct from
-             * everything we've decoded so far (R22/waveform-88/
-             * waveform-188 are all much shorter). That same issue
-             * reports it coming back EMPTY on firmware 50.40.1.0
-             * (matching this unit's firmware) even with the clasp
-             * circuit properly closed - so an empty/all-zero result
-             * here would match a real, already-documented negative,
-             * not necessarily something we did wrong. Flagged
-             * explicitly rather than falling into the generic
-             * unknown-length bucket, specifically so it's never
-             * missed if it does show up.
+             * "Layout v16" flash-banked ECG record. REBUILT to match
+             * a far more precise, rigorously re-derived scheme from
+             * a real primary-source report (ryanbr/noop#891,
+             * ayiskakov, WS50_r00/50.39.1.0 - the closest hardware
+             * match to this unit of anyone in the whole thread):
+             * validated across 128 real frames, with an explicit
+             * negative control against the #194 framing-artifact
+             * problem, continuity checks across record boundaries,
+             * and a correction posted for an earlier version of the
+             * same analysis (a second tag class, not zero-fill).
+             *
+             * @11 record_index (u32 LE, monotonic, lockstep with
+             *     v18/v20/v21/v26)
+             * @15 unix (u32 LE, strap RTC seconds, one record/sec)
+             * @32 word_count (u16 LE, number of 3-byte FIFO words)
+             * @34 FIFO body, word_count x 3 bytes:
+             *     byte0: tag - bits7-6 = 4-way class field
+             *            (0x80=ECG, 0x00=a second, non-ECG channel,
+             *            0x40/0xC0 rare/unexplained), bits1-0 =
+             *            sample bits 17-16
+             *     byte1: sample bits 15-8 (big-endian)
+             *     byte2: sample bits 7-0
+             *     sample = sign-extend the resulting 18-bit value
+             *
+             * Per that report's own hardware, this record has NEVER
+             * once appeared in this unit's own captures across the
+             * entire investigation (checked directly - every
+             * historical pull to date has produced only 88/124/188-
+             * byte records) - possibly a firmware difference
+             * (50.39.1.0 vs this unit's 50.40.1.0), or possibly a
+             * timing issue: that report's own data shows the
+             * recording runs a full 64 seconds, well past our
+             * typical listen windows, so a pull that happens too
+             * soon after a combined attempt may simply precede the
+             * record's completion.
              */
             int nonZero = 0;
             for (byte b : value) {
@@ -4592,63 +4889,101 @@ public class MainActivity extends Activity {
             }
 
             line("*** V16 FLASH ECG RECORD (len=1584) SEEN - " +
-                    nonZero + "/" + value.length + " non-zero bytes ***");
+                    nonZero + "/" + value.length + " non-zero bytes " +
+                    "- THIS HAS NEVER APPEARED IN ANY PAST CAPTURE ON " +
+                    "THIS UNIT, INVESTIGATE IMMEDIATELY ***");
 
-            /*
-             * Full byte-level structure from a real, primary-source
-             * writeup (issue #1100, vishk23) - magic/sequence/
-             * timestamp header, 1559-byte payload, CRC32 trailer.
-             * Decoded explicitly so if this record ever appears here,
-             * we get its embedded timestamp for free - lets us
-             * correlate it precisely against our own MARK_TOUCH
-             * markers, the same way the real writeup correlated it
-             * against a held-electrode window.
-             */
-            if (value.length >= 1584) {
+            if (value.length >= 36) {
 
-                int magic = value[0] & 0xff;
-                int sequence = value[11] & 0xff;
+                long recordIndex = (value[11] & 0xffL) |
+                        ((value[12] & 0xffL) << 8) |
+                        ((value[13] & 0xffL) << 16) |
+                        ((value[14] & 0xffL) << 24);
 
                 long unixTs = (value[15] & 0xffL) |
                         ((value[16] & 0xffL) << 8) |
                         ((value[17] & 0xffL) << 16) |
                         ((value[18] & 0xffL) << 24);
 
-                int const1 = value[19] & 0xff;
-                int const2 = value[20] & 0xff;
+                int wordCount = (value[32] & 0xff) |
+                        ((value[33] & 0xff) << 8);
 
-                byte[] payload = Arrays.copyOfRange(value, 21, 1580);
-                int payloadNonZero = 0;
-                for (byte b : payload) {
-                    if (b != 0) {
-                        payloadNonZero++;
+                java.util.Date recordDate =
+                        new java.util.Date(unixTs * 1000L);
+
+                line(String.format(Locale.US,
+                        "V16 STRUCTURE: recordIndex=%d unixTs=%d " +
+                                "(%s) wordCount=%d",
+                        recordIndex, unixTs, recordDate.toString(),
+                        wordCount));
+
+                /*
+                 * Decode the FIFO body - word_count x 3-byte words,
+                 * classified by the tag byte's top two bits. Only
+                 * class 0x80 is confirmed ECG; others are tracked
+                 * separately, never mixed into the ECG sample series
+                 * (the exact mistake the primary source's own
+                 * correction warned against).
+                 */
+                int fifoStart = 34;
+                int ecgSamples = 0;
+                int otherClassSamples = 0;
+                int fifoBytesAvailable =
+                        Math.max(0, value.length - fifoStart);
+                int wordsAvailable = Math.min(
+                        wordCount, fifoBytesAvailable / 3);
+
+                StringBuilder ecgPreview = new StringBuilder();
+
+                for (int w = 0; w < wordsAvailable; w++) {
+
+                    int base = fifoStart + w * 3;
+                    int tag = value[base] & 0xff;
+                    int b1 = value[base + 1] & 0xff;
+                    int b2 = value[base + 2] & 0xff;
+
+                    int tagClass = tag & 0xC0;
+                    int sampleHighBits = tag & 0x03;
+
+                    int raw18 = (sampleHighBits << 16) |
+                            (b1 << 8) | b2;
+
+                    // sign-extend 18-bit value
+                    int sample = (raw18 << 14) >> 14;
+
+                    if (tagClass == 0x80) {
+
+                        ecgSamples++;
+
+                        if (ecgPreview.length() < 200) {
+                            ecgPreview.append(sample).append(",");
+                        }
+
+                    } else {
+
+                        otherClassSamples++;
                     }
                 }
 
-                java.util.Date recordDate = new java.util.Date(unixTs * 1000L);
+                line("V16 FIFO DECODE: " + wordsAvailable +
+                        " words, ECG(class=0x80)=" + ecgSamples +
+                        " other-class=" + otherClassSamples);
 
-                line(String.format(Locale.US,
-                        "V16 STRUCTURE: magic=0x%02X seq=%d " +
-                                "unixTs=%d (%s) const=0x%02X 0x%02X " +
-                                "payloadNonZero=%d/1559",
-                        magic, sequence, unixTs, recordDate.toString(),
-                        const1, const2, payloadNonZero));
+                if (ecgSamples > 0) {
 
-                logRaw("V16_STRUCTURE magic=0x" +
-                        String.format("%02X", magic) +
-                        " seq=" + sequence +
-                        " unixTs=" + unixTs +
-                        " payloadNonZero=" + payloadNonZero + "/1559");
+                    line("*** V16 ECG SAMPLES DECODED - first values: " +
+                            ecgPreview + " ***");
 
-                if (payloadNonZero > 0) {
-
-                    line("*** V16 PAYLOAD IS NON-ZERO - THIS IS A REAL " +
-                            "HIT, INVESTIGATE IMMEDIATELY - every prior " +
-                            "report of this record has been entirely " +
-                            "zero ***");
-                    logRaw("V16_PAYLOAD_NONZERO_HIT raw=" +
-                            Protocol.hex(value));
+                    logRaw("V16_ECG_SAMPLES_DECODED recordIndex=" +
+                            recordIndex + " unixTs=" + unixTs +
+                            " ecgSamples=" + ecgSamples +
+                            " preview=" + ecgPreview);
                 }
+
+                logRaw("V16_STRUCTURE recordIndex=" + recordIndex +
+                        " unixTs=" + unixTs + " wordCount=" + wordCount +
+                        " ecgSamples=" + ecgSamples +
+                        " otherClassSamples=" + otherClassSamples);
             }
 
             logRaw("V16_FLASH_ECG_RECORD len=1584 nonZeroBytes=" +
@@ -7750,6 +8085,39 @@ public class MainActivity extends Activity {
                         "TOUCH CLASP",
                 v -> runRealDocumentedSequenceOrder());
         addToCurrentSection(documentedSeqBtn);
+
+        /*
+         * TWO-COMMAND TURN-ON - the exact, precise sequence NOOP's
+         * own upstream PR #1765 states produced 315 real type=43
+         * records. Placed first, above even the retry variant, since
+         * this is the most precisely-sourced sequence of the entire
+         * investigation - it's not a hypothesis, it's a direct quote
+         * of what worked for someone else on matching hardware.
+         */
+        Button twoCommandBtn = btn(
+                "TWO-COMMAND TURN-ON (139 then 124, NO 125 - exact " +
+                        "sequence from #1765 that produced 315 real " +
+                        "records) - TOUCH NOW",
+                v -> runTwoCommandTurnOn());
+        addToCurrentSection(twoCommandBtn);
+
+        /*
+         * REAL APP EXACT FLOW WITH RETRY - genuinely important
+         * discovery from an independent iOS decompile (Goose
+         * project's own research): a real, confirmed string,
+         * "failure_after_three_attempts", from the actual official
+         * app's own LabradorReadingStrapInteractor.swift. The real
+         * app expects up to 3 attempts before giving up - we've only
+         * ever tried once, every single test this whole
+         * investigation. Placed at the very top given how directly
+         * it's sourced and how significant a gap it fills.
+         */
+        Button realAppFlowRetryBtn = btn(
+                "REAL APP EXACT FLOW WITH RETRY (up to 3 attempts, " +
+                        "matching the real app's own confirmed " +
+                        "\"failure_after_three_attempts\" behavior)",
+                v -> runRealAppExactFlowWithRetry());
+        addToCurrentSection(realAppFlowRetryBtn);
 
         /*
          * REAL APP EXACT FLOW - the single most important new test
