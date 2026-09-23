@@ -13,10 +13,57 @@ public final class Protocol {
 
     public static byte[] clientHello() { return hex("AA 01 08 00 00 01 E6 71 23 01 91 01 36 3E 5C 8D"); }
 
+    /*
+     * FIXED - pad4. The WHOOP 5/MG ("maverick") firmware only accepts a
+     * command whose inner record length is a multiple of 4 bytes; any
+     * other length is dropped silently - no FAILURE, no reply at all.
+     * Confirmed three ways: NOOP's own puffinCommandFrame ("Pad the inner
+     * record to a 4-byte boundary ... exactly as the strap's maverick
+     * framing does ... otherwise ... the strap rejects the frame (#48)"),
+     * OpenStrap's gen5 builder, and our own log history - across ~10,000
+     * sent frames and ~50 opcodes, EVERY 4-aligned command was answered
+     * and EVERY unaligned one (all ECG commands included) never was.
+     *
+     * Padding only appends zeros to frames that were not aligned, so
+     * every frame that already worked is byte-for-byte unchanged. For a
+     * single-byte arg the result [type seq cmd 01 arg 00 00 00] is
+     * identical to NOOP's [revision, arg] + pad4 frame.
+     */
     public static byte[] labradorBytes(int type, int cmd, byte[] arg, int seq) {
-        byte[] inner = new byte[4 + arg.length];
+        int rawLen = 4 + arg.length;
+        byte[] inner = new byte[(rawLen + 3) & ~3];
         inner[0] = (byte)type; inner[1] = (byte)seq; inner[2] = (byte)cmd; inner[3] = (byte)arg.length;
         System.arraycopy(arg, 0, inner, 4, arg.length);
+        CRC32 c = new CRC32(); c.update(inner);
+        long crc = c.getValue();
+        int declared = inner.length + 4;
+        byte[] out = new byte[8 + declared];
+        out[0] = (byte)0xAA; out[1] = 0x01;
+        out[2] = (byte)(declared & 0xff); out[3] = (byte)((declared >>> 8) & 0xff);
+        out[4] = 0x00; out[5] = 0x01;
+        int h = crc16Modbus(out, 0, 6);
+        out[6] = (byte)(h & 0xff); out[7] = (byte)((h >>> 8) & 0xff);
+        System.arraycopy(inner, 0, out, 8, inner.length);
+        int p = 8 + inner.length;
+        out[p] = (byte)(crc & 0xff); out[p+1] = (byte)((crc >>> 8) & 0xff);
+        out[p+2] = (byte)((crc >>> 16) & 0xff); out[p+3] = (byte)((crc >>> 24) & 0xff);
+        return out;
+    }
+
+    /*
+     * NOOP-exact puffin command frame: inner = [type][seq][cmd] + payload,
+     * zero-padded to a 4-byte boundary, NO length byte. labradorBytes()
+     * inserts arg.length as the 4th byte, which only coincides with the
+     * revision byte (0x01) for single-byte args - for multi-byte payloads
+     * (SET/GET_DEVICE_CONFIG_VALUE, GET_FF_VALUE) it injects a spurious
+     * byte ahead of the real revision. Use this for any payload whose
+     * first byte is already the revision, or for bodyless/raw commands.
+     */
+    public static byte[] puffinFrame(int type, int cmd, byte[] payload, int seq) {
+        int rawLen = 3 + payload.length;
+        byte[] inner = new byte[Math.max(4, (rawLen + 3) & ~3)];
+        inner[0] = (byte)type; inner[1] = (byte)seq; inner[2] = (byte)cmd;
+        System.arraycopy(payload, 0, inner, 3, payload.length);
         CRC32 c = new CRC32(); c.update(inner);
         long crc = c.getValue();
         int declared = inner.length + 4;
