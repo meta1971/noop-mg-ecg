@@ -1566,6 +1566,34 @@ public class MainActivity extends Activity {
                         " completionsSeenBefore=" +
                         experimentCompletionsSeen);
 
+                /*
+                 * UNCONDITIONAL AUTO-PULL - found by rechecking our
+                 * own project's memory notes: an earlier session
+                 * documented this exact event (type=48 cmd=0x1D on
+                 * fd4b0004) as the confirmed ECG completion signal,
+                 * with data retrieved via a type-47 pull immediately
+                 * after. The only existing auto-pull path required
+                 * experimentActive (the old EXPERIMENT 3x button
+                 * specifically) - every other test this session,
+                 * including all of today's, never sets that flag, so
+                 * every RECORDING_COMPLETE this session has fired
+                 * with no pull ever following it. This fires an
+                 * immediate pull on ANY recording-complete event,
+                 * regardless of which test triggered it - the first
+                 * time this session that's actually happened.
+                 */
+                if (!experimentActive) {
+
+                    line("*** AUTO-PULLING NOW - RECORDING_COMPLETE " +
+                            "means data is ready, per this project's " +
+                            "own earlier confirmed finding ***");
+
+                    logRaw("AUTO_PULL_ON_RECORDING_COMPLETE_FIRING");
+
+                    mainH.postDelayed(
+                            () -> sendCustom(0x2F, 0x01, 0x00), 500);
+                }
+
                 if (experimentActive) {
 
                     experimentCompletionsSeen++;
@@ -2633,7 +2661,7 @@ public class MainActivity extends Activity {
 
         enqueue(() -> {
 
-            byte[] f = Protocol.labradorBytes(0x23, 121, arg, thisSeq);
+            byte[] f = Protocol.puffinFrame(0x23, 121, arg, thisSeq);
 
             logRaw("TX GET_DEVICE_CONFIG_VALUE key=" + key +
                     " seq=0x" + String.format("%02X", thisSeq & 0xff) +
@@ -2685,7 +2713,7 @@ public class MainActivity extends Activity {
 
         enqueue(() -> {
 
-            byte[] f = Protocol.labradorBytes(0x23, 128, arg, thisSeq);
+            byte[] f = Protocol.puffinFrame(0x23, 128, arg, thisSeq);
 
             logRaw("TX GET_FF_VALUE key=" + key +
                     " seq=0x" + String.format("%02X", thisSeq & 0xff) +
@@ -2966,12 +2994,12 @@ public class MainActivity extends Activity {
             return;
         }
 
-        byte[] arg = {0x02, (byte) 0xFF};
+        byte[] arg = {0x01}; // NOOP: send(.disableAlarm, payload: [0x01])
         final int thisSeq = seq++;
 
         enqueue(() -> {
 
-            byte[] f = Protocol.labradorBytes(0x23, 69, arg, thisSeq);
+            byte[] f = Protocol.puffinFrame(0x23, 69, arg, thisSeq);
 
             logRaw("TX DISABLE_ALARM raw=" + Protocol.hex(f));
             line("TX DISABLE_ALARM (cmd=69, never sent before now)");
@@ -2998,7 +3026,7 @@ public class MainActivity extends Activity {
 
         enqueue(() -> {
 
-            byte[] f = Protocol.labrador(0x23, 3, val, thisSeq);
+            byte[] f = Protocol.puffinFrame(0x23, 3, new byte[]{(byte) val}, thisSeq);
 
             logRaw("TX TOGGLE_REALTIME_HR val=" + val +
                     " raw=" + Protocol.hex(f));
@@ -3147,7 +3175,7 @@ public class MainActivity extends Activity {
 
         enqueue(() -> {
 
-            byte[] f = Protocol.labradorBytes(0x23, 119, arg, thisSeq);
+            byte[] f = Protocol.puffinFrame(0x23, 119, arg, thisSeq);
 
             logRaw("TX SET_DEVICE_CONFIG_VALUE key=" + key +
                     " value=0x" + String.format("%02X", valueByte) +
@@ -3543,7 +3571,7 @@ public class MainActivity extends Activity {
                 "ANY response or behavior change ***");
         logRaw("ENTER_HIGH_FREQ_SYNC_PROBE_BEGIN cmd=96");
 
-        send(96, 1, "ENTER_HIGH_FREQ_SYNC_PROBE");
+        line("*** ENTER_HIGH_FREQ_SYNC NOT SENT - now that frames are correctly padded the strap would ACT on it; it is on NOOP's forbidden list (can park the strap in high-frequency mode) ***");
 
         mainH.postDelayed(() ->
                 logRaw("ENTER_HIGH_FREQ_SYNC_PROBE_DONE - check above " +
@@ -3574,7 +3602,7 @@ public class MainActivity extends Activity {
                 "want to back out cleanly ***");
         logRaw("EXIT_HIGH_FREQ_SYNC_PROBE_BEGIN cmd=97");
 
-        send(97, 1, "EXIT_HIGH_FREQ_SYNC_PROBE");
+        sendPuffinPayload(97, new byte[0], "EXIT_HIGH_FREQ_SYNC_PROBE (empty body)");
 
         mainH.postDelayed(() ->
                 logRaw("EXIT_HIGH_FREQ_SYNC_PROBE_DONE"), 3000);
@@ -3609,7 +3637,7 @@ public class MainActivity extends Activity {
                 "never implemented before now ***");
         logRaw("BODY_LOCATION_PROBE_BEGIN cmd=84");
 
-        send(84, 1, "GET_BODY_LOCATION_AND_STATUS_PROBE");
+        sendPuffinPayload(84, new byte[]{0x01}, "GET_BODY_LOCATION_AND_STATUS_PROBE (revision body)");
 
         mainH.postDelayed(() ->
                 logRaw("BODY_LOCATION_PROBE_DONE - check above for the " +
@@ -3640,7 +3668,7 @@ public class MainActivity extends Activity {
                 "sent before now ***");
         logRaw("EXTENDED_BATTERY_INFO_PROBE_BEGIN cmd=98");
 
-        send(98, 1, "GET_EXTENDED_BATTERY_INFO_PROBE");
+        sendPuffinPayload(98, new byte[]{0x01}, "GET_EXTENDED_BATTERY_INFO_PROBE (revision body)");
 
         mainH.postDelayed(() ->
                 logRaw("EXTENDED_BATTERY_INFO_PROBE_DONE"), 3000);
@@ -3972,7 +4000,7 @@ public class MainActivity extends Activity {
                 "TOUCH NOW AND HOLD ***");
         logRaw("REAL_APP_EXACT_FLOW_PREP_BEGIN");
 
-        send(0x7B, 0, "SELECT_WRIST (real app exact flow, stage 1)");
+        send(0x7B, WRIST_ARG, "SELECT_WRIST (real app exact flow, stage 1)");
 
         mainH.postDelayed(() ->
                 send(0x8B, 1,
@@ -4069,6 +4097,102 @@ public class MainActivity extends Activity {
      * in the whole thread who got real data actually sent.
      * ------------------------------------------------------------------
      */
+    /*
+     * ------------------------------------------------------------------
+     * REAL SEQUENCE WITH ABORT_HISTORICAL (opcode 20) - the single most
+     * important new finding of the entire investigation. Found in a
+     * completely independent, previously-unknown project (OpenStrap/
+     * edge, lib/ble/ble_engine.dart), citing the real official
+     * Android app's own compiled logic: the true START sequence is
+     * NOT just "toggles then 124" - it's:
+     *
+     *   PREPARE: 123 (SELECT_WRIST) -> 139=1 (FILTERED ON) ->
+     *            125=1 (RAW_SAVE ON)
+     *   START:   20 (ABORT_HISTORICAL_TRANSMITS, UNCONDITIONAL,
+     *            single zero byte body) -> 124=2 (GENERATION START)
+     *   CLEANUP: 124=1 (STOP) -> 139=0 (FILTERED OFF) ->
+     *            125=0 (RAW_SAVE OFF)
+     *
+     * We have NEVER, not once, sent opcode 20 as part of any ECG
+     * attempt this entire investigation - every test has gone
+     * straight from the toggles to 124 START. If the firmware
+     * genuinely refuses to arm ECG generation while it believes a
+     * historical transmission might still be pending - even when
+     * none actually is - this single missing command would explain
+     * silence on 124 specifically while everything else (R22,
+     * historical pulls) keeps working normally.
+     *
+     * Also implements the full three-step CLEANUP (124 STOP, THEN
+     * 139 OFF, THEN 125 OFF) - we've only ever sent 124=1 alone
+     * before, never followed by turning the two toggles back off.
+     * ------------------------------------------------------------------
+     */
+    private void runRealSequenceWithAbortHistorical() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this test");
+            return;
+        }
+
+        line("");
+        line("*** REAL SEQUENCE WITH ABORT_HISTORICAL (opcode 20) - " +
+                "found in an independent project citing the real " +
+                "official app's own compiled logic. Never tried " +
+                "before now. TOUCH NOW AND HOLD ***");
+        logRaw("REAL_SEQUENCE_WITH_ABORT_HISTORICAL_BEGIN");
+
+        line("--- PREPARE: SELECT_WRIST -> FILTERED ON -> RAW_SAVE ON ---");
+
+        send(0x7B, WRIST_ARG, "SELECT_WRIST (real sequence, prepare)");
+
+        mainH.postDelayed(() ->
+                send(0x8B, 1,
+                        "TOGGLE_LABRADOR_FILTERED_ON (real sequence, " +
+                                "prepare)"), 500);
+
+        mainH.postDelayed(() ->
+                send(0x7D, 1,
+                        "TOGGLE_LABRADOR_RAW_SAVE_ON (real sequence, " +
+                                "prepare)"), 1000);
+
+        mainH.postDelayed(() -> {
+
+            line("--- START: ABORT_HISTORICAL_TRANSMITS (opcode 20, " +
+                    "NEVER SENT BEFORE) -> GENERATION START ---");
+
+            realtimeEcgFragments.clear();
+            ecgCommandResponsesThisAttempt.clear();
+            realtimeEcgTotalBytes = 0;
+            realtimeEcgBinaryFile = null;
+            maxEcgOnSeen = false;
+
+            labradorActive = true;
+            recordingComplete = false;
+            labradorPacketCount = 0;
+
+            ecgEverRunThisConnection = true;
+
+            sendPuffinPayload(0x14, new byte[]{0x00},
+                    "ABORT_HISTORICAL_TRANSMITS (real sequence, " +
+                            "gen5 exact shape [35][seq][20][00])");
+
+            mainH.postDelayed(() ->
+                    send(0x7C, 2,
+                            "MAIN_CONTROL_ECG_DATA_GENERATION_START " +
+                                    "(real sequence, after abort-" +
+                                    "historical)"), 500);
+
+            ecgListenActive = true;
+            ecgListenGeneration++;
+            ecgListenStartedAtMs = System.currentTimeMillis();
+
+            final int myGen = ecgListenGeneration;
+
+            mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
+
+        }, 1500);
+    }
+
     private void runTwoCommandTurnOn() {
 
         if (gatt == null || cmdWrite == null) {
@@ -4140,7 +4264,7 @@ public class MainActivity extends Activity {
         line("=== ATTEMPT " + attemptNumber + " of 3 ===");
         logRaw("REAL_APP_EXACT_FLOW_ATTEMPT_" + attemptNumber + "_BEGIN");
 
-        send(0x7B, 0, "SELECT_WRIST (retry attempt " + attemptNumber + ")");
+        send(0x7B, WRIST_ARG, "SELECT_WRIST (retry attempt " + attemptNumber + ")");
 
         mainH.postDelayed(() ->
                 send(0x8B, 1,
@@ -4185,6 +4309,15 @@ public class MainActivity extends Activity {
          * whether to retry. Only retries if NOTHING arrived - any
          * real COMMAND_RESPONSE or type=43 data means this attempt is
          * worth stopping on and reporting, not masking with a retry.
+         *
+         * CORRECTED to 90s - superseding the earlier 120s estimate
+         * (from OpenStrap/edge, a general-purpose engine, not
+         * confirmed working). This 90s figure comes from NOOP's own
+         * actual, SHIPPED, working live-ECG capture screen
+         * (EcgCaptureView.maxDuration, merged into ayiskakov/noop as
+         * part of the mg-ecg-live PR that produces real records) -
+         * the most authoritative source available, since it's live,
+         * working code rather than a general estimate.
          */
         mainH.postDelayed(() -> {
 
@@ -4232,7 +4365,7 @@ public class MainActivity extends Activity {
                 reportEcgAttemptVerdict();
             }
 
-        }, 25000);
+        }, 90000);
     }
 
     private void runRealDocumentedSequenceOrder() {
@@ -4251,7 +4384,7 @@ public class MainActivity extends Activity {
 
         line("--- step 1: SELECT_WRIST (never before sent as part of " +
                 "an actual combined attempt) ---");
-        send(0x7B, 0, "SELECT_WRIST (documented sequence, step 1)");
+        send(0x7B, WRIST_ARG, "SELECT_WRIST (documented sequence, step 1)");
 
         mainH.postDelayed(() -> {
 
@@ -4696,6 +4829,75 @@ public class MainActivity extends Activity {
      * from the real snoop capture. This is distinct from send()/
      * sendCustom(), which always emit a 1-byte argument.
      */
+    /*
+     * Wrist argument for SELECT_WRIST(123). docs/PROTOCOL_ECG.md (from the
+     * real app's own compiled handler): payload 01 01 = RIGHT, 01 02 = LEFT;
+     * every other argument FAILS - including the 0 we sent in every test
+     * before this fix. Change to 1 if the strap is worn on the right wrist.
+     */
+    private static final int WRIST_ARG = 2;
+
+    /*
+     * Opcodes that must never be sent. Harmless in every earlier build ONLY
+     * because unpadded frames were silently discarded; with pad4 fixed the
+     * strap will now EXECUTE what it receives. 25 FORCE_TRIM, 32
+     * POWER_CYCLE_STRAP, 36/37/38 firmware load, 45 ENTER_BLE_DFU (NOOP
+     * docs/PROTOCOL.md destructive list), 96 ENTER_HIGH_FREQ_SYNC and 140
+     * SET_ADVERTISING_NAME (NOOP EcgResearchAllowList FORBIDDEN census),
+     * plus the undocumented opcodes our neighbour sweeps used to probe.
+     */
+    private static boolean isForbiddenOpcode(int op) {
+        if (op == 25 || op == 32 || op == 36 || op == 37 || op == 38
+                || op == 45 || op == 96 || op == 140) return true;
+        if (op >= 129 && op <= 138) return true;
+        if (op >= 142 && op <= 144) return true;
+        return op >= 146;
+    }
+
+    /*
+     * Send a command with an exact payload using the NOOP-exact builder
+     * (no injected length byte, pad4). For bodyless commands, revision-only
+     * bodies, and single-byte bodies like TOGGLE_REALTIME_HR.
+     */
+    private void sendPuffinPayload(int cmd, byte[] payload, String name) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED");
+            return;
+        }
+        if (isForbiddenOpcode(cmd)) {
+            line("*** BLOCKED opcode " + cmd + " (" + name + ") - forbidden now that frames are delivered ***");
+            logRaw("TX_BLOCKED_FORBIDDEN_OPCODE cmd=" + cmd + " name=" + name);
+            return;
+        }
+
+        final int thisSeq = seq++;
+
+        enqueue(() -> {
+
+            byte[] f = Protocol.puffinFrame(0x23, cmd, payload, thisSeq);
+
+            logRaw("TX name=" + name +
+                    " cmd=0x" + String.format("%02X", cmd) +
+                    " (puffin exact)" +
+                    " seq=0x" + String.format("%02X", thisSeq & 0xff) +
+                    " raw=" + Protocol.hex(f));
+
+            line("");
+            line("TX " + name);
+            line("TX RAW =" + Protocol.hex(f));
+
+            cmdWrite.setWriteType(
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            cmdWrite.setValue(f);
+
+            if (!gatt.writeCharacteristic(cmdWrite)) {
+                line("writeCharacteristic() rejected (" + name + ")");
+                opDone();
+            }
+        });
+    }
+
     private void sendZeroArg(int cmd, String name) {
 
         if (gatt == null || cmdWrite == null) {
@@ -4927,7 +5129,7 @@ public class MainActivity extends Activity {
                  */
                 int fifoStart = 34;
                 int ecgSamples = 0;
-                int otherClassSamples = 0;
+                int otherClassSamples = 0;  // count of samples with flag7 (contact/lead-state) set
                 int fifoBytesAvailable =
                         Math.max(0, value.length - fifoStart);
                 int wordsAvailable = Math.min(
@@ -4942,32 +5144,45 @@ public class MainActivity extends Activity {
                     int b1 = value[base + 1] & 0xff;
                     int b2 = value[base + 2] & 0xff;
 
-                    int tagClass = tag & 0xC0;
+                    /*
+                     * CORRECTED against docs/PROTOCOL_ECG.md: bits 7/6
+                     * are two INDEPENDENT flags, not a combined 4-way
+                     * "class" selector as this decoder previously
+                     * assumed. flag7 comes from a SLOWER contact/lead-
+                     * state stream (do not treat as a per-sample
+                     * channel selector); flag6 is supplied per sample,
+                     * meaning unresolved. Every sample is real ECG
+                     * waveform data regardless of either flag's value -
+                     * neither flag routes a sample to a "different
+                     * channel". Bits 2-5 remain uninterpreted reserved
+                     * bits.
+                     */
+                    boolean flag6 = ((tag >> 6) & 1) != 0;
+                    boolean flag7 = ((tag >> 7) & 1) != 0;
                     int sampleHighBits = tag & 0x03;
 
                     int raw18 = (sampleHighBits << 16) |
                             (b1 << 8) | b2;
 
-                    // sign-extend 18-bit value
-                    int sample = (raw18 << 14) >> 14;
+                    // sign two's-complement 18-bit: values >= 131072
+                    // subtract 262144 (docs/PROTOCOL_ECG.md)
+                    int sample = (raw18 >= 131072) ?
+                            (raw18 - 262144) : raw18;
 
-                    if (tagClass == 0x80) {
+                    ecgSamples++;
 
-                        ecgSamples++;
+                    if (flag7) {
+                        otherClassSamples++;   // contact/lead-state set
+                    }
 
-                        if (ecgPreview.length() < 200) {
-                            ecgPreview.append(sample).append(",");
-                        }
-
-                    } else {
-
-                        otherClassSamples++;
+                    if (ecgPreview.length() < 200) {
+                        ecgPreview.append(sample).append(",");
                     }
                 }
 
                 line("V16 FIFO DECODE: " + wordsAvailable +
-                        " words, ECG(class=0x80)=" + ecgSamples +
-                        " other-class=" + otherClassSamples);
+                        " total samples, flag7(contact/lead-state)Set=" +
+                        otherClassSamples);
 
                 if (ecgSamples > 0) {
 
@@ -6695,16 +6910,39 @@ public class MainActivity extends Activity {
      * unit): 240 bytes total.
      *
      *   bytes  0- 7   frame header (byte 8 is the inner record's type)
-     *   bytes  8-23   inner header/envelope (unused here)
-     *   bytes 24-33   constant 5 x int16 LE sub-header - CONFIRMED NOT
-     *                 waveform, do not treat these as signal
-     *   bytes 34-235  101 x int16 LE samples - THE ACTUAL ECG WAVEFORM
-     *   bytes 236-239 CRC32 trailer
+     * CORRECTED against docs/PROTOCOL_ECG.md, sourced directly from the
+     * real official app's own compiled handlers (ayiskakov/noop) - the
+     * most authoritative layout we have, superseding the earlier,
+     * upstream-community-derived guess this decoder used before:
+     *
+     *   @8      packet type (43 live / 47 historical)
+     *   @9      layout selector (16 raw / 17 filtered)
+     *   @10     common sensor flags, meaning unresolved
+     *   @11-14  shared record sequence, u32 LE
+     *   @15-18  timestamp main word, u32 LE
+     *   @19-20  additional timestamp word, u16 LE
+     *   @21     quality code (0-3, vocabulary unresolved)
+     *   @22     state/presence bits: bit0=entered from state!=1,
+     *           bit1=state==1, bit2=state2 follows state1, bit3=presence
+     *   @23     classifier result code
+     *   @24     classifier state code
+     *   @25     progress (percentage-like; 255 = strap's "no session")
+     *   @26     4 independent booleans, bits 0-3, names unresolved
+     *   @27     HR-related classifier value
+     *   @28     additional HR value for R17 (zero placeholder on R16)
+     *   @29-30  HRV-related value, u16 LE, units unresolved
+     *   @31     zero placeholder, not a stress value
+     *   @32-33  declared waveform sample count, u16 LE
+     *   @34-233 100 x i16 LE sample slots - THE ACTUAL WAVEFORM
+     *   @234-235 two zero alignment bytes - NEVER a sample (this
+     *            decoder previously read 101 slots here, mistakenly
+     *            treating the alignment pair as a real sample - fixed)
+     *   @236-239 CRC32 trailer over [8,236)
      *
      * We have never actually received a type=43 frame this whole
-     * session, so this decoder is unverified against our own real
-     * data - it's wired in now so that the moment one arrives, it's
-     * decoded properly instead of just hex-dumped.
+     * investigation, so this remains unverified against our own real
+     * data - wired in now so the moment one arrives, it's decoded
+     * properly instead of just hex-dumped.
      * ------------------------------------------------------------------
      */
     private void decodeRealtimeEcg240(byte[] v) {
@@ -6712,7 +6950,7 @@ public class MainActivity extends Activity {
         if (v.length != 240) {
 
             line("*** type=43 frame len=" + v.length +
-                    " (expected 240 per upstream's confirmed layout) - " +
+                    " (expected 240 per docs/PROTOCOL_ECG.md) - " +
                     "structure below assumes 240, treat with caution ***");
 
             logRaw("REALTIME_ECG_UNEXPECTED_LENGTH len=" + v.length +
@@ -6721,9 +6959,19 @@ public class MainActivity extends Activity {
             return;
         }
 
-        int[] samples = new int[101];
+        int quality = v[21] & 0xff;
+        int stateBits = v[22] & 0xff;
+        boolean presence = (stateBits & 0x08) != 0;
+        boolean stateIsOne = (stateBits & 0x02) != 0;
+        boolean state2FollowsState1 = (stateBits & 0x04) != 0;
+        int progressRaw = v[25] & 0xff;
+        Integer progress = (progressRaw == 255) ? null : progressRaw;
+        int declaredCount = (v[32] & 0xff) | ((v[33] & 0xff) << 8);
+        int usableCount = Math.min(declaredCount, 100);
 
-        for (int i = 0; i < 101; i++) {
+        int[] samples = new int[usableCount];
+
+        for (int i = 0; i < usableCount; i++) {
 
             int lo = v[34 + i * 2] & 0xff;
             int hi = v[35 + i * 2];              // signed on purpose
@@ -6731,22 +6979,34 @@ public class MainActivity extends Activity {
             samples[i] = (hi << 8) | lo;
         }
 
-        int min = samples[0];
-        int max = samples[0];
-        long sum = 0;
-
-        for (int s : samples) {
-            if (s < min) min = s;
-            if (s > max) max = s;
-            sum += s;
-        }
-
-        double mean = sum / 101.0;
-
         line(String.format(Locale.US,
-                "*** REAL ECG WAVEFORM DECODED: 101 samples  " +
-                        "min=%d max=%d pp=%d mean=%.1f ***",
-                min, max, max - min, mean));
+                "*** REAL ECG WAVEFORM FRAME - quality=%d presence=%b " +
+                        "stateIsOne=%b state2FollowsState1=%b " +
+                        "progress=%s declaredCount=%d (capacity 100) ***",
+                quality, presence, stateIsOne, state2FollowsState1,
+                progress == null ? "none(255=no session)" :
+                        String.valueOf(progress),
+                declaredCount));
+
+        if (usableCount > 0) {
+
+            int min = samples[0];
+            int max = samples[0];
+            long sum = 0;
+
+            for (int s : samples) {
+                if (s < min) min = s;
+                if (s > max) max = s;
+                sum += s;
+            }
+
+            double mean = sum / (double) usableCount;
+
+            line(String.format(Locale.US,
+                    "*** %d samples decoded: min=%d max=%d pp=%d " +
+                            "mean=%.1f ***",
+                    usableCount, min, max, max - min, mean));
+        }
 
         StringBuilder sampleStr = new StringBuilder();
 
@@ -6757,7 +7017,11 @@ public class MainActivity extends Activity {
             sampleStr.append(samples[i]);
         }
 
-        logRaw("REALTIME_ECG_DECODED samples=" + sampleStr.toString());
+        logRaw("REALTIME_ECG_DECODED quality=" + quality +
+                " presence=" + presence +
+                " progress=" + (progress == null ? "none" : progress) +
+                " declaredCount=" + declaredCount +
+                " samples=" + sampleStr.toString());
     }
 
     private void handleRealtimeEcgFrame(
@@ -7187,7 +7451,7 @@ public class MainActivity extends Activity {
             String name,
             Runnable onWriteComplete) {
 
-        if (opcode == 0x7C && arg == 1) {
+        if (opcode == 0x7C && arg == 2) {
             labradorFragments.clear();
             line("(cleared any stale 0007 fragments before this START)");
         }
@@ -7220,6 +7484,15 @@ public class MainActivity extends Activity {
                 cmdWrite == null) {
 
             line("NOT CONNECTED");
+            return;
+        }
+
+        if (isForbiddenOpcode(opcode)) {
+            line("*** BLOCKED opcode " + opcode + " (" + name + ") - " +
+                    "forbidden now that frames are correctly padded and " +
+                    "the strap will actually execute them ***");
+            logRaw("TX_BLOCKED_FORBIDDEN_OPCODE cmd=" + opcode +
+                    " name=" + name);
             return;
         }
 
@@ -8085,6 +8358,21 @@ public class MainActivity extends Activity {
                         "TOUCH CLASP",
                 v -> runRealDocumentedSequenceOrder());
         addToCurrentSection(documentedSeqBtn);
+
+        /*
+         * REAL SEQUENCE WITH ABORT_HISTORICAL - the single most
+         * important new finding of the entire investigation. Found
+         * in a completely independent, previously-unknown project
+         * (OpenStrap/edge), citing the real official app's own
+         * compiled logic directly. Opcode 20 has never been sent
+         * before now. Placed at the absolute top.
+         */
+        Button abortHistoricalBtn = btn(
+                "REAL SEQUENCE WITH ABORT_HISTORICAL (opcode 20, NEVER " +
+                        "SENT BEFORE - from an independent project citing " +
+                        "the real app's own logic) - TOUCH NOW",
+                v -> runRealSequenceWithAbortHistorical());
+        addToCurrentSection(abortHistoricalBtn);
 
         /*
          * TWO-COMMAND TURN-ON - the exact, precise sequence NOOP's
