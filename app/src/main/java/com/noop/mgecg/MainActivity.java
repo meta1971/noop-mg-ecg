@@ -35,6 +35,29 @@ public class MainActivity extends Activity {
     private BluetoothDevice pendingDevice;
 
     private TextView log;
+
+    /*
+     * New, polished ECG screen - built as an overlay on top of the
+     * existing debug UI (root), toggled by a single button, rather
+     * than restructuring the app's existing Activity/BLE architecture.
+     * Nothing about the proven connection/send logic changes; this is
+     * a presentation layer wired directly to it.
+     */
+    private FrameLayout ecgScreenContainer;
+    private EcgWaveformView ecgWaveformView;
+    private TextView ecgStatusText;
+    private TextView ecgHrText;
+    private TextView ecgElapsedText;
+    private Button ecgStartStopButton;
+    private boolean ecgScreenActive = false;
+    private boolean ecgSessionRunning = false;
+    private long ecgSessionStartMs = 0L;
+    private final java.util.List<Integer> ecgLiveBeatIntervalsMs =
+            new java.util.ArrayList<>();
+    private int ecgLastPeakSampleIndex = -1;
+    private int ecgSampleCounter = 0;
+    private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
+    private Runnable ecgElapsedTicker;
     private TextView statusBar;
     private TextView field113Display;
     private final ArrayDeque<Float> field113History = new ArrayDeque<>();
@@ -1868,6 +1891,39 @@ public class MainActivity extends Activity {
         }
 
         line("Responses seen: " + detail);
+
+        /*
+         * FIXED - real, decoded type=43 data is unambiguous success on
+         * its own, regardless of maxEcgOnSeen (a console-text match
+         * that has never fired for this client) or the toggle result
+         * codes. Found after the frame-padding fix produced 190 real
+         * type=43 frames in one session, which this function still
+         * reported as "Inconclusive" because it only ever checked
+         * maxEcgOnSeen, not realtimeEcgFragments directly. Checked
+         * first, ahead of anyFailure/anyUnsupported, since a genuine
+         * data stream settles the question outright regardless of
+         * what any individual toggle's result code was.
+         */
+        if (realtimeEcgFragments != null && !realtimeEcgFragments.isEmpty()) {
+
+            int totalBytes = 0;
+            for (byte[] frag : realtimeEcgFragments) {
+                totalBytes += frag.length;
+            }
+
+            line("*** VERDICT: RealDataReceived - " +
+                    realtimeEcgFragments.size() + " real type=43 " +
+                    "frames (" + totalBytes + " bytes) actually " +
+                    "arrived and were decoded. This is genuine, " +
+                    "confirmed ECG data, not an inference from a " +
+                    "toggle's result code. ***");
+
+            logRaw("ECG_VERDICT=RealDataReceived detail=" + detail +
+                    " frameCount=" + realtimeEcgFragments.size() +
+                    " totalBytes=" + totalBytes);
+
+            return;
+        }
 
         if (anyUnsupported) {
 
@@ -6964,10 +7020,25 @@ public class MainActivity extends Activity {
         boolean presence = (stateBits & 0x08) != 0;
         boolean stateIsOne = (stateBits & 0x02) != 0;
         boolean state2FollowsState1 = (stateBits & 0x04) != 0;
+        int classifierState = v[24] & 0xff;
         int progressRaw = v[25] & 0xff;
         Integer progress = (progressRaw == 255) ? null : progressRaw;
         int declaredCount = (v[32] & 0xff) | ((v[33] & 0xff) << 8);
         int usableCount = Math.min(declaredCount, 100);
+
+        /*
+         * Real, frame-level "establishing" status for the ECG screen -
+         * from a real, confirmed finding (ayiskakov, ryanbr/noop#891,
+         * 23 Sep): the classifier state turns to 2 on exactly the
+         * record where progress reaches 100, every time, in every
+         * recording checked. That's a more direct, reliable
+         * "recording established" signal than progress alone, since
+         * it's a discrete state flip rather than a number to
+         * interpret. No-ops if the ECG screen isn't open.
+         */
+        if (presence) {
+            feedEcgFrameStatus(quality, progress, classifierState);
+        }
 
         int[] samples = new int[usableCount];
 
@@ -6977,6 +7048,17 @@ public class MainActivity extends Activity {
             int hi = v[35 + i * 2];              // signed on purpose
 
             samples[i] = (hi << 8) | lo;
+
+            /*
+             * Feed the new live ECG screen, sample by sample, as each
+             * one is decoded - only while presence is confirmed, so
+             * the view shows real contact-confirmed waveform rather
+             * than the pre-contact "waiting" period's near-zero
+             * samples. No-ops entirely if the ECG screen isn't open.
+             */
+            if (presence) {
+                feedEcgLiveSample(samples[i]);
+            }
         }
 
         line(String.format(Locale.US,
@@ -8082,6 +8164,409 @@ public class MainActivity extends Activity {
                                 .ACTION_BOND_STATE_CHANGED));
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * NEW ECG SCREEN - a real, polished capture view: a live-sweeping
+     * waveform, a live HR readout from a lightweight real-time beat
+     * detector, elapsed time, and a single clear start/stop control.
+     * Wired directly to the exact, proven sequence confirmed working
+     * on hardware: prepare (SELECT_WRIST -> 139 -> 125) -> START
+     * (ABORT_HISTORICAL(20) -> 124=2), and a clean three-step stop
+     * (124=1 -> 139=0 -> 125=0) - nothing here is a new, untested
+     * command sequence, only new presentation around it.
+     * ------------------------------------------------------------------
+     */
+    private FrameLayout buildEcgScreen() {
+
+        FrameLayout container = new FrameLayout(this);
+        container.setBackgroundColor(0xFF0A0E14);
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(28, 40, 28, 28);
+
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        Button backBtn = new Button(this);
+        backBtn.setText("< BACK");
+        backBtn.setTextSize(13);
+        backBtn.setBackgroundColor(0xFF1A2230);
+        backBtn.setTextColor(0xFFB8C4D9);
+        backBtn.setOnClickListener(v -> showEcgScreen(false));
+        topRow.addView(backBtn,
+                new LinearLayout.LayoutParams(-2, -2));
+
+        TextView heading = new TextView(this);
+        heading.setText("  ECG");
+        heading.setTextSize(22);
+        heading.setTextColor(0xFFEAF2FF);
+        heading.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams headingLp =
+                new LinearLayout.LayoutParams(0, -2, 1f);
+        headingLp.gravity = Gravity.CENTER_VERTICAL;
+        topRow.addView(heading, headingLp);
+
+        col.addView(topRow,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        Space sp1 = new Space(this);
+        col.addView(sp1, new LinearLayout.LayoutParams(-1, 24));
+
+        // status / instruction line
+        ecgStatusText = new TextView(this);
+        ecgStatusText.setText(
+                "Two fingers on the metal clasp, then tap Start");
+        ecgStatusText.setTextSize(14);
+        ecgStatusText.setTextColor(0xFF8FA1BD);
+        col.addView(ecgStatusText,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        Space sp2 = new Space(this);
+        col.addView(sp2, new LinearLayout.LayoutParams(-1, 18));
+
+        // the live waveform, in a nicely framed card
+        LinearLayout waveformCard = new LinearLayout(this);
+        waveformCard.setOrientation(LinearLayout.VERTICAL);
+        waveformCard.setBackgroundColor(0xFF0A0E14);
+        waveformCard.setPadding(4, 4, 4, 4);
+
+        ecgWaveformView = new EcgWaveformView(this);
+        waveformCard.addView(ecgWaveformView,
+                new LinearLayout.LayoutParams(-1, 520));
+
+        col.addView(waveformCard,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        Space sp3 = new Space(this);
+        col.addView(sp3, new LinearLayout.LayoutParams(-1, 24));
+
+        // live HR + elapsed time row
+        LinearLayout statsRow = new LinearLayout(this);
+        statsRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        LinearLayout hrBlock = new LinearLayout(this);
+        hrBlock.setOrientation(LinearLayout.VERTICAL);
+        hrBlock.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        ecgHrText = new TextView(this);
+        ecgHrText.setText("--");
+        ecgHrText.setTextSize(42);
+        ecgHrText.setTextColor(0xFF39FF6A);
+        ecgHrText.setTypeface(null, android.graphics.Typeface.BOLD);
+        ecgHrText.setGravity(Gravity.CENTER);
+        hrBlock.addView(ecgHrText,
+                new LinearLayout.LayoutParams(-2, -2));
+
+        TextView hrLabel = new TextView(this);
+        hrLabel.setText("BPM (live estimate)");
+        hrLabel.setTextSize(11);
+        hrLabel.setTextColor(0xFF5A6B85);
+        hrLabel.setGravity(Gravity.CENTER);
+        hrBlock.addView(hrLabel,
+                new LinearLayout.LayoutParams(-2, -2));
+
+        statsRow.addView(hrBlock,
+                new LinearLayout.LayoutParams(0, -2, 1f));
+
+        LinearLayout timeBlock = new LinearLayout(this);
+        timeBlock.setOrientation(LinearLayout.VERTICAL);
+        timeBlock.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        ecgElapsedText = new TextView(this);
+        ecgElapsedText.setText("0:00");
+        ecgElapsedText.setTextSize(42);
+        ecgElapsedText.setTextColor(0xFFEAF2FF);
+        ecgElapsedText.setTypeface(null, android.graphics.Typeface.BOLD);
+        ecgElapsedText.setGravity(Gravity.CENTER);
+        timeBlock.addView(ecgElapsedText,
+                new LinearLayout.LayoutParams(-2, -2));
+
+        TextView timeLabel = new TextView(this);
+        timeLabel.setText("ELAPSED");
+        timeLabel.setTextSize(11);
+        timeLabel.setTextColor(0xFF5A6B85);
+        timeLabel.setGravity(Gravity.CENTER);
+        timeBlock.addView(timeLabel,
+                new LinearLayout.LayoutParams(-2, -2));
+
+        statsRow.addView(timeBlock,
+                new LinearLayout.LayoutParams(0, -2, 1f));
+
+        col.addView(statsRow,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        Space sp4 = new Space(this);
+        col.addView(sp4, new LinearLayout.LayoutParams(-1, 32));
+
+        // the single start/stop control
+        ecgStartStopButton = new Button(this);
+        ecgStartStopButton.setText("START ECG");
+        ecgStartStopButton.setTextSize(17);
+        ecgStartStopButton.setTypeface(null, android.graphics.Typeface.BOLD);
+        ecgStartStopButton.setBackgroundColor(0xFF39FF6A);
+        ecgStartStopButton.setTextColor(0xFF0A0E14);
+        ecgStartStopButton.setPadding(0, 36, 0, 36);
+        ecgStartStopButton.setOnClickListener(v -> onEcgStartStopTapped());
+        col.addView(ecgStartStopButton,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        Space sp5 = new Space(this);
+        col.addView(sp5, new LinearLayout.LayoutParams(-1, 14));
+
+        TextView disclaimer = new TextView(this);
+        disclaimer.setText(
+                "Research instrumentation, not a medical device. Not " +
+                        "a diagnosis. Does not detect any heart " +
+                        "condition.");
+        disclaimer.setTextSize(11);
+        disclaimer.setTextColor(0xFF4A5568);
+        disclaimer.setGravity(Gravity.CENTER);
+        col.addView(disclaimer,
+                new LinearLayout.LayoutParams(-1, -2));
+
+        ScrollView scroller = new ScrollView(this);
+        scroller.addView(col);
+        container.addView(scroller,
+                new FrameLayout.LayoutParams(-1, -1));
+
+        return container;
+    }
+
+    /** Shows or hides the new ECG screen over the existing debug UI. */
+    private void showEcgScreen(boolean show) {
+        ecgScreenActive = show;
+        ecgScreenContainer.setVisibility(
+                show ? View.VISIBLE : View.GONE);
+        if (!show && ecgSessionRunning) {
+            // leaving mid-session doesn't stop the strap, just the
+            // screen - the underlying send/listen logic is unaffected,
+            // matching how every other test button in this app behaves
+        }
+    }
+
+    private void onEcgStartStopTapped() {
+
+        if (gatt == null || cmdWrite == null) {
+            ecgStatusText.setText(
+                    "Not connected - tap SCAN/CONNECT first, then " +
+                            "come back here");
+            return;
+        }
+
+        if (!ecgSessionRunning) {
+            startEcgScreenSession();
+        } else {
+            stopEcgScreenSession();
+        }
+    }
+
+    private void startEcgScreenSession() {
+
+        ecgSessionRunning = true;
+        ecgSessionEstablishedThisRun = false;
+        ecgWaveformView.reset();
+        ecgLiveBeatIntervalsMs.clear();
+        ecgLastPeakSampleIndex = -1;
+        ecgSampleCounter = 0;
+        ecgHrText.setText("--");
+        ecgElapsedText.setTextColor(0xFFEAF2FF);
+        ecgSessionStartMs = System.currentTimeMillis();
+
+        ecgStartStopButton.setText("STOP");
+        ecgStartStopButton.setBackgroundColor(0xFFFF5555);
+        ecgStartStopButton.setTextColor(0xFFFFFFFF);
+        ecgStatusText.setText(
+                "Recording - keep fingers on the clasp");
+
+        // exactly the confirmed-working sequence, unchanged
+        runRealSequenceWithAbortHistorical();
+
+        /*
+         * 10-minute auto-stop awareness - a real, confirmed strap
+         * behavior (ayiskakov, ryanbr/noop#891, 23 Sep): "the strap
+         * stops a session itself at 10 minutes... the console logged
+         * SENSORS: ECG active timeout." Not something this app
+         * controls or can prevent - just makes it visible rather than
+         * looking like an unexplained stop if it happens. Amber past
+         * 9:00, and a plain note once past 10:00 rather than letting a
+         * silent stop look like a bug.
+         */
+        ecgElapsedTicker = () -> {
+            if (!ecgSessionRunning) {
+                return;
+            }
+            long elapsedS = (System.currentTimeMillis() - ecgSessionStartMs) / 1000;
+            ecgElapsedText.setText(
+                    String.format(Locale.US, "%d:%02d",
+                            elapsedS / 60, elapsedS % 60));
+
+            if (elapsedS >= 600) {
+                ecgElapsedText.setTextColor(0xFFFF5555);
+                if (elapsedS == 600) {
+                    ecgStatusText.setText(
+                            "Past 10:00 - the strap itself stops " +
+                                    "sessions here, so this may end " +
+                                    "on its own shortly");
+                }
+            } else if (elapsedS >= 540) {
+                ecgElapsedText.setTextColor(0xFFFFC947);
+            }
+
+            ecgUiHandler.postDelayed(ecgElapsedTicker, 250);
+        };
+        ecgUiHandler.post(ecgElapsedTicker);
+    }
+
+    private void stopEcgScreenSession() {
+
+        ecgSessionRunning = false;
+        if (ecgElapsedTicker != null) {
+            ecgUiHandler.removeCallbacks(ecgElapsedTicker);
+        }
+
+        // clean three-step stop, matching the confirmed sequence:
+        // generation stop, then both toggles off
+        send(0x7C, 1, "MAIN_CONTROL_ECG_DATA_GENERATION_STOP (ECG screen)");
+        mainH.postDelayed(() ->
+                send(0x8B, 0, "TOGGLE_LABRADOR_FILTERED_OFF (ECG screen)"),
+                400);
+        mainH.postDelayed(() ->
+                send(0x7D, 0, "TOGGLE_LABRADOR_RAW_SAVE_OFF (ECG screen)"),
+                800);
+
+        ecgStartStopButton.setText("START ECG");
+        ecgStartStopButton.setBackgroundColor(0xFF39FF6A);
+        ecgStartStopButton.setTextColor(0xFF0A0E14);
+
+        int total = ecgWaveformView.getTotalSamplesReceived();
+        if (total > 0) {
+            ecgStatusText.setText(
+                    total + " real samples captured this session");
+        } else {
+            ecgStatusText.setText(
+                    "No live data arrived - check contact and try again");
+        }
+    }
+
+    /**
+     * True once classifierState has hit 2 this session - per
+     * ayiskakov's confirmed finding (ryanbr/noop#891, 23 Sep), this
+     * flips on exactly the record where progress reaches 100, every
+     * time, and never flips back. Used so the status line doesn't
+     * flicker between "establishing" and "established" if progress
+     * itself briefly dips.
+     */
+    private boolean ecgSessionEstablishedThisRun = false;
+
+    /**
+     * Updates the ECG screen's status line from real, frame-level
+     * fields (quality, progress, classifierState) - called once per
+     * decoded type=43 frame while presence is confirmed, not once per
+     * sample. No-ops if the ECG screen isn't open or no session is
+     * running, so it never overwrites the idle "tap Start" prompt or
+     * the post-session summary.
+     */
+    private void feedEcgFrameStatus(
+            int quality, Integer progress, int classifierState) {
+
+        if (ecgScreenContainer == null || !ecgScreenActive
+                || !ecgSessionRunning) {
+            return;
+        }
+
+        if (classifierState == 2) {
+            ecgSessionEstablishedThisRun = true;
+        }
+
+        if (ecgSessionEstablishedThisRun) {
+            ecgStatusText.setText(
+                    "Recording established \u2713  (quality " +
+                            quality + "/3)");
+            return;
+        }
+
+        String progressStr = (progress == null) ?
+                "starting" : (progress + "%");
+
+        ecgStatusText.setText(
+                "Establishing... " + progressStr +
+                        "  (quality " + quality + "/3) - hold contact");
+    }
+
+    /*
+     * A lightweight, real-time beat detector for the live HR readout
+     * only - intentionally simple, favoring responsiveness on screen
+     * over the rigor of the full offline analysis already done on
+     * this project's captured data. Uses a rolling median/MAD-style
+     * threshold, updated as samples arrive, with a 300ms refractory
+     * period matching normal physiological limits.
+     */
+    private final java.util.List<Integer> ecgRecentAbsForThreshold =
+            new java.util.ArrayList<>();
+
+    private void feedEcgLiveSample(int rawSample) {
+
+        if (ecgScreenContainer == null || !ecgScreenActive) {
+            return;
+        }
+
+        ecgWaveformView.addSample(rawSample);
+        ecgSampleCounter++;
+
+        int absVal = Math.abs(rawSample);
+        ecgRecentAbsForThreshold.add(absVal);
+        if (ecgRecentAbsForThreshold.size() > 300) {
+            ecgRecentAbsForThreshold.remove(0);
+        }
+
+        if (ecgRecentAbsForThreshold.size() < 40) {
+            return;
+        }
+
+        java.util.List<Integer> sorted =
+                new java.util.ArrayList<>(ecgRecentAbsForThreshold);
+        java.util.Collections.sort(sorted);
+        int median = sorted.get(sorted.size() / 2);
+        int threshold = median * 4 + 300;
+
+        int refractorySamples = 30; // 300ms at 100Hz
+
+        if (absVal > threshold &&
+                (ecgLastPeakSampleIndex < 0 ||
+                        ecgSampleCounter - ecgLastPeakSampleIndex
+                                >= refractorySamples)) {
+
+            if (ecgLastPeakSampleIndex >= 0) {
+
+                int deltaSamples =
+                        ecgSampleCounter - ecgLastPeakSampleIndex;
+                int intervalMs = deltaSamples * 10; // 100Hz
+
+                if (intervalMs >= 300 && intervalMs <= 2000) {
+
+                    ecgLiveBeatIntervalsMs.add(intervalMs);
+                    if (ecgLiveBeatIntervalsMs.size() > 6) {
+                        ecgLiveBeatIntervalsMs.remove(0);
+                    }
+
+                    if (ecgLiveBeatIntervalsMs.size() >= 3) {
+                        long sum = 0;
+                        for (int iv : ecgLiveBeatIntervalsMs) sum += iv;
+                        double avgMs =
+                                sum / (double) ecgLiveBeatIntervalsMs.size();
+                        int bpm = (int) Math.round(60000.0 / avgMs);
+                        if (bpm >= 30 && bpm <= 220) {
+                            ecgHrText.setText(String.valueOf(bpm));
+                        }
+                    }
+                }
+            }
+            ecgLastPeakSampleIndex = ecgSampleCounter;
+        }
+    }
+
     private void buildUi() {
 
         LinearLayout root =
@@ -8128,6 +8613,26 @@ public class MainActivity extends Activity {
                 new LinearLayout.LayoutParams(
                         -1,
                         -2));
+
+        /*
+         * New, polished entry point to the ECG screen - placed first,
+         * above every debug/probe control, since this is now the
+         * actual product-facing feature, not just another test.
+         */
+        Button openEcgScreenBtn = new Button(this);
+        openEcgScreenBtn.setText("\u2764  ECG");
+        openEcgScreenBtn.setTextSize(18);
+        openEcgScreenBtn.setTypeface(null, android.graphics.Typeface.BOLD);
+        openEcgScreenBtn.setBackgroundColor(0xFF39FF6A);
+        openEcgScreenBtn.setTextColor(0xFF0A0E14);
+        openEcgScreenBtn.setPadding(0, 30, 0, 30);
+        openEcgScreenBtn.setOnClickListener(v -> showEcgScreen(true));
+
+        LinearLayout.LayoutParams ecgBtnLp =
+                new LinearLayout.LayoutParams(-1, -2);
+        ecgBtnLp.topMargin = 8;
+        ecgBtnLp.bottomMargin = 24;
+        root.addView(openEcgScreenBtn, ecgBtnLp);
 
         /*
          * Always-visible live readout for the unidentified R22 byte
@@ -8958,7 +9463,15 @@ public class MainActivity extends Activity {
                         0,
                         2));
 
-        setContentView(root);
+        FrameLayout outer = new FrameLayout(this);
+        outer.addView(root, new FrameLayout.LayoutParams(-1, -1));
+
+        ecgScreenContainer = buildEcgScreen();
+        ecgScreenContainer.setVisibility(View.GONE);
+        outer.addView(ecgScreenContainer,
+                new FrameLayout.LayoutParams(-1, -1));
+
+        setContentView(outer);
     }
 
     private Button btn(
