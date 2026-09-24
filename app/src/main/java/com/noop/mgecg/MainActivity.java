@@ -7035,9 +7035,19 @@ public class MainActivity extends Activity {
          * "recording established" signal than progress alone, since
          * it's a discrete state flip rather than a number to
          * interpret. No-ops if the ECG screen isn't open.
+         *
+         * Posted to the main thread for the same reason as the
+         * sample feed above - a plain TextView update often appears
+         * to tolerate a background thread, but it isn't guaranteed,
+         * and this makes it genuinely correct rather than "happens
+         * to work".
          */
-        if (presence) {
-            feedEcgFrameStatus(quality, progress, classifierState);
+        if (presence && ecgUiHandler != null) {
+            final int qualityForUi = quality;
+            final Integer progressForUi = progress;
+            final int classifierStateForUi = classifierState;
+            ecgUiHandler.post(() -> feedEcgFrameStatus(
+                    qualityForUi, progressForUi, classifierStateForUi));
         }
 
         int[] samples = new int[usableCount];
@@ -7048,17 +7058,31 @@ public class MainActivity extends Activity {
             int hi = v[35 + i * 2];              // signed on purpose
 
             samples[i] = (hi << 8) | lo;
+        }
 
-            /*
-             * Feed the new live ECG screen, sample by sample, as each
-             * one is decoded - only while presence is confirmed, so
-             * the view shows real contact-confirmed waveform rather
-             * than the pre-contact "waiting" period's near-zero
-             * samples. No-ops entirely if the ECG screen isn't open.
-             */
-            if (presence) {
-                feedEcgLiveSample(samples[i]);
-            }
+        /*
+         * FIXED - real threading bug found by direct on-screen
+         * observation: connectGatt() here is never given a Handler,
+         * so Android runs onCharacteristicChanged (and everything it
+         * calls, including this whole decode function) on a
+         * background binder thread, not the main thread. Simple
+         * TextView updates often appear to work anyway - which is why
+         * the status line correctly showed "Recording established" -
+         * but ValueAnimator (used for the idle-sweep animation) must
+         * be touched only from the thread that created it. Canceling
+         * it from a background thread was silently failing, so
+         * liveMode never flipped and the idle sweep kept running
+         * forever even with real data genuinely arriving underneath
+         * it. Batches the whole frame's samples into one post to the
+         * main thread, rather than one post per sample.
+         */
+        if (presence && ecgUiHandler != null) {
+            final int[] samplesForUi = samples;
+            ecgUiHandler.post(() -> {
+                for (int s : samplesForUi) {
+                    feedEcgLiveSample(s);
+                }
+            });
         }
 
         line(String.format(Locale.US,
