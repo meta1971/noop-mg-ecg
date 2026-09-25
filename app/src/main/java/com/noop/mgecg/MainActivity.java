@@ -8415,6 +8415,7 @@ public class MainActivity extends Activity {
         ecgFullSessionIntervalsMs.clear();
         ecgRhythmResultText.setText("");
         ecgLastPeakSampleIndex = -1;
+        ecgCurrentQualityRunFrames = 0;
         ecgSampleCounter = 0;
         ecgHrText.setText("--");
         ecgElapsedText.setTextColor(0xFFEAF2FF);
@@ -8658,6 +8659,22 @@ public class MainActivity extends Activity {
      * running, so it never overwrites the idle "tap Start" prompt or
      * the post-session summary.
      */
+    /*
+     * Tracks how many consecutive frames the current quality run has
+     * held, and resets the beat-interval tracker at every quality
+     * transition - fixing a real gap found by independent offline
+     * verification: an interval was previously gated only by the
+     * quality at its SECOND peak, so a peak detected during a noisy
+     * stretch could still be paired with a later, clean-quality peak
+     * and counted as a "quality-3" interval, when only one of its two
+     * endpoints genuinely was. Requiring 3 full seconds of sustained
+     * quality=3 before counting anything from a run matches
+     * ayiskakov's own stated, proven threshold exactly
+     * (ryanbr/noop#891: "quality-3 runs of at least 3 s").
+     */
+    private int ecgCurrentQualityRunFrames = 0;
+    private static final int ECG_MIN_QUALITY3_RUN_FRAMES = 3;
+
     private void feedEcgFrameStatus(
             int quality, Integer progress, int classifierState) {
 
@@ -8665,6 +8682,14 @@ public class MainActivity extends Activity {
                 || !ecgSessionRunning) {
             return;
         }
+
+        if (quality != ecgLatestQualityForGate) {
+            // a genuine quality transition - never let a beat interval
+            // span across it, and restart this run's own duration count
+            ecgLastPeakSampleIndex = -1;
+            ecgCurrentQualityRunFrames = 0;
+        }
+        ecgCurrentQualityRunFrames++;
 
         ecgLatestQualityForGate = quality;
 
@@ -8743,7 +8768,9 @@ public class MainActivity extends Activity {
                         ecgLiveBeatIntervalsMs.remove(0);
                     }
 
-                    if (ecgLatestQualityForGate == 3) {
+                    if (ecgLatestQualityForGate == 3 &&
+                            ecgCurrentQualityRunFrames >=
+                                    ECG_MIN_QUALITY3_RUN_FRAMES) {
                         ecgFullSessionIntervalsMs.add(intervalMs);
                     }
 
