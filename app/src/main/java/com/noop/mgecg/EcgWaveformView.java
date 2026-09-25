@@ -4,7 +4,6 @@ import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.DashPathEffect;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
@@ -17,26 +16,27 @@ import java.util.Arrays;
 
 /**
  * A real-time, sweeping ECG trace view - the visual centerpiece of the
- * new ECG screen. Modeled on how a real clinical monitor draws: a
- * bright cursor sweeps left-to-right across a fixed window, erasing
- * and overwriting the oldest data as it goes, rather than continuously
- * scrolling the whole trace (which is smoother-looking but less
- * "alive" than a genuine sweep display).
+ * ECG screen. Styled after real clinical ECG paper: a fine pink grid
+ * at small intervals with bolder red lines marking larger divisions,
+ * matching the standard convention (small squares = time/amplitude
+ * units, bold squares grouping five of them) rather than a generic
+ * dark oscilloscope look.
+ *
+ * The trace itself is rendered as a smoothed curve through the sample
+ * points (quadratic Bezier segments meeting at each midpoint) rather
+ * than straight line-to-line segments, which reads as noticeably less
+ * jagged/synthetic at this sample density without misrepresenting the
+ * underlying data - the same points are used, just connected more
+ * smoothly, exactly as a real chart-rendering library would.
  *
  * Purely a rendering component - knows nothing about BLE, opcodes, or
- * frame decoding. The host screen calls addSample(int) for every
- * decoded ECG sample as it arrives (raw signed ADC counts, exactly
- * what decodeRealtimeEcg240() already extracts), and this view handles
- * buffering, auto-scaling and drawing.
+ * frame decoding. The host screen calls addSample(int) for every real,
+ * decoded ECG sample as it arrives.
  */
 public class EcgWaveformView extends View {
 
-    /** How many seconds of trace are visible on screen at once. */
     private static final float WINDOW_SECONDS = 6f;
-
-    /** Sample rate of the live type=43/R17 stream, per docs/PROTOCOL_ECG.md. */
     private static final int SAMPLE_RATE_HZ = 100;
-
     private static final int BUFFER_SIZE =
             (int) (WINDOW_SECONDS * SAMPLE_RATE_HZ);
 
@@ -45,19 +45,20 @@ public class EcgWaveformView extends View {
     private int writeHead = 0;
     private int totalSamplesReceived = 0;
 
-    // Auto-scaling: tracks a slowly-adapting min/max so the trace
-    // doesn't jump around on every single sample, but still responds
-    // to genuine amplitude changes over a second or two.
     private float displayMin = -1000f;
     private float displayMax = 1000f;
     private static final float SCALE_SMOOTHING = 0.06f;
 
-    private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    // ECG-paper grid: a fine minor grid, with a bolder major grid
+    // every 5th line - the real clinical convention.
+    private final Paint minorGridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint majorGridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint tracePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint traceGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint traceCoreHighlight = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint sweepPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint bgPaint = new Paint();
-    private final Paint centerLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private final Path tracePath = new Path();
 
@@ -76,33 +77,44 @@ public class EcgWaveformView extends View {
     }
 
     private void init() {
-        bgPaint.setColor(Color.parseColor("#0A0E14"));
+        bgPaint.setColor(Color.parseColor("#0D1015"));
 
-        gridPaint.setColor(Color.parseColor("#1A2230"));
-        gridPaint.setStrokeWidth(1.5f);
+        minorGridPaint.setColor(Color.parseColor("#2A1418"));
+        minorGridPaint.setStrokeWidth(1f);
 
-        centerLinePaint.setColor(Color.parseColor("#141B26"));
-        centerLinePaint.setStrokeWidth(1.5f);
+        majorGridPaint.setColor(Color.parseColor("#4A2028"));
+        majorGridPaint.setStrokeWidth(1.6f);
 
-        tracePaint.setColor(Color.parseColor("#39FF6A"));
+        borderPaint.setColor(Color.parseColor("#1F2733"));
+        borderPaint.setStyle(Paint.Style.STROKE);
+        borderPaint.setStrokeWidth(2f);
+
+        int traceColor = Color.parseColor("#2EE6A8");
+
+        tracePaint.setColor(traceColor);
         tracePaint.setStyle(Paint.Style.STROKE);
-        tracePaint.setStrokeWidth(4.5f);
+        tracePaint.setStrokeWidth(3.4f);
         tracePaint.setStrokeJoin(Paint.Join.ROUND);
         tracePaint.setStrokeCap(Paint.Cap.ROUND);
 
-        traceGlowPaint.setColor(Color.parseColor("#3939FF6A"));
+        traceGlowPaint.setColor(Color.parseColor("#402EE6A8"));
         traceGlowPaint.setStyle(Paint.Style.STROKE);
-        traceGlowPaint.setStrokeWidth(11f);
+        traceGlowPaint.setStrokeWidth(9f);
         traceGlowPaint.setStrokeJoin(Paint.Join.ROUND);
         traceGlowPaint.setStrokeCap(Paint.Cap.ROUND);
 
-        sweepPaint.setColor(Color.parseColor("#B0FFFFFF"));
-        sweepPaint.setStrokeWidth(2.5f);
+        traceCoreHighlight.setColor(Color.parseColor("#C8FFF4E8"));
+        traceCoreHighlight.setStyle(Paint.Style.STROKE);
+        traceCoreHighlight.setStrokeWidth(1.1f);
+        traceCoreHighlight.setStrokeJoin(Paint.Join.ROUND);
+        traceCoreHighlight.setStrokeCap(Paint.Cap.ROUND);
+
+        sweepPaint.setColor(Color.parseColor("#D0FFFFFF"));
+        sweepPaint.setStrokeWidth(2f);
 
         Arrays.fill(hasSample, false);
     }
 
-    /** Called by the host screen for every real, decoded ECG sample. */
     public void addSample(int value) {
         if (idleSweepAnimator != null) {
             idleSweepAnimator.cancel();
@@ -115,9 +127,6 @@ public class EcgWaveformView extends View {
         writeHead = (writeHead + 1) % BUFFER_SIZE;
         totalSamplesReceived++;
 
-        // gently widen/narrow the visible range toward the recent
-        // sample's magnitude, so genuine amplitude changes are
-        // followed without every single noisy sample causing a jump
         float target = Math.abs(value) * 1.35f + 200f;
         if (target > displayMax) {
             displayMax = displayMax + (target - displayMax) * 0.35f;
@@ -131,7 +140,6 @@ public class EcgWaveformView extends View {
         postInvalidateOnAnimation();
     }
 
-    /** Clears the trace and returns to the idle placeholder sweep. */
     public void reset() {
         Arrays.fill(hasSample, false);
         writeHead = 0;
@@ -143,7 +151,6 @@ public class EcgWaveformView extends View {
         invalidate();
     }
 
-    /** A gentle, animated flat-line sweep shown before a session starts. */
     private void startIdleSweep() {
         if (idleSweepAnimator != null) {
             idleSweepAnimator.cancel();
@@ -185,75 +192,80 @@ public class EcgWaveformView extends View {
         }
 
         canvas.drawRect(0, 0, w, h, bgPaint);
-        drawGrid(canvas, w, h);
-        canvas.drawLine(0, h / 2f, w, h / 2f, centerLinePaint);
+        drawEcgPaperGrid(canvas, w, h);
 
         if (!liveMode) {
             drawIdleSweep(canvas, w, h);
-            return;
+        } else {
+            drawLiveTrace(canvas, w, h);
         }
 
-        drawLiveTrace(canvas, w, h);
+        canvas.drawRect(1, 1, w - 1, h - 1, borderPaint);
     }
 
-    private void drawGrid(Canvas canvas, int w, int h) {
-        int cols = 12;
-        int rows = 6;
-        for (int c = 1; c < cols; c++) {
-            float x = w * c / (float) cols;
-            canvas.drawLine(x, 0, x, h, gridPaint);
+    /**
+     * Real clinical ECG paper convention: small squares at a fine
+     * interval, with every 5th line drawn bolder to form the familiar
+     * large-square grouping. Purely cosmetic (no calibrated time/
+     * voltage scale is claimed), but reads as a genuine medical trace
+     * rather than a generic dark chart.
+     */
+    private void drawEcgPaperGrid(Canvas canvas, int w, int h) {
+        float minorSpacing = w / 60f;
+
+        int col = 0;
+        for (float x = 0; x <= w; x += minorSpacing, col++) {
+            Paint p = (col % 5 == 0) ? majorGridPaint : minorGridPaint;
+            canvas.drawLine(x, 0, x, h, p);
         }
-        for (int r = 1; r < rows; r++) {
-            float y = h * r / (float) rows;
-            canvas.drawLine(0, y, w, y, gridPaint);
+
+        float minorSpacingY = h / 30f;
+        int row = 0;
+        for (float y = 0; y <= h; y += minorSpacingY, row++) {
+            Paint p = (row % 5 == 0) ? majorGridPaint : minorGridPaint;
+            canvas.drawLine(0, y, w, y, p);
         }
     }
 
     private void drawIdleSweep(Canvas canvas, int w, int h) {
         Paint idlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        idlePaint.setColor(Color.parseColor("#3A4658"));
+        idlePaint.setColor(Color.parseColor("#4A5A52"));
         idlePaint.setStyle(Paint.Style.STROKE);
-        idlePaint.setStrokeWidth(3.5f);
+        idlePaint.setStrokeWidth(3f);
         idlePaint.setStrokeCap(Paint.Cap.ROUND);
 
         float y = h / 2f;
         float sweepX = w * idlePhase;
 
-        Path p = new Path();
-        p.moveTo(0, y);
-        p.lineTo(w, y);
-        canvas.drawPath(p, idlePaint);
+        canvas.drawLine(0, y, w, y, idlePaint);
 
         Paint dotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        dotPaint.setColor(Color.parseColor("#39FF6A"));
         dotPaint.setShader(new RadialGradient(
-                sweepX, y, 22f,
-                Color.parseColor("#B039FF6A"), Color.TRANSPARENT,
+                sweepX, y, 20f,
+                Color.parseColor("#A02EE6A8"), Color.TRANSPARENT,
                 Shader.TileMode.CLAMP));
-        canvas.drawCircle(sweepX, y, 22f, dotPaint);
+        canvas.drawCircle(sweepX, y, 20f, dotPaint);
 
         Paint corePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        corePaint.setColor(Color.parseColor("#39FF6A"));
-        canvas.drawCircle(sweepX, y, 5f, corePaint);
+        corePaint.setColor(Color.parseColor("#2EE6A8"));
+        canvas.drawCircle(sweepX, y, 4.5f, corePaint);
     }
 
     private void drawLiveTrace(Canvas canvas, int w, int h) {
-        // the write head is the "sweep" position - draw a bright
-        // vertical marker there, exactly like a real monitor's cursor
+
         float sweepFrac = writeHead / (float) BUFFER_SIZE;
         float sweepX = w * sweepFrac;
 
-        tracePath.reset();
-        boolean started = false;
         float range = (displayMax - displayMin);
         if (range < 1f) {
             range = 1f;
         }
 
+        float[] xs = new float[BUFFER_SIZE];
+        float[] ys = new float[BUFFER_SIZE];
+        int n = 0;
+
         for (int i = 0; i < BUFFER_SIZE; i++) {
-            // read the buffer starting one PAST the write head, so
-            // the oldest sample is at screen-x=0 and the most recent
-            // (just-written) sample sits right at the sweep cursor
             int idx = (writeHead + i) % BUFFER_SIZE;
             if (!hasSample[idx]) {
                 continue;
@@ -261,28 +273,38 @@ public class EcgWaveformView extends View {
             float x = w * i / (float) BUFFER_SIZE;
             float norm = (samples[idx] - displayMin) / range;
             float y = h - (norm * h);
-
-            if (!started) {
-                tracePath.moveTo(x, y);
-                started = true;
-            } else {
-                tracePath.lineTo(x, y);
-            }
+            xs[n] = x;
+            ys[n] = y;
+            n++;
         }
 
-        if (started) {
+        tracePath.reset();
+
+        if (n > 2) {
+            tracePath.moveTo(xs[0], ys[0]);
+            for (int i = 1; i < n - 1; i++) {
+                float midX = (xs[i] + xs[i + 1]) / 2f;
+                float midY = (ys[i] + ys[i + 1]) / 2f;
+                tracePath.quadTo(xs[i], ys[i], midX, midY);
+            }
+            tracePath.lineTo(xs[n - 1], ys[n - 1]);
+        } else if (n == 2) {
+            tracePath.moveTo(xs[0], ys[0]);
+            tracePath.lineTo(xs[1], ys[1]);
+        }
+
+        if (n > 0) {
             canvas.drawPath(tracePath, traceGlowPaint);
             canvas.drawPath(tracePath, tracePaint);
+            canvas.drawPath(tracePath, traceCoreHighlight);
         }
 
-        // sweep cursor - a bright vertical line with a soft leading glow,
-        // marking exactly where the next sample will be drawn
         Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
         glow.setShader(new LinearGradient(
-                sweepX - 26, 0, sweepX, 0,
-                Color.TRANSPARENT, Color.parseColor("#40FFFFFF"),
+                sweepX - 24, 0, sweepX, 0,
+                Color.TRANSPARENT, Color.parseColor("#382EE6A8"),
                 Shader.TileMode.CLAMP));
-        canvas.drawRect(sweepX - 26, 0, sweepX, h, glow);
+        canvas.drawRect(sweepX - 24, 0, sweepX, h, glow);
         canvas.drawLine(sweepX, 0, sweepX, h, sweepPaint);
     }
 
