@@ -273,6 +273,17 @@ public class MainActivity extends Activity {
 
     private java.io.File historicalBinaryFile;
     private final List<byte[]> historicalFragments = new ArrayList<>();
+
+    /*
+     * Tallies hist_version byte values seen among historical records
+     * that don't match any of our known lengths (124/88/188/1584) -
+     * built to surface R24/R25/R26/PIP-R26 if they're already
+     * arriving in pulls and being silently lumped into "unknown
+     * length" noise. Reset at the start of each pull, reported at the
+     * end.
+     */
+    private final java.util.Map<Integer, Integer>
+            unknownRecordHistVersionTally = new java.util.HashMap<>();
     private int historicalTotalBytes = 0;
 
     /*
@@ -5262,12 +5273,58 @@ public class MainActivity extends Activity {
 
         } else {
 
-            line("*** UNKNOWN HISTORICAL RECORD LENGTH=" + value.length +
-                    " - neither the known R22 (124), waveform-88 (88), " +
-                    "nor waveform-188 (188) shape ***");
+            /*
+             * ENHANCED (2026-09-26) - matching what NOOP's own
+             * upstream #927 fix added ("count the packet types a
+             * history offload drops, instead of dropping them
+             * silently"). R24, R25, R26 and PIP-R26 have never been
+             * decoded anywhere by anyone - the firmware's own config-
+             * key names (enable_write_r24_packets,
+             * enable_write_r25_packets, disable_pip_r26_packets)
+             * are known to exist, but no capture of what they
+             * actually contain has ever been reported. If any of
+             * these are already arriving in our own historical pulls,
+             * the length-only catch-all below would have been
+             * silently swallowing them into one undifferentiated
+             * bucket - this pulls out the actual hist_version byte
+             * (@9, the same field that identifies every other known
+             * record type) and tallies it separately, so a genuinely
+             * new record type stands out immediately rather than
+             * blending into "unknown length=N" noise.
+             */
+            int unknownHistVersion = value.length > 9 ?
+                    (value[9] & 0xff) : -1;
 
-            logRaw("UNRECOGNIZED_RECORD_SHAPE_UNKNOWN_LENGTH len=" +
-                    value.length + " raw=" + Protocol.hex(value));
+            Integer priorCount =
+                    unknownRecordHistVersionTally.get(unknownHistVersion);
+            int newCount = (priorCount == null ? 0 : priorCount) + 1;
+            unknownRecordHistVersionTally.put(unknownHistVersion, newCount);
+
+            String r24r25r26Flag = "";
+            if (unknownHistVersion == 24) {
+                r24r25r26Flag = " *** THIS IS R24 - NEVER DECODED " +
+                        "BEFORE, BY ANYONE, ANYWHERE - SAVE THIS BIN " +
+                        "FILE IMMEDIATELY ***";
+            } else if (unknownHistVersion == 25) {
+                r24r25r26Flag = " *** THIS IS R25 - NEVER DECODED " +
+                        "BEFORE, BY ANYONE, ANYWHERE - SAVE THIS BIN " +
+                        "FILE IMMEDIATELY ***";
+            } else if (unknownHistVersion == 26) {
+                r24r25r26Flag = " *** THIS IS R26/PIP-R26 - NEVER " +
+                        "DECODED BEFORE, BY ANYONE, ANYWHERE - SAVE " +
+                        "THIS BIN FILE IMMEDIATELY ***";
+            }
+
+            line("*** UNKNOWN HISTORICAL RECORD LENGTH=" + value.length +
+                    " hist_version=" + unknownHistVersion +
+                    " (seen " + newCount + "x this pull) - neither " +
+                    "the known R22 (124), waveform-88 (88), nor " +
+                    "waveform-188 (188) shape ***" + r24r25r26Flag);
+
+            logRaw("UNRECOGNIZED_RECORD_SHAPE len=" + value.length +
+                    " hist_version=" + unknownHistVersion +
+                    " tallyThisVersion=" + newCount +
+                    " raw=" + Protocol.hex(value));
         }
 
         /*
@@ -5990,6 +6047,24 @@ public class MainActivity extends Activity {
      */
     private void recordPullOutcomeAndSummarize() {
 
+        if (!unknownRecordHistVersionTally.isEmpty()) {
+
+            StringBuilder tallyStr = new StringBuilder();
+            for (java.util.Map.Entry<Integer, Integer> e :
+                    unknownRecordHistVersionTally.entrySet()) {
+                if (tallyStr.length() > 0) tallyStr.append(", ");
+                tallyStr.append("hist_version=").append(e.getKey())
+                        .append(" x").append(e.getValue());
+            }
+
+            line("");
+            line("*** UNRECOGNIZED RECORD TYPES THIS PULL: " +
+                    tallyStr + " - check the log for any flagged as " +
+                    "R24/R25/R26 above ***");
+
+            logRaw("UNKNOWN_RECORD_TALLY_THIS_PULL " + tallyStr);
+        }
+
         SharedPreferences prefs =
                 getSharedPreferences(
                         "labrador_ecg_control", MODE_PRIVATE);
@@ -6069,6 +6144,7 @@ public class MainActivity extends Activity {
 
         ecgRanBeforeCurrentPull = ecgEverRunThisConnection;
         waveform88SeenThisPull = 0;
+        unknownRecordHistVersionTally.clear();
 
         line("");
         line("*** REAL HISTORICAL PULL: SET_CLOCK -> GET_CLOCK -> " +
@@ -9085,27 +9161,16 @@ public class MainActivity extends Activity {
          * of where the data goes, not just a different way of asking
          * for it.
          */
-        Button bankToFlashBtn = btn(
-                "BANK-TO-FLASH TEST (ECG start/stop, then pull history) " +
-                        "- WEAR + TOUCH CLASP",
-                v -> runBankToFlashTest());
-        addToCurrentSection(bankToFlashBtn);
-
         /*
-         * REAL DOCUMENTED SEQUENCE ORDER - SELECT_WRIST has never been
-         * sent as part of an actual combined attempt before now,
-         * despite #1100's own real, documented sequence listing it as
-         * step one. Placed at the top since it's the newest, most
-         * directly-motivated untried combination.
-         */
-        Button documentedSeqBtn = btn(
-                "REAL DOCUMENTED SEQUENCE ORDER (SELECT_WRIST first, " +
-                        "per #1100 - never tried before now) - WEAR + " +
-                        "TOUCH CLASP",
-                v -> runRealDocumentedSequenceOrder());
-        addToCurrentSection(documentedSeqBtn);
-
-        /*
+         * Pruned (2026-09-26): BANK-TO-FLASH TEST and REAL DOCUMENTED
+         * SEQUENCE ORDER were both genuine, well-motivated attempts
+         * from earlier in the investigation, before the real, working
+         * sequence was confirmed. Now that REAL SEQUENCE WITH
+         * ABORT_HISTORICAL below is confirmed to produce real data on
+         * hardware, these two no longer add anything the confirmed
+         * sequence and its retry variant don't already cover - kept
+         * out to reduce clutter, not because either was wrong.
+         *
          * REAL SEQUENCE WITH ABORT_HISTORICAL - the single most
          * important new finding of the entire investigation. Found
          * in a completely independent, previously-unknown project
@@ -9121,21 +9186,12 @@ public class MainActivity extends Activity {
         addToCurrentSection(abortHistoricalBtn);
 
         /*
-         * TWO-COMMAND TURN-ON - the exact, precise sequence NOOP's
-         * own upstream PR #1765 states produced 315 real type=43
-         * records. Placed first, above even the retry variant, since
-         * this is the most precisely-sourced sequence of the entire
-         * investigation - it's not a hypothesis, it's a direct quote
-         * of what worked for someone else on matching hardware.
-         */
-        Button twoCommandBtn = btn(
-                "TWO-COMMAND TURN-ON (139 then 124, NO 125 - exact " +
-                        "sequence from #1765 that produced 315 real " +
-                        "records) - TOUCH NOW",
-                v -> runTwoCommandTurnOn());
-        addToCurrentSection(twoCommandBtn);
-
-        /*
+         * Pruned (2026-09-26): TWO-COMMAND TURN-ON (139 then 124, no
+         * 125) was a genuine, precisely-sourced test in its own
+         * right, but the confirmed-working sequence above already
+         * includes 125 and is proven on real hardware - this variant
+         * no longer adds a distinct, needed test.
+         *
          * REAL APP EXACT FLOW WITH RETRY - genuinely important
          * discovery from an independent iOS decompile (Goose
          * project's own research): a real, confirmed string,
@@ -9154,66 +9210,16 @@ public class MainActivity extends Activity {
         addToCurrentSection(realAppFlowRetryBtn);
 
         /*
-         * REAL APP EXACT FLOW - the single most important new test
-         * from decompiling the real app's own ECG code path
-         * (ts1.a/LabradorServiceImpl). Deliberately sends NO R22
-         * flags at all - the real, traced code path never sends any -
-         * and splits prep/start into two genuinely separate taps,
-         * matching the real app's own two-stage UX rather than one
-         * rapid burst. Placed first since it's the most direct,
-         * best-evidenced test in the whole investigation.
+         * Pruned (2026-09-26): REAL APP EXACT FLOW (two-stage, no
+         * retry), FULL COMBINED, CONTACT-FIRST, CLEAN-SLATE and
+         * ULTIMATE were all genuine, well-motivated tests from earlier
+         * in the investigation, before the real, working sequence and
+         * its retry variant were confirmed on hardware. None adds a
+         * distinct, still-needed test now - kept out to reduce
+         * clutter, not because any was wrong. The underlying
+         * functions are left in place, unused, in case any is ever
+         * worth revisiting.
          */
-        Button realAppFlowPrepBtn = btn(
-                "REAL APP EXACT FLOW - STAGE 1: PREP (wrist+2 toggles, " +
-                        "deliberately NO R22 - from decompiled source) - " +
-                        "TOUCH NOW",
-                v -> runRealAppExactFlowPrep());
-        addToCurrentSection(realAppFlowPrepBtn);
-
-        Button realAppFlowStartBtn = btn(
-                "REAL APP EXACT FLOW - STAGE 2: START (tap only after " +
-                        "stage 1 completes, as a separate action)",
-                v -> runRealAppExactFlowStart());
-        addToCurrentSection(realAppFlowStartBtn);
-
-        /*
-         * FULL COMBINED ECG ATTEMPT - chains R22 unlock + the ECG
-         * gate + the confirmed real ECG start sequence together,
-         * something never tried this whole session before it.
-         */
-        Button combinedBtn = btn(
-                "FULL COMBINED ECG ATTEMPT (R22+gate+real start) - " +
-                        "WEAR + TOUCH CLASP",
-                v -> runFullCombinedEcgAttempt());
-        addToCurrentSection(combinedBtn);
-
-        /*
-         * CONTACT-FIRST ECG ATTEMPT - touch established and settled
-         * BEFORE the command sequence, not at/after it like every
-         * other attempt.
-         */
-        Button contactFirstBtn = btn(
-                "CONTACT-FIRST ECG ATTEMPT - TOUCH NOW, BEFORE TAPPING",
-                v -> runContactFirstEcgAttempt());
-        addToCurrentSection(contactFirstBtn);
-
-        Button cleanSlateBtn = btn(
-                "CLEAN-SLATE ECG ATTEMPT (clears R22 first, slow pacing) " +
-                        "- TOUCH THROUGHOUT",
-                v -> runCleanSlateEcgAttempt());
-        addToCurrentSection(cleanSlateBtn);
-
-        /*
-         * ULTIMATE ECG ATTEMPT - four new, previously-untried ideas:
-         * explicit SpO2/PPG-off mode reset, a real warm-up delay
-         * before touch, periodic START re-kicks through the hold,
-         * and a separate probe of an undocumented argument value.
-         */
-        Button ultimateBtn = btn(
-                "ULTIMATE ECG ATTEMPT (SpO2-off + warmup + re-kick) - " +
-                        "WEAR, WAIT FOR TOUCH PROMPT",
-                v -> runUltimateEcgAttempt());
-        addToCurrentSection(ultimateBtn);
 
         addSectionHeader(controls, "OPCODE & ARGUMENT PROBES " +
                 "(quick, standalone)", 0xFFFFD166);
