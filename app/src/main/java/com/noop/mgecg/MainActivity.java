@@ -3004,6 +3004,54 @@ public class MainActivity extends Activity {
      * streaming, not when it's idle.
      * ------------------------------------------------------------------
      */
+    /*
+     * ------------------------------------------------------------------
+     * R24/R25/R26/PIP-R26 CONFIG-KEY PROBE - active probe for the
+     * three real, confirmed firmware flag names that have never been
+     * decoded by anyone: enable_write_r24_packets,
+     * enable_write_r25_packets, disable_pip_r26_packets. Uses the
+     * exact same SET(119)/GET(121) mechanism proven working on
+     * enable_raw_data_w_ecg earlier in this investigation.
+     *
+     * The two "enable_*" flags are SET to 1 then read back - if
+     * either is a real, recognized key, the strap should echo the
+     * value rather than staying silent (matching the confirmed
+     * behavior of every other real flag name tried this whole
+     * project). "disable_pip_r26_packets" is deliberately NOT written
+     * here - it's a disable flag, so writing it risks turning R26 off
+     * if it's already streaming by default. It's read-only probed
+     * first, to see its current state, before ever considering a
+     * write.
+     * ------------------------------------------------------------------
+     */
+    private void runR24R25R26ConfigProbe() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this probe");
+            return;
+        }
+
+        line("");
+        line("*** R24/R25/R26 CONFIG-KEY PROBE - three flag names " +
+                "never decoded by anyone, using the same SET/GET " +
+                "mechanism proven on enable_raw_data_w_ecg ***");
+        logRaw("R24_R25_R26_CONFIG_PROBE_BEGIN");
+
+        setDeviceConfigValue("enable_write_r24_packets", 0x31);
+        mainH.postDelayed(() ->
+                getDeviceConfigValue("enable_write_r24_packets"), 800);
+
+        mainH.postDelayed(() ->
+                setDeviceConfigValue("enable_write_r25_packets", 0x31),
+                1800);
+        mainH.postDelayed(() ->
+                getDeviceConfigValue("enable_write_r25_packets"), 2600);
+
+        // read-only - never written, per the comment above
+        mainH.postDelayed(() ->
+                getDeviceConfigValue("disable_pip_r26_packets"), 3600);
+    }
+
     private void runDeviceConfigDuringActivePull() {
 
         if (gatt == null || cmdWrite == null) {
@@ -7122,8 +7170,10 @@ public class MainActivity extends Activity {
             final int qualityForUi = quality;
             final Integer progressForUi = progress;
             final int classifierStateForUi = classifierState;
+            final int declaredCountForUi = declaredCount;
             ecgUiHandler.post(() -> feedEcgFrameStatus(
-                    qualityForUi, progressForUi, classifierStateForUi));
+                    qualityForUi, progressForUi, classifierStateForUi,
+                    declaredCountForUi));
         }
 
         int[] samples = new int[usableCount];
@@ -8489,6 +8539,7 @@ public class MainActivity extends Activity {
         ecgWaveformView.reset();
         ecgLiveBeatIntervalsMs.clear();
         ecgFullSessionIntervalsMs.clear();
+        ecgFrameArrivalLog.clear();
         ecgRhythmResultText.setText("");
         ecgLastPeakSampleIndex = -1;
         ecgCurrentQualityRunFrames = 0;
@@ -8573,6 +8624,70 @@ public class MainActivity extends Activity {
         }
 
         runRhythmRegularityAnalysis();
+        measureR17SampleRate();
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * DIRECT R17 RATE MEASUREMENT - the exact method used to first
+     * confirm this rate on this project's own captured data: isolates
+     * the longest run of CONSECUTIVE frames each with the full
+     * declaredCount==100, then divides the samples in that run
+     * (excluding the last frame's own count, since the measured span
+     * only covers up to that frame's arrival, not its full duration)
+     * by the real wall-clock span between the run's first and last
+     * frame. This is a genuine measurement, not the widely-cited but
+     * explicitly unmeasured 100 Hz assumption (docs/PROTOCOL_ECG.md
+     * and ayiskakov's own ryanbr/noop#891 both state outright that
+     * this rate "is not measured").
+     * ------------------------------------------------------------------
+     */
+    private void measureR17SampleRate() {
+
+        if (ecgFrameArrivalLog.size() < 10) {
+            return;
+        }
+
+        java.util.List<long[]> bestRun = new java.util.ArrayList<>();
+        java.util.List<long[]> currentRun = new java.util.ArrayList<>();
+
+        for (long[] entry : ecgFrameArrivalLog) {
+            if (entry[1] == 100) {
+                currentRun.add(entry);
+            } else {
+                if (currentRun.size() > bestRun.size()) {
+                    bestRun = currentRun;
+                }
+                currentRun = new java.util.ArrayList<>();
+            }
+        }
+        if (currentRun.size() > bestRun.size()) {
+            bestRun = currentRun;
+        }
+
+        if (bestRun.size() < 5) {
+            logRaw("R17_RATE_MEASUREMENT insufficient consecutive " +
+                    "full-count frames this session (best run=" +
+                    bestRun.size() + ")");
+            return;
+        }
+
+        long spanMs = bestRun.get(bestRun.size() - 1)[0] -
+                bestRun.get(0)[0];
+        long samplesExclLast = 100L * (bestRun.size() - 1);
+        double measuredHz = samplesExclLast / (spanMs / 1000.0);
+
+        line("");
+        line(String.format(Locale.US,
+                "*** R17 RATE MEASURED THIS SESSION: %.2f Hz " +
+                        "(%d consecutive full frames, %.1fs span) - " +
+                        "a genuine measurement, not the previously " +
+                        "unmeasured 100 Hz assumption ***",
+                measuredHz, bestRun.size(), spanMs / 1000.0));
+
+        logRaw(String.format(Locale.US,
+                "R17_RATE_MEASURED hz=%.3f frames=%d spanMs=%d",
+                measuredHz, bestRun.size(), spanMs));
     }
 
     /*
@@ -8751,13 +8866,32 @@ public class MainActivity extends Activity {
     private int ecgCurrentQualityRunFrames = 0;
     private static final int ECG_MIN_QUALITY3_RUN_FRAMES = 3;
 
+    /*
+     * Real, per-frame arrival log for this session - (arrival
+     * timestamp ms, declaredCount) pairs, used to directly MEASURE
+     * the live R17 rate rather than continuing to assume the
+     * long-cited but explicitly unmeasured 100 Hz figure
+     * (docs/PROTOCOL_ECG.md and ayiskakov's own ryanbr/noop#891 both
+     * state outright: "not measured"). Reset each session; the rate
+     * is computed at stop from the longest run of consecutive,
+     * fully-declared (declaredCount==100) frames, isolating genuine
+     * steady-state throughput from the settling/gap periods that
+     * would otherwise dilute a simple whole-session average.
+     */
+    private final java.util.List<long[]> ecgFrameArrivalLog =
+            new java.util.ArrayList<>();
+
     private void feedEcgFrameStatus(
-            int quality, Integer progress, int classifierState) {
+            int quality, Integer progress, int classifierState,
+            int declaredCount) {
 
         if (ecgScreenContainer == null || !ecgScreenActive
                 || !ecgSessionRunning) {
             return;
         }
+
+        ecgFrameArrivalLog.add(new long[]{
+                System.currentTimeMillis(), declaredCount});
 
         if (quality != ecgLatestQualityForGate) {
             // a genuine quality transition - never let a beat interval
@@ -9223,6 +9357,18 @@ public class MainActivity extends Activity {
 
         addSectionHeader(controls, "OPCODE & ARGUMENT PROBES " +
                 "(quick, standalone)", 0xFFFFD166);
+
+        /*
+         * R24/R25/R26/PIP-R26 CONFIG-KEY PROBE - never decoded by
+         * anyone, anywhere. Placed first in this section given how
+         * genuinely unexplored this territory is.
+         */
+        Button r24r25r26Btn = btn(
+                "PROBE R24/R25/R26/PIP-R26 CONFIG KEYS (never decoded " +
+                        "by anyone - via the proven SET/GET(119/121) " +
+                        "mechanism)",
+                v -> runR24R25R26ConfigProbe());
+        addToCurrentSection(r24r25r26Btn);
 
         Button probeArgBtn = btn(
                 "PROBE UNDOCUMENTED cmd=0x7C arg=3",
