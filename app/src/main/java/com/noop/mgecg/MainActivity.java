@@ -8514,6 +8514,24 @@ public class MainActivity extends Activity {
             // screen - the underlying send/listen logic is unaffected,
             // matching how every other test button in this app behaves
         }
+
+        /*
+         * Keep the screen awake for the duration of the ECG screen -
+         * a real, confirmed cause of session fragmentation (this
+         * project's own last session: contact lost reaching to
+         * unlock the phone mid-hold). Only applied while this screen
+         * is the one showing, and cleared the moment it's left, so
+         * the rest of the app is unaffected.
+         */
+        if (show) {
+            getWindow().addFlags(
+                    android.view.WindowManager.LayoutParams
+                            .FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(
+                    android.view.WindowManager.LayoutParams
+                            .FLAG_KEEP_SCREEN_ON);
+        }
     }
 
     private void onEcgStartStopTapped() {
@@ -8781,6 +8799,61 @@ public class MainActivity extends Activity {
             color = "#FF5555";
         }
 
+        /*
+         * SHANNON ENTROPY - a second, independent irregularity
+         * measure, using the actual technique behind Apple Watch's
+         * own published AFib method (the Apple Heart Study
+         * methodology bins R-R intervals and measures how spread out/
+         * unpredictable that distribution is), rather than continuing
+         * to rely on Poincare SD1/SD2 alone. Two independent methods
+         * agreeing is a meaningfully stronger signal than either one
+         * alone - the same cross-validation principle already used
+         * for the heart-rate figure itself earlier in this project.
+         *
+         * 50ms bins, matching pNN50's own granularity. Entropy
+         * normalized to 0-1 by dividing by log2(bin count), so the
+         * result doesn't depend on how many bins this particular
+         * session's range happened to produce.
+         */
+        int minRr = rr.get(0), maxRr = rr.get(0);
+        for (int v : rr) {
+            if (v < minRr) minRr = v;
+            if (v > maxRr) maxRr = v;
+        }
+        int binWidthMs = 50;
+        int numBins = Math.max(1, (maxRr - minRr) / binWidthMs + 1);
+        int[] bins = new int[numBins];
+        for (int v : rr) {
+            int idx = (v - minRr) / binWidthMs;
+            if (idx >= numBins) idx = numBins - 1;
+            bins[idx]++;
+        }
+
+        double shannonEntropy = 0;
+        for (int count : bins) {
+            if (count == 0) continue;
+            double p = count / (double) n;
+            shannonEntropy -= p * (Math.log(p) / Math.log(2));
+        }
+        double maxPossibleEntropy = numBins > 1 ?
+                (Math.log(numBins) / Math.log(2)) : 1;
+        double normalizedEntropy = maxPossibleEntropy > 0 ?
+                shannonEntropy / maxPossibleEntropy : 0;
+
+        // same three-band scheme as the Poincare result, for a
+        // directly comparable label - reasoned bands, not a
+        // validated clinical cutoff, same caveat as above
+        String entropyLabel;
+        if (normalizedEntropy < 0.5) {
+            entropyLabel = "Regular";
+        } else if (normalizedEntropy < 0.75) {
+            entropyLabel = "Some irregularity";
+        } else {
+            entropyLabel = "Notably irregular";
+        }
+
+        boolean methodsAgree = entropyLabel.equals(label);
+
         String result = String.format(Locale.US,
                 "<b><font color='%s'>%s</font></b><br>" +
                         "%d clean beats analysed &middot; SD1/SD2 " +
@@ -8793,8 +8866,22 @@ public class MainActivity extends Activity {
                         "\"Notably irregular\" describes the pattern " +
                         "that can occur with AFib among other causes " +
                         "(including motion, poor contact, or normal " +
-                        "sinus arrhythmia) - it is not a diagnosis.</small>",
-                color, label, n, sd1Sd2Ratio, pOver50);
+                        "sinus arrhythmia) - it is not a diagnosis." +
+                        "</small><br><br>" +
+                        "<b>Shannon entropy (independent check): %s</b> " +
+                        "(normalised %.2f)<br>" +
+                        "<small>Bins beat-to-beat timing and measures " +
+                        "how spread out the distribution is - the " +
+                        "actual method behind Apple's own published " +
+                        "AFib approach. %s</small>",
+                color, label, n, sd1Sd2Ratio, pOver50,
+                entropyLabel, normalizedEntropy,
+                methodsAgree ?
+                        "Agrees with the Poincar\u00e9 result above." :
+                        "Disagrees with the Poincar\u00e9 result above " +
+                                "- worth treating this session's " +
+                                "reading with more caution than one " +
+                                "where both methods agree.");
 
         ecgRhythmResultText.setText(
                 android.text.Html.fromHtml(
@@ -8805,7 +8892,11 @@ public class MainActivity extends Activity {
                 " sd2=" + String.format(Locale.US, "%.1f", sd2) +
                 " ratio=" + String.format(Locale.US, "%.3f", sd1Sd2Ratio) +
                 " pOver50=" + String.format(Locale.US, "%.1f", pOver50) +
-                " label=" + label);
+                " label=" + label +
+                " shannonEntropy=" + String.format(Locale.US, "%.3f",
+                        normalizedEntropy) +
+                " entropyLabel=" + entropyLabel +
+                " methodsAgree=" + methodsAgree);
     }
 
     /**
