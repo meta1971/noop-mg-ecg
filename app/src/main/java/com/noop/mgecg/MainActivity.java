@@ -8339,6 +8339,26 @@ public class MainActivity extends Activity {
         Space sp5 = new Space(this);
         col.addView(sp5, new LinearLayout.LayoutParams(-1, 14));
 
+        /*
+         * Rhythm-regularity result - shown only after a session ends
+         * with enough clean beats. A real Poincaré-plot analysis
+         * (SD1/SD2), the same general technique behind Apple Watch's
+         * own published AFib-detection method, computed here as an
+         * honest, descriptive, non-diagnostic personal-project result
+         * rather than a validated clinical classification.
+         */
+        ecgRhythmResultText = new TextView(this);
+        ecgRhythmResultText.setText("");
+        ecgRhythmResultText.setTextSize(13);
+        ecgRhythmResultText.setTextColor(0xFFB8C4D9);
+        ecgRhythmResultText.setGravity(Gravity.CENTER);
+        ecgRhythmResultText.setLineSpacing(6, 1f);
+        LinearLayout.LayoutParams rhythmLp =
+                new LinearLayout.LayoutParams(-1, -2);
+        rhythmLp.topMargin = 20;
+        rhythmLp.bottomMargin = 20;
+        col.addView(ecgRhythmResultText, rhythmLp);
+
         TextView disclaimer = new TextView(this);
         disclaimer.setText(
                 "Research instrumentation, not a medical device. Not " +
@@ -8392,6 +8412,8 @@ public class MainActivity extends Activity {
         ecgSessionEstablishedThisRun = false;
         ecgWaveformView.reset();
         ecgLiveBeatIntervalsMs.clear();
+        ecgFullSessionIntervalsMs.clear();
+        ecgRhythmResultText.setText("");
         ecgLastPeakSampleIndex = -1;
         ecgSampleCounter = 0;
         ecgHrText.setText("--");
@@ -8472,6 +8494,126 @@ public class MainActivity extends Activity {
             ecgStatusText.setText(
                     "No live data arrived - check contact and try again");
         }
+
+        runRhythmRegularityAnalysis();
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * Rhythm-regularity analysis - a real, well-established statistical
+     * method (Poincare-plot SD1/SD2, plus pRR-style successive-
+     * difference counting), the same general category of technique
+     * behind Apple Watch's own published AFib-detection approach. This
+     * is NOT a clinical implementation and makes NO diagnostic claim -
+     * it describes, in plain language, how regular or irregular this
+     * session's beat timing was, exactly the same restraint NOOP's own
+     * RhythmScreen uses ("NOT an ECG... cannot diagnose, detect, or
+     * rule out any heart condition"). Runs only on quality-3,
+     * confirmed-clean beats (ecgFullSessionIntervalsMs), never on the
+     * noisier quality-1/2 data that produced misleading numbers
+     * earlier tonight.
+     * ------------------------------------------------------------------
+     */
+    private void runRhythmRegularityAnalysis() {
+
+        java.util.List<Integer> rr = ecgFullSessionIntervalsMs;
+
+        if (rr.size() < 15) {
+            ecgRhythmResultText.setText(
+                    rr.isEmpty() ?
+                            "" :
+                            "Not enough clean (quality 3/3) beats this " +
+                                    "session for a rhythm read-out (" +
+                                    rr.size() + " collected, 15+ needed)");
+            return;
+        }
+
+        int n = rr.size();
+
+        // successive differences: RR[i+1] - RR[i]
+        double[] diffs = new double[n - 1];
+        for (int i = 0; i < n - 1; i++) {
+            diffs[i] = rr.get(i + 1) - rr.get(i);
+        }
+
+        double meanRr = 0;
+        for (int v : rr) meanRr += v;
+        meanRr /= n;
+
+        double varRr = 0;
+        for (int v : rr) varRr += (v - meanRr) * (v - meanRr);
+        varRr /= (n - 1);
+
+        double meanDiff = 0;
+        for (double d : diffs) meanDiff += d;
+        meanDiff /= diffs.length;
+
+        double varDiff = 0;
+        for (double d : diffs) varDiff += (d - meanDiff) * (d - meanDiff);
+        varDiff /= (diffs.length - 1);
+
+        // Standard Poincare-plot formulas:
+        // SD1 = short-term (beat-to-beat) variability
+        // SD2 = longer-term variability
+        double sd1 = Math.sqrt(0.5 * varDiff);
+        double sd2Sq = (2 * varRr) - (0.5 * varDiff);
+        double sd2 = sd2Sq > 0 ? Math.sqrt(sd2Sq) : 0;
+
+        double sd1Sd2Ratio = (sd2 > 1) ? (sd1 / sd2) : 0;
+
+        // pRR50-style: share of successive differences over 50ms -
+        // a simple, widely-used irregularity indicator on its own
+        int over50 = 0;
+        for (double d : diffs) {
+            if (Math.abs(d) > 50) over50++;
+        }
+        double pOver50 = 100.0 * over50 / diffs.length;
+
+        // Plain-language classification, deliberately coarse and
+        // descriptive rather than a precise clinical threshold - the
+        // cut points below are a reasonable personal-project reading
+        // of the literature's general pattern (a Poincare plot that's
+        // notably rounder / less cigar-shaped, and a higher share of
+        // large successive differences, is the pattern associated with
+        // irregular rhythms including AFib), not a validated cutoff.
+        String label;
+        String color;
+        if (sd1Sd2Ratio < 0.35 && pOver50 < 15) {
+            label = "Regular";
+            color = "#39FF6A";
+        } else if (sd1Sd2Ratio < 0.6 && pOver50 < 35) {
+            label = "Some irregularity";
+            color = "#FFC947";
+        } else {
+            label = "Notably irregular";
+            color = "#FF5555";
+        }
+
+        String result = String.format(Locale.US,
+                "<b><font color='%s'>%s</font></b><br>" +
+                        "%d clean beats analysed &middot; SD1/SD2 " +
+                        "ratio %.2f &middot; %.0f%% of beat-to-beat " +
+                        "changes over 50ms<br>" +
+                        "<small>A Poincar\u00e9-plot read of beat " +
+                        "timing regularity - the same general " +
+                        "technique behind Apple Watch's own AFib " +
+                        "feature, but not clinically validated here. " +
+                        "\"Notably irregular\" describes the pattern " +
+                        "that can occur with AFib among other causes " +
+                        "(including motion, poor contact, or normal " +
+                        "sinus arrhythmia) - it is not a diagnosis.</small>",
+                color, label, n, sd1Sd2Ratio, pOver50);
+
+        ecgRhythmResultText.setText(
+                android.text.Html.fromHtml(
+                        result, android.text.Html.FROM_HTML_MODE_LEGACY));
+
+        logRaw("RHYTHM_ANALYSIS beats=" + n +
+                " sd1=" + String.format(Locale.US, "%.1f", sd1) +
+                " sd2=" + String.format(Locale.US, "%.1f", sd2) +
+                " ratio=" + String.format(Locale.US, "%.3f", sd1Sd2Ratio) +
+                " pOver50=" + String.format(Locale.US, "%.1f", pOver50) +
+                " label=" + label);
     }
 
     /**
@@ -8483,6 +8625,30 @@ public class MainActivity extends Activity {
      * itself briefly dips.
      */
     private boolean ecgSessionEstablishedThisRun = false;
+
+    /*
+     * Latest quality code (0-3), updated once per frame by
+     * feedEcgFrameStatus - used to gate the live BPM readout below,
+     * since a real, confirmed finding (ayiskakov, ryanbr/noop#891,
+     * 23 Sep) showed clean complexes appear only in quality-3 records;
+     * quality-0/1 stretches produce beat trains unrelated to the
+     * strap's own optical HR (mains interference, open-circuit
+     * artifacts). The waveform itself still always shows the real,
+     * raw data regardless of quality - only the derived BPM number is
+     * gated, so the number shown is never misleadingly confident.
+     */
+    private int ecgLatestQualityForGate = 0;
+
+    /*
+     * Full-session record of beat-to-beat intervals, quality-gated
+     * (only recorded while quality==3, same principle as the live BPM
+     * gate) - kept separately from the short rolling window used for
+     * the live BPM number, since a genuine rhythm-regularity analysis
+     * needs the whole session's beats, not just the last few.
+     */
+    private final java.util.List<Integer> ecgFullSessionIntervalsMs =
+            new java.util.ArrayList<>();
+    private TextView ecgRhythmResultText;
 
     /**
      * Updates the ECG screen's status line from real, frame-level
@@ -8499,6 +8665,8 @@ public class MainActivity extends Activity {
                 || !ecgSessionRunning) {
             return;
         }
+
+        ecgLatestQualityForGate = quality;
 
         if (classifierState == 2) {
             ecgSessionEstablishedThisRun = true;
@@ -8575,14 +8743,36 @@ public class MainActivity extends Activity {
                         ecgLiveBeatIntervalsMs.remove(0);
                     }
 
+                    if (ecgLatestQualityForGate == 3) {
+                        ecgFullSessionIntervalsMs.add(intervalMs);
+                    }
+
                     if (ecgLiveBeatIntervalsMs.size() >= 3) {
-                        long sum = 0;
-                        for (int iv : ecgLiveBeatIntervalsMs) sum += iv;
-                        double avgMs =
-                                sum / (double) ecgLiveBeatIntervalsMs.size();
-                        int bpm = (int) Math.round(60000.0 / avgMs);
-                        if (bpm >= 30 && bpm <= 220) {
-                            ecgHrText.setText(String.valueOf(bpm));
+
+                        if (ecgLatestQualityForGate == 3) {
+
+                            long sum = 0;
+                            for (int iv : ecgLiveBeatIntervalsMs) sum += iv;
+                            double avgMs = sum /
+                                    (double) ecgLiveBeatIntervalsMs.size();
+                            int bpm = (int) Math.round(60000.0 / avgMs);
+                            if (bpm >= 30 && bpm <= 220) {
+                                ecgHrText.setText(String.valueOf(bpm));
+                                ecgHrText.setTextColor(0xFF39FF6A);
+                            }
+
+                        } else {
+
+                            /*
+                             * Below quality 3, the strap's own signal
+                             * isn't clean enough for a trustworthy
+                             * rate yet (per ayiskakov's confirmed
+                             * finding) - show that honestly rather
+                             * than a number that may just be mains
+                             * interference or contact artifact.
+                             */
+                            ecgHrText.setText("--");
+                            ecgHrText.setTextColor(0xFF5A6B85);
                         }
                     }
                 }
