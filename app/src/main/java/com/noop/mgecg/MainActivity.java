@@ -3459,6 +3459,21 @@ public class MainActivity extends Activity {
      * ------------------------------------------------------------------
      */
     private static final String KNOWN_STRAP_ADDR = "F2:CF:4E:DD:32:47";
+    private static final String RESEARCH_STRAP_SERIAL = "5AM0360496";
+    private final java.util.Set<String> ignoredStrapsThisScan =
+            new java.util.HashSet<>();
+
+    /** True only for the dedicated research MG (address or serial in name). */
+    private boolean isResearchStrap(ScanResult r) {
+        BluetoothDevice d = r.getDevice();
+        if (KNOWN_STRAP_ADDR.equalsIgnoreCase(d.getAddress())) return true;
+        String name = null;
+        try { name = d.getName(); } catch (SecurityException ignored) { }
+        if (name == null && r.getScanRecord() != null) {
+            name = r.getScanRecord().getDeviceName();
+        }
+        return name != null && name.contains(RESEARCH_STRAP_SERIAL);
+    }
     private ScanCallback advertScanCallback;
     private final java.util.Set<String> advertPayloadsSeen =
             new java.util.HashSet<>();
@@ -3582,7 +3597,7 @@ public class MainActivity extends Activity {
         advertScanCallback = new ScanCallback() {
             @Override
             public void onScanResult(int type, ScanResult r) {
-                if (isOurStrap(r)) {
+                if (isResearchStrap(r)) {
                     mainH.post(() -> logAdvertisement(r, "PASSIVE_SCAN"));
                 }
             }
@@ -6409,7 +6424,7 @@ public class MainActivity extends Activity {
                 hrConfidence, motionArtifact));
 
         logRaw(String.format(
-                "R22_DECODE accel_x=%.4f accel_y=%.4f accel_z=%.4f " +
+                "R18_DECODE accel_x=%.4f accel_y=%.4f accel_z=%.4f " +
                         "mag=%.4f hr=%d quality_field113=%s " +
                         "hr_confidence=%d motion_artifact=%b",
                 accelX, accelY, accelZ, mag, heartRate,
@@ -8538,7 +8553,9 @@ public class MainActivity extends Activity {
             int cmd,
             byte[] b3AndPayload) {
 
-        int innerLen = 3 + b3AndPayload.length;
+        // pad4 (26 Sep): the strap silently drops any command whose inner
+        // record isn't a multiple of 4 bytes. Aligned frames are unchanged.
+        int innerLen = (3 + b3AndPayload.length + 3) & ~3;
 
         byte[] inner = new byte[innerLen];
         inner[0] = (byte) type;
@@ -8838,7 +8855,17 @@ public class MainActivity extends Activity {
             /* body[4..7] = subseconds, left as 0 - we have no
                sub-second-accurate clock source worth encoding here */
 
-            byte[] f = Protocol.labradorBytes(0x23, 0x0A, body, thisSeq);
+            /*
+             * FIXED (26 Sep) - this used labradorBytes, which inserts the
+             * payload length (0x08) ahead of the payload. The strap reads
+             * the 4 bytes after the opcode as seconds, so it got
+             * [08 s0 s1 s2] = ((now << 8) | 8) mod 2^32 - a date in 2067.
+             * Proven from the drained history: 9 strap clock jumps land on
+             * our logged SET_CLOCK sends to the second (e.g. 25 Sep
+             * 19:26:28 UTC -> strap 2067-03-07 18:59:20). NOOP's frame:
+             * [23][seq][0A] + [secs u32 LE][00 00 00 00], padded to 4.
+             */
+            byte[] f = Protocol.puffinFrame(0x23, 0x0A, body, thisSeq);
 
             logRaw("TX SET_CLOCK (corrected 8-byte) epoch=" + epochNow +
                     " seq=0x" + String.format("%02X", thisSeq & 0xff) +
@@ -8885,8 +8912,14 @@ public class MainActivity extends Activity {
 
         enqueue(() -> {
 
-            byte[] f = Protocol.labradorU32(
-                    type, cmd, epochNow, thisSeq);
+            // FIXED (26 Sep): labradorU32 inserted a length byte (0x04)
+            // ahead of the seconds -> strap clock set to (now<<8)|4.
+            // Same NOOP form as SET_CLOCK now: [secs u32 LE][4 x 00].
+            byte[] clockBody = {
+                    (byte) (epochNow & 0xFF), (byte) ((epochNow >> 8) & 0xFF),
+                    (byte) ((epochNow >> 16) & 0xFF), (byte) ((epochNow >> 24) & 0xFF),
+                    0, 0, 0, 0 };
+            byte[] f = Protocol.puffinFrame(type, cmd, clockBody, thisSeq);
 
             logRaw("TX SET_CLOCK_GUESS type=0x" +
                     String.format("%02X", type) +
@@ -11189,8 +11222,11 @@ public class MainActivity extends Activity {
         scanner =
                 adapter.getBluetoothLeScanner();
 
-        line("SCANNING 10s...");
-        logRaw("SCAN_START");
+        ignoredStrapsThisScan.clear();
+        line("SCANNING 10s... (locked to research MG " +
+                RESEARCH_STRAP_SERIAL + " / " + KNOWN_STRAP_ADDR + ")");
+        logRaw("SCAN_START lockedTo=" + RESEARCH_STRAP_SERIAL + "/" +
+                KNOWN_STRAP_ADDR);
         updateStatus("● SCANNING...");
 
         ScanFilter f =
@@ -11242,6 +11278,27 @@ public class MainActivity extends Activity {
                     " addr=" + d.getAddress() +
                     " rssi=" + r.getRssi() +
                     " bondStateAtScan=" + d.getBondState());
+
+            /*
+             * RESEARCH-STRAP LOCK (26 Sep). A WHOOP 5.0 and this MG both
+             * advertise the same fd4b0001 service, and this callback used
+             * to connect to whichever answered first - the "APK connects
+             * to the wrong pod" problem. Only the research MG is accepted
+             * now, matched by address or by the serial in its advertised
+             * name (so a changed address after a reset still matches).
+             */
+            if (!isResearchStrap(r)) {
+                String who = d.getAddress();
+                if (ignoredStrapsThisScan.add(who)) {
+                    String nm = null;
+                    try { nm = d.getName(); } catch (SecurityException ignored) { }
+                    line("IGNORING " + nm + " " + who +
+                            " - not the research MG (" + RESEARCH_STRAP_SERIAL + ")");
+                    logRaw("SCAN_IGNORED_NOT_RESEARCH_STRAP name=" + nm +
+                            " addr=" + who);
+                }
+                return;
+            }
 
             logAdvertisement(r, "MAIN_SCAN");
 
