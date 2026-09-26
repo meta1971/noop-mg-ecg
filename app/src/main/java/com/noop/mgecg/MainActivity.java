@@ -1175,11 +1175,14 @@ public class MainActivity extends Activity {
         /*
          * Always preserve the raw packet first.
          */
-        line("");
-        line("========== RX #" + rxCount + " ==========");
-        line("CHANNEL " + uuid);
-        line("LENGTH  " + value.length);
-        line("RAW     " + Protocol.hex(value));
+        boolean quietScreen = pullAckActive && "0005".equals(uuid);
+        if (!quietScreen) {
+            line("");
+            line("========== RX #" + rxCount + " ==========");
+            line("CHANNEL " + uuid);
+            line("LENGTH  " + value.length);
+            line("RAW     " + Protocol.hex(value));
+        }
 
         /*
          * Every RX event now also persists here unconditionally - not
@@ -1191,20 +1194,35 @@ public class MainActivity extends Activity {
          * reaction (a Labrador identity broadcast) only showed up in
          * a SAVE LOG snapshot, never in this file.
          */
-        logRaw("RX_GENERIC channel=" + uuid +
-                " len=" + value.length +
-                " raw=" + Protocol.hex(value));
+        /*
+         * COMPACT LOGGING during pulls (26 Sep): the first working offload
+         * wrote 31 MB in 3.5 min, 98% of it three hex copies of every
+         * history frame - which the historical bin already holds byte for
+         * byte. During a pull, 0005 frames get one short line here.
+         */
+        if (quietScreen) {
+            logRaw("RX_GENERIC channel=" + uuid +
+                    " len=" + value.length +
+                    (value.length > 9 ? " type=" + (value[8] & 0xff) +
+                            " b9=" + (value[9] & 0xff) : ""));
+        } else {
+            logRaw("RX_GENERIC channel=" + uuid +
+                    " len=" + value.length +
+                    " raw=" + Protocol.hex(value));
+        }
 
         checkPendingEcgGateConfirmation(value);
 
         /*
          * Existing generic protocol summary.
          */
-        try {
-            line("FRAME   " +
-                    Protocol.frameSummary(value));
-        } catch (Exception e) {
-            line("FRAME   summary-error: " + e);
+        if (!quietScreen) {
+            try {
+                line("FRAME   " +
+                        Protocol.frameSummary(value));
+            } catch (Exception e) {
+                line("FRAME   summary-error: " + e);
+            }
         }
 
         /*
@@ -1741,14 +1759,13 @@ public class MainActivity extends Activity {
                  */
                 if (!experimentActive) {
 
-                    line("*** AUTO-PULLING NOW - RECORDING_COMPLETE " +
-                            "means data is ready, per this project's " +
-                            "own earlier confirmed finding ***");
-
-                    logRaw("AUTO_PULL_ON_RECORDING_COMPLETE_FIRING");
-
-                    mainH.postDelayed(
-                            () -> sendCustom(0x2F, 0x01, 0x00), 500);
+                    // REMOVED (26 Sep): this sent sendCustom(0x2F, 0x01,
+                    // 0x00) - a frame whose type byte is 0x2F, the
+                    // HISTORICAL_DATA *record* type, not a command. It
+                    // came from a misread earlier in the project and did
+                    // nothing useful; it fired mid-offload on 26 Sep.
+                    // Pulls are started by REAL HISTORICAL PULL only.
+                    logRaw("RECORDING_COMPLETE_SEEN (no auto-pull)");
                 }
 
                 if (experimentActive) {
@@ -5755,6 +5772,9 @@ public class MainActivity extends Activity {
     private int historyEndsAcked = 0;
     private int historyStartsSeen = 0;
     private int historyAutoContinues = 0;
+    private int endsAckedSinceKick = 0;
+    // NOOP BACKFILL_IDLE_TIMEOUT_MS = 60 s; loop ticks every 350 ms
+    private static final int HISTORY_IDLE_REKICK_CYCLES = 172;
     private long lastAckedTrim = -1L;
     private String lastAckedEndHex = "";
     private long lastAckedEndMs = 0L;
@@ -5865,6 +5885,7 @@ public class MainActivity extends Activity {
                             trim + ")");
 
             historyEndsAcked++;
+            endsAckedSinceKick++;
             lastAckedTrim = trim;
 
             if (historyEndsAcked == 1 || historyEndsAcked % 10 == 0) {
@@ -5894,11 +5915,12 @@ public class MainActivity extends Activity {
             // NOOP #364 auto-continue: the strap hands over a bounded
             // amount per SEND_HISTORICAL; re-request while the trim is
             // still advancing, capped.
-            boolean progressed = historyEndsAcked > 0 &&
+            boolean progressed = endsAckedSinceKick > 0 &&
                     lastAckedTrim != 0xFFFFFFFFL;
             if (progressed &&
                     historyAutoContinues < MAX_HISTORY_AUTO_CONTINUES) {
                 historyAutoContinues++;
+                endsAckedSinceKick = 0;
                 line("Auto-continuing offload (" + historyAutoContinues +
                         "/" + MAX_HISTORY_AUTO_CONTINUES + ")");
                 logRaw("HISTORY_AUTO_CONTINUE n=" + historyAutoContinues);
@@ -5939,8 +5961,15 @@ public class MainActivity extends Activity {
 
         pullIdleCycles = 0;
 
-        logRaw("HIST_BURST len=" + value.length +
-                " raw=" + Protocol.hex(value));
+        if (pullAckActive) {
+            logRaw("HIST_BURST len=" + value.length +
+                    (value.length > 18 ? " ver=" + (value[9] & 0xff) +
+                            " idx=" + u32leAt(value, 11) +
+                            " unix=" + u32leAt(value, 15) : ""));
+        } else {
+            logRaw("HIST_BURST len=" + value.length +
+                    " raw=" + Protocol.hex(value));
+        }
 
         /*
          * R17 OPTICAL/LABRADOR FILTERED CHECK - a record type we've
@@ -6157,8 +6186,16 @@ public class MainActivity extends Activity {
                         " otherClassSamples=" + otherClassSamples);
             }
 
-            logRaw("V16_FLASH_ECG_RECORD len=1584 nonZeroBytes=" +
-                    nonZero + " raw=" + Protocol.hex(value));
+            int v16Words = (value[32] & 0xff) | ((value[33] & 0xff) << 8);
+            if (v16Words > 0 || !pullAckActive) {
+                // an R16 that actually carries ECG samples: keep the full hex
+                logRaw("V16_FLASH_ECG_RECORD len=1584 words=" + v16Words +
+                        " nonZeroBytes=" + nonZero +
+                        " raw=" + Protocol.hex(value));
+            } else {
+                logRaw("V16_FLASH_ECG_RECORD len=1584 words=0 (empty) " +
+                        "nonZeroBytes=" + nonZero);
+            }
 
         } else {
 
@@ -6936,6 +6973,15 @@ public class MainActivity extends Activity {
      */
     private void recordPullOutcomeAndSummarize() {
 
+        // every pull end path comes through here: release keep-screen-on
+        // unless the ECG screen still needs it
+        runOnUiThread(() -> {
+            if (!ecgScreenActive) {
+                getWindow().clearFlags(android.view.WindowManager
+                        .LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+        });
+
         if (!histTypeCensus.isEmpty()) {
             line("*** THIS PULL, by hist_version / type: " + histTypeCensus +
                     "  (18=R18 124B, 22=R22 188B, 26=R26 88B, 16=R16 ECG " +
@@ -7055,6 +7101,7 @@ public class MainActivity extends Activity {
         historyEndsAcked = 0;
         historyStartsSeen = 0;
         historyAutoContinues = 0;
+        endsAckedSinceKick = 0;
         lastAckedTrim = -1L;
         lastAckedEndHex = "";
         lastAckedEndMs = 0L;
@@ -7067,6 +7114,10 @@ public class MainActivity extends Activity {
                 "first this connection = " + ecgRanBeforeCurrentPull +
                 ") ***");
         logRaw("REAL_PULL_BEGIN");
+
+        // keep the phone awake while history drains (can take a while)
+        runOnUiThread(() -> getWindow().addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
 
         sendRealSetClock();
         sendZeroArg(0x0B, "GET_CLOCK");
@@ -7250,6 +7301,33 @@ public class MainActivity extends Activity {
 
         pullAckCounter++;
         pullIdleCycles++;
+
+        /*
+         * Idle watchdog re-kick (NOOP: 60 s idle, then re-send
+         * SEND_HISTORICAL_DATA if the trim advanced this pass, capped).
+         * On 26 Sep the strap paused after 81 acked chunks with no
+         * HISTORY_COMPLETE - NOOP treats that as normal and re-kicks.
+         */
+        if (realEndAckMode && pullIdleCycles == HISTORY_IDLE_REKICK_CYCLES) {
+            if (endsAckedSinceKick > 0 && lastAckedTrim != 0xFFFFFFFFL &&
+                    historyAutoContinues < MAX_HISTORY_AUTO_CONTINUES) {
+                historyAutoContinues++;
+                line("Strap quiet for 60 s after " + endsAckedSinceKick +
+                        " acked chunk(s) - re-requesting history (" +
+                        historyAutoContinues + "/" +
+                        MAX_HISTORY_AUTO_CONTINUES + ")");
+                logRaw("HISTORY_IDLE_REKICK n=" + historyAutoContinues +
+                        " endsSinceKick=" + endsAckedSinceKick +
+                        " lastTrim=" + lastAckedTrim);
+                endsAckedSinceKick = 0;
+                pullIdleCycles = 0;
+                sendZeroArg(0x16, "SEND_HISTORICAL_DATA (idle re-kick)");
+            } else {
+                logRaw("HISTORY_IDLE_NO_REKICK endsSinceKick=" +
+                        endsAckedSinceKick + " autoContinues=" +
+                        historyAutoContinues);
+            }
+        }
 
         /*
          * No fixed cycle cap anymore - see the field-declaration
@@ -11395,6 +11473,10 @@ public class MainActivity extends Activity {
     private void clearLog() {
 
         runOnUiThread(() -> {
+            synchronized (pendingUiLines) {
+                pendingUiLines.setLength(0);
+            }
+            screenText.setLength(0);
             if (log != null) {
                 log.setText("");
             }
@@ -11456,40 +11538,55 @@ public class MainActivity extends Activity {
                 Toast.LENGTH_SHORT).show();
     }
 
+    /*
+     * BATCHED SCREEN OUTPUT (26 Sep). Every line() used to copy the whole
+     * on-screen text (up to 20,000 chars), re-render it and scroll, on the
+     * UI thread, once per line. During the first working offload (~1,400
+     * frames/min, several lines each) the UI thread fell ~8-13 minutes
+     * behind: a 30 s main-thread timer ran at 18:48:07 then not until
+     * 18:56:10. The app looked crashed, and the pull loop - which also
+     * runs on the main thread - never got its turn. Lines are now
+     * collected off-thread and the screen is updated at most every 250 ms.
+     * The log file (logRaw) is unaffected.
+     */
+    private final StringBuilder pendingUiLines = new StringBuilder();
+    private final StringBuilder screenText = new StringBuilder();
+    private boolean uiFlushScheduled = false;
+
     private void line(String s) {
 
-        runOnUiThread(() -> {
-
-            String old =
-                    log == null
-                            ? ""
-                            : log.getText()
-                            .toString();
-
-            if (old.length() > 20000) {
-
-                old =
-                        old.substring(
-                                old.length() - 16000);
+        String stamped = String.format("\n%tT  %s", new Date(), s);
+        synchronized (pendingUiLines) {
+            pendingUiLines.append(stamped);
+            if (pendingUiLines.length() > 40000) {
+                pendingUiLines.delete(0, pendingUiLines.length() - 20000);
             }
-
-            if (log != null) {
-
-                log.setText(
-                        old +
-                        String.format(
-                                "\n%tT  %s",
-                                new Date(),
-                                s));
+            if (uiFlushScheduled) {
+                return;
             }
+            uiFlushScheduled = true;
+        }
+        mainH.postDelayed(this::flushUiLines, 250);
+    }
 
-            if (scrollView != null) {
+    private void flushUiLines() {
 
-                scrollView.post(() ->
-                        scrollView.fullScroll(
-                                View.FOCUS_DOWN));
-            }
-        });
+        String add;
+        synchronized (pendingUiLines) {
+            add = pendingUiLines.toString();
+            pendingUiLines.setLength(0);
+            uiFlushScheduled = false;
+        }
+        screenText.append(add);
+        if (screenText.length() > 20000) {
+            screenText.delete(0, screenText.length() - 16000);
+        }
+        if (log != null) {
+            log.setText(screenText.toString());
+        }
+        if (scrollView != null) {
+            scrollView.post(() -> scrollView.fullScroll(View.FOCUS_DOWN));
+        }
     }
 
     /*
