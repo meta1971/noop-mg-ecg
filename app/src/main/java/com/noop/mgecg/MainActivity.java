@@ -1181,6 +1181,9 @@ public class MainActivity extends Activity {
             } else if (envType == 0x31 && envCmd == 0x02) {
                 decodeStatusFrame31(value);
             } else if (envType == 0x24 &&
+                    envCmd >= 115 && envCmd <= 118) {
+                handleKeyWalkReply(envCmd, value);
+            } else if (envType == 0x24 &&
                     (envCmd == 119 || envCmd == 121)) {
 
                 /*
@@ -3024,6 +3027,303 @@ public class MainActivity extends Activity {
      * write.
      * ------------------------------------------------------------------
      */
+    /*
+     * ------------------------------------------------------------------
+     * R24/R25/R26 PROBE VIA THE CONFIRMED-WORKING MECHANISM - the
+     * earlier probe used setDeviceConfigValue (opcode 119/121), which
+     * gave silence for all three names. That's genuinely informative
+     * but not conclusive: 119/121 has never itself been confirmed to
+     * echo ANY real flag on this firmware. sendR22Flag (opcode 0x78/
+     * 120, the actual SET_CONFIG mechanism) is the one with a real
+     * track record - it's what enable_raw_data_w_ecg and every other
+     * confirmed-real flag on this project actually echoes through.
+     * Trying these three names through the mechanism proven to work,
+     * not just the one that seemed most obviously named for it.
+     * ------------------------------------------------------------------
+     */
+    /*
+     * ------------------------------------------------------------------
+     * STRAP KEY LIST - asks the strap to enumerate its OWN key names.
+     * Read-only: no value is ever written from this path.
+     *
+     * Spec from ryanbr/noop FeatureFlagProbe.kt (#761/#872), itself
+     * built from a decompiled official client's response types plus a
+     * hands-on WHOOP 4.0 dump, and run on a WHOOP MG (WS50_r03), which
+     * announced 16 feature flags and served indices 1-10 then 13-18.
+     * That walk is almost certainly where enable_write_r24/r25_packets
+     * were first seen.
+     *
+     *   117 / 115 request body [0x01] -> record [rev][count u16 LE]
+     *   118 / 116 request body [0x01], repeated (the strap keeps its own
+     *             cursor) -> record [rev][index][validKey][ASCII key\0]
+     *   index 0xFF = the strap's own end marker
+     *
+     * Record = frame bytes 13..len-4 (byte 12 is the result code), same
+     * offsets every other COMMAND_RESPONSE decoder here uses.
+     *
+     * Our old walks never reached the strap: every 115-118 frame sent
+     * before the pad4 fix was unpadded and silently dropped. This is the
+     * first walk this unit will actually receive.
+     * ------------------------------------------------------------------
+     */
+    private boolean keyWalkActive = false;
+    private int keyWalkStartCmd = 117;
+    private int keyWalkNextCmd = 118;
+    private String keyWalkLabel = "FEATURE-FLAG";
+    private int keyWalkSteps = 0;
+    private int keyWalkAnnounced = -1;
+    private int keyWalkLastIndex = -1;
+    private int keyWalkEmptyRun = 0;
+    private final java.util.List<String> keyWalkKeys =
+            new java.util.ArrayList<>();
+    private Runnable keyWalkTimeout;
+    private static final int KEY_WALK_MAX_STEPS = 128;
+    private static final int KEY_WALK_OVERSHOOT = 4;
+    private static final int KEY_WALK_MAX_EMPTY = 8;
+
+    private void runStrapKeyList(boolean featureFlags) {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this probe");
+            return;
+        }
+        if (keyWalkActive) {
+            line("A key walk is already running - wait for it to finish");
+            return;
+        }
+
+        keyWalkStartCmd = featureFlags ? 117 : 115;
+        keyWalkNextCmd = featureFlags ? 118 : 116;
+        keyWalkLabel = featureFlags ? "FEATURE-FLAG" : "DEVICE-CONFIG";
+        keyWalkSteps = 0;
+        keyWalkAnnounced = -1;
+        keyWalkLastIndex = -1;
+        keyWalkEmptyRun = 0;
+        keyWalkKeys.clear();
+        keyWalkActive = true;
+
+        line("");
+        line("*** STRAP " + keyWalkLabel + " KEY LIST (" +
+                keyWalkStartCmd + "/" + keyWalkNextCmd +
+                ", read-only) - asking the strap to name its own keys ***");
+        logRaw("KEY_LIST_BEGIN namespace=" + keyWalkLabel);
+
+        sendPuffinPayload(keyWalkStartCmd, new byte[]{0x01},
+                "KEY_LIST_START(" + keyWalkStartCmd + ")");
+        armKeyWalkTimeout(keyWalkStartCmd);
+    }
+
+    private void armKeyWalkTimeout(int awaitingCmd) {
+        if (keyWalkTimeout != null) mainH.removeCallbacks(keyWalkTimeout);
+        keyWalkTimeout = () -> finishKeyWalk(
+                "no reply to opcode " + awaitingCmd + " within 8s");
+        mainH.postDelayed(keyWalkTimeout, 8000);
+    }
+
+    private boolean keyWalkFrameCrcOk(byte[] v) {
+        if (v.length < 16) return false;
+        int h = Protocol.crc16Modbus(v, 0, 6);
+        if ((v[6] & 0xff) != (h & 0xff) ||
+                (v[7] & 0xff) != ((h >>> 8) & 0xff)) return false;
+        java.util.zip.CRC32 c = new java.util.zip.CRC32();
+        c.update(v, 8, v.length - 12);
+        long crc = c.getValue();
+        int p = v.length - 4;
+        long got = (v[p] & 0xffL) | ((v[p + 1] & 0xffL) << 8) |
+                ((v[p + 2] & 0xffL) << 16) | ((v[p + 3] & 0xffL) << 24);
+        return crc == got;
+    }
+
+    private void handleKeyWalkReply(int cmd, byte[] v) {
+
+        logRaw("KEY_LIST_REPLY cmd=" + cmd + " raw=" + Protocol.hex(v));
+
+        if (!keyWalkActive ||
+                (cmd != keyWalkStartCmd && cmd != keyWalkNextCmd)) {
+            return;
+        }
+        if (!keyWalkFrameCrcOk(v)) {
+            line("KEY LIST: reply for cmd " + cmd +
+                    " failed CRC - rejected, not decoded");
+            finishKeyWalk("CRC failure on a reply (our rejection)");
+            return;
+        }
+
+        int result = v[12] & 0xff;
+        int recLen = v.length - 4 - 13;
+        if (recLen < 2) {
+            finishKeyWalk("reply record too short to decode");
+            return;
+        }
+
+        if (cmd == keyWalkStartCmd) {
+            int rev = v[13] & 0xff;
+            int count = recLen >= 3 ?
+                    ((v[14] & 0xff) | ((v[15] & 0xff) << 8)) : -1;
+            line("KEY LIST START -> revision=" + rev + " announced=" +
+                    count + " result=" + result);
+            logRaw("KEY_LIST_START_REPLY namespace=" + keyWalkLabel +
+                    " revision=" + rev + " announced=" + count +
+                    " result=" + result);
+            if (result == 3) {
+                finishKeyWalk("strap answered UNSUPPORTED(3) to " +
+                        keyWalkStartCmd);
+                return;
+            }
+            keyWalkAnnounced = count;
+            sendPuffinPayload(keyWalkNextCmd, new byte[]{0x01},
+                    "KEY_LIST_NEXT(" + keyWalkNextCmd + ")");
+            armKeyWalkTimeout(keyWalkNextCmd);
+            return;
+        }
+
+        // cmd == keyWalkNextCmd
+        keyWalkSteps++;
+        int index = v[14] & 0xff;
+        boolean validKey = recLen >= 3 && (v[15] & 0xff) != 0;
+        String key = null;
+        if (recLen >= 4) {
+            StringBuilder kb = new StringBuilder();
+            for (int i = 16; i < v.length - 4; i++) {
+                int b = v[i] & 0xff;
+                if (b == 0) break;
+                if (b < 32 || b > 126) { kb.setLength(0); break; }
+                kb.append((char) b);
+                if (kb.length() > 32) { kb.setLength(0); break; }
+            }
+            if (kb.length() > 0) key = kb.toString();
+        }
+
+        line("  [" + keyWalkSteps + "] index=" + index +
+                " validKey=" + validKey +
+                (key != null ? " key=\"" + key + "\"" : "") +
+                " result=" + result);
+
+        if (result == 3) {
+            finishKeyWalk("strap answered UNSUPPORTED(3) to " +
+                    keyWalkNextCmd);
+            return;
+        }
+        if (index == 0xFF) {
+            finishKeyWalk("strap's own end marker (index 0xFF)");
+            return;
+        }
+        if (!validKey) {
+            keyWalkEmptyRun++;
+            if (index == keyWalkLastIndex) {
+                finishKeyWalk("validKey=0 repeated at index " + index +
+                        " - cursor parked");
+                return;
+            }
+            if (keyWalkEmptyRun >= KEY_WALK_MAX_EMPTY) {
+                finishKeyWalk(KEY_WALK_MAX_EMPTY +
+                        " consecutive empty slots (client-side cap)");
+                return;
+            }
+        } else {
+            keyWalkEmptyRun = 0;
+            if (key != null && !keyWalkKeys.contains(key)) {
+                keyWalkKeys.add(key);
+            }
+        }
+        keyWalkLastIndex = index;
+
+        if (keyWalkSteps >= KEY_WALK_MAX_STEPS) {
+            finishKeyWalk("safety cap of " + KEY_WALK_MAX_STEPS +
+                    " replies (client-side)");
+            return;
+        }
+        if (keyWalkAnnounced > 0 && keyWalkAnnounced <= KEY_WALK_MAX_STEPS
+                && keyWalkSteps >= keyWalkAnnounced + KEY_WALK_OVERSHOOT) {
+            finishKeyWalk("announced " + keyWalkAnnounced + " + " +
+                    KEY_WALK_OVERSHOOT + " overshoot reached " +
+                    "(client-side - strap sent no end marker)");
+            return;
+        }
+
+        mainH.postDelayed(() -> {
+            if (!keyWalkActive) return;
+            sendPuffinPayload(keyWalkNextCmd, new byte[]{0x01},
+                    "KEY_LIST_NEXT(" + keyWalkNextCmd + ")");
+            armKeyWalkTimeout(keyWalkNextCmd);
+        }, 150);
+    }
+
+    private void finishKeyWalk(String reason) {
+
+        if (!keyWalkActive) return;
+        keyWalkActive = false;
+        if (keyWalkTimeout != null) mainH.removeCallbacks(keyWalkTimeout);
+
+        line("");
+        line("*** " + keyWalkLabel + " KEY LIST FINISHED - " +
+                keyWalkKeys.size() + " name(s), announced " +
+                keyWalkAnnounced + " - stopped: " + reason + " ***");
+
+        StringBuilder all = new StringBuilder();
+        for (int i = 0; i < keyWalkKeys.size(); i++) {
+            String k = keyWalkKeys.get(i);
+            String lk = k.toLowerCase(java.util.Locale.US);
+            boolean flag = lk.contains("r24") || lk.contains("r25") ||
+                    lk.contains("r26") || lk.contains("pip") ||
+                    lk.contains("ecg") || lk.contains("labrador") ||
+                    lk.contains("write");
+            line(String.format(java.util.Locale.US, "  %2d. %s%s",
+                    i + 1, k, flag ? "   <-- OF INTEREST" : ""));
+            if (all.length() > 0) all.append(",");
+            all.append(k);
+        }
+
+        logRaw("KEY_LIST_SUMMARY namespace=" + keyWalkLabel +
+                " announced=" + keyWalkAnnounced +
+                " steps=" + keyWalkSteps +
+                " named=" + keyWalkKeys.size() +
+                " stop=\"" + reason + "\" keys=" + all);
+    }
+
+    private void runR24R25R26ViaConfirmedMechanism() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this probe");
+            return;
+        }
+
+        line("");
+        line("*** R24/R25/R26 PROBE VIA SET_CONFIG (0x78/120) - the " +
+                "actual confirmed-working mechanism, not the 119/121 " +
+                "namespace already tried and found silent ***");
+        logRaw("R24_R25_R26_VIA_SET_CONFIG_BEGIN");
+
+        /*
+         * CORRECTED (2026-09-26) after checking our own logs:
+         * disable_pip_r26_packets is ALREADY a confirmed-real feature
+         * flag on this strap - SET_CONFIG(120) returned SUCCESS twice
+         * on 20 Sep, and it is one of the 16 flags the official app
+         * itself writes on every connect (value '2', from HCI
+         * captures #103/#522). It is therefore NEVER written here:
+         * '0' has unknown meaning and could move the strap away from
+         * the official app's own setting. Read-only baseline for all
+         * three via GET_FF_VALUE(128) first - NOOP's own code treats
+         * only a 128 read-back as proof of stored state, not a 120
+         * echo - then write R24/R25 only, then read those back.
+         */
+        getFeatureFlagValue("enable_write_r24_packets");
+        mainH.postDelayed(() ->
+                getFeatureFlagValue("enable_write_r25_packets"), 700);
+        mainH.postDelayed(() ->
+                getFeatureFlagValue("disable_pip_r26_packets"), 1400);
+
+        mainH.postDelayed(() ->
+                sendR22Flag("enable_write_r24_packets", '1'), 2400);
+        mainH.postDelayed(() ->
+                sendR22Flag("enable_write_r25_packets", '1'), 3100);
+
+        mainH.postDelayed(() ->
+                getFeatureFlagValue("enable_write_r24_packets"), 4100);
+        mainH.postDelayed(() ->
+                getFeatureFlagValue("enable_write_r25_packets"), 4800);
+    }
+
     private void runR24R25R26ConfigProbe() {
 
         if (gatt == null || cmdWrite == null) {
@@ -9461,6 +9761,20 @@ public class MainActivity extends Activity {
                 v -> runR24R25R26ConfigProbe());
         addToCurrentSection(r24r25r26Btn);
 
+        /*
+         * Same three names, tried through the OTHER mechanism -
+         * SET_CONFIG(0x78/120), the one actually confirmed to echo
+         * real flags this whole investigation (enable_raw_data_w_ecg
+         * and every real R22 flag). 119/121 giving silence doesn't
+         * rule these names out; this checks the mechanism with an
+         * actual track record.
+         */
+        Button r24r25r26ViaSetConfigBtn = btn(
+                "PROBE R24/R25/R26 VIA FF NAMESPACE (read 128 -> write " +
+                        "R24/R25 via 120 -> read back; R26 read-only)",
+                v -> runR24R25R26ViaConfirmedMechanism());
+        addToCurrentSection(r24r25r26ViaSetConfigBtn);
+
         Button probeArgBtn = btn(
                 "PROBE UNDOCUMENTED cmd=0x7C arg=3",
                 v -> probeUndocumentedEcgArg());
@@ -9589,15 +9903,14 @@ public class MainActivity extends Activity {
         addToCurrentSection(confirmClearRemainingBtn);
 
         Button featureFlagWalkBtn = btn(
-                "WALK ALL FEATURE-FLAG KEYS (cmd=117/118, real " +
-                        "enumeration mechanism, never sent before now)",
-                v -> sweepFeatureFlagKeyWalk());
+                "LIST STRAP'S FEATURE FLAGS (117/118, read-only - " +
+                        "strap names its own keys)",
+                v -> runStrapKeyList(true));
         addToCurrentSection(featureFlagWalkBtn);
 
         Button deviceConfigWalkBtn = btn(
-                "WALK ALL DEVICE-CONFIG KEYS (cmd=115/116, the " +
-                        "namespace enable_raw_data_w_ecg lives in)",
-                v -> sweepDeviceConfigKeyWalk());
+                "LIST STRAP'S DEVICE-CONFIG KEYS (115/116, read-only)",
+                v -> runStrapKeyList(false));
         addToCurrentSection(deviceConfigWalkBtn);
 
         Button keyWalksWithPreconditionBtn = btn(
