@@ -1171,8 +1171,27 @@ public class MainActivity extends Activity {
             int envType = value[8] & 0xff;
             int envCmd = value[10] & 0xff;
 
-            if (envType == 0x2F && envCmd == 0x80) {
+            if (envType == 0x2F) {
+                /*
+                 * FIXED (26 Sep): every type-47 record, whatever byte 10
+                 * holds. The old filter required byte10 == 0x80; on the
+                 * R16/R17 family byte 10 is "common sensor flags" and our
+                 * own live R17 frames carry 0x00 there in 1737 of 2104
+                 * cases - so R16 records would have been dropped on
+                 * arrival even if a pull had ever reached them.
+                 */
                 handleHistoricalBurstFrame(uuid, value);
+            } else if (envType == 0x38) {
+                handlePuffinMetadata(value);
+            } else if (envType == 0x34) {
+                // 52 HISTORICAL_IMU_DATA_STREAM - a 5/MG history body
+                // type (NOOP WhoopBleClient.isOffloadFrame). Saved so it
+                // is inside the bin before any chunk containing it is acked.
+                saveHistoricalFragment(value);
+                pullIdleCycles = 0;
+                bumpHistCensus(52);
+                logRaw("HIST_IMU_FRAME len=" + value.length +
+                        " raw=" + Protocol.hex(value));
             } else if (envType == 0x32 && envCmd == 0x02) {
                 dumpAsciiRuns(value);
                 extractCursorFromDebugText(value);
@@ -5592,7 +5611,205 @@ public class MainActivity extends Activity {
             fos.write(data);
 
         } catch (Exception e) {
-            line("HISTORICAL SAVE ERROR: " + e);
+            historicalSaveFailedThisPull = true;
+            line("HISTORICAL SAVE ERROR: " + e +
+                    " - chunk acks are now held for this pull");
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * REAL HISTORY OFFLOAD ACK (26 Sep) - root cause of every pull we have
+     * ever run re-sending the same ~25-60 oldest records (e.g. index
+     * 26082858..26082888 in seven separate pulls on 10-11 Sep; today
+     * 27275379..27275404, each record three times over): we never
+     * acknowledged a chunk the way the strap needs, so it never trimmed.
+     *
+     * Our old ack echoed a "cursor" rebuilt from a "Trim: 0x..:0x.." line
+     * in the console text - and when none was seen (as today), a single
+     * counter byte, blind, every 350 ms. The strap answered SUCCESS but
+     * had nothing to trim against.
+     *
+     * What NOOP does (WhoopBleClient.ackHistoricalChunk + Backfiller +
+     * Framing.decodeMetadataWhoop5, "matches the verified Mac offload"):
+     *   - 5/MG closes each ~50-record chunk with PUFFIN_METADATA, packet
+     *     type 56 at frame[8] (NOT 49 - NOOP itself once had our exact
+     *     "strap never trims" symptom from matching the wrong type, #78)
+     *   - meta_type @10: 1 HISTORY_START, 2 HISTORY_END, 3 HISTORY_COMPLETE
+     *   - HISTORY_END: unix @11 (u32), trim_cursor @21 (u32),
+     *     end_data = frame[21:29] verbatim
+     *   - ack EVERY HISTORY_END with HISTORICAL_DATA_RESULT (23),
+     *     payload [0x01] + end_data, written with response
+     *   - the strap deletes the chunk once the ack lands, so the chunk
+     *     must be durably stored first
+     * Our router dropped type 56 entirely (it only passed type 47 with
+     * byte10 == 0x80), so no HISTORY_END was ever even looked at.
+     * ------------------------------------------------------------------
+     */
+    private boolean realEndAckMode = false;
+    private boolean puffinMetadataSeenThisPull = false;
+    private boolean historicalSaveFailedThisPull = false;
+    private boolean loggedBlindAckFallback = false;
+    private long pullStartMs = 0L;
+    private int historyEndsAcked = 0;
+    private int historyStartsSeen = 0;
+    private int historyAutoContinues = 0;
+    private long lastAckedTrim = -1L;
+    private static final int MAX_HISTORY_AUTO_CONTINUES = 30;
+    private static final long BLIND_ACK_FALLBACK_AFTER_MS = 15000L;
+    private final java.util.Map<Integer, Integer> histTypeCensus =
+            new java.util.TreeMap<>();
+
+    private void bumpHistCensus(int key) {
+        Integer c = histTypeCensus.get(key);
+        histTypeCensus.put(key, c == null ? 1 : c + 1);
+    }
+
+    private static long u32leAt(byte[] v, int off) {
+        return (v[off] & 0xffL) | ((v[off + 1] & 0xffL) << 8) |
+                ((v[off + 2] & 0xffL) << 16) | ((v[off + 3] & 0xffL) << 24);
+    }
+
+    /** fsync the history bin so a chunk is on disk before we let the strap delete it. */
+    private boolean syncHistoricalFileToDisk() {
+        if (historicalBinaryFile == null) {
+            return true; // nothing stored yet - an empty END is still acked (NOOP)
+        }
+        try (java.io.FileOutputStream fos =
+                     new java.io.FileOutputStream(historicalBinaryFile, true)) {
+            fos.getFD().sync();
+            return true;
+        } catch (Exception e) {
+            line("HISTORICAL SYNC ERROR: " + e);
+            return false;
+        }
+    }
+
+    private void handlePuffinMetadata(byte[] v) {
+
+        boolean crcOk = keyWalkFrameCrcOk(v);
+        int metaType = v.length > 10 ? (v[10] & 0xff) : -1;
+        puffinMetadataSeenThisPull = true;
+        pullIdleCycles = 0;
+        bumpHistCensus(56);
+
+        // keep the chunk markers in the bin for offline analysis
+        saveHistoricalFragment(v);
+
+        logRaw("PUFFIN_METADATA meta_type=" + metaType + " crcOk=" +
+                crcOk + " len=" + v.length + " raw=" + Protocol.hex(v));
+
+        if (!crcOk) {
+            line("HISTORY metadata frame failed CRC - ignored, never acked");
+            return;
+        }
+
+        if (metaType == 1) {
+            historyStartsSeen++;
+            line("HISTORY_START (#" + historyStartsSeen + ")");
+            return;
+        }
+
+        if (metaType == 2) {
+
+            if (v.length < 33) {
+                line("HISTORY_END too short to carry end_data (" +
+                        v.length + " bytes) - not acked");
+                return;
+            }
+            long unix = u32leAt(v, 11);
+            long trim = u32leAt(v, 21);
+            byte[] endData = java.util.Arrays.copyOfRange(v, 21, 29);
+
+            logRaw("HISTORY_END unix=" + unix + " trim=" + trim +
+                    " end_data=" + Protocol.hex(endData));
+
+            if (!pullAckActive) {
+                line("HISTORY_END outside an active pull - not acked");
+                return;
+            }
+            if (historicalSaveFailedThisPull) {
+                line("*** A history save failed earlier this pull - NOT " +
+                        "acking, so the strap keeps this chunk ***");
+                logRaw("HISTORY_END_ACK_HELD reason=earlier_save_failure");
+                return;
+            }
+            if (!syncHistoricalFileToDisk()) {
+                line("*** DISK SYNC FAILED - NOT acking, so the strap " +
+                        "keeps this chunk ***");
+                logRaw("HISTORY_END_ACK_HELD reason=sync_failed");
+                return;
+            }
+
+            realEndAckMode = true;
+
+            byte[] payload = new byte[9];
+            payload[0] = 0x01;
+            System.arraycopy(endData, 0, payload, 1, 8);
+
+            sendPuffinPayload(23, payload,
+                    "HISTORICAL_DATA_RESULT (HISTORY_END ack, trim=" +
+                            trim + ")");
+
+            historyEndsAcked++;
+            lastAckedTrim = trim;
+
+            if (historyEndsAcked == 1 || historyEndsAcked % 10 == 0) {
+                line("HISTORY_END acked #" + historyEndsAcked +
+                        " trim=" + trim + " - " +
+                        historicalFragments.size() + " records saved so far");
+            }
+            if (trim == 0xFFFFFFFFL) {
+                line("trim=0xFFFFFFFF - strap reports no further flash " +
+                        "cursor (caught up, or nothing banked)");
+            }
+            return;
+        }
+
+        if (metaType == 3) {
+
+            line("HISTORY_COMPLETE - " + historyEndsAcked +
+                    " chunk(s) acked this pull");
+            logRaw("HISTORY_COMPLETE endsAcked=" + historyEndsAcked +
+                    " lastTrim=" + lastAckedTrim +
+                    " frames=" + historicalFragments.size());
+
+            if (!pullAckActive) {
+                return;
+            }
+
+            // NOOP #364 auto-continue: the strap hands over a bounded
+            // amount per SEND_HISTORICAL; re-request while the trim is
+            // still advancing, capped.
+            boolean progressed = historyEndsAcked > 0 &&
+                    lastAckedTrim != 0xFFFFFFFFL;
+            if (progressed &&
+                    historyAutoContinues < MAX_HISTORY_AUTO_CONTINUES) {
+                historyAutoContinues++;
+                line("Auto-continuing offload (" + historyAutoContinues +
+                        "/" + MAX_HISTORY_AUTO_CONTINUES + ")");
+                logRaw("HISTORY_AUTO_CONTINUE n=" + historyAutoContinues);
+                mainH.postDelayed(() -> {
+                    if (pullAckActive) {
+                        sendZeroArg(0x16, "SEND_HISTORICAL_DATA (auto-continue)");
+                    }
+                }, 800);
+                return;
+            }
+
+            pullAckActive = false;
+            pullGeneration++;
+            historyDrainedThisPull = true;
+            line("*** HISTORY OFFLOAD FINISHED - strap's own " +
+                    "HISTORY_COMPLETE, " + historyEndsAcked +
+                    " chunk(s) acked, " + historicalFragments.size() +
+                    " frames saved ***");
+            logRaw("HISTORY_DRAINED_BY_COMPLETE frames=" +
+                    historicalFragments.size() + " bytes=" +
+                    historicalTotalBytes + " endsAcked=" + historyEndsAcked);
+            recordPullOutcomeAndSummarize();
+            saveReconstructedWaveform();
+            saveReconstructedWaveform188();
         }
     }
 
@@ -5600,6 +5817,9 @@ public class MainActivity extends Activity {
             String uuid,
             byte[] value) {
 
+        if (value.length > 9) {
+            bumpHistCensus(value[9] & 0xff);
+        }
         historicalFragments.add(value);
         historicalTotalBytes += value.length;
         saveHistoricalFragment(value);
@@ -6603,6 +6823,18 @@ public class MainActivity extends Activity {
      */
     private void recordPullOutcomeAndSummarize() {
 
+        if (!histTypeCensus.isEmpty()) {
+            line("*** THIS PULL, by hist_version / type: " + histTypeCensus +
+                    "  (18=R18 124B, 22=R22 188B, 26=R26 88B, 16=R16 ECG " +
+                    "1584B, 52=IMU stream, 56=chunk metadata) - HISTORY_END " +
+                    "acks sent: " + historyEndsAcked + " ***");
+            logRaw("HIST_CENSUS " + histTypeCensus +
+                    " endsAcked=" + historyEndsAcked +
+                    " starts=" + historyStartsSeen +
+                    " autoContinues=" + historyAutoContinues +
+                    " lastTrim=" + lastAckedTrim);
+        }
+
         if (!unknownRecordHistVersionTally.isEmpty()) {
 
             StringBuilder tallyStr = new StringBuilder();
@@ -6701,6 +6933,17 @@ public class MainActivity extends Activity {
         ecgRanBeforeCurrentPull = ecgEverRunThisConnection;
         waveform88SeenThisPull = 0;
         unknownRecordHistVersionTally.clear();
+
+        realEndAckMode = false;
+        puffinMetadataSeenThisPull = false;
+        historicalSaveFailedThisPull = false;
+        loggedBlindAckFallback = false;
+        pullStartMs = System.currentTimeMillis();
+        historyEndsAcked = 0;
+        historyStartsSeen = 0;
+        historyAutoContinues = 0;
+        lastAckedTrim = -1L;
+        histTypeCensus.clear();
 
         line("");
         line("*** REAL HISTORICAL PULL: SET_CLOCK -> GET_CLOCK -> " +
@@ -6835,7 +7078,27 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (lastKnownCursor != null) {
+        boolean allowBlindAck = !realEndAckMode &&
+                !puffinMetadataSeenThisPull &&
+                System.currentTimeMillis() - pullStartMs >
+                        BLIND_ACK_FALLBACK_AFTER_MS;
+
+        if (!allowBlindAck) {
+
+            // Real HISTORY_END acks drive the offload (or we are still in
+            // the first 15 s waiting for the strap's own metadata). No
+            // blind acks - they are the likely reason the strap kept
+            // restarting the same chunk. The loop keeps running only to
+            // detect when the strap goes quiet.
+
+        } else if (lastKnownCursor != null) {
+
+            if (!loggedBlindAckFallback) {
+                loggedBlindAckFallback = true;
+                line("(no HISTORY_END metadata in 15s - falling back to " +
+                        "the legacy blind ack)");
+                logRaw("BLIND_ACK_FALLBACK engaged");
+            }
 
             byte[] b3AndCursor = new byte[9];
             b3AndCursor[0] = 0x01;
@@ -6852,6 +7115,13 @@ public class MainActivity extends Activity {
                     myGeneration);
 
         } else {
+
+            if (!loggedBlindAckFallback) {
+                loggedBlindAckFallback = true;
+                line("(no HISTORY_END metadata in 15s - falling back to " +
+                        "the legacy blind ack)");
+                logRaw("BLIND_ACK_FALLBACK engaged");
+            }
 
             line("(no real cursor captured yet - falling back to " +
                     "counter-based ack for this cycle)");
@@ -9248,25 +9518,80 @@ public class MainActivity extends Activity {
      */
     private void runRhythmRegularityAnalysis() {
 
-        java.util.List<Integer> rr = ecgFullSessionIntervalsMs;
+        java.util.List<Integer> rawRr = ecgFullSessionIntervalsMs;
 
-        if (rr.size() < 15) {
+        if (rawRr.size() < 15) {
             ecgRhythmResultText.setText(
-                    rr.isEmpty() ?
+                    rawRr.isEmpty() ?
                             "" :
                             "Not enough clean (quality 3/3) beats this " +
                                     "session for a rhythm read-out (" +
-                                    rr.size() + " collected, 15+ needed)");
+                                    rawRr.size() + " collected, 15+ needed)");
+            return;
+        }
+
+        /*
+         * ARTIFACT HANDLING (26 Sep). A 7-minute session gave SD1 = 163.8 ms
+         * while only 6.8% of successive differences exceeded 50 ms - only
+         * possible if a few huge jumps (a missed or doubled beat) dominate
+         * SD1. Standard HRV practice sets those aside first (ayiskakov's
+         * pipeline uses Malik filtering and never joins a difference across
+         * a rejected interval).
+         *
+         * But in a genuinely irregular rhythm, many REAL intervals differ
+         * from their neighbours by >20% - filtering them would bias the
+         * result toward "Regular" exactly when it shouldn't. So: if more
+         * than 15% would be set aside, no label is given at all.
+         */
+        int nRaw = rawRr.size();
+        boolean[] keep = new boolean[nRaw];
+        int excluded = 0;
+        for (int i = 0; i < nRaw; i++) {
+            java.util.List<Integer> nb = new java.util.ArrayList<>();
+            for (int j = i - 2; j <= i + 2; j++) {
+                if (j != i && j >= 0 && j < nRaw) nb.add(rawRr.get(j));
+            }
+            java.util.Collections.sort(nb);
+            double med = nb.isEmpty() ? rawRr.get(i) :
+                    (nb.size() % 2 == 1 ? nb.get(nb.size() / 2) :
+                            (nb.get(nb.size() / 2 - 1) + nb.get(nb.size() / 2)) / 2.0);
+            keep[i] = Math.abs(rawRr.get(i) - med) <= 0.20 * med;
+            if (!keep[i]) excluded++;
+        }
+        double excludedFrac = excluded / (double) nRaw;
+
+        java.util.List<Integer> rr = new java.util.ArrayList<>();
+        for (int i = 0; i < nRaw; i++) if (keep[i]) rr.add(rawRr.get(i));
+
+        java.util.List<Double> diffList = new java.util.ArrayList<>();
+        for (int i = 0; i < nRaw - 1; i++) {
+            if (keep[i] && keep[i + 1]) {
+                diffList.add((double) (rawRr.get(i + 1) - rawRr.get(i)));
+            }
+        }
+
+        if (excludedFrac > 0.15 || rr.size() < 15 || diffList.size() < 10) {
+            String msg = String.format(Locale.US,
+                    "<b>Inconclusive</b><br>%d of %d beat intervals " +
+                            "(%.0f%%) differ by more than 20%% from their " +
+                            "neighbours. With this data that can't be " +
+                            "separated into detector errors versus a " +
+                            "genuinely irregular rhythm, so no label is " +
+                            "given. A longer, stiller hold usually helps.",
+                    excluded, nRaw, 100 * excludedFrac);
+            ecgRhythmResultText.setText(android.text.Html.fromHtml(
+                    msg, android.text.Html.FROM_HTML_MODE_LEGACY));
+            logRaw("RHYTHM_ANALYSIS inconclusive beats=" + nRaw +
+                    " excluded=" + excluded + String.format(Locale.US,
+                    " excludedFrac=%.3f", excludedFrac));
             return;
         }
 
         int n = rr.size();
 
-        // successive differences: RR[i+1] - RR[i]
-        double[] diffs = new double[n - 1];
-        for (int i = 0; i < n - 1; i++) {
-            diffs[i] = rr.get(i + 1) - rr.get(i);
-        }
+        // successive differences, only between adjacent kept intervals
+        double[] diffs = new double[diffList.size()];
+        for (int i = 0; i < diffs.length; i++) diffs[i] = diffList.get(i);
 
         double meanRr = 0;
         for (int v : rr) meanRr += v;
@@ -9378,7 +9703,8 @@ public class MainActivity extends Activity {
 
         String result = String.format(Locale.US,
                 "<b><font color='%s'>%s</font></b><br>" +
-                        "%d clean beats analysed &middot; SD1/SD2 " +
+                        "%d clean beats analysed (%d set aside as " +
+                        "likely detector errors) &middot; SD1/SD2 " +
                         "ratio %.2f &middot; %.0f%% of beat-to-beat " +
                         "changes over 50ms<br>" +
                         "<small>A Poincar\u00e9-plot read of beat " +
@@ -9396,7 +9722,7 @@ public class MainActivity extends Activity {
                         "how spread out the distribution is - the " +
                         "actual method behind Apple's own published " +
                         "AFib approach. %s</small>",
-                color, label, n, sd1Sd2Ratio, pOver50,
+                color, label, n, excluded, sd1Sd2Ratio, pOver50,
                 entropyLabel, normalizedEntropy,
                 methodsAgree ?
                         "Agrees with the Poincar\u00e9 result above." :
@@ -9409,7 +9735,7 @@ public class MainActivity extends Activity {
                 android.text.Html.fromHtml(
                         result, android.text.Html.FROM_HTML_MODE_LEGACY));
 
-        logRaw("RHYTHM_ANALYSIS beats=" + n +
+        logRaw("RHYTHM_ANALYSIS beats=" + n + " excluded=" + excluded +
                 " sd1=" + String.format(Locale.US, "%.1f", sd1) +
                 " sd2=" + String.format(Locale.US, "%.1f", sd2) +
                 " ratio=" + String.format(Locale.US, "%.3f", sd1Sd2Ratio) +
