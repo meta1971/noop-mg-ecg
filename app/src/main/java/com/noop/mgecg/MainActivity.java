@@ -7323,9 +7323,9 @@ public class MainActivity extends Activity {
         }
 
         line("");
-        line("*** R22 UNLOCK: GET_ADVERTISING_NAME -> " +
-                R22_FLAGS.length + " of ~15 real flags - " +
-                "STRAP MUST BE WORN ***");
+        line("*** OFFICIAL FLAG BURST: GET_ADVERTISING_NAME -> all " +
+                R22_FLAGS.length + " feature flags at the official " +
+                "app's own values - STRAP MUST BE WORN ***");
         logRaw("R22_UNLOCK_BEGIN flags=" + R22_FLAGS.length);
 
         sendGetAdvertisingName();
@@ -7338,6 +7338,20 @@ public class MainActivity extends Activity {
             mainH.postDelayed(
                     () -> sendR22Flag(flag, r22ValueFor(flag)), delayMs);
         }
+
+        /*
+         * Read-back (26 Sep): the strap's own 117/118 walk confirmed
+         * these 16 names ARE its complete feature-flag list on
+         * 50.40.1.0, in this exact order - so this burst is the whole
+         * namespace, and restores every flag to the official app's
+         * value. disable_pip_r26_packets had persisted at '0' (our
+         * own pre-correction write on 20 Sep) instead of the official
+         * '2'; read it back after the burst to confirm the restore.
+         */
+        long afterBurstMs = 80L * (R22_FLAGS.length + 2) + 400;
+        mainH.postDelayed(
+                () -> getFeatureFlagValue("disable_pip_r26_packets"),
+                afterBurstMs);
     }
 
     /*
@@ -9834,8 +9848,8 @@ public class MainActivity extends Activity {
          * NOOP's own docs.
          */
         Button r22Btn = btn(
-                "SEND R22 UNLOCK (10 flags, corrected frames - " +
-                        "STRAP MUST BE WORN)",
+                "SEND OFFICIAL 16-FLAG BURST (restores all feature " +
+                        "flags to the official app's values - WEAR STRAP)",
                 v -> sendR22UnlockPartial());
         addToCurrentSection(r22Btn);
 
