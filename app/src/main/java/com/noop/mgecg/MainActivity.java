@@ -1073,7 +1073,94 @@ public class MainActivity extends Activity {
      * ------------------------------------------------------------------
      */
 
+    /*
+     * ------------------------------------------------------------------
+     * FRAME REASSEMBLY on 0005 (26 Sep). A frame larger than one BLE
+     * notification (MTU 247 -> 244-byte payloads) arrives in pieces, and
+     * only the first piece starts with the AA 01 header. Our router
+     * only acted on header-bearing notifications, so every R16 record
+     * (1584 bytes = 6 x 244 + 120) lost its last 1340 bytes - the whole
+     * sample area. Verified offline: rebuilding the 26 R16 records from
+     * the logged pieces of the 26 Sep pull gave 26/26 valid CRC32.
+     *
+     * A new frame is only recognised if its CRC16 header checks out, so
+     * a continuation piece that happens to start with AA 01 can't be
+     * mistaken for one. Limited to 0005 (the history/data channel) so
+     * the 0007 Labrador path keeps its own handling.
+     * ------------------------------------------------------------------
+     */
+    private java.io.ByteArrayOutputStream reasmBuf = null;
+    private int reasmExpected = 0;
+    private int reasmFragments = 0;
+
+    private boolean frameHeaderCrcOk(byte[] v) {
+        if (v.length < 8) return false;
+        int h = Protocol.crc16Modbus(v, 0, 6);
+        return (v[6] & 0xff) == (h & 0xff) &&
+                (v[7] & 0xff) == ((h >>> 8) & 0xff);
+    }
+
+    /** A complete frame, or null while a larger one is still arriving. */
+    private byte[] reassembleData0005(byte[] value) {
+
+        boolean headerHere = value.length >= 8 &&
+                (value[0] & 0xff) == 0xAA && (value[1] & 0xff) == 0x01 &&
+                frameHeaderCrcOk(value);
+
+        if (reasmBuf != null) {
+            if (headerHere) {
+                logRaw("REASM_ABANDONED expected=" + reasmExpected +
+                        " got=" + reasmBuf.size() +
+                        " fragments=" + reasmFragments);
+                reasmBuf = null;
+                // fall through: treat this piece as a new frame
+            } else {
+                reasmBuf.write(value, 0, value.length);
+                reasmFragments++;
+                if (reasmBuf.size() < reasmExpected) {
+                    return null;
+                }
+                byte[] all = reasmBuf.toByteArray();
+                reasmBuf = null;
+                if (all.length > reasmExpected) {
+                    logRaw("REASM_OVERFLOW extra=" +
+                            (all.length - reasmExpected));
+                }
+                return java.util.Arrays.copyOf(all, reasmExpected);
+            }
+        }
+
+        if (headerHere) {
+            int total = ((value[2] & 0xff) | ((value[3] & 0xff) << 8)) + 8;
+            if (total > value.length && total <= 8192) {
+                reasmBuf = new java.io.ByteArrayOutputStream(total);
+                reasmBuf.write(value, 0, value.length);
+                reasmExpected = total;
+                reasmFragments = 1;
+                return null;
+            }
+        }
+        return value;
+    }
+
     private void handleRx(
+            BluetoothGattCharacteristic c,
+            byte[] value) {
+
+        if (value == null) {
+            return;
+        }
+        if ("0005".equals(shortUuid(c.getUuid()))) {
+            byte[] full = reassembleData0005(value);
+            if (full == null) {
+                return; // piece of a larger frame, held until complete
+            }
+            value = full;
+        }
+        handleRxFrame(c, value);
+    }
+
+    private void handleRxFrame(
             BluetoothGattCharacteristic c,
             byte[] value) {
 
@@ -1197,8 +1284,22 @@ public class MainActivity extends Activity {
                 extractCursorFromDebugText(value);
             } else if (envType == 43) {
                 handleRealtimeEcgFrame(uuid, value);
-            } else if (envType == 0x31 && envCmd == 0x02) {
-                decodeStatusFrame31(value);
+            } else if (envType == 0x31) {
+                /*
+                 * FIXED (26 Sep): these "STATUS31" frames are the strap's
+                 * history chunk markers - METADATA, packet type 49 on
+                 * this firmware (NOOP maps 49 and 56 both to METADATA).
+                 * byte10: 1 HISTORY_START, 2 HISTORY_END, 3 COMPLETE.
+                 * Seen on the 26 Sep pull: one START at the beginning,
+                 * then the same END (trim 11577, end_data
+                 * 39 2D 00 00 10 00 00 00) repeated, unacked.
+                 */
+                if (envCmd == 0x02) {
+                    decodeStatusFrame31(value);
+                }
+                if (envCmd >= 1 && envCmd <= 3) {
+                    handlePuffinMetadata(value);
+                }
             } else if (envType == 0x24 &&
                     envCmd >= 115 && envCmd <= 118) {
                 handleKeyWalkReply(envCmd, value);
@@ -5655,6 +5756,8 @@ public class MainActivity extends Activity {
     private int historyStartsSeen = 0;
     private int historyAutoContinues = 0;
     private long lastAckedTrim = -1L;
+    private String lastAckedEndHex = "";
+    private long lastAckedEndMs = 0L;
     private static final int MAX_HISTORY_AUTO_CONTINUES = 30;
     private static final long BLIND_ACK_FALLBACK_AFTER_MS = 15000L;
     private final java.util.Map<Integer, Integer> histTypeCensus =
@@ -5691,7 +5794,7 @@ public class MainActivity extends Activity {
         int metaType = v.length > 10 ? (v[10] & 0xff) : -1;
         puffinMetadataSeenThisPull = true;
         pullIdleCycles = 0;
-        bumpHistCensus(56);
+        bumpHistCensus(v[8] & 0xff);
 
         // keep the chunk markers in the bin for offline analysis
         saveHistoricalFragment(v);
@@ -5740,6 +5843,16 @@ public class MainActivity extends Activity {
                 logRaw("HISTORY_END_ACK_HELD reason=sync_failed");
                 return;
             }
+
+            String endHex = Protocol.hex(endData);
+            long nowMs = System.currentTimeMillis();
+            if (endHex.equals(lastAckedEndHex) &&
+                    nowMs - lastAckedEndMs < 1500) {
+                logRaw("HISTORY_END_DUPLICATE_SKIPPED trim=" + trim);
+                return;
+            }
+            lastAckedEndHex = endHex;
+            lastAckedEndMs = nowMs;
 
             realEndAckMode = true;
 
@@ -6826,7 +6939,7 @@ public class MainActivity extends Activity {
         if (!histTypeCensus.isEmpty()) {
             line("*** THIS PULL, by hist_version / type: " + histTypeCensus +
                     "  (18=R18 124B, 22=R22 188B, 26=R26 88B, 16=R16 ECG " +
-                    "1584B, 52=IMU stream, 56=chunk metadata) - HISTORY_END " +
+                    "1584B, 52=IMU stream, 49/56=chunk metadata) - HISTORY_END " +
                     "acks sent: " + historyEndsAcked + " ***");
             logRaw("HIST_CENSUS " + histTypeCensus +
                     " endsAcked=" + historyEndsAcked +
@@ -6943,7 +7056,10 @@ public class MainActivity extends Activity {
         historyStartsSeen = 0;
         historyAutoContinues = 0;
         lastAckedTrim = -1L;
+        lastAckedEndHex = "";
+        lastAckedEndMs = 0L;
         histTypeCensus.clear();
+        reasmBuf = null;
 
         line("");
         line("*** REAL HISTORICAL PULL: SET_CLOCK -> GET_CLOCK -> " +
