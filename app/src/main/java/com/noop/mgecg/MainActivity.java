@@ -3301,6 +3301,173 @@ public class MainActivity extends Activity {
             "enable_raw_data_w_ecg",
     };
 
+    /*
+     * ------------------------------------------------------------------
+     * PASSIVE ADVERTISEMENT SCAN - read-only, never connects, never
+     * writes. Logs every advertisement from this strap for 20s, decoded
+     * into its AD structures (manufacturer data, service data, UUIDs,
+     * name). Distinct payloads are logged once each with a timestamp,
+     * so a field that changes like a live heart rate would show up as a
+     * sequence of new payloads.
+     *
+     * Motivation: the strap's own device-config list includes
+     * whoop_live_hr_in_adv_ind_pkt (stored '0' = unset; the firmware's
+     * default for unset is not documented for this key). Whether heart
+     * rate is already in the advertisement can be answered by looking,
+     * without writing the key. This app had never logged the raw
+     * advertisement before.
+     *
+     * A connected strap may stop advertising - run this BEFORE
+     * SCAN/CONNECT for a clean read.
+     * ------------------------------------------------------------------
+     */
+    private static final String KNOWN_STRAP_ADDR = "F2:CF:4E:DD:32:47";
+    private ScanCallback advertScanCallback;
+    private final java.util.Set<String> advertPayloadsSeen =
+            new java.util.HashSet<>();
+    private int advertTotal = 0;
+
+    private boolean isOurStrap(ScanResult r) {
+        BluetoothDevice d = r.getDevice();
+        String addr = d.getAddress();
+        if (KNOWN_STRAP_ADDR.equalsIgnoreCase(addr)) return true;
+        if (gatt != null && gatt.getDevice() != null &&
+                addr.equalsIgnoreCase(gatt.getDevice().getAddress()))
+            return true;
+        String name = null;
+        try { name = d.getName(); } catch (SecurityException ignored) { }
+        if (name == null && r.getScanRecord() != null)
+            name = r.getScanRecord().getDeviceName();
+        return name != null && name.toUpperCase(java.util.Locale.US)
+                .contains("WHOOP");
+    }
+
+    private String decodeAdStructures(byte[] raw) {
+        StringBuilder out = new StringBuilder();
+        int i = 0;
+        while (i < raw.length) {
+            int len = raw[i] & 0xff;
+            if (len == 0 || i + len >= raw.length + 1) break;
+            if (i + 1 + len > raw.length) break;
+            int type = raw[i + 1] & 0xff;
+            byte[] data = java.util.Arrays.copyOfRange(raw, i + 2, i + 1 + len);
+            String what;
+            switch (type) {
+                case 0x01: what = "FLAGS"; break;
+                case 0x02: case 0x03: what = "UUID16_LIST"; break;
+                case 0x06: case 0x07: what = "UUID128_LIST"; break;
+                case 0x08: case 0x09: what = "NAME"; break;
+                case 0x0A: what = "TX_POWER"; break;
+                case 0x16: what = "SERVICE_DATA_16"; break;
+                case 0x21: what = "SERVICE_DATA_128"; break;
+                case 0xFF: what = "MANUFACTURER"; break;
+                default: what = String.format("TYPE_0x%02X", type);
+            }
+            out.append(" [").append(what).append(" ");
+            if (type == 0x08 || type == 0x09) {
+                out.append('"').append(new String(data,
+                        java.nio.charset.StandardCharsets.US_ASCII))
+                        .append('"');
+            } else if (type == 0xFF && data.length >= 2) {
+                int company = (data[0] & 0xff) | ((data[1] & 0xff) << 8);
+                out.append(String.format("company=0x%04X data=", company))
+                        .append(Protocol.hex(java.util.Arrays.copyOfRange(
+                                data, 2, data.length)));
+            } else if (type == 0x16 && data.length >= 2) {
+                int uuid = (data[0] & 0xff) | ((data[1] & 0xff) << 8);
+                out.append(String.format("uuid=0x%04X data=", uuid))
+                        .append(Protocol.hex(java.util.Arrays.copyOfRange(
+                                data, 2, data.length)));
+            } else {
+                out.append(Protocol.hex(data));
+            }
+            out.append("]");
+            i += 1 + len;
+        }
+        return out.toString();
+    }
+
+    private void logAdvertisement(ScanResult r, String source) {
+        ScanRecord rec = r.getScanRecord();
+        if (rec == null || rec.getBytes() == null) return;
+        byte[] raw = rec.getBytes();
+        int end = raw.length;
+        while (end > 0 && raw[end - 1] == 0) end--;
+        byte[] trimmed = java.util.Arrays.copyOf(raw, end);
+        String hex = Protocol.hex(trimmed);
+        advertTotal++;
+        if (!advertPayloadsSeen.add(hex)) return;
+        String decoded = decodeAdStructures(trimmed);
+        line("ADVERT #" + advertPayloadsSeen.size() + " (new payload, " +
+                advertTotal + " adverts so far) rssi=" + r.getRssi() +
+                decoded);
+        logRaw("ADVERT source=" + source +
+                " distinct=" + advertPayloadsSeen.size() +
+                " total=" + advertTotal +
+                " rssi=" + r.getRssi() +
+                " decoded=" + decoded +
+                " raw=" + hex);
+    }
+
+    private void runPassiveAdvertScan() {
+
+        if (adapter == null) {
+            line("Bluetooth adapter unavailable");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 31 &&
+                checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+                        != PackageManager.PERMISSION_GRANTED) {
+            requestPerms();
+            return;
+        }
+        final BluetoothLeScanner ls = adapter.getBluetoothLeScanner();
+        if (ls == null) {
+            line("BLE scanner unavailable - is Bluetooth on?");
+            return;
+        }
+        if (advertScanCallback != null) {
+            line("Advert scan already running");
+            return;
+        }
+
+        advertPayloadsSeen.clear();
+        advertTotal = 0;
+
+        line("");
+        line("*** PASSIVE ADVERT SCAN - 20s, read-only, no connect ***");
+        if (gatt != null) {
+            line("NOTE: currently connected - a connected strap may not " +
+                    "advertise. If nothing appears, disconnect and rerun.");
+        }
+        logRaw("ADVERT_SCAN_BEGIN connected=" + (gatt != null));
+
+        advertScanCallback = new ScanCallback() {
+            @Override
+            public void onScanResult(int type, ScanResult r) {
+                if (isOurStrap(r)) {
+                    mainH.post(() -> logAdvertisement(r, "PASSIVE_SCAN"));
+                }
+            }
+        };
+
+        ScanSettings ss = new ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .build();
+        ls.startScan(new ArrayList<>(), ss, advertScanCallback);
+
+        mainH.postDelayed(() -> {
+            try { ls.stopScan(advertScanCallback); } catch (Exception ignored) { }
+            advertScanCallback = null;
+            line("*** ADVERT SCAN FINISHED - " + advertTotal +
+                    " adverts from this strap, " + advertPayloadsSeen.size() +
+                    " distinct payload(s). Several distinct payloads = " +
+                    "something in the advertisement is changing. ***");
+            logRaw("ADVERT_SCAN_SUMMARY total=" + advertTotal +
+                    " distinct=" + advertPayloadsSeen.size());
+        }, 20000);
+    }
+
     private void readAllDeviceConfigValues() {
 
         if (gatt == null || cmdWrite == null) {
@@ -9974,6 +10141,12 @@ public class MainActivity extends Activity {
                 v -> readAllDeviceConfigValues());
         addToCurrentSection(readAllDeviceConfigBtn);
 
+        Button passiveAdvertBtn = btn(
+                "PASSIVE ADVERT SCAN (20s, read-only, no connect - " +
+                        "run BEFORE connecting)",
+                v -> runPassiveAdvertScan());
+        addToCurrentSection(passiveAdvertBtn);
+
         Button keyWalksWithPreconditionBtn = btn(
                 "KEY-WALKS WITH REAL APP PRECONDITION (DISABLE_ALARM+" +
                         "HR first, then BOTH walks - never combined " +
@@ -10549,6 +10722,8 @@ public class MainActivity extends Activity {
                     " addr=" + d.getAddress() +
                     " rssi=" + r.getRssi() +
                     " bondStateAtScan=" + d.getBondState());
+
+            logAdvertisement(r, "MAIN_SCAN");
 
             updateStatus("● FOUND " + d.getName());
 
