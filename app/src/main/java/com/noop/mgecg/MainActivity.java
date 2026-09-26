@@ -3281,6 +3281,47 @@ public class MainActivity extends Activity {
                 " stop=\"" + reason + "\" keys=" + all);
     }
 
+    /*
+     * The strap's complete device-config key list on 50.40.1.0, as it
+     * reported it itself via the 115/116 walk (26 Sep): 7 keys, ended
+     * on its own 0xFF marker. READ-ONLY: GET_DEVICE_CONFIG_VALUE (121)
+     * for each, nothing written. Device-config values persist on the
+     * strap, and several of these (cont_collection_mode,
+     * max_collection_backlog) could plausibly change how it collects
+     * or stores data - so current values are documented first, before
+     * any write is ever considered.
+     */
+    private static final String[] DEVICE_CONFIG_KEYS_50_40_1_0 = {
+            "sigproc_wear_detect",
+            "enable_rfid",
+            "max_collection_backlog",
+            "cont_collection_mode",
+            "whoop_live_hr_in_adv_ind_pkt",
+            "whoop_live_2_hrm_devices",
+            "enable_raw_data_w_ecg",
+    };
+
+    private void readAllDeviceConfigValues() {
+
+        if (gatt == null || cmdWrite == null) {
+            line("NOT CONNECTED - cannot run this probe");
+            return;
+        }
+
+        line("");
+        line("*** READ ALL " + DEVICE_CONFIG_KEYS_50_40_1_0.length +
+                " DEVICE-CONFIG VALUES (121, read-only - nothing " +
+                "written) ***");
+        logRaw("READ_ALL_DEVICE_CONFIG_BEGIN keys=" +
+                DEVICE_CONFIG_KEYS_50_40_1_0.length);
+
+        for (int i = 0; i < DEVICE_CONFIG_KEYS_50_40_1_0.length; i++) {
+            final String key = DEVICE_CONFIG_KEYS_50_40_1_0[i];
+            mainH.postDelayed(() -> getDeviceConfigValue(key),
+                    700L * i);
+        }
+    }
+
     private void runR24R25R26ViaConfirmedMechanism() {
 
         if (gatt == null || cmdWrite == null) {
@@ -9926,6 +9967,12 @@ public class MainActivity extends Activity {
                 "LIST STRAP'S DEVICE-CONFIG KEYS (115/116, read-only)",
                 v -> runStrapKeyList(false));
         addToCurrentSection(deviceConfigWalkBtn);
+
+        Button readAllDeviceConfigBtn = btn(
+                "READ ALL 7 DEVICE-CONFIG VALUES (121, read-only - " +
+                        "nothing written)",
+                v -> readAllDeviceConfigValues());
+        addToCurrentSection(readAllDeviceConfigBtn);
 
         Button keyWalksWithPreconditionBtn = btn(
                 "KEY-WALKS WITH REAL APP PRECONDITION (DISABLE_ALARM+" +
