@@ -3620,6 +3620,130 @@ public class MainActivity extends Activity {
         }, 20000);
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * SLEEP (27 Sep). Every R18 record received during a pull (1/s: heart
+     * rate @22, accelerometer floats @45/49/53, unix @15) is kept in memory;
+     * when the pull finishes, SleepAnalyzer runs on the latest night
+     * (20:00-12:00 local) in the background, and the result is saved so the
+     * SLEEP screen shows it after a restart. Rules and validation: see
+     * SleepAnalyzer. Records dated outside 2023-2031 (e.g. the old 2067
+     * clock bug) are ignored.
+     * ------------------------------------------------------------------
+     */
+    private long[] sleepUnix = new long[4096];
+    private int[] sleepHr = new int[4096];
+    private float[] sleepMag = new float[4096];
+    private int sleepN = 0;
+    private FrameLayout sleepScreenContainer;
+    private TextView sleepResultText;
+
+    private void captureSleepSample(byte[] value, int hr, float ax, float ay, float az) {
+        if (value.length < 19) return;
+        long unix = u32leAt(value, 15);
+        if (unix < 1672531200L || unix > 1924992000L) return;
+        synchronized (this) {
+            if (sleepN == sleepUnix.length) {
+                int cap = sleepUnix.length * 2;
+                sleepUnix = java.util.Arrays.copyOf(sleepUnix, cap);
+                sleepHr = java.util.Arrays.copyOf(sleepHr, cap);
+                sleepMag = java.util.Arrays.copyOf(sleepMag, cap);
+            }
+            sleepUnix[sleepN] = unix;
+            sleepHr[sleepN] = hr;
+            sleepMag[sleepN] = (float) Math.sqrt(ax * ax + ay * ay + az * az);
+            sleepN++;
+        }
+    }
+
+    private void runSleepAnalysisAfterPull() {
+        final long[] u; final int[] h; final float[] m; final int n;
+        synchronized (this) {
+            n = sleepN;
+            if (n < 600) {
+                logRaw("SLEEP_ANALYSIS skipped r18Seconds=" + n);
+                return;
+            }
+            u = java.util.Arrays.copyOf(sleepUnix, n);
+            h = java.util.Arrays.copyOf(sleepHr, n);
+            m = java.util.Arrays.copyOf(sleepMag, n);
+        }
+        new Thread(() -> {
+            SleepAnalyzer.Result r = SleepAnalyzer.analyzeLatestNight(
+                    u, h, m, n, java.util.TimeZone.getDefault());
+            logRaw(r.toLog());
+            final String html = r.toHtml();
+            if (r.ok) {
+                getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit()
+                        .putString("sleep_last_html", html).apply();
+            }
+            runOnUiThread(() -> {
+                line(r.ok ? "*** SLEEP: " + r.clock(r.onsetMin) + " -> " +
+                        r.clock(r.wakeMin) + ", asleep ~" + (r.asleepMin / 60) + "h" +
+                        String.format(Locale.UK, "%02d", r.asleepMin % 60) +
+                        " - open the SLEEP screen for detail ***"
+                        : "(sleep: " + r.reason + ")");
+                if (sleepResultText != null && r.ok) {
+                    sleepResultText.setText(android.text.Html.fromHtml(
+                            html, android.text.Html.FROM_HTML_MODE_LEGACY));
+                }
+            });
+        }, "sleep-analysis").start();
+    }
+
+    private FrameLayout buildSleepScreen() {
+        FrameLayout container = new FrameLayout(this);
+        container.setBackgroundColor(0xFF0A0E14);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(28, 40, 28, 28);
+
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+        Button backBtn = new Button(this);
+        backBtn.setText("< BACK");
+        backBtn.setTextSize(13);
+        backBtn.setBackgroundColor(0xFF1A2230);
+        backBtn.setTextColor(0xFFB8C4D9);
+        backBtn.setOnClickListener(v -> sleepScreenContainer.setVisibility(View.GONE));
+        topRow.addView(backBtn, new LinearLayout.LayoutParams(-2, -2));
+        TextView heading = new TextView(this);
+        heading.setText("  Sleep");
+        heading.setTextSize(22);
+        heading.setTextColor(0xFFEAF2FF);
+        heading.setTypeface(null, android.graphics.Typeface.BOLD);
+        topRow.addView(heading, new LinearLayout.LayoutParams(0, -2, 1f));
+        col.addView(topRow, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView how = new TextView(this);
+        how.setText("Wear the strap overnight, then run REAL HISTORICAL PULL in the " +
+                "morning. The latest night is analysed automatically when the pull " +
+                "finishes.");
+        how.setTextSize(13);
+        how.setTextColor(0xFF8FA1BD);
+        LinearLayout.LayoutParams howLp = new LinearLayout.LayoutParams(-1, -2);
+        howLp.topMargin = 16;
+        col.addView(how, howLp);
+
+        sleepResultText = new TextView(this);
+        sleepResultText.setTextSize(15);
+        sleepResultText.setTextColor(0xFFEAF2FF);
+        sleepResultText.setLineSpacing(6, 1f);
+        String saved = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE)
+                .getString("sleep_last_html", null);
+        sleepResultText.setText(saved == null ? "No night analysed yet." :
+                android.text.Html.fromHtml(saved, android.text.Html.FROM_HTML_MODE_LEGACY));
+        LinearLayout.LayoutParams resLp = new LinearLayout.LayoutParams(-1, -2);
+        resLp.topMargin = 28;
+        col.addView(sleepResultText, resLp);
+
+        ScrollView scroller = new ScrollView(this);
+        scroller.addView(col);
+        container.addView(scroller, new FrameLayout.LayoutParams(-1, -1));
+        return container;
+    }
+
     private void readAllDeviceConfigValues() {
 
         if (gatt == null || cmdWrite == null) {
@@ -6374,6 +6498,7 @@ public class MainActivity extends Activity {
                 accelX * accelX + accelY * accelY + accelZ * accelZ);
 
         int heartRate = value[22] & 0xff;
+        captureSleepSample(value, heartRate, accelX, accelY, accelZ);
 
         /*
          * CONFIRMED MEANING - this was "unidentified field113", now
@@ -6988,6 +7113,8 @@ public class MainActivity extends Activity {
      */
     private void recordPullOutcomeAndSummarize() {
 
+        runSleepAnalysisAfterPull();
+
         // every pull end path comes through here: release keep-screen-on
         // unless the ECG screen still needs it
         runOnUiThread(() -> {
@@ -7122,6 +7249,7 @@ public class MainActivity extends Activity {
         lastAckedEndMs = 0L;
         histTypeCensus.clear();
         reasmBuf = null;
+        synchronized (this) { sleepN = 0; }
 
         line("");
         line("*** REAL HISTORICAL PULL: SET_CLOCK -> GET_CLOCK -> " +
@@ -8175,6 +8303,12 @@ public class MainActivity extends Activity {
             ecgUiHandler.post(() -> feedEcgFrameStatus(
                     qualityForUi, progressForUi, classifierStateForUi,
                     declaredCountForUi));
+            final int strapResult = v[23] & 0xff;
+            final int strapMask = v[26] & 0xff;
+            final int strapHr = v[27] & 0xff;
+            final int strapHrv = (v[29] & 0xff) | ((v[30] & 0xff) << 8);
+            ecgUiHandler.post(() -> feedEcgStrapVerdict(
+                    classifierStateForUi, strapResult, strapMask, strapHr, strapHrv));
         }
 
         int[] samples = new int[usableCount];
@@ -9392,6 +9526,13 @@ public class MainActivity extends Activity {
         col.addView(ecgStatusText,
                 new LinearLayout.LayoutParams(-1, -2));
 
+        ecgStrapVerdictText = new TextView(this);
+        ecgStrapVerdictText.setTextSize(13);
+        ecgStrapVerdictText.setTextColor(0xFFB8C4D9);
+        LinearLayout.LayoutParams strapLp = new LinearLayout.LayoutParams(-1, -2);
+        strapLp.topMargin = 8;
+        col.addView(ecgStrapVerdictText, strapLp);
+
         Space sp2 = new Space(this);
         col.addView(sp2, new LinearLayout.LayoutParams(-1, 18));
 
@@ -9577,6 +9718,9 @@ public class MainActivity extends Activity {
         ecgLiveBeatIntervalsMs.clear();
         ecgFullSessionIntervalsMs.clear();
         ecgFrameArrivalLog.clear();
+        ecgStrapState = 0; ecgStrapResult = 0; ecgStrapMask = 0;
+        ecgStrapHr = 0; ecgStrapHrv = -1;
+        if (ecgStrapVerdictText != null) ecgStrapVerdictText.setText("");
         ecgRhythmResultText.setText("");
         ecgLastPeakSampleIndex = -1;
         ecgCurrentQualityRunFrames = 0;
@@ -9853,125 +9997,75 @@ public class MainActivity extends Activity {
         }
         double pOver50 = 100.0 * over50 / diffs.length;
 
-        // Plain-language classification, deliberately coarse and
-        // descriptive rather than a precise clinical threshold - the
-        // cut points below are a reasonable personal-project reading
-        // of the literature's general pattern (a Poincare plot that's
-        // notably rounder / less cigar-shaped, and a higher share of
-        // large successive differences, is the pattern associated with
-        // irregular rhythms including AFib), not a validated cutoff.
-        String label;
-        String color;
-        if (sd1Sd2Ratio < 0.35 && pOver50 < 15) {
-            label = "Regular";
-            color = "#39FF6A";
-        } else if (sd1Sd2Ratio < 0.6 && pOver50 < 35) {
-            label = "Some irregularity";
-            color = "#FFC947";
-        } else {
-            label = "Notably irregular";
-            color = "#FF5555";
-        }
-
         /*
-         * SHANNON ENTROPY - a second, independent irregularity
-         * measure, using the actual technique behind Apple Watch's
-         * own published AFib method (the Apple Heart Study
-         * methodology bins R-R intervals and measures how spread out/
-         * unpredictable that distribution is), rather than continuing
-         * to rely on Poincare SD1/SD2 alone. Two independent methods
-         * agreeing is a meaningfully stronger signal than either one
-         * alone - the same cross-validation principle already used
-         * for the heart-rate figure itself earlier in this project.
-         *
-         * 50ms bins, matching pNN50's own granularity. Entropy
-         * normalized to 0-1 by dividing by log2(bin count), so the
-         * result doesn't depend on how many bins this particular
-         * session's range happened to produce.
+         * PUBLISHED AF SCREEN (27 Sep) - replaces this project's earlier
+         * home-made Poincare/entropy labels and thresholds. See AfScreen for
+         * the method (Dash et al. 2009), thresholds and what was checked. It
+         * needs a 128-beat window: on 20-37 beat windows this project's normal
+         * sessions tripped the entropy threshold almost every time, and one
+         * bad interval pushed nRMSSD past 0.1. SD1/SD2/pNN50 stay as
+         * descriptive numbers only. (The earlier comment claiming Shannon
+         * binning was "Apple's published AFib method" was wrong and is gone.)
          */
-        int minRr = rr.get(0), maxRr = rr.get(0);
-        for (int v : rr) {
-            if (v < minRr) minRr = v;
-            if (v > maxRr) maxRr = v;
-        }
-        int binWidthMs = 50;
-        int numBins = Math.max(1, (maxRr - minRr) / binWidthMs + 1);
-        int[] bins = new int[numBins];
-        for (int v : rr) {
-            int idx = (v - minRr) / binWidthMs;
-            if (idx >= numBins) idx = numBins - 1;
-            bins[idx]++;
-        }
-
-        double shannonEntropy = 0;
-        for (int count : bins) {
-            if (count == 0) continue;
-            double p = count / (double) n;
-            shannonEntropy -= p * (Math.log(p) / Math.log(2));
-        }
-        double maxPossibleEntropy = numBins > 1 ?
-                (Math.log(numBins) / Math.log(2)) : 1;
-        double normalizedEntropy = maxPossibleEntropy > 0 ?
-                shannonEntropy / maxPossibleEntropy : 0;
-
-        // same three-band scheme as the Poincare result, for a
-        // directly comparable label - reasoned bands, not a
-        // validated clinical cutoff, same caveat as above
-        String entropyLabel;
-        if (normalizedEntropy < 0.5) {
-            entropyLabel = "Regular";
-        } else if (normalizedEntropy < 0.75) {
-            entropyLabel = "Some irregularity";
+        String dashHtml;
+        String dashLog;
+        if (n >= AfScreen.WINDOW) {
+            double[] w = new double[AfScreen.WINDOW];
+            for (int i = 0; i < AfScreen.WINDOW; i++) w[i] = rr.get(n - AfScreen.WINDOW + i);
+            double[] d = AfScreen.dash(w);
+            boolean af = d[6] > 0.5;
+            dashHtml = String.format(Locale.US,
+                    "<b><font color='%s'>Published AF screen: %s</font></b><br>" +
+                            "<small>Dash et al. 2009, last 128 clean beats. An AF-like " +
+                            "pattern needs all three:<br>" +
+                            "&nbsp;nRMSSD %.3f (AF-like above 0.100) %s<br>" +
+                            "&nbsp;Shannon entropy %.2f (AF-like above 0.70) %s<br>" +
+                            "&nbsp;turning points %d (random-like %.0f &plusmn; %.0f) %s</small>",
+                    af ? "#FF5555" : "#39FF6A",
+                    af ? "AF-like pattern" : "no AF-like pattern",
+                    d[0], d[0] > 0.1 ? "&#10003;" : "&#10007;",
+                    d[1], d[1] > 0.7 ? "&#10003;" : "&#10007;",
+                    (int) d[2], d[3], 1.96 * d[4], d[5] > 0.5 ? "&#10003;" : "&#10007;");
+            dashLog = String.format(Locale.US,
+                    " dash_nrmssd=%.4f dash_she=%.3f dash_tp=%d dash_tpRandom=%b dash_afLike=%b",
+                    d[0], d[1], (int) d[2], d[5] > 0.5, af);
         } else {
-            entropyLabel = "Notably irregular";
+            dashHtml = String.format(Locale.US,
+                    "<b>Published AF screen: not run</b><br><small>It needs 128 clean " +
+                            "beats (about %d min of steady hold at your heart rate); this " +
+                            "session had %d. Shorter windows gave false alarms on normal " +
+                            "rhythm in testing.</small>",
+                    Math.max(2, (int) Math.ceil(AfScreen.WINDOW * meanRr / 60000.0) + 1), n);
+            dashLog = " dash=not_run beats=" + n;
         }
 
-        boolean methodsAgree = entropyLabel.equals(label);
+        int early = AfScreen.earlyBeats(rawRr);
 
         String result = String.format(Locale.US,
-                "<b><font color='%s'>%s</font></b><br>" +
-                        "%d clean beats analysed (%d set aside as " +
-                        "likely detector errors) &middot; SD1/SD2 " +
-                        "ratio %.2f &middot; %.0f%% of beat-to-beat " +
-                        "changes over 50ms<br>" +
-                        "<small>A Poincar\u00e9-plot read of beat " +
-                        "timing regularity - the same general " +
-                        "technique behind Apple Watch's own AFib " +
-                        "feature, but not clinically validated here. " +
-                        "\"Notably irregular\" describes the pattern " +
-                        "that can occur with AFib among other causes " +
-                        "(including motion, poor contact, or normal " +
-                        "sinus arrhythmia) - it is not a diagnosis." +
-                        "</small><br><br>" +
-                        "<b>Shannon entropy (independent check): %s</b> " +
-                        "(normalised %.2f)<br>" +
-                        "<small>Bins beat-to-beat timing and measures " +
-                        "how spread out the distribution is - the " +
-                        "actual method behind Apple's own published " +
-                        "AFib approach. %s</small>",
-                color, label, n, excluded, sd1Sd2Ratio, pOver50,
-                entropyLabel, normalizedEntropy,
-                methodsAgree ?
-                        "Agrees with the Poincar\u00e9 result above." :
-                        "Disagrees with the Poincar\u00e9 result above " +
-                                "- worth treating this session's " +
-                                "reading with more caution than one " +
-                                "where both methods agree.");
+                "%s<br><br>" +
+                        "<b>Beats:</b> %d clean, %d set aside as likely detector errors, " +
+                        "%d early beat(s)<br>" +
+                        "<small>Descriptive only: SD1 %.0f ms, SD2 %.0f ms, %.0f%% of " +
+                        "beat-to-beat changes over 50 ms</small><br><br>" +
+                        "%s<br><br>" +
+                        "<small>Not a diagnosis. An AF-like pattern can also come from poor " +
+                        "contact, movement or frequent early beats, and a clean result does " +
+                        "not rule AF out.</small>",
+                dashHtml, n, excluded, early, sd1, sd2, pOver50,
+                describeStrapVerdictHtml());
 
         ecgRhythmResultText.setText(
                 android.text.Html.fromHtml(
                         result, android.text.Html.FROM_HTML_MODE_LEGACY));
 
         logRaw("RHYTHM_ANALYSIS beats=" + n + " excluded=" + excluded +
+                " early=" + early +
                 " sd1=" + String.format(Locale.US, "%.1f", sd1) +
                 " sd2=" + String.format(Locale.US, "%.1f", sd2) +
-                " ratio=" + String.format(Locale.US, "%.3f", sd1Sd2Ratio) +
                 " pOver50=" + String.format(Locale.US, "%.1f", pOver50) +
-                " label=" + label +
-                " shannonEntropy=" + String.format(Locale.US, "%.3f",
-                        normalizedEntropy) +
-                " entropyLabel=" + entropyLabel +
-                " methodsAgree=" + methodsAgree);
+                dashLog +
+                " strapResult=" + ecgStrapResult + " strapHr=" + ecgStrapHr +
+                " strapHrv=" + ecgStrapHrv + " strapMask=" + ecgStrapMask);
     }
 
     /**
@@ -10046,6 +10140,82 @@ public class MainActivity extends Activity {
      */
     private final java.util.List<long[]> ecgFrameArrivalLog =
             new java.util.ArrayList<>();
+
+    /*
+     * ------------------------------------------------------------------
+     * STRAP'S OWN ECG VERDICT (decoded 27 Sep from 24 stored sessions;
+     * the same fields are carried live in R17):
+     *   @24 state   1 analysing -> 2 verdict ready -> 0 after stop
+     *   @23 result  0 until the verdict, then one code:
+     *       1 = readable: @27 = heart rate (within 1 bpm of our own
+     *           measurement in 9/9 sessions), @29-30 = RMSSD in ms
+     *       2 = unreadable: no heart rate; @26 = non-zero reason flags
+     *           (6/6 sessions; OpenStrap names four reasons - low
+     *           amplitude, significant noise, unstable signal, not enough
+     *           data - bit order not confirmed)
+     *       6 = meaning unknown: @27 is 5-14 bpm above the true rate and
+     *           above even the fastest single interval, so it is NOT a heart
+     *           rate here; @29-30 still matches our RMSSD; not explained by
+     *           rhythm, early beats, optical HR or T-wave height
+     *       any other code: never seen in our data - logged prominently
+     *   @29-30 0xFFFF = no value yet
+     * ------------------------------------------------------------------
+     */
+    private TextView ecgStrapVerdictText;
+    private int ecgStrapState = 0, ecgStrapResult = 0, ecgStrapMask = 0;
+    private int ecgStrapHr = 0, ecgStrapHrv = -1;
+
+    private void feedEcgStrapVerdict(int state, int result, int mask, int hr, int hrv) {
+        if (ecgScreenContainer == null || !ecgSessionRunning) return;
+        boolean changed = state != ecgStrapState || result != ecgStrapResult;
+        ecgStrapState = state;
+        if (result != 0) {
+            ecgStrapResult = result;
+            ecgStrapMask = mask;
+            if (hr > 0) ecgStrapHr = hr;
+        }
+        if (hrv != 0xFFFF && hrv > 0) ecgStrapHrv = hrv;
+        if (changed && result != 0) {
+            logRaw("STRAP_VERDICT state=" + state + " result=" + result +
+                    " hr27=" + hr + " hrv=" + hrv + " mask26=" + mask +
+                    (result != 1 && result != 2 && result != 6 ?
+                            " *** NEW CODE - never seen before in this project ***" : ""));
+        }
+        if (ecgStrapVerdictText != null) {
+            ecgStrapVerdictText.setText(android.text.Html.fromHtml(
+                    describeStrapVerdictHtml(), android.text.Html.FROM_HTML_MODE_LEGACY));
+        }
+    }
+
+    private String describeStrapVerdictHtml() {
+        if (ecgStrapResult == 0) {
+            return ecgStrapState == 1 ? "<small>Strap: analysing&hellip;</small>" : "";
+        }
+        String hrv = ecgStrapHrv > 0 ? ", HRV (RMSSD) " + ecgStrapHrv + " ms" : "";
+        switch (ecgStrapResult) {
+            case 1:
+                return "<b>Strap verdict 1: readable</b> &mdash; heart rate " +
+                        (ecgStrapHr > 0 ? ecgStrapHr + " bpm" : "n/a") + hrv +
+                        "<br><small>Code 1 matched our own heart rate within 1 bpm " +
+                        "in 9 of 9 test sessions.</small>";
+            case 2:
+                return String.format(Locale.US,
+                        "<b>Strap verdict 2: unreadable</b> &mdash; reason flags " +
+                                "%d%d%d%d (bits 3..0)<br><small>Hold still, firm contact on " +
+                                "the clasp, and try again.</small>",
+                        (ecgStrapMask >> 3) & 1, (ecgStrapMask >> 2) & 1,
+                        (ecgStrapMask >> 1) & 1, ecgStrapMask & 1);
+            case 6:
+                return "<b>Strap verdict 6: meaning not yet known</b>" + hrv +
+                        "<br><small>In this code the strap's heart-rate field is not " +
+                        "a heart rate (it reads 5&ndash;14 bpm high).</small>";
+            default:
+                return "<b><font color='#FFC947'>Strap verdict " + ecgStrapResult +
+                        ": a code never seen in this project</font></b>" + hrv +
+                        "<br><small>Please keep this session's log &mdash; it may be the " +
+                        "strap's rhythm finding.</small>";
+        }
+    }
 
     private void feedEcgFrameStatus(
             int quality, Integer progress, int classifierState,
@@ -10248,8 +10418,20 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams ecgBtnLp =
                 new LinearLayout.LayoutParams(-1, -2);
         ecgBtnLp.topMargin = 8;
-        ecgBtnLp.bottomMargin = 24;
+        ecgBtnLp.bottomMargin = 12;
         root.addView(openEcgScreenBtn, ecgBtnLp);
+
+        Button openSleepBtn = new Button(this);
+        openSleepBtn.setText("\uD83C\uDF19  SLEEP");
+        openSleepBtn.setTextSize(18);
+        openSleepBtn.setTypeface(null, android.graphics.Typeface.BOLD);
+        openSleepBtn.setBackgroundColor(0xFF7FA7FF);
+        openSleepBtn.setTextColor(0xFF0A0E14);
+        openSleepBtn.setPadding(0, 30, 0, 30);
+        openSleepBtn.setOnClickListener(v -> sleepScreenContainer.setVisibility(View.VISIBLE));
+        LinearLayout.LayoutParams sleepBtnLp = new LinearLayout.LayoutParams(-1, -2);
+        sleepBtnLp.bottomMargin = 24;
+        root.addView(openSleepBtn, sleepBtnLp);
 
         /*
          * Always-visible live readout for the unidentified R22 byte
@@ -11053,6 +11235,11 @@ public class MainActivity extends Activity {
         ecgScreenContainer = buildEcgScreen();
         ecgScreenContainer.setVisibility(View.GONE);
         outer.addView(ecgScreenContainer,
+                new FrameLayout.LayoutParams(-1, -1));
+
+        sleepScreenContainer = buildSleepScreen();
+        sleepScreenContainer.setVisibility(View.GONE);
+        outer.addView(sleepScreenContainer,
                 new FrameLayout.LayoutParams(-1, -1));
 
         setContentView(outer);
