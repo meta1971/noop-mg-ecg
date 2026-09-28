@@ -3698,6 +3698,162 @@ public class MainActivity extends Activity {
         }, "sleep-analysis").start();
     }
 
+    /*
+     * ------------------------------------------------------------------
+     * ECG HISTORY (28 Sep). One entry per ECG-screen session, keyed by its
+     * start time: saved at STOP with the strap's own verdict (category, code,
+     * live/average HR, RMSSD, reason flags) so nothing is lost if the phone
+     * disconnects, then updated in place when the stored 500 Hz analysis
+     * finishes. Kept on the phone (SharedPreferences, JSON), newest 200.
+     * ------------------------------------------------------------------
+     */
+    private static final String ECG_HISTORY_KEY = "ecg_history_json";
+    private FrameLayout ecgHistoryContainer;
+    private TextView ecgHistoryText;
+
+    private synchronized void saveEcgHistoryEntry(EcgR16Analyzer.Result stored) {
+        try {
+            SharedPreferences prefs = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
+            org.json.JSONArray arr = new org.json.JSONArray(prefs.getString(ECG_HISTORY_KEY, "[]"));
+            org.json.JSONObject e = null;
+            int at = -1;
+            for (int i = 0; i < arr.length(); i++) {
+                if (arr.getJSONObject(i).optLong("start") == ecgSessionStartUnix) {
+                    e = arr.getJSONObject(i); at = i; break;
+                }
+            }
+            if (e == null) e = new org.json.JSONObject();
+            e.put("start", ecgSessionStartUnix);
+            e.put("stop", ecgSessionStopUnix);
+            if (ecgStrapResult != 0 || !e.has("code")) {
+                int hrShown = ecgStrapLiveHr > 0 ? ecgStrapLiveHr : ecgStrapHr;
+                e.put("code", ecgStrapResult);
+                e.put("category", ecgStrapResult == 0 ? "No verdict" :
+                        strapCategory(ecgStrapResult, hrShown));
+                e.put("liveHr", ecgStrapLiveHr);
+                e.put("avgHr", ecgStrapHr);
+                e.put("strapHrv", ecgStrapHrv);
+                e.put("mask", ecgStrapMask);
+                e.put("interruptions", ecgRuleInterruptions);
+            }
+            if (stored != null) {
+                org.json.JSONObject r = new org.json.JSONObject();
+                r.put("usableS", stored.usableSeconds);
+                r.put("intervals", stored.intervals);
+                r.put("inconclusive", stored.inconclusive);
+                r.put("noise", stored.noiseFraction);
+                if (!Double.isNaN(stored.hr)) r.put("hr", stored.hr);
+                if (!Double.isNaN(stored.rmssd)) r.put("rmssd", stored.rmssd);
+                r.put("early", stored.early);
+                r.put("screenRun", stored.screenRun);
+                r.put("afLike", stored.afLike);
+                e.put("stored", r);
+            }
+            if (at >= 0) arr.put(at, e); else arr.put(e);
+            while (arr.length() > 200) arr.remove(0);
+            prefs.edit().putString(ECG_HISTORY_KEY, arr.toString()).apply();
+            logRaw("ECG_HISTORY_SAVED start=" + ecgSessionStartUnix +
+                    (stored != null ? " withStoredAnalysis" : " strapVerdictOnly"));
+            runOnUiThread(this::refreshEcgHistoryText);
+        } catch (Exception ex) {
+            logRaw("ECG_HISTORY_SAVE_ERROR " + ex);
+        }
+    }
+
+    private String ecgHistoryHtml() {
+        org.json.JSONArray arr;
+        try {
+            arr = new org.json.JSONArray(getSharedPreferences("labrador_ecg_control", MODE_PRIVATE)
+                    .getString(ECG_HISTORY_KEY, "[]"));
+        } catch (Exception ex) {
+            return "History could not be read.";
+        }
+        if (arr.length() == 0) return "No ECG sessions saved yet.";
+        java.text.SimpleDateFormat df = new java.text.SimpleDateFormat("EEE d MMM, HH:mm", Locale.UK);
+        StringBuilder b = new StringBuilder();
+        for (int i = arr.length() - 1; i >= 0; i--) {
+            org.json.JSONObject e = arr.optJSONObject(i);
+            if (e == null) continue;
+            long st = e.optLong("start"), sp = e.optLong("stop");
+            String cat = e.optString("category", "No verdict");
+            String color = cat.contains("AFib") ? "#FF5555" : cat.equals("Sinus rhythm") ? "#39FF6A" :
+                    cat.equals("Inconclusive") || cat.equals("Unreadable") || cat.equals("No verdict")
+                            ? "#FFC947" : "#7FA7FF";
+            b.append("<b>").append(df.format(new java.util.Date(st * 1000L))).append("</b>");
+            if (sp > st) b.append(" &middot; ").append((sp - st) / 60).append(" min ")
+                    .append(String.format(Locale.UK, "%02d", (sp - st) % 60)).append(" s");
+            b.append("<br>Strap: <font color='").append(color).append("'><b>").append(cat)
+                    .append("</b></font>");
+            int hr = e.optInt("liveHr") > 0 ? e.optInt("liveHr") : e.optInt("avgHr");
+            if (hr > 0 && !cat.equals("Unreadable") && !cat.equals("Inconclusive"))
+                b.append(" &middot; ").append(hr).append(" bpm");
+            int hv = e.optInt("strapHrv", -1);
+            if (hv > 0 && hv != 0xFFFF) b.append(" &middot; HRV ").append(hv).append(" ms");
+            org.json.JSONObject r = e.optJSONObject("stored");
+            if (r == null) {
+                b.append("<br><small>Stored 500 Hz: not analysed</small>");
+            } else if (r.optBoolean("inconclusive")) {
+                b.append("<br><small>Stored 500 Hz: inconclusive (").append(r.optInt("usableS"))
+                        .append(" s usable)</small>");
+            } else if (r.has("hr")) {
+                b.append(String.format(Locale.UK, "<br><small>Stored 500 Hz: HR %.0f &middot; HRV %.0f ms",
+                        r.optDouble("hr"), r.optDouble("rmssd")));
+                if (r.optBoolean("screenRun")) b.append(r.optBoolean("afLike")
+                        ? " &middot; <font color='#FF5555'>AF-like pattern</font>"
+                        : " &middot; no AF-like pattern");
+                b.append("</small>");
+            } else {
+                b.append("<br><small>Stored 500 Hz: not enough usable data</small>");
+            }
+            b.append("<br><br>");
+        }
+        b.append("<small>Strap verdict = the band's own analysis (official mapping, via " +
+                "OpenStrap). Not a diagnosis.</small>");
+        return b.toString();
+    }
+
+    private void refreshEcgHistoryText() {
+        if (ecgHistoryText != null) ecgHistoryText.setText(android.text.Html.fromHtml(
+                ecgHistoryHtml(), android.text.Html.FROM_HTML_MODE_LEGACY));
+    }
+
+    private FrameLayout buildEcgHistoryScreen() {
+        FrameLayout container = new FrameLayout(this);
+        container.setBackgroundColor(0xFF0A0E14);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(28, 40, 28, 28);
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+        Button backBtn = new Button(this);
+        backBtn.setText("< BACK");
+        backBtn.setTextSize(13);
+        backBtn.setBackgroundColor(0xFF1A2230);
+        backBtn.setTextColor(0xFFB8C4D9);
+        backBtn.setOnClickListener(v -> ecgHistoryContainer.setVisibility(View.GONE));
+        topRow.addView(backBtn, new LinearLayout.LayoutParams(-2, -2));
+        TextView heading = new TextView(this);
+        heading.setText("  ECG history");
+        heading.setTextSize(22);
+        heading.setTextColor(0xFFEAF2FF);
+        heading.setTypeface(null, android.graphics.Typeface.BOLD);
+        topRow.addView(heading, new LinearLayout.LayoutParams(0, -2, 1f));
+        col.addView(topRow, new LinearLayout.LayoutParams(-1, -2));
+        ecgHistoryText = new TextView(this);
+        ecgHistoryText.setTextSize(15);
+        ecgHistoryText.setTextColor(0xFFEAF2FF);
+        ecgHistoryText.setLineSpacing(6, 1f);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = 28;
+        col.addView(ecgHistoryText, lp);
+        refreshEcgHistoryText();
+        ScrollView scroller = new ScrollView(this);
+        scroller.addView(col);
+        container.addView(scroller, new FrameLayout.LayoutParams(-1, -1));
+        return container;
+    }
+
     private FrameLayout buildSleepScreen() {
         FrameLayout container = new FrameLayout(this);
         container.setBackgroundColor(0xFF0A0E14);
@@ -9874,6 +10030,7 @@ public class MainActivity extends Activity {
         getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit()
                 .putBoolean("ecg_session_guard", false).apply();
         ecgSessionStopUnix = System.currentTimeMillis() / 1000L;
+        saveEcgHistoryEntry(null);
         scheduleStoredEcgPull();
     }
 
@@ -10469,6 +10626,7 @@ public class MainActivity extends Activity {
         }
         new Thread(() -> {
             EcgR16Analyzer.Result r = EcgR16Analyzer.analyse(mine);
+            saveEcgHistoryEntry(r);
             logRaw(r.toLog());
             final String html = r.toHtml() + (r.recordsIn == 0 ?
                     "<br><small>No stored ECG records were dated inside this session. " +
@@ -10727,8 +10885,23 @@ public class MainActivity extends Activity {
         openSleepBtn.setPadding(0, 30, 0, 30);
         openSleepBtn.setOnClickListener(v -> sleepScreenContainer.setVisibility(View.VISIBLE));
         LinearLayout.LayoutParams sleepBtnLp = new LinearLayout.LayoutParams(-1, -2);
-        sleepBtnLp.bottomMargin = 24;
+        sleepBtnLp.bottomMargin = 12;
         root.addView(openSleepBtn, sleepBtnLp);
+
+        Button openHistoryBtn = new Button(this);
+        openHistoryBtn.setText("\uD83D\uDCCB  ECG HISTORY");
+        openHistoryBtn.setTextSize(18);
+        openHistoryBtn.setTypeface(null, android.graphics.Typeface.BOLD);
+        openHistoryBtn.setBackgroundColor(0xFFB388EB);
+        openHistoryBtn.setTextColor(0xFF0A0E14);
+        openHistoryBtn.setPadding(0, 30, 0, 30);
+        openHistoryBtn.setOnClickListener(v -> {
+            refreshEcgHistoryText();
+            ecgHistoryContainer.setVisibility(View.VISIBLE);
+        });
+        LinearLayout.LayoutParams histBtnLp = new LinearLayout.LayoutParams(-1, -2);
+        histBtnLp.bottomMargin = 24;
+        root.addView(openHistoryBtn, histBtnLp);
 
         /*
          * Always-visible live readout for the unidentified R22 byte
@@ -11531,6 +11704,11 @@ public class MainActivity extends Activity {
         ecgScreenContainer = buildEcgScreen();
         ecgScreenContainer.setVisibility(View.GONE);
         outer.addView(ecgScreenContainer,
+                new FrameLayout.LayoutParams(-1, -1));
+
+        ecgHistoryContainer = buildEcgHistoryScreen();
+        ecgHistoryContainer.setVisibility(View.GONE);
+        outer.addView(ecgHistoryContainer,
                 new FrameLayout.LayoutParams(-1, -1));
 
         sleepScreenContainer = buildSleepScreen();
