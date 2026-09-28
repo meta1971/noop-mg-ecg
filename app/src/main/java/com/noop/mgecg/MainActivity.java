@@ -1707,6 +1707,10 @@ public class MainActivity extends Activity {
                         " resultByte=" + resultCode +
                         " raw=" + Protocol.hex(value));
 
+                if (envCmd == 145 && resultCode == 1) {
+                    mainH.post(this::cleanupLeftoverEcgSessionIfGuarded);
+                }
+
             } else if (envType != 0x2F && envType != 0x32 &&
                     envType != 43 && envType != 0x31 &&
                     envType != 0x24) {
@@ -3048,8 +3052,11 @@ public class MainActivity extends Activity {
             }
         });
 
-        line("--- PROBE: writing '0' to enable_sig12 only ---");
-        sendR22Flag("enable_sig12", '0');
+        // FIXED 27 Sep: this probe wrote '0', away from the official app's
+        // '1' - a persistent change to the strap. It now writes the official
+        // value, so running it can only restore, never alter, the setting.
+        line("--- PROBE: writing the official '1' to enable_sig12, then reading back ---");
+        sendR22Flag("enable_sig12", '1');
 
         mainH.postDelayed(() -> {
 
@@ -6094,6 +6101,7 @@ public class MainActivity extends Activity {
         if (value.length > 9) {
             bumpHistCensus(value[9] & 0xff);
         }
+        captureStoredEcgRecord(value);
         historicalFragments.add(value);
         historicalTotalBytes += value.length;
         saveHistoricalFragment(value);
@@ -7114,6 +7122,7 @@ public class MainActivity extends Activity {
     private void recordPullOutcomeAndSummarize() {
 
         runSleepAnalysisAfterPull();
+        runStoredEcgAnalysisIfPending();
 
         // every pull end path comes through here: release keep-screen-on
         // unless the ECG screen still needs it
@@ -7250,6 +7259,9 @@ public class MainActivity extends Activity {
         histTypeCensus.clear();
         reasmBuf = null;
         synchronized (this) { sleepN = 0; }
+        if (!pendingEcgStoredAnalysis) {
+            synchronized (pulledR16) { pulledR16.clear(); }
+        }
 
         line("");
         line("*** REAL HISTORICAL PULL: SET_CLOCK -> GET_CLOCK -> " +
@@ -7279,6 +7291,12 @@ public class MainActivity extends Activity {
 
     private void stopPullAckLoop() {
 
+        if (!pullAckActive) {
+            // FIXED 27 Sep: pressing STOP after a pull had already finished
+            // re-ran the summary (census, sleep analysis) a second time.
+            line("(no pull running - nothing to stop)");
+            return;
+        }
         pullAckActive = false;
         pullGeneration++;
 
@@ -8295,6 +8313,15 @@ public class MainActivity extends Activity {
          * and this makes it genuinely correct rather than "happens
          * to work".
          */
+        if (ecgUiHandler != null) {
+            final boolean presForRules = presence;
+            final int progForRules = progressRaw;
+            final int stateForRules = classifierState;
+            final boolean analysingBit = (stateBits & 0x02) != 0;
+            ecgUiHandler.post(() -> feedEcgSessionRules(
+                    presForRules, progForRules, stateForRules, analysingBit));
+        }
+
         if (presence && ecgUiHandler != null) {
             final int qualityForUi = quality;
             final Integer progressForUi = progress;
@@ -8307,8 +8334,10 @@ public class MainActivity extends Activity {
             final int strapMask = v[26] & 0xff;
             final int strapHr = v[27] & 0xff;
             final int strapHrv = (v[29] & 0xff) | ((v[30] & 0xff) << 8);
+            final int strapLiveHr = v[28] & 0xff;
             ecgUiHandler.post(() -> feedEcgStrapVerdict(
-                    classifierStateForUi, strapResult, strapMask, strapHr, strapHrv));
+                    classifierStateForUi, strapResult, strapMask, strapHr, strapHrv,
+                    strapLiveHr));
         }
 
         int[] samples = new int[usableCount];
@@ -8469,7 +8498,12 @@ public class MainActivity extends Activity {
 
         reportEcgAttemptVerdict();
 
+        // FIXED 27 Sep: full official cleanup (124 01 01, 139 01 00,
+        // 125 01 00). This STOP used to send only 124, leaving filtered mode
+        // and raw-save ON on the strap.
         send(0x7C, 1, "MAIN_CONTROL_ECG_DATA_GENERATION_STOP");
+        mainH.postDelayed(() -> send(0x8B, 0, "TOGGLE_LABRADOR_FILTERED_OFF"), 400);
+        mainH.postDelayed(() -> send(0x7D, 0, "TOGGLE_LABRADOR_RAW_SAVE_OFF"), 800);
     }
 
     /*
@@ -8819,6 +8853,20 @@ public class MainActivity extends Activity {
             int arg,
             String name,
             Runnable onWriteComplete) {
+
+        /*
+         * RAW-SAVE GUARD (27 Sep). Raw-save (125 = 0x7D) is switched ON in 12
+         * places in this app (the ECG screen and many older experiments) but
+         * was switched OFF in only two - the red-section STOP never did. That
+         * is the likely cause of the empty R16 banked every second on 24 Sep.
+         * Any raw-save ON now sets the guard and any OFF clears it; after the
+         * strap answers GET_HELLO on the next connect, a set guard triggers
+         * the official cleanup (cleanupLeftoverEcgSessionIfGuarded).
+         */
+        if (opcode == 0x7D && (arg == 0 || arg == 1)) {
+            getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit()
+                    .putBoolean("ecg_session_guard", arg == 1).apply();
+        }
 
         if (opcode == 0x7C && arg == 2) {
             labradorFragments.clear();
@@ -9645,6 +9693,15 @@ public class MainActivity extends Activity {
         rhythmLp.bottomMargin = 20;
         col.addView(ecgRhythmResultText, rhythmLp);
 
+        ecgStoredResultText = new TextView(this);
+        ecgStoredResultText.setTextSize(13);
+        ecgStoredResultText.setTextColor(0xFFB8C4D9);
+        ecgStoredResultText.setGravity(Gravity.CENTER);
+        ecgStoredResultText.setLineSpacing(6, 1f);
+        LinearLayout.LayoutParams storedLp = new LinearLayout.LayoutParams(-1, -2);
+        storedLp.bottomMargin = 20;
+        col.addView(ecgStoredResultText, storedLp);
+
         TextView disclaimer = new TextView(this);
         disclaimer.setText(
                 "Research instrumentation, not a medical device. Not " +
@@ -9713,6 +9770,13 @@ public class MainActivity extends Activity {
     private void startEcgScreenSession() {
 
         ecgSessionRunning = true;
+        resetEcgSessionRules();
+        ecgStrapLiveHr = 0;
+        ecgSessionStartUnix = System.currentTimeMillis() / 1000L;
+        pendingEcgStoredAnalysis = false;
+        if (ecgStoredResultText != null) ecgStoredResultText.setText("");
+        getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit()
+                .putBoolean("ecg_session_guard", true).apply();
         ecgSessionEstablishedThisRun = false;
         ecgWaveformView.reset();
         ecgLiveBeatIntervalsMs.clear();
@@ -9806,6 +9870,11 @@ public class MainActivity extends Activity {
 
         runRhythmRegularityAnalysis();
         measureR17SampleRate();
+
+        getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit()
+                .putBoolean("ecg_session_guard", false).apply();
+        ecgSessionStopUnix = System.currentTimeMillis() / 1000L;
+        scheduleStoredEcgPull();
     }
 
     /*
@@ -10163,12 +10232,44 @@ public class MainActivity extends Activity {
      */
     private TextView ecgStrapVerdictText;
     private int ecgStrapState = 0, ecgStrapResult = 0, ecgStrapMask = 0;
-    private int ecgStrapHr = 0, ecgStrapHrv = -1;
+    private int ecgStrapHr = 0, ecgStrapHrv = -1, ecgStrapLiveHr = 0;
 
-    private void feedEcgStrapVerdict(int state, int result, int mask, int hr, int hrv) {
+    /*
+     * The strap's result -> category table: the official app's fixed
+     * mapping, as ported by OpenStrap edge 0.10.0 (lib/ecg/ecg_models.dart,
+     * their docs/mg/05 sec. 5). The category comes from the band's own
+     * (HeartKey) analysis; nothing on the phone classifies here.
+     * Consistent with this project's data: code 1 HR matched our own within
+     * 1 bpm in 9/9 sessions; code 6 (inconclusive) was exactly where the
+     * average-HR byte ran 5-14 bpm high.
+     * Bytes: @27 average HR (used for the saved category), @28 live HR
+     * (used for the on-screen branch) - in our R17 data @28 matched the true
+     * rate even in code-6 sessions.
+     */
+    static String strapCategory(int result, int hr) {
+        switch (result) {
+            case 0: case 2: return "Unreadable";
+            case 1: return (hr >= 51 && hr <= 99) ? "Sinus rhythm" : "Unreadable";
+            case 3: return hr <= 50 ? "Low heart rate" : "Unreadable";
+            case 4:
+                if (hr >= 51 && hr <= 99) return "Possible AFib";
+                if (hr >= 100 && hr <= 150) return "AFib with high heart rate";
+                if (hr >= 151 && hr <= 200) return "High heart rate";
+                return "Unreadable";
+            case 5:
+                if (hr >= 100 && hr <= 150) return "High heart rate (no AFib)";
+                if (hr >= 151 && hr <= 200) return "High heart rate";
+                return "Unreadable";
+            case 6: return "Inconclusive";
+            default: return "Unreadable";
+        }
+    }
+
+    private void feedEcgStrapVerdict(int state, int result, int mask, int hr, int hrv, int liveHr) {
         if (ecgScreenContainer == null || !ecgSessionRunning) return;
         boolean changed = state != ecgStrapState || result != ecgStrapResult;
         ecgStrapState = state;
+        if (liveHr > 0) ecgStrapLiveHr = liveHr;
         if (result != 0) {
             ecgStrapResult = result;
             ecgStrapMask = mask;
@@ -10177,9 +10278,10 @@ public class MainActivity extends Activity {
         if (hrv != 0xFFFF && hrv > 0) ecgStrapHrv = hrv;
         if (changed && result != 0) {
             logRaw("STRAP_VERDICT state=" + state + " result=" + result +
-                    " hr27=" + hr + " hrv=" + hrv + " mask26=" + mask +
-                    (result != 1 && result != 2 && result != 6 ?
-                            " *** NEW CODE - never seen before in this project ***" : ""));
+                    " category=\"" + strapCategory(result, liveHr > 0 ? liveHr : hr) + "\"" +
+                    " hr27avg=" + hr + " hr28live=" + liveHr + " hrv=" + hrv + " mask26=" + mask +
+                    (result < 0 || result > 6 ?
+                            " *** CODE OUTSIDE THE KNOWN TABLE ***" : ""));
         }
         if (ecgStrapVerdictText != null) {
             ecgStrapVerdictText.setText(android.text.Html.fromHtml(
@@ -10188,33 +10290,228 @@ public class MainActivity extends Activity {
     }
 
     private String describeStrapVerdictHtml() {
+        String session = describeEcgSessionRulesHtml();
         if (ecgStrapResult == 0) {
-            return ecgStrapState == 1 ? "<small>Strap: analysing&hellip;</small>" : "";
+            return (ecgStrapState == 1 ? "<small>Strap: analysing&hellip;</small>" : "") +
+                    (session.isEmpty() ? "" : "<br>" + session);
         }
-        String hrv = ecgStrapHrv > 0 ? ", HRV (RMSSD) " + ecgStrapHrv + " ms" : "";
-        switch (ecgStrapResult) {
-            case 1:
-                return "<b>Strap verdict 1: readable</b> &mdash; heart rate " +
-                        (ecgStrapHr > 0 ? ecgStrapHr + " bpm" : "n/a") + hrv +
-                        "<br><small>Code 1 matched our own heart rate within 1 bpm " +
-                        "in 9 of 9 test sessions.</small>";
+        int hrForScreen = ecgStrapLiveHr > 0 ? ecgStrapLiveHr : ecgStrapHr;
+        String cat = strapCategory(ecgStrapResult, hrForScreen);
+        String color = cat.contains("AFib") ? "#FF5555" :
+                cat.equals("Sinus rhythm") ? "#39FF6A" :
+                cat.equals("Inconclusive") || cat.equals("Unreadable") ? "#FFC947" : "#7FA7FF";
+        StringBuilder b = new StringBuilder();
+        b.append("<b>Strap verdict: <font color='").append(color).append("'>")
+                .append(cat).append("</font></b><br><small>code ").append(ecgStrapResult);
+        if (hrForScreen > 0) b.append(", heart rate ").append(hrForScreen).append(" bpm");
+        if (ecgStrapHrv > 0) b.append(", HRV (RMSSD) ").append(ecgStrapHrv).append(" ms");
+        if (ecgStrapResult == 2) {
+            b.append(String.format(Locale.US, ", reason flags %d%d%d%d",
+                    (ecgStrapMask >> 3) & 1, (ecgStrapMask >> 2) & 1,
+                    (ecgStrapMask >> 1) & 1, ecgStrapMask & 1));
+        }
+        b.append("<br>The strap's own analysis (official mapping, via OpenStrap). " +
+                "Band-reported, not a diagnosis.</small>");
+        if (ecgStrapResult == 6) {
+            b.append("<br><small>The official app offers one retry after a first " +
+                    "inconclusive reading.</small>");
+        }
+        if (!session.isEmpty()) b.append("<br>").append(session);
+        return b.toString();
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * OFFICIAL SESSION RULES (from OpenStrap edge 0.10.0 ecg_policy.dart,
+     * their port of the official app): WAITING until presence with
+     * 0 < progress < 255; ACTIVE; contact lost when presence drops,
+     * progress returns to 0 or decreases (one interruption each); 3
+     * interruptions or progress 255 = failed reading; verdict (state 2) =
+     * done. RESTART (opcode 20, then 124 with 01 03) when active with
+     * presence, progress rising and below 100, and the "analysing" bit
+     * (@22 bit 1, set exactly when state = 1 in our 3,341 frames) clear.
+     * That condition never occurred in our recorded sessions, so restart is
+     * a safety net: at most 2 per session, >= 10 s apart. Recording is NOT
+     * stopped on a "failed" outcome - this is a research app; the outcome is
+     * reported so it can be compared with the official behaviour.
+     * ------------------------------------------------------------------
+     */
+    private static final String[] ECG_PHASES = {"waiting for contact", "recording",
+            "contact lost", "verdict received", "failed"};
+    private int ecgRulePhase = 0, ecgRuleInterruptions = 0, ecgRulePrev = -1;
+    private int ecgRuleRestarts = 0;
+    private long ecgRuleLastRestartMs = 0;
+    private String ecgRuleFailReason = "";
+
+    private void resetEcgSessionRules() {
+        ecgRulePhase = 0; ecgRuleInterruptions = 0; ecgRulePrev = -1;
+        ecgRuleRestarts = 0; ecgRuleLastRestartMs = 0; ecgRuleFailReason = "";
+    }
+
+    private String describeEcgSessionRulesHtml() {
+        if (!ecgSessionRunning && ecgRulePhase == 0) return "";
+        String p = ECG_PHASES[ecgRulePhase];
+        String extra = ecgRulePhase == 4 ? " (" + ecgRuleFailReason + ")" : "";
+        return String.format(Locale.UK,
+                "<small>Official session rules: %s%s &middot; interruptions %d/3%s</small>",
+                p, extra, ecgRuleInterruptions,
+                ecgRuleRestarts > 0 ? " &middot; restarts sent " + ecgRuleRestarts : "");
+    }
+
+    private void feedEcgSessionRules(boolean presence, int progress, int state,
+                                     boolean analysingBit) {
+        if (!ecgSessionRunning || ecgRulePhase >= 3) return;
+        int before = ecgRulePhase, beforeInt = ecgRuleInterruptions;
+        boolean acceptable = presence && progress > 0 && progress != 255;
+        switch (ecgRulePhase) {
+            case 0:
+                if (acceptable) { ecgRulePhase = 1; ecgRulePrev = progress; }
+                break;
+            case 1: {
+                boolean lost = !presence || progress == 0 ||
+                        (ecgRulePrev >= 0 && progress < ecgRulePrev);
+                if (lost) {
+                    ecgRuleInterruptions++;
+                    ecgRulePhase = 2;
+                    ecgRulePrev = -1;
+                    if (ecgRuleInterruptions >= 3) {
+                        ecgRulePhase = 4; ecgRuleFailReason = "3 interruptions";
+                    }
+                } else if (state == 2) {
+                    ecgRulePhase = 3;
+                } else if (progress == 255) {
+                    ecgRulePhase = 4; ecgRuleFailReason = "progress 255";
+                } else {
+                    if (presence && progress > 0 && progress >= ecgRulePrev &&
+                            progress < 100 && !analysingBit) {
+                        maybeSendEcgRestart();
+                    }
+                    ecgRulePrev = progress;
+                }
+                break;
+            }
             case 2:
-                return String.format(Locale.US,
-                        "<b>Strap verdict 2: unreadable</b> &mdash; reason flags " +
-                                "%d%d%d%d (bits 3..0)<br><small>Hold still, firm contact on " +
-                                "the clasp, and try again.</small>",
-                        (ecgStrapMask >> 3) & 1, (ecgStrapMask >> 2) & 1,
-                        (ecgStrapMask >> 1) & 1, ecgStrapMask & 1);
-            case 6:
-                return "<b>Strap verdict 6: meaning not yet known</b>" + hrv +
-                        "<br><small>In this code the strap's heart-rate field is not " +
-                        "a heart rate (it reads 5&ndash;14 bpm high).</small>";
+                if (progress == 255) {
+                    ecgRulePhase = 4; ecgRuleFailReason = "progress 255";
+                } else if (acceptable) {
+                    ecgRulePhase = 1; ecgRulePrev = progress;
+                }
+                break;
             default:
-                return "<b><font color='#FFC947'>Strap verdict " + ecgStrapResult +
-                        ": a code never seen in this project</font></b>" + hrv +
-                        "<br><small>Please keep this session's log &mdash; it may be the " +
-                        "strap's rhythm finding.</small>";
+                break;
         }
+        if (ecgRulePhase != before || ecgRuleInterruptions != beforeInt) {
+            logRaw("ECG_SESSION_RULES phase=" + ECG_PHASES[ecgRulePhase] +
+                    " interruptions=" + ecgRuleInterruptions +
+                    (ecgRulePhase == 4 ? " failReason=" + ecgRuleFailReason : ""));
+            if (ecgStrapVerdictText != null) {
+                ecgStrapVerdictText.setText(android.text.Html.fromHtml(
+                        describeStrapVerdictHtml(), android.text.Html.FROM_HTML_MODE_LEGACY));
+            }
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * STORED 500 Hz ANALYSIS AFTER EACH SESSION. On STOP (after cleanup) a
+     * history pull starts automatically; R16 records dated within the
+     * session are kept in memory and analysed with EcgR16Analyzer when the
+     * pull finishes. On this project's data the stored ECG set aside 0.5%
+     * of beats where the live 100 Hz stream set aside 25%, and its RMSSD
+     * agreed with the strap's own in 13/13 readable sessions.
+     * The MG is research-only, so a pull taking its history is intended.
+     * ------------------------------------------------------------------
+     */
+    private boolean pendingEcgStoredAnalysis = false;
+    private long ecgSessionStartUnix = 0, ecgSessionStopUnix = 0;
+    private final java.util.List<byte[]> pulledR16 = new java.util.ArrayList<>();
+    private TextView ecgStoredResultText;
+
+    private void scheduleStoredEcgPull() {
+        if (ecgStoredResultText != null) {
+            ecgStoredResultText.setText(android.text.Html.fromHtml(
+                    "<small>Fetching the stored 500 Hz ECG from the strap&hellip;</small>",
+                    android.text.Html.FROM_HTML_MODE_LEGACY));
+        }
+        mainH.postDelayed(() -> {
+            if (gatt == null || cmdWrite == null) {
+                if (ecgStoredResultText != null) ecgStoredResultText.setText(
+                        "Not connected - run REAL HISTORICAL PULL later to analyse the stored ECG.");
+                return;
+            }
+            if (pullAckActive) {
+                logRaw("STORED_ECG_PULL skipped: a pull is already running");
+                pendingEcgStoredAnalysis = true;
+                return;
+            }
+            pendingEcgStoredAnalysis = true;
+            logRaw("STORED_ECG_PULL_BEGIN sessionStart=" + ecgSessionStartUnix +
+                    " sessionStop=" + ecgSessionStopUnix);
+            startRealHistoricalPull();
+        }, 3000);
+    }
+
+    private void captureStoredEcgRecord(byte[] value) {
+        if (!pendingEcgStoredAnalysis || value.length != 1584 || (value[9] & 0xff) != 16) return;
+        synchronized (pulledR16) { pulledR16.add(value.clone()); }
+    }
+
+    private void runStoredEcgAnalysisIfPending() {
+        if (!pendingEcgStoredAnalysis) return;
+        pendingEcgStoredAnalysis = false;
+        final java.util.List<byte[]> mine = new java.util.ArrayList<>();
+        synchronized (pulledR16) {
+            for (byte[] f : pulledR16) {
+                long t = u32leAt(f, 15);
+                if (t >= ecgSessionStartUnix - 15 && t <= ecgSessionStopUnix + 30) mine.add(f);
+            }
+            pulledR16.clear();
+        }
+        new Thread(() -> {
+            EcgR16Analyzer.Result r = EcgR16Analyzer.analyse(mine);
+            logRaw(r.toLog());
+            final String html = r.toHtml() + (r.recordsIn == 0 ?
+                    "<br><small>No stored ECG records were dated inside this session. " +
+                            "If the strap clock was wrong, this will be empty.</small>" : "");
+            runOnUiThread(() -> {
+                if (ecgStoredResultText != null) ecgStoredResultText.setText(
+                        android.text.Html.fromHtml(html, android.text.Html.FROM_HTML_MODE_LEGACY));
+                line("*** STORED 500 Hz ECG: " + (r.inconclusive ? "inconclusive" :
+                        (Double.isNaN(r.hr) ? "not enough data" :
+                                String.format(Locale.UK, "HR %.0f, RMSSD %.0f ms", r.hr, r.rmssd))) +
+                        (r.screenRun ? (r.afLike ? ", AF-LIKE pattern" : ", no AF-like pattern") : "") +
+                        " ***");
+            });
+        }, "r16-analysis").start();
+    }
+
+    /*
+     * Connect-time cleanup (official behaviour, via OpenStrap): if the last
+     * ECG session was not stopped cleanly (app killed, link lost), the strap
+     * may still be generating / saving raw ECG - the cause of the empty R16
+     * records banked every second on 24 Sep. After the strap answers
+     * GET_HELLO, send the cleanup triplet once.
+     */
+    private void cleanupLeftoverEcgSessionIfGuarded() {
+        SharedPreferences prefs = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
+        if (!prefs.getBoolean("ecg_session_guard", false) || ecgSessionRunning) return;
+        prefs.edit().putBoolean("ecg_session_guard", false).apply();
+        logRaw("ECG_LEFTOVER_CLEANUP sending 124 01 01, 139 01 00, 125 01 00");
+        line("*** Last ECG session was not stopped cleanly - stopping ECG / raw-save on the strap ***");
+        send(0x7C, 1, "ECG_STOP (leftover cleanup)");
+        mainH.postDelayed(() -> send(0x8B, 0, "LABRADOR_FILTERED_OFF (leftover cleanup)"), 400);
+        mainH.postDelayed(() -> send(0x7D, 0, "LABRADOR_RAW_SAVE_OFF (leftover cleanup)"), 800);
+    }
+
+    private void maybeSendEcgRestart() {
+        long now = System.currentTimeMillis();
+        if (ecgRuleRestarts >= 2 || now - ecgRuleLastRestartMs < 10000) return;
+        ecgRuleRestarts++;
+        ecgRuleLastRestartMs = now;
+        logRaw("ECG_RESTART_SENT n=" + ecgRuleRestarts);
+        line("*** Official restart condition met - sending RESTART (20, then 124 01 03) ***");
+        sendPuffinPayload(0x14, new byte[]{0x00}, "ABORT_HISTORICAL_TRANSMITS (restart)");
+        mainH.postDelayed(() -> send(0x7C, 3, "MAIN_CONTROL_ECG_DATA_GENERATION_RESTART"), 400);
     }
 
     private void feedEcgFrameStatus(
@@ -10848,8 +11145,7 @@ public class MainActivity extends Activity {
         addToCurrentSection(ffCalibrationBtn);
 
         Button stagedDisableProbeBtn = btn(
-                "STAGED R22 DISABLE: PROBE enable_sig12 with '0' first " +
-                        "(is '0' even valid in this namespace?)",
+                "PROBE enable_sig12 (writes the official '1', reads back)",
                 v -> runStagedR22DisableProbe());
         addToCurrentSection(stagedDisableProbeBtn);
 
