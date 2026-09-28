@@ -34,6 +34,16 @@ import java.util.Locale;
  *    al. 2009) runs on the last 128
  * Checked: over the 30 s before the strap's verdict, our RMSSD fell within
  * the strap's own RMSSD values (+-3 ms) in 13/13 readable sessions.
+ *
+ * Beat-shape gate (added 28 Sep after a noisy session the strap called
+ * Unreadable: 27% of beats misshapen, misplaced beats 13-18% off time slipped
+ * past the 20% rule and pushed nRMSSD to 0.090). Each beat (+-100 ms) is
+ * correlated with its run's median beat; below 0.8 = bad shape. Intervals
+ * touching a bad-shape beat are left out of HR, HRV and the AF screen.
+ * Inconclusive if > 15% of intervals fail the rhythm rule OR > 10% of beats
+ * fail the shape test. On 25 sessions: all 16 the strap could read (codes 1
+ * and 6) give a result (bad shapes 0-9.4%); 6 of 7 it called unreadable
+ * (code 2) come out Inconclusive (5.9-82%); RMSSD agreement stays 13/13.
  * Not a diagnosis.
  */
 public final class EcgR16Analyzer {
@@ -45,7 +55,9 @@ public final class EcgR16Analyzer {
     private EcgR16Analyzer() {}
 
     public static final class Result {
-        public int recordsIn, usableSeconds, intervals, excluded, early;
+        public int recordsIn, usableSeconds, intervals, excluded, early, rhythmOut;
+        public int beatsChecked, beatsBadShape;
+        public double noiseFraction;
         public double hr = Double.NaN, rmssd = Double.NaN;
         public boolean screenRun, afLike, inconclusive;
         public double[] dash;
@@ -53,9 +65,11 @@ public final class EcgR16Analyzer {
 
         public String toLog() {
             return String.format(Locale.US,
-                    "R16_ANALYSIS records=%d usableS=%d intervals=%d excluded=%d early=%d " +
-                            "hr=%.1f rmssd=%.1f inconclusive=%b screenRun=%b afLike=%b%s",
-                    recordsIn, usableSeconds, intervals, excluded, early, hr, rmssd,
+                    "R16_ANALYSIS records=%d usableS=%d intervals=%d excluded=%d rhythmOut=%d " +
+                            "badShape=%d/%d early=%d hr=%.1f rmssd=%.1f inconclusive=%b " +
+                            "screenRun=%b afLike=%b%s",
+                    recordsIn, usableSeconds, intervals, excluded, rhythmOut,
+                    beatsBadShape, beatsChecked, early, hr, rmssd,
                     inconclusive, screenRun, afLike,
                     dash == null ? "" : String.format(Locale.US,
                             " nrmssd=%.4f she=%.3f tp=%d tpRandom=%b",
@@ -72,10 +86,14 @@ public final class EcgR16Analyzer {
             b.append(String.format(Locale.UK, "<small>%d s usable, %d beat intervals, " +
                     "%d set aside, %d early beat(s)</small><br>", usableSeconds, intervals, excluded, early));
             if (inconclusive) {
-                return b.append(String.format(Locale.UK,
-                        "<b>Inconclusive</b> &mdash; %.0f%% of intervals set aside, so no heart " +
-                                "rate or rhythm verdict. Hold still with firm finger contact.",
-                        100.0 * excluded / intervals)).toString();
+                String why = noiseFraction > 0.10
+                        ? String.format(Locale.UK, "%.0f%% of beats did not look like a clean " +
+                        "heartbeat (signal too noisy)", 100 * noiseFraction)
+                        : String.format(Locale.UK, "%.0f%% of beat intervals were irregular or " +
+                        "mis-detected", 100.0 * rhythmOut / intervals);
+                return b.append("<b>Inconclusive</b> &mdash; ").append(why).append(", so no heart " +
+                        "rate or rhythm verdict. Hold still with firm finger contact and try again.")
+                        .toString();
             }
             b.append(String.format(Locale.UK, "Heart rate <b>%.0f</b> bpm &middot; HRV (RMSSD) <b>%.0f</b> ms<br>",
                     hr, rmssd));
@@ -259,6 +277,7 @@ public final class EcgR16Analyzer {
         if (cur.size() >= MIN_RUN_S) runs.add(cur);
 
         List<List<Double>> rrRuns = new ArrayList<>();
+        List<List<Boolean>> badRuns = new ArrayList<>();
         for (List<byte[]> run : runs) {
             if (run.size() - SETTLE_S < MIN_RUN_S) continue;
             List<byte[]> use = run.subList(SETTLE_S, run.size());
@@ -267,23 +286,55 @@ public final class EcgR16Analyzer {
             for (int s = 0; s < use.size(); s++)
                 for (int k = 0; k < 500; k++) x[500 * s + k] = sample(use.get(s), k);
             List<Integer> pk = peaks(x);
+            // same filtered, polarity-corrected signal peaks() used
+            double[] y = filtfilt(x);
+            int n = y.length;
+            double hi = percentile(y, 0, n, 99.5), lo = -percentile(y, 0, n, 0.5);
+            if (lo > hi) for (int i = 0; i < n; i++) y[i] = -y[i];
+            int h = 50;
+            List<Integer> ok = new ArrayList<>();
+            for (int p : pk) if (p - h >= 0 && p + h < n) ok.add(p);
+            java.util.Set<Integer> bad = new java.util.HashSet<>();
+            if (ok.size() >= 5) {
+                double[] T = new double[2 * h];
+                double[] col = new double[ok.size()];
+                for (int j = 0; j < 2 * h; j++) {
+                    for (int g = 0; g < ok.size(); g++) col[g] = y[ok.get(g) - h + j];
+                    double[] srt = col.clone();
+                    Arrays.sort(srt);
+                    int m = srt.length / 2;
+                    T[j] = srt.length % 2 == 1 ? srt[m] : (srt[m - 1] + srt[m]) / 2.0;
+                }
+                for (int p : ok) if (pearson(y, p - h, T) < 0.8) bad.add(p);
+            }
+            r.beatsChecked += ok.size();
+            r.beatsBadShape += bad.size();
             List<Double> rr = new ArrayList<>();
-            for (int i = 1; i < pk.size(); i++) rr.add((pk.get(i) - pk.get(i - 1)) * 1000.0 / FS);
+            List<Boolean> bd = new ArrayList<>();
+            for (int i = 1; i < pk.size(); i++) {
+                rr.add((pk.get(i) - pk.get(i - 1)) * 1000.0 / FS);
+                bd.add(bad.contains(pk.get(i - 1)) || bad.contains(pk.get(i)));
+            }
             rrRuns.add(rr);
+            badRuns.add(bd);
         }
 
         List<Double> clean = new ArrayList<>();
         List<Integer> allRr = new ArrayList<>();
         double sumSq = 0;
         int nDiff = 0;
-        for (List<Double> rr : rrRuns) {
+        for (int ri = 0; ri < rrRuns.size(); ri++) {
+            List<Double> rr = rrRuns.get(ri);
+            List<Boolean> bd = badRuns.get(ri);
             boolean[] keep = new boolean[rr.size()];
             for (int i = 0; i < rr.size(); i++) {
                 List<Double> nb = new ArrayList<>();
                 for (int j = Math.max(0, i - 2); j < i; j++) nb.add(rr.get(j));
                 for (int j = i + 1; j < Math.min(rr.size(), i + 3); j++) nb.add(rr.get(j));
                 double med = nb.isEmpty() ? rr.get(i) : median(nb);
-                keep[i] = Math.abs(rr.get(i) - med) <= 0.2 * med;
+                boolean rhythmOk = Math.abs(rr.get(i) - med) <= 0.2 * med;
+                if (!rhythmOk) r.rhythmOut++;
+                keep[i] = rhythmOk && !bd.get(i);
                 if (!keep[i]) r.excluded++;
                 else clean.add(rr.get(i));
                 allRr.add((int) Math.round(rr.get(i)));
@@ -302,7 +353,8 @@ public final class EcgR16Analyzer {
             r.note = "Only " + r.usableSeconds + " s of settled, good-contact stored ECG.";
             return r;
         }
-        r.inconclusive = r.excluded > 0.15 * r.intervals;
+        r.noiseFraction = r.beatsBadShape / (double) Math.max(1, r.beatsChecked);
+        r.inconclusive = r.rhythmOut > 0.15 * r.intervals || r.noiseFraction > 0.10;
         if (!clean.isEmpty()) r.hr = 60000.0 / median(clean);
         if (nDiff > 0) r.rmssd = Math.sqrt(sumSq / nDiff);
         if (!r.inconclusive && clean.size() >= AfScreen.WINDOW) {
@@ -313,6 +365,20 @@ public final class EcgR16Analyzer {
             r.afLike = r.dash[6] > 0.5;
         }
         return r;
+    }
+
+    /** Pearson correlation of y[from .. from+t.length) with t (numpy corrcoef) */
+    static double pearson(double[] y, int from, double[] t) {
+        int n = t.length;
+        double my = 0, mt = 0;
+        for (int i = 0; i < n; i++) { my += y[from + i]; mt += t[i]; }
+        my /= n; mt /= n;
+        double sxy = 0, sxx = 0, syy = 0;
+        for (int i = 0; i < n; i++) {
+            double a = y[from + i] - my, c = t[i] - mt;
+            sxy += a * c; sxx += a * a; syy += c * c;
+        }
+        return sxy / Math.sqrt(sxx * syy);
     }
 
     static double median(List<Double> v) {
