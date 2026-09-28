@@ -61,19 +61,15 @@ public class EcgWaveformView extends View {
     private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     /*
-     * Empirical, NOT datasheet-confirmed, estimate: derived by cross-
-     * calibrating this project's own real R-wave peak amplitudes
-     * (median 1082 raw counts, from 177 quality-3 confirmed beats)
-     * against the documented clinical R-wave range (0.5-2.0mV). The
-     * low end of that resulting range is used here as the more
-     * plausible figure, since the MAX86176's documented higher-gain
-     * options (480V/V, 960V/V) suggest a finer LSB than a related
-     * chip's (MAX30001) confirmed 0.381 uV/count at its lowest gain -
-     * which this empirical low-end estimate (0.462 uV/count) sits
-     * close to. Labelled "est." on screen deliberately, since this
-     * is a reasoned approximation, not a calibrated value.
+     * Live R17 samples are microvolts: OpenStrap edge 0.10.0 documents them as
+     * "input-referred integer microvolts, exactly as the band sends them"
+     * (lib/ecg/ecg_models.dart). Consistent with this project's data: the
+     * median R-wave peak of 1082 counts (177 clean beats) = 1.08 mV, inside the
+     * usual 0.5-2.0 mV range. Replaces the earlier empirical 0.46 uV/count
+     * estimate (28 Sep), which under-read by about half. Applies to the live
+     * 100 Hz stream only; the stored 500 Hz R16 is on a different scale.
      */
-    private static final double ESTIMATED_UV_PER_COUNT = 0.46;
+    private static final double UV_PER_COUNT = 1.0;
 
     private final Paint scaleLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -329,10 +325,10 @@ public class EcgWaveformView extends View {
         canvas.drawRect(sweepX - 24, 0, sweepX, h, glow);
         canvas.drawLine(sweepX, 0, sweepX, h, sweepPaint);
 
-        double estimatedMv = (displayMax * ESTIMATED_UV_PER_COUNT) / 1000.0;
+        double estimatedMv = (displayMax * UV_PER_COUNT) / 1000.0;
         canvas.drawText(
                 String.format(java.util.Locale.US,
-                        "±%.2f mV (est.)", estimatedMv),
+                        "±%.2f mV", estimatedMv),
                 12, 30, scaleLabelPaint);
     }
 
