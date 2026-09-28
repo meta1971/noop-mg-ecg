@@ -27,7 +27,22 @@ import java.util.TimeZone;
  *  - wake-ups = runs of strong movement (>= 2 of 3 minutes) inside the period
  *  - lowest-HR still stretches: HR in the night's lowest quartile, still,
  *    >= 10 consecutive minutes. A pattern, not sleep staging.
- * Limits: two nights, self-reported reference times; not validated against
+ * Revised 28 Sep 2026 after a third night (bed 22:00, awake 02:30 for ~30 min,
+ * up 05:45; the strap went on at 21:51, so there was no awake evening):
+ *  - coverage is judged up to the end of the data (a 06:00 pull can never
+ *    cover until noon), needing >= 300 covered minutes and >= 70% of the span
+ *  - fallback onset: if the evening rule finds no onset, the reference is the
+ *    median HR of the first 10 still minutes of the rest period (first point
+ *    with >= 18 of 25 still) and the drop needed is 2 bpm; flagged lower
+ *    confidence
+ *  - a final wake within 98 min of the end of the data is accepted if at
+ *    least 10 min of data follow it, and marked "at end of data"
+ *  - wake-ups <= 15 min apart are merged when the median HR between them is
+ *    >= the night's sleeping median + 5 bpm (awake but lying still)
+ * Three nights, detected vs reported: 23:32/23:30 -> 05:45/05:45,
+ * 00:15/00:30 -> 07:39/07:40, 21:56/22:00 -> 05:45/05:45; the 02:30 episode
+ * -> one 23-min wake-up (02:26).
+ * Limits: three nights, self-reported reference times; not validated against
  * polysomnography.
  */
 public final class SleepAnalyzer {
@@ -51,6 +66,8 @@ public final class SleepAnalyzer {
         public int sleepHrLowestMin = -1;
         public List<int[]> lowHrStretches = new ArrayList<>();
         public int lowHrStretchMin;
+        public boolean coverageOk, onsetLowConfidence, wakeAtEndOfData;
+        public int dataEndMin;
         public TimeZone tz;
 
         public String clock(int minute) {
@@ -75,10 +92,11 @@ public final class SleepAnalyzer {
             return String.format(Locale.US,
                     "SLEEP_ANALYSIS night=%s onset=%s wake=%s periodMin=%d asleepMin=%d " +
                             "wakeUps=%d wakeUpMin=%d twitchMin=%d hrMedian=%.0f hrLowest=%.0f@%s " +
-                            "lowHrStretchMin=%d eveningHr=%.0f coveredMin=%d",
+                            "lowHrStretchMin=%d eveningHr=%.0f coveredMin=%d onsetLowConf=%b wakeAtEnd=%b",
                     night(), clock(onsetMin), clock(wakeMin), periodMin, asleepMin,
                     wakeUps.size(), wakeUpMin, twitchMin, sleepHrMedian, sleepHrLowest,
-                    clock(sleepHrLowestMin), lowHrStretchMin, eveningHr, coveredMinutes);
+                    clock(sleepHrLowestMin), lowHrStretchMin, eveningHr, coveredMinutes,
+                    onsetLowConfidence, wakeAtEndOfData);
         }
 
         public String toHtml() {
@@ -95,22 +113,28 @@ public final class SleepAnalyzer {
             }
             return String.format(Locale.UK,
                     "<b>Night %s</b><br><br>" +
-                            "<big><b>%s &rarr; %s</b></big><br>" +
+                            "<big><b>%s &rarr; %s</b></big>%s<br>" +
                             "Asleep about <b>%dh %02dm</b> of %dh %02dm (%d%%)<br><br>" +
                             "Wake-ups: %d, %d min total%s<br>" +
                             "Restless minutes (twitches, not waking): %d<br><br>" +
                             "Sleeping heart rate: median %.0f, lowest %.0f at %s<br>" +
-                            "Evening resting heart rate: %.0f<br><br>" +
+                            "%s: %.0f<br><br>" +
                             "Lowest-heart-rate, stillest stretches: %s (%d min)<br>" +
                             "<small>These usually fall where deep sleep concentrates " +
                             "&mdash; a pattern, not measured sleep stages.</small><br><br>" +
                             "<small>Method validated on 2 nights against your own times " +
                             "(errors 0&ndash;17 min). Not a medical sleep test.</small>",
                     night(), clock(onsetMin), clock(wakeMin),
+                    (onsetLowConfidence ? "<br><small>Sleep onset lower confidence: no awake " +
+                            "evening in the data, heart-rate drop was small.</small>" : "") +
+                            (wakeAtEndOfData ? "<br><small>Wake-up close to the end of the " +
+                                    "data (pulled soon after).</small>" : ""),
                     asleepMin / 60, asleepMin % 60, periodMin / 60, periodMin % 60,
                     Math.round(100.0 * asleepMin / Math.max(1, periodMin)),
                     wakeUps.size(), wakeUpMin, wakeUps.isEmpty() ? "" : ": " + w,
                     twitchMin, sleepHrMedian, sleepHrLowest, clock(sleepHrLowestMin),
+                    onsetLowConfidence ? "Resting heart rate at the start of the night"
+                            : "Evening resting heart rate",
                     eveningHr, d.length() == 0 ? "none" : d.toString(), lowHrStretchMin);
         }
     }
@@ -134,11 +158,12 @@ public final class SleepAnalyzer {
         for (int back = 0; back < 4; back++) {
             long start = c.getTimeInMillis() / 1000L;
             Result r = analyzeNightStarting(start, unix, hr, mag, n, tz);
-            if (r.coveredMinutes >= 0.7 * WINDOW_MIN) return r;
+            if (r.coverageOk) return r;
             c.add(Calendar.DAY_OF_MONTH, -1);
         }
-        none.reason = "No night in this pull had at least 70% of 20:00-12:00 covered " +
-                "(the strap must be worn overnight and pulled next morning).";
+        none.reason = "No night in this pull had enough data (at least 5 hours, " +
+                "70% of 20:00 to the time of the pull) - wear the strap overnight " +
+                "and pull next morning.";
         return none;
     }
 
@@ -163,6 +188,7 @@ public final class SleepAnalyzer {
             long m = (unix[i] - start) / 60;
             if (unix[i] >= start && m < N) perMin.get((int) m).add(i);
         }
+        int firstMin = -1;
         for (int k = 0; k < N; k++) {
             List<Integer> s = perMin.get(k);
             cnt[k] = s.size();
@@ -176,52 +202,77 @@ public final class SleepAnalyzer {
             hrMin[k] = median(h);
             mov[k] = sum / (s.size() - 1);
             r.coveredMinutes++;
+            if (firstMin < 0) firstMin = k;
         }
-        if (r.coveredMinutes < 0.7 * N) {
-            r.reason = "Only " + r.coveredMinutes + " of " + N + " minutes covered.";
+        // coverage judged up to the end of the data, not the end of the window
+        int Nend = 0;
+        for (int k = 0; k < N; k++) if (!perMin.get(k).isEmpty()) Nend = k + 1;
+        r.dataEndMin = Nend;
+        r.coverageOk = firstMin >= 0 && r.coveredMinutes >= 300 &&
+                r.coveredMinutes >= 0.7 * (Nend - firstMin);
+        if (!r.coverageOk) {
+            r.reason = "Only " + r.coveredMinutes + " minutes covered.";
             return r;
         }
 
-        boolean[] still = new boolean[N], strong = new boolean[N];
-        for (int k = 0; k < N; k++) {           // no data -> movement 0 -> still
+        boolean[] still = new boolean[Nend], strong = new boolean[Nend];
+        for (int k = 0; k < Nend; k++) {        // no data -> movement 0 -> still
             still[k] = mov[k] < STILL_G;
             strong[k] = mov[k] > STRONG_G;
         }
-        double[] hr21 = rollingNanMedian(hrMin, 21);
-        List<Double> ev = new ArrayList<>();
-        for (int k = 0; k < 180; k++) if (still[k] && !Double.isNaN(hrMin[k])) ev.add(hrMin[k]);
-        if (ev.size() < 20) {
-            r.reason = "Not enough still evening data (20:00-23:00) to set a resting heart rate.";
-            return r;
-        }
-        r.eveningHr = median(ev);
+        double[] hrN = Arrays.copyOf(hrMin, Nend);
+        double[] hr21 = rollingNanMedian(hrN, 21);
 
-        boolean[] sleepish = new boolean[N];
-        for (int k = 0; k < N; k++) sleepish[k] = still[k] && hr21[k] <= r.eveningHr - 3;
-        for (int k = 0; k < N; k++) {
-            int s = 0;
-            for (int j = k; j < Math.min(N, k + 25); j++) if (sleepish[j]) s++;
-            if (s >= 18) { r.onsetMin = k; break; }
+        List<Double> ev = new ArrayList<>();
+        for (int k = 0; k < Math.min(180, Nend); k++)
+            if (still[k] && !Double.isNaN(hrN[k])) ev.add(hrN[k]);
+        if (ev.size() >= 20) {
+            r.eveningHr = median(ev);
+            r.onsetMin = firstQualifyingWindow(still, hr21, r.eveningHr - 3, 0, Nend);
         }
         if (r.onsetMin < 0) {
-            r.reason = "No sleep onset found (still + heart rate below evening rest).";
+            // fallback: no usable awake evening - compare with the start of the rest period
+            int rest = -1;
+            for (int k = 0; k < Nend; k++) {
+                int st = 0;
+                for (int j = k; j < Math.min(Nend, k + 25); j++) if (still[j]) st++;
+                if (st >= 18) { rest = k; break; }
+            }
+            if (rest < 0) { r.reason = "No rest period found."; return r; }
+            List<Double> ref = new ArrayList<>();
+            for (int k = rest; k < Nend && ref.size() < 10; k++)
+                if (still[k] && !Double.isNaN(hrN[k])) ref.add(hrN[k]);
+            if (ref.size() < 10) {
+                r.reason = "Not enough still data to set a resting heart rate.";
+                return r;
+            }
+            r.eveningHr = median(ref);
+            r.onsetLowConfidence = true;
+            r.onsetMin = firstQualifyingWindow(still, hr21, r.eveningHr - 2, rest, Nend);
+        }
+        if (r.onsetMin < 0) {
+            r.reason = "No sleep onset found (still + heart rate below resting level).";
             return r;
         }
 
-        for (int k = r.onsetMin + 90; k < N - 60; k++) {
+        for (int k = r.onsetMin + 90; k < Nend - 10; k++) {
             if (!strong[k]) continue;
             int s = 0;
-            for (int j = k; j < Math.min(N, k + 8); j++) if (strong[j]) s++;
+            for (int j = k; j < Math.min(Nend, k + 8); j++) if (strong[j]) s++;
             if (s < 5) continue;
             boolean backToSleep = false;
             for (int j = 0; j < 60 && !backToSleep; j++) {
-                int a = k + 8 + j, b = Math.min(N, a + 30);
-                if (b - a <= 0) continue;
+                int a = k + 8 + j;
+                if (a + 30 > Nend) break;          // only full 30-min windows inside the data
                 int st = 0;
-                for (int q = a; q < b; q++) if (still[q]) st++;
-                if (st >= 0.9 * (b - a)) backToSleep = true;
+                for (int q = a; q < a + 30; q++) if (still[q]) st++;
+                if (st >= 0.9 * 30) backToSleep = true;
             }
-            if (!backToSleep) { r.wakeMin = k; break; }
+            if (!backToSleep) {
+                r.wakeMin = k;
+                r.wakeAtEndOfData = k + 98 > Nend;
+                break;
+            }
         }
         if (r.wakeMin < 0) {
             r.reason = "Sleep onset found at " + r.clock(r.onsetMin) +
@@ -229,24 +280,37 @@ public final class SleepAnalyzer {
             return r;
         }
 
+        List<int[]> bouts = new ArrayList<>();
         int k = r.onsetMin;
         while (k < r.wakeMin) {
             int s3 = 0;
-            for (int j = k; j < Math.min(N, k + 3); j++) if (strong[j]) s3++;
+            for (int j = k; j < Math.min(Nend, k + 3); j++) if (strong[j]) s3++;
             if (strong[k] && s3 >= 2) {
                 int j = k;
-                while (j < r.wakeMin && (strong[j] || (j + 1 < N && strong[j + 1]))) j++;
-                r.wakeUps.add(new int[]{k, j});
-                r.wakeUpMin += j - k;
+                while (j < r.wakeMin && (strong[j] || (j + 1 < Nend && strong[j + 1]))) j++;
+                bouts.add(new int[]{k, j});
                 k = j;
             } else k++;
         }
+        List<Double> sleepHr = new ArrayList<>();
+        for (int q = r.onsetMin; q < r.wakeMin; q++) if (!Double.isNaN(hrN[q])) sleepHr.add(hrN[q]);
+        double hmed = median(sleepHr);
+        for (int[] b : bouts) {             // merge: awake but lying still between two bursts
+            if (!r.wakeUps.isEmpty()) {
+                int[] prev = r.wakeUps.get(r.wakeUps.size() - 1);
+                List<Double> gap = new ArrayList<>();
+                for (int q = prev[1]; q < b[0]; q++) if (!Double.isNaN(hrN[q])) gap.add(hrN[q]);
+                if (b[0] - prev[1] <= 15 && median(gap) >= hmed + 5) { prev[1] = b[1]; continue; }
+            }
+            r.wakeUps.add(new int[]{b[0], b[1]});
+        }
+        for (int[] b : r.wakeUps) r.wakeUpMin += b[1] - b[0];
         r.periodMin = r.wakeMin - r.onsetMin;
         r.asleepMin = r.periodMin - r.wakeUpMin;
         for (int q = r.onsetMin; q < r.wakeMin; q++)
             if (mov[q] > STILL_G && mov[q] <= STRONG_G) r.twitchMin++;
 
-        double[] hs = Arrays.copyOfRange(hrMin, r.onsetMin, r.wakeMin);
+        double[] hs = Arrays.copyOfRange(hrN, r.onsetMin, r.wakeMin);
         List<Double> hv = new ArrayList<>();
         for (double v : hs) if (!Double.isNaN(v)) hv.add(v);
         r.sleepHrMedian = median(hv);
@@ -270,6 +334,16 @@ public final class SleepAnalyzer {
         }
         r.ok = true;
         return r;
+    }
+
+    /** first k in [from, to) where >= 18 of the 25 minutes from k are still with HR21 <= limit */
+    static int firstQualifyingWindow(boolean[] still, double[] hr21, double limit, int from, int to) {
+        for (int k = from; k < to; k++) {
+            int s = 0;
+            for (int j = k; j < Math.min(to, k + 25); j++) if (still[j] && hr21[j] <= limit) s++;
+            if (s >= 18) return k;
+        }
+        return -1;
     }
 
     static double median(List<Double> v) {
