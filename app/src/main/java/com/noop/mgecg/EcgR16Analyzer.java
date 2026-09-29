@@ -146,7 +146,7 @@ public final class EcgR16Analyzer {
     static boolean usable(byte[] f) {
         if (f.length != 1584) return false;
         if (((f[32] & 0xff) | ((f[33] & 0xff) << 8)) != 500) return false;
-        if ((f[21] & 0xff) < 2) return false;
+        if ((f[21] & 0xff) < 3) return false;   // quality 3 only, matches the live path
         int contact = 0, maxAbs = 0;
         for (int k = 0; k < 500; k++) {
             int o = 34 + 3 * k;
