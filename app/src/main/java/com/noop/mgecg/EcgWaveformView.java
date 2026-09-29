@@ -45,9 +45,18 @@ public class EcgWaveformView extends View {
     private int writeHead = 0;
     private int totalSamplesReceived = 0;
 
-    private float displayMin = -1000f;
-    private float displayMax = 1000f;
-    private static final float SCALE_SMOOTHING = 0.06f;
+    /*
+     * Calibrated, fixed vertical scale - WHOOP's own window: its report
+     * waveform is drawn from -1000 to +2000 uV on 6 boxes of 500 uV, and its
+     * live screen plots raw R17 counts (= uV) with no auto-scaling. Samples
+     * outside the window are clamped to its edge, as WHOOP does.
+     */
+    private static final float DISPLAY_MIN_UV = -1000f;
+    private static final float DISPLAY_MAX_UV = 2000f;
+    private float displayMin = DISPLAY_MIN_UV;
+    private float displayMax = DISPLAY_MAX_UV;
+    private boolean contactLost = false;
+    private final Paint contactLostPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     // ECG-paper grid: a fine minor grid, with a bolder major grid
     // every 5th line - the real clinical convention.
@@ -125,6 +134,11 @@ public class EcgWaveformView extends View {
         sweepPaint.setColor(Color.parseColor("#D0FFFFFF"));
         sweepPaint.setStrokeWidth(2f);
 
+        contactLostPaint.setColor(Color.parseColor("#FFC947"));
+        contactLostPaint.setTextSize(40f);
+        contactLostPaint.setTextAlign(Paint.Align.CENTER);
+        contactLostPaint.setFakeBoldText(true);
+
         scaleLabelPaint.setColor(Color.parseColor("#8FA1BD"));
         scaleLabelPaint.setTextSize(24f);
         scaleLabelPaint.setTypeface(
@@ -145,16 +159,6 @@ public class EcgWaveformView extends View {
         writeHead = (writeHead + 1) % BUFFER_SIZE;
         totalSamplesReceived++;
 
-        float target = Math.abs(value) * 1.35f + 200f;
-        if (target > displayMax) {
-            displayMax = displayMax + (target - displayMax) * 0.35f;
-            displayMin = -displayMax;
-        } else {
-            displayMax = displayMax + (target - displayMax) * SCALE_SMOOTHING;
-            displayMax = Math.max(displayMax, 400f);
-            displayMin = -displayMax;
-        }
-
         postInvalidateOnAnimation();
     }
 
@@ -162,8 +166,9 @@ public class EcgWaveformView extends View {
         Arrays.fill(hasSample, false);
         writeHead = 0;
         totalSamplesReceived = 0;
-        displayMin = -1000f;
-        displayMax = 1000f;
+        displayMin = DISPLAY_MIN_UV;
+        displayMax = DISPLAY_MAX_UV;
+        contactLost = false;
         liveMode = false;
         startIdleSweep();
         invalidate();
@@ -221,15 +226,22 @@ public class EcgWaveformView extends View {
         canvas.drawRect(1, 1, w - 1, h - 1, borderPaint);
     }
 
+    /** Shown when the strap zeroes the live samples (fingers off the clasp). */
+    public void setContactLost(boolean lost) {
+        if (lost != contactLost) {
+            contactLost = lost;
+            postInvalidateOnAnimation();
+        }
+    }
+
     /**
-     * Real clinical ECG paper convention: small squares at a fine
-     * interval, with every 5th line drawn bolder to form the familiar
-     * large-square grouping. Purely cosmetic (no calibrated time/
-     * voltage scale is claimed), but reads as a genuine medical trace
-     * rather than a generic dark chart.
+     * Calibrated ECG paper: small box 0.04 s x 0.1 mV, large box (every 5th
+     * line) 0.2 s x 0.5 mV - the standard grid, and the one WHOOP's report
+     * uses. Boxes are not square on a phone-shaped view (WHOOP's aren't
+     * either); the values per box are exact.
      */
     private void drawEcgPaperGrid(Canvas canvas, int w, int h) {
-        float minorSpacing = w / 60f;
+        float minorSpacing = w / (WINDOW_SECONDS / 0.04f);
 
         int col = 0;
         for (float x = 0; x <= w; x += minorSpacing, col++) {
@@ -237,7 +249,7 @@ public class EcgWaveformView extends View {
             canvas.drawLine(x, 0, x, h, p);
         }
 
-        float minorSpacingY = h / 30f;
+        float minorSpacingY = h / ((DISPLAY_MAX_UV - DISPLAY_MIN_UV) / 100f);
         int row = 0;
         for (float y = 0; y <= h; y += minorSpacingY, row++) {
             Paint p = (row % 5 == 0) ? majorGridPaint : minorGridPaint;
@@ -289,7 +301,8 @@ public class EcgWaveformView extends View {
                 continue;
             }
             float x = w * i / (float) BUFFER_SIZE;
-            float norm = (samples[idx] - displayMin) / range;
+            float v = Math.max(displayMin, Math.min(displayMax, samples[idx]));
+            float norm = (v - displayMin) / range;
             float y = h - (norm * h);
             xs[n] = x;
             ys[n] = y;
@@ -325,11 +338,17 @@ public class EcgWaveformView extends View {
         canvas.drawRect(sweepX - 24, 0, sweepX, h, glow);
         canvas.drawLine(sweepX, 0, sweepX, h, sweepPaint);
 
-        double estimatedMv = (displayMax * UV_PER_COUNT) / 1000.0;
         canvas.drawText(
-                String.format(java.util.Locale.US,
-                        "±%.2f mV", estimatedMv),
+                String.format(java.util.Locale.UK,
+                        "%.0f to +%.0f mV \u00b7 large box 0.2 s \u00d7 0.5 mV",
+                        displayMin * UV_PER_COUNT / 1000.0,
+                        displayMax * UV_PER_COUNT / 1000.0),
                 12, 30, scaleLabelPaint);
+
+        if (contactLost) {
+            canvas.drawText("NO CONTACT \u2014 fingers off the clasp",
+                    w / 2f, h / 2f, contactLostPaint);
+        }
     }
 
     public boolean isLive() {
