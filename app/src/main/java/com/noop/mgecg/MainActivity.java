@@ -8522,6 +8522,11 @@ public class MainActivity extends Activity {
          * it. Batches the whole frame's samples into one post to the
          * main thread, rather than one post per sample.
          */
+        if (ecgUiHandler != null) {
+            final boolean allZeroForUi = EcgWhoopSpec.r17AllZero(v);
+            ecgUiHandler.post(() -> feedEcgLeadOff(allZeroForUi));
+        }
+
         if (presence && ecgUiHandler != null) {
             final int[] samplesForUi = samples;
             ecgUiHandler.post(() -> {
@@ -9715,6 +9720,26 @@ public class MainActivity extends Activity {
         headingLp.gravity = Gravity.CENTER_VERTICAL;
         topRow.addView(heading, headingLp);
 
+        ecgOfficialMode = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE)
+                .getBoolean("ecg_mode_official", false);
+        ecgModeButton = new Button(this);
+        ecgModeButton.setTextSize(12);
+        ecgModeButton.setBackgroundColor(0xFF1A2230);
+        ecgModeButton.setTextColor(0xFFB8C4D9);
+        updateEcgModeButton();
+        ecgModeButton.setOnClickListener(v -> {
+            if (ecgSessionRunning) {
+                ecgStatusText.setText("Stop the current recording to change mode");
+                return;
+            }
+            ecgOfficialMode = !ecgOfficialMode;
+            getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit()
+                    .putBoolean("ecg_mode_official", ecgOfficialMode).apply();
+            updateEcgModeButton();
+        });
+        topRow.addView(ecgModeButton,
+                new LinearLayout.LayoutParams(-2, -2));
+
         col.addView(topRow,
                 new LinearLayout.LayoutParams(-1, -2));
 
@@ -9927,6 +9952,9 @@ public class MainActivity extends Activity {
 
         ecgSessionRunning = true;
         resetEcgSessionRules();
+        ecgOfficialStopScheduled = false;
+        ecgZeroFrameRun = 0;
+        ecgLeadOffShown = false;
         ecgStrapLiveHr = 0;
         ecgSessionStartUnix = System.currentTimeMillis() / 1000L;
         pendingEcgStoredAnalysis = false;
@@ -9952,8 +9980,10 @@ public class MainActivity extends Activity {
         ecgStartStopButton.setText("STOP");
         ecgStartStopButton.setBackgroundColor(0xFFFF5555);
         ecgStartStopButton.setTextColor(0xFFFFFFFF);
-        ecgStatusText.setText(
-                "Recording - keep fingers on the clasp");
+        ecgStatusText.setText(ecgOfficialMode
+                ? "Official 30 s reading - keep fingers on the clasp"
+                : "Research recording (up to 10 min) - keep fingers on the clasp");
+        logRaw("ECG_SESSION_MODE " + (ecgOfficialMode ? "official" : "research"));
 
         // exactly the confirmed-working sequence, unchanged
         runRealSequenceWithAbortHistorical();
@@ -10376,18 +10406,58 @@ public class MainActivity extends Activity {
      *       1 = readable: @27 = heart rate (within 1 bpm of our own
      *           measurement in 9/9 sessions), @29-30 = RMSSD in ms
      *       2 = unreadable: no heart rate; @26 = non-zero reason flags
-     *           (6/6 sessions; OpenStrap names four reasons - low
-     *           amplitude, significant noise, unstable signal, not enough
-     *           data - bit order not confirmed)
-     *       6 = meaning unknown: @27 is 5-14 bpm above the true rate and
-     *           above even the fastest single interval, so it is NOT a heart
-     *           rate here; @29-30 still matches our RMSSD; not explained by
-     *           rhythm, early beats, optical HR or T-wave height
+     *           (6/6 sessions). Bit values CONFIRMED 28 Sep from WHOOP's own
+     *           enum in the official app: 1 low amplitude, 2 significant
+     *           noise, 4 unstable signal, 8 not enough data (EcgWhoopSpec)
+     *       6 = Inconclusive (WHOOP's own classifier: code 6 -> Inconclusive
+     *           regardless of HR). @27 is 5-14 bpm above the true rate here,
+     *           so it is NOT a heart rate in this case; @29-30 still matches
+     *           our RMSSD
      *       any other code: never seen in our data - logged prominently
      *   @29-30 0xFFFF = no value yet
      * ------------------------------------------------------------------
      */
     private TextView ecgStrapVerdictText;
+
+    /*
+     * Session mode. RESEARCH (default): keep recording after the verdict,
+     * up to the strap's own 10-minute limit. OFFICIAL: behave like WHOOP's
+     * app - stop 2 s after the verdict (state 2) or when the official rules
+     * call the reading failed. Stored per device.
+     */
+    private boolean ecgOfficialMode = false;
+    private boolean ecgOfficialStopScheduled = false;
+    private Button ecgModeButton;
+
+    /*
+     * Live lead-off: with fingers off the clasp the strap keeps sending R17
+     * frames but zeroes every sample (28 Sep: frames 213-214 after the finger
+     * lift; the stored R16 shows the same second as contact-bit loss and an
+     * electrode-impedance jump). Two consecutive all-zero frames = lead off;
+     * a single zero frame also occurs once at start-up and is ignored.
+     */
+    private int ecgZeroFrameRun = 0;
+    private boolean ecgLeadOffShown = false;
+
+    private void feedEcgLeadOff(boolean allZeroFrame) {
+        if (ecgScreenContainer == null || !ecgSessionRunning) return;
+        ecgZeroFrameRun = allZeroFrame ? ecgZeroFrameRun + 1 : 0;
+        boolean off = ecgZeroFrameRun >= 2;
+        if (off == ecgLeadOffShown) return;
+        ecgLeadOffShown = off;
+        ecgWaveformView.setContactLost(off);
+        logRaw("LEAD_OFF_R17 " + (off ? "start" : "end") +
+                " elapsedMs=" + (System.currentTimeMillis() - ecgSessionStartMs));
+        ecgStatusText.setText(off
+                ? "Fingers off the clasp - contact lost"
+                : "Contact back - keep fingers on the clasp");
+    }
+
+    private void updateEcgModeButton() {
+        if (ecgModeButton == null) return;
+        ecgModeButton.setText(ecgOfficialMode ? "MODE: OFFICIAL 30 s" : "MODE: RESEARCH");
+    }
+
     private int ecgStrapState = 0, ecgStrapResult = 0, ecgStrapMask = 0;
     private int ecgStrapHr = 0, ecgStrapHrv = -1, ecgStrapLiveHr = 0;
 
@@ -10433,6 +10503,9 @@ public class MainActivity extends Activity {
             if (hr > 0) ecgStrapHr = hr;
         }
         if (hrv != 0xFFFF && hrv > 0) ecgStrapHrv = hrv;
+        if (ecgOfficialMode && state == 2 && result != 0) {
+            scheduleOfficialStop("verdict code " + result);
+        }
         if (changed && result != 0) {
             logRaw("STRAP_VERDICT state=" + state + " result=" + result +
                     " category=\"" + strapCategory(result, liveHr > 0 ? liveHr : hr) + "\"" +
@@ -10444,6 +10517,15 @@ public class MainActivity extends Activity {
             ecgStrapVerdictText.setText(android.text.Html.fromHtml(
                     describeStrapVerdictHtml(), android.text.Html.FROM_HTML_MODE_LEGACY));
         }
+    }
+
+    private void scheduleOfficialStop(String why) {
+        if (ecgOfficialStopScheduled) return;
+        ecgOfficialStopScheduled = true;
+        logRaw("ECG_OFFICIAL_MODE_STOP reason=\"" + why + "\" in 2 s");
+        ecgUiHandler.postDelayed(() -> {
+            if (ecgSessionRunning) stopEcgScreenSession();
+        }, 2000);
     }
 
     private String describeStrapVerdictHtml() {
@@ -10462,13 +10544,12 @@ public class MainActivity extends Activity {
                 .append(cat).append("</font></b><br><small>code ").append(ecgStrapResult);
         if (hrForScreen > 0) b.append(", heart rate ").append(hrForScreen).append(" bpm");
         if (ecgStrapHrv > 0) b.append(", HRV (RMSSD) ").append(ecgStrapHrv).append(" ms");
-        if (ecgStrapResult == 2) {
-            b.append(String.format(Locale.US, ", reason flags %d%d%d%d",
-                    (ecgStrapMask >> 3) & 1, (ecgStrapMask >> 2) & 1,
-                    (ecgStrapMask >> 1) & 1, ecgStrapMask & 1));
+        if (ecgStrapMask != 0) {
+            b.append(" &middot; reasons: ").append(android.text.TextUtils.join(", ",
+                    EcgWhoopSpec.reasons(ecgStrapMask)));
         }
-        b.append("<br>The strap's own analysis (official mapping, via OpenStrap). " +
-                "Band-reported, not a diagnosis.</small>");
+        b.append("<br>The strap's own analysis (official mapping; matches WHOOP's " +
+                "app line for line). Band-reported, not a diagnosis.</small>");
         if (ecgStrapResult == 6) {
             b.append("<br><small>The official app offers one retry after a first " +
                     "inconclusive reading.</small>");
@@ -10488,9 +10569,9 @@ public class MainActivity extends Activity {
      * presence, progress rising and below 100, and the "analysing" bit
      * (@22 bit 1, set exactly when state = 1 in our 3,341 frames) clear.
      * That condition never occurred in our recorded sessions, so restart is
-     * a safety net: at most 2 per session, >= 10 s apart. Recording is NOT
-     * stopped on a "failed" outcome - this is a research app; the outcome is
-     * reported so it can be compared with the official behaviour.
+     * a safety net: at most 2 per session, >= 10 s apart. In RESEARCH mode
+     * recording is NOT stopped on a "failed" outcome, so it can be compared
+     * with the official behaviour; in OFFICIAL mode it is (like WHOOP's app).
      * ------------------------------------------------------------------
      */
     private static final String[] ECG_PHASES = {"waiting for contact", "recording",
@@ -10556,6 +10637,9 @@ public class MainActivity extends Activity {
                 break;
             default:
                 break;
+        }
+        if (ecgOfficialMode && ecgRulePhase == 4) {
+            scheduleOfficialStop("failed: " + ecgRuleFailReason);
         }
         if (ecgRulePhase != before || ecgRuleInterruptions != beforeInt) {
             logRaw("ECG_SESSION_RULES phase=" + ECG_PHASES[ecgRulePhase] +
@@ -10696,6 +10780,11 @@ public class MainActivity extends Activity {
 
         if (classifierState == 2) {
             ecgSessionEstablishedThisRun = true;
+        }
+
+        if (ecgLeadOffShown) {
+            ecgStatusText.setText("Fingers off the clasp - contact lost");
+            return;
         }
 
         if (ecgSessionEstablishedThisRun) {
