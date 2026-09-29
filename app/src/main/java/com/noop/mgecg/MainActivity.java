@@ -56,6 +56,10 @@ public class MainActivity extends Activity {
             new java.util.ArrayList<>();
     private int ecgLastPeakSampleIndex = -1;
     private long ecgLastR17Seq = -1;   // UI-handler thread only
+    // Quality-3 live R17 samples, kept per contiguous segment so the rhythm
+    // analysis can time the beats offline (see EcgR17Beats). UI-handler thread only.
+    private final java.util.List<Integer> ecgQ3Cur = new java.util.ArrayList<>();
+    private final java.util.List<int[]> ecgQ3Segments = new java.util.ArrayList<>();
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -6103,9 +6107,19 @@ public class MainActivity extends Activity {
         if (!ecgSessionRunning) return;
         if (ecgLastR17Seq >= 0 && seq != ((ecgLastR17Seq + 1) & 0xFFFFFFFFL)) {
             ecgLastPeakSampleIndex = -1;
+            closeEcgQ3Segment();   // never let the offline beat timing span a gap
             logRaw("ECG_SEQ_GAP prev=" + ecgLastR17Seq + " seq=" + seq);
         }
         ecgLastR17Seq = seq;
+    }
+
+    /** Ends the current quality-3 segment (if any) and keeps it for the offline beat timing. */
+    private void closeEcgQ3Segment() {
+        if (ecgQ3Cur.isEmpty()) return;
+        int[] seg = new int[ecgQ3Cur.size()];
+        for (int i = 0; i < seg.length; i++) seg[i] = ecgQ3Cur.get(i);
+        ecgQ3Segments.add(seg);
+        ecgQ3Cur.clear();
     }
 
     private static long u32leAt(byte[] v, int off) {
@@ -9993,6 +10007,8 @@ public class MainActivity extends Activity {
         ecgRhythmResultText.setText("");
         ecgLastPeakSampleIndex = -1;
         ecgLastR17Seq = -1;
+        ecgQ3Cur.clear();
+        ecgQ3Segments.clear();
         ecgCurrentQualityRunFrames = 0;
         ecgSampleCounter = 0;
         ecgHrText.setText("--");
@@ -10167,7 +10183,21 @@ public class MainActivity extends Activity {
      */
     private void runRhythmRegularityAnalysis() {
 
-        java.util.List<Integer> rawRr = ecgFullSessionIntervalsMs;
+        /*
+         * Beat timing (29 Sep): the live detector thresholds raw |x| and gave
+         * RMSSD 29 ms on a capture whose stored 500 Hz record says 6.9 ms.
+         * R17 is the same signal as R16 decimated to 100 Hz, so time the
+         * beats offline from the buffered quality-3 samples instead (zero-phase
+         * band-pass + sub-sample peak, see EcgR17Beats), and fall back to the
+         * live intervals only if that yields too few.
+         */
+        closeEcgQ3Segment();
+        final java.util.List<Integer> offlineRr = EcgR17Beats.rrMs(ecgQ3Segments);
+        final java.util.List<Integer> rawRr =
+                offlineRr.size() >= 15 ? offlineRr : ecgFullSessionIntervalsMs;
+        logRaw("RHYTHM_RR_SOURCE " + (rawRr == offlineRr ? "offline" : "live")
+                + " segments=" + ecgQ3Segments.size() + " offlineRr=" + offlineRr.size()
+                + " liveRr=" + ecgFullSessionIntervalsMs.size());
 
         if (rawRr.size() < 15) {
             ecgRhythmResultText.setText(
@@ -10719,6 +10749,130 @@ public class MainActivity extends Activity {
         synchronized (pulledR16) { pulledR16.add(value.clone()); }
     }
 
+    /*
+     * Saves the whole stored ECG as a PNG next to the logs: 20 s per row
+     * (longer rows past 5 min so the picture stays at 15 rows or fewer),
+     * 0.5 mV grid, red trace where the strap reported quality 3, grey where it
+     * did not, blue ticks at detected R peaks. Drawn from
+     * EcgR16Analyzer.strip(), which is pure Java and tested against real
+     * captures. Runs on the r16-analysis thread. Research capture, not a
+     * diagnosis.
+     */
+    private void saveEcgStripPng(EcgR16Analyzer.Strip s, EcgR16Analyzer.Result r) {
+        final int fs = EcgR16Analyzer.FS;
+        final int n = s.mv.length;
+        if (n < 10 * fs) return;
+        java.io.File dir = getExternalFilesDir(null);
+        if (dir == null) return;
+        final double totalSec = n / (double) fs;
+        int rowSec = 20;
+        while (totalSec / rowSec > 15) rowSec += 10;
+        final int rows = (int) Math.ceil(totalSec / rowSec);
+        final int W = 1600, left = 64, right = 16, rowH = 170, gap = 30, head = 118;
+        final int plotW = W - left - right;
+        final int H = head + rows * (rowH + gap) + 8;
+        final double ampMv = Double.isNaN(r.rAmpUv) ? 1.0 : r.rAmpUv / 1000.0;
+        final double top = Math.max(1.6, 1.5 * ampMv);
+        final double bot = -Math.max(1.2, 0.8 * top);
+        final double spc = rowSec * (double) fs / plotW;          // samples per pixel column
+
+        android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
+                W, H, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas c = new android.graphics.Canvas(bmp);
+        c.drawColor(0xFFFFFFFF);
+        android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        p.setColor(0xFF111111);
+        p.setTextSize(28f);
+        c.drawText("WHOOP MG single-lead ECG - complete stored recording", 16, 36, p);
+        p.setTextSize(20f);
+        c.drawText(String.format(Locale.UK,
+                "%.0f s at 500 Hz, 0.67-40 Hz zero-phase, %.4f uV/count  |  HR %s bpm, RMSSD %s ms, %d R peaks",
+                totalSec, EcgWhoopSpec.R16_UV_PER_COUNT,
+                Double.isNaN(r.hr) ? "-" : String.format(Locale.UK, "%.1f", r.hr),
+                Double.isNaN(r.rmssd) ? "-" : String.format(Locale.UK, "%.1f", r.rmssd),
+                s.beats.length), 16, 68, p);
+        p.setColor(0xFF555555);
+        p.setTextSize(17f);
+        c.drawText("Red = strap quality 3, grey = below 3, blue ticks = detected R peaks. "
+                + "Research capture: not a medical device, not a diagnosis.", 16, 96, p);
+
+        for (int row = 0; row < rows; row++) {
+            final int s0 = row * rowSec * fs;
+            final int s1 = Math.min(n, s0 + rowSec * fs);
+            final float y0 = head + row * (rowH + gap);
+            // grid: 0.5 mV horizontal lines, 1 s vertical lines
+            p.setStrokeWidth(1f);
+            p.setColor(0xFFF1D3D3);
+            for (double gv = Math.ceil(bot * 2) / 2.0; gv <= top; gv += 0.5) {
+                float yy = (float) (y0 + (top - gv) / (top - bot) * rowH);
+                c.drawLine(left, yy, left + plotW, yy, p);
+            }
+            for (int sec = 0; sec <= rowSec; sec++) {
+                float xx = left + (float) sec * plotW / rowSec;
+                c.drawLine(xx, y0, xx, y0 + rowH, p);
+            }
+            float yz = (float) (y0 + top / (top - bot) * rowH);
+            p.setColor(0xFFDDA0A0);
+            c.drawLine(left, yz, left + plotW, yz, p);
+            p.setColor(0xFF555555);
+            p.setTextSize(15f);
+            c.drawText(String.format(Locale.UK, "%d s", row * rowSec), 4, y0 + 14, p);
+            c.drawText("0 mV", 4, yz + 5, p);
+
+            // trace: one min-max bar per pixel column, joined to the previous column
+            p.setStrokeWidth(1.3f);
+            float px = Float.NaN, py = Float.NaN;
+            for (int col = 0; col < plotW; col++) {
+                int a = s0 + (int) (col * spc);
+                int b = Math.min(s1, s0 + (int) ((col + 1) * spc));
+                if (a >= s1) break;
+                double mn = Double.MAX_VALUE, mx = -Double.MAX_VALUE;
+                double firstV = Double.NaN, lastV = Double.NaN;
+                for (int i = a; i < Math.max(b, a + 1) && i < s1; i++) {
+                    double v = s.mv[i];
+                    if (Double.isNaN(v)) continue;
+                    if (Double.isNaN(firstV)) firstV = v;
+                    lastV = v;
+                    if (v < mn) mn = v;
+                    if (v > mx) mx = v;
+                }
+                if (Double.isNaN(firstV)) { px = Float.NaN; continue; }
+                p.setColor(s.quality[a] == 3 ? 0xFFC0392B : 0xFF9A9A9A);
+                float x = left + col;
+                float yMax = (float) (y0 + (top - Math.min(top, Math.max(bot, mx))) / (top - bot) * rowH);
+                float yMin = (float) (y0 + (top - Math.min(top, Math.max(bot, mn))) / (top - bot) * rowH);
+                float yFirst = (float) (y0 + (top - Math.min(top, Math.max(bot, firstV))) / (top - bot) * rowH);
+                float yLast = (float) (y0 + (top - Math.min(top, Math.max(bot, lastV))) / (top - bot) * rowH);
+                if (!Float.isNaN(px)) c.drawLine(px, py, x, yFirst, p);
+                c.drawLine(x, yMax, x, yMin + 1f, p);
+                px = x;
+                py = yLast;
+            }
+            p.setColor(0xFF1F3A93);
+            p.setStrokeWidth(2f);
+            for (int bi : s.beats) {
+                if (bi < s0 || bi >= s1) continue;
+                float xx = left + (float) ((bi - s0) / spc);
+                c.drawLine(xx, y0, xx, y0 + 14f, p);
+            }
+        }
+
+        java.io.File out = new java.io.File(dir, "ecg_strip_" + s.startUnix + ".png");
+        try (java.io.FileOutputStream fo = new java.io.FileOutputStream(out)) {
+            bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, fo);
+        } catch (java.io.IOException e) {
+            logRaw("ECG_STRIP_PNG_FAILED " + e);
+            bmp.recycle();
+            return;
+        }
+        bmp.recycle();
+        final String path = out.getAbsolutePath();
+        logRaw("ECG_STRIP_PNG path=" + path + " rows=" + rows + " rowSec=" + rowSec
+                + " beats=" + s.beats.length);
+        runOnUiThread(() -> line("*** ECG image saved: " + path + " ***"));
+    }
+
     private void runStoredEcgAnalysisIfPending() {
         if (!pendingEcgStoredAnalysis) return;
         pendingEcgStoredAnalysis = false;
@@ -10734,6 +10888,11 @@ public class MainActivity extends Activity {
             EcgR16Analyzer.Result r = EcgR16Analyzer.analyse(mine);
             saveEcgHistoryEntry(r);
             logRaw(r.toLog());
+            try {
+                saveEcgStripPng(EcgR16Analyzer.strip(mine), r);
+            } catch (Throwable t) {
+                logRaw("ECG_STRIP_PNG_FAILED " + t);
+            }
             final String html = r.toHtml() + (r.recordsIn == 0 ?
                     "<br><small>No stored ECG records were dated inside this session. " +
                             "If the strap clock was wrong, this will be empty.</small>" : "");
@@ -10843,6 +11002,14 @@ public class MainActivity extends Activity {
 
         ecgWaveformView.addSample(rawSample);
         ecgSampleCounter++;
+
+        // same gate the live intervals use: quality 3, after the run has settled
+        if (ecgSessionRunning && ecgLatestQualityForGate == 3
+                && ecgCurrentQualityRunFrames >= ECG_MIN_QUALITY3_RUN_FRAMES) {
+            ecgQ3Cur.add(rawSample);
+        } else {
+            closeEcgQ3Segment();
+        }
 
         int absVal = Math.abs(rawSample);
         ecgRecentAbsForThreshold.add(absVal);
