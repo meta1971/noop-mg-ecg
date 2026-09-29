@@ -45,6 +45,15 @@ import java.util.Locale;
  * and 6) give a result (bad shapes 0-9.4%); 6 of 7 it called unreadable
  * (code 2) come out Inconclusive (5.9-82%); RMSSD agreement stays 13/13.
  * Not a diagnosis.
+ *
+ * Contact and units (added 28 Sep, from the official WHOOP app + this
+ * project's data; constants in EcgWhoopSpec):
+ *  - a second is also unusable if any sample carries tag bit 6 (the
+ *    amplifier's 500 ms fast-recovery window after saturation) or if the
+ *    electrode-impedance block @1534 reads lead-off (mean I > 200)
+ *  - R-wave amplitude and beat-to-beat noise are reported in microvolts
+ *    (R16 = 0.0621 uV/count, derived from R17 = 1 uV/count), measured on the
+ *    zero-phase 0.67-40 Hz + 50 Hz-notch signal
  */
 public final class EcgR16Analyzer {
 
@@ -59,6 +68,9 @@ public final class EcgR16Analyzer {
         public int beatsChecked, beatsBadShape;
         public double noiseFraction;
         public double hr = Double.NaN, rmssd = Double.NaN;
+        public int fastRecoverySeconds, leadOffSeconds;
+        public double rAmpUv = Double.NaN, noiseUv = Double.NaN;
+        public boolean inverted;
         public boolean screenRun, afLike, inconclusive;
         public double[] dash;
         public String note = "";
@@ -67,10 +79,12 @@ public final class EcgR16Analyzer {
             return String.format(Locale.US,
                     "R16_ANALYSIS records=%d usableS=%d intervals=%d excluded=%d rhythmOut=%d " +
                             "badShape=%d/%d early=%d hr=%.1f rmssd=%.1f inconclusive=%b " +
-                            "screenRun=%b afLike=%b%s",
+                            "screenRun=%b afLike=%b rAmpUv=%.0f noiseUv=%.0f inverted=%b " +
+                            "fastRecoveryS=%d leadOffS=%d%s",
                     recordsIn, usableSeconds, intervals, excluded, rhythmOut,
                     beatsBadShape, beatsChecked, early, hr, rmssd,
-                    inconclusive, screenRun, afLike,
+                    inconclusive, screenRun, afLike, rAmpUv, noiseUv, inverted,
+                    fastRecoverySeconds, leadOffSeconds,
                     dash == null ? "" : String.format(Locale.US,
                             " nrmssd=%.4f she=%.3f tp=%d tpRandom=%b",
                             dash[0], dash[1], (int) dash[2], dash[5] > 0.5));
@@ -78,6 +92,11 @@ public final class EcgR16Analyzer {
 
         public String toHtml() {
             StringBuilder b = new StringBuilder("<b>Stored 500 Hz ECG (from the strap's memory)</b><br>");
+            if (leadOffSeconds > 0 || fastRecoverySeconds > 0) {
+                b.append(String.format(Locale.UK, "<small>Contact: fingers off for %d s, " +
+                        "amplifier recovering for %d s (both left out)</small><br>",
+                        leadOffSeconds, fastRecoverySeconds));
+            }
             if (usableSeconds == 0 || intervals < 10) {
                 return b.append("<small>").append(note.isEmpty() ?
                         "Not enough usable stored ECG for an analysis." : note)
@@ -85,6 +104,12 @@ public final class EcgR16Analyzer {
             }
             b.append(String.format(Locale.UK, "<small>%d s usable, %d beat intervals, " +
                     "%d set aside, %d early beat(s)</small><br>", usableSeconds, intervals, excluded, early));
+            if (!Double.isNaN(rAmpUv)) {
+                b.append(String.format(Locale.UK, "<small>R wave %.2f mV%s &middot; " +
+                                "beat-to-beat noise %.0f &micro;V (the chip itself adds ~0.6 " +
+                                "&micro;V; the rest is muscle and contact)</small><br>",
+                        rAmpUv / 1000.0, inverted ? " (inverted)" : "", noiseUv));
+            }
             if (inconclusive) {
                 String why = noiseFraction > 0.10
                         ? String.format(Locale.UK, "%.0f%% of beats did not look like a clean " +
@@ -130,7 +155,9 @@ public final class EcgR16Analyzer {
             int v = sample(f, k);
             maxAbs = Math.max(maxAbs, Math.abs(v));
         }
-        return contact >= 450 && maxAbs < 125000;
+        return contact >= 450 && maxAbs < 125000
+                && EcgWhoopSpec.r16FastRecoveryCount(f) == 0
+                && EcgWhoopSpec.r16LeadOffMeanI(f) <= EcgWhoopSpec.LEAD_OFF_I_THRESHOLD;
     }
 
     static int sample(byte[] f, int k) {
@@ -261,6 +288,14 @@ public final class EcgR16Analyzer {
         r.recordsIn = records.size();
         List<byte[]> recs = new ArrayList<>(records);
         recs.sort((a, b) -> Long.compare(u32(a, 11) & 0xffffffffL, u32(b, 11) & 0xffffffffL));
+        for (byte[] f : recs) {
+            if (f.length != 1584 || EcgWhoopSpec.r16Count(f) == 0) continue;
+            if (EcgWhoopSpec.r16FastRecoveryCount(f) > 0) r.fastRecoverySeconds++;
+            if (EcgWhoopSpec.r16LeadOffCount(f) > 250
+                    || EcgWhoopSpec.r16LeadOffMeanI(f) > EcgWhoopSpec.LEAD_OFF_I_THRESHOLD) r.leadOffSeconds++;
+        }
+        List<Double> ampAll = new ArrayList<>(), noiseAll = new ArrayList<>();
+        int invRuns = 0, runsMeasured = 0;
 
         List<List<byte[]>> runs = new ArrayList<>();
         List<byte[]> cur = new ArrayList<>();
@@ -290,7 +325,8 @@ public final class EcgR16Analyzer {
             double[] y = filtfilt(x);
             int n = y.length;
             double hi = percentile(y, 0, n, 99.5), lo = -percentile(y, 0, n, 0.5);
-            if (lo > hi) for (int i = 0; i < n; i++) y[i] = -y[i];
+            boolean inv = lo > hi;
+            if (inv) for (int i = 0; i < n; i++) y[i] = -y[i];
             int h = 50;
             List<Integer> ok = new ArrayList<>();
             for (int p : pk) if (p - h >= 0 && p + h < n) ok.add(p);
@@ -309,6 +345,10 @@ public final class EcgR16Analyzer {
             }
             r.beatsChecked += ok.size();
             r.beatsBadShape += bad.size();
+            if (measureAmplitude(x, pk, bad, inv, ampAll, noiseAll)) {
+                runsMeasured++;
+                if (inv) invRuns++;
+            }
             List<Double> rr = new ArrayList<>();
             List<Boolean> bd = new ArrayList<>();
             for (int i = 1; i < pk.size(); i++) {
@@ -349,6 +389,9 @@ public final class EcgR16Analyzer {
         }
         r.intervals = allRr.size();
         r.early = AfScreen.earlyBeats(allRr);
+        if (!ampAll.isEmpty()) r.rAmpUv = median(ampAll);
+        if (!noiseAll.isEmpty()) r.noiseUv = median(noiseAll);
+        r.inverted = runsMeasured > 0 && invRuns * 2 > runsMeasured;
         if (r.intervals < 10) {
             r.note = "Only " + r.usableSeconds + " s of settled, good-contact stored ECG.";
             return r;
@@ -365,6 +408,56 @@ public final class EcgR16Analyzer {
             r.afLike = r.dash[6] > 0.5;
         }
         return r;
+    }
+
+    /*
+     * R-wave amplitude (uV) and beat-to-beat noise (uV RMS of each beat minus
+     * the run's median beat, -300..+550 ms) on the zero-phase 0.67-40 Hz +
+     * 50 Hz-notch signal. Baseline = median of -200..-80 ms (PR segment).
+     * Misshapen beats are skipped. Returns false if too few beats.
+     */
+    static boolean measureAmplitude(double[] counts, List<Integer> pk, java.util.Set<Integer> bad,
+                                    boolean inv, List<Double> ampOut, List<Double> noiseOut) {
+        double[] u = new double[counts.length];
+        for (int i = 0; i < u.length; i++) u[i] = counts[i] * EcgWhoopSpec.R16_UV_PER_COUNT;
+        double[] z = EcgWhoopSpec.improvedFilter(u);
+        int pre = (int) (0.30 * FS), post = (int) (0.55 * FS), srch = (int) (0.03 * FS);
+        int b0 = (int) (0.20 * FS), b1 = (int) (0.08 * FS);
+        List<double[]> beats = new ArrayList<>();
+        List<Double> amps = new ArrayList<>();
+        for (int p : pk) {
+            if (bad.contains(p) || p - pre < 0 || p + post >= z.length) continue;
+            double base = median(sub(z, p - b0, p - b1));
+            double pkv = inv ? Double.MAX_VALUE : -Double.MAX_VALUE;
+            for (int i = p - srch; i <= p + srch; i++) pkv = inv ? Math.min(pkv, z[i]) : Math.max(pkv, z[i]);
+            amps.add(Math.abs(pkv - base));
+            double[] w = new double[pre + post];
+            for (int j = 0; j < w.length; j++) w[j] = z[p - pre + j] - base;
+            beats.add(w);
+        }
+        if (beats.size() < 5) return false;
+        int len = pre + post;
+        double[] tmpl = new double[len];
+        double[] col = new double[beats.size()];
+        for (int j = 0; j < len; j++) {
+            for (int g = 0; g < beats.size(); g++) col[g] = beats.get(g)[j];
+            Arrays.sort(col);
+            int m = col.length / 2;
+            tmpl[j] = col.length % 2 == 1 ? col[m] : (col[m - 1] + col[m]) / 2.0;
+        }
+        for (double[] w : beats) {
+            double ss = 0;
+            for (int j = 0; j < len; j++) { double d = w[j] - tmpl[j]; ss += d * d; }
+            noiseOut.add(Math.sqrt(ss / len));
+        }
+        ampOut.addAll(amps);
+        return true;
+    }
+
+    static List<Double> sub(double[] a, int from, int to) {
+        List<Double> out = new ArrayList<>();
+        for (int i = from; i < to; i++) out.add(a[i]);
+        return out;
     }
 
     /** Pearson correlation of y[from .. from+t.length) with t (numpy corrcoef) */
