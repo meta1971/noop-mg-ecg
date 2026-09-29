@@ -1,5 +1,5 @@
 plugins { id 'com.android.application' }
 
 android { namespace 'com.noop.mgecg'; compileSdk 34
-    defaultConfig { applicationId 'com.noop.mgecg'; minSdk 26; targetSdk 34; versionCode 2; versionName '0.1.1-seqgap' }
+    defaultConfig { applicationId 'com.noop.mgecg'; minSdk 26; targetSdk 34; versionCode 3; versionName '0.1.2-offline-rr' }
 }
