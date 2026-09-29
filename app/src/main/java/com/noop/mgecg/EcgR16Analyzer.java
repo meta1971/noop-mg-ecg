@@ -481,4 +481,81 @@ public final class EcgR16Analyzer {
         int m = a.length / 2;
         return a.length % 2 == 1 ? a[m] : (a[m - 1] + a[m]) / 2.0;
     }
+
+    // ------------------------------------------------------------------ strip
+
+    /**
+     * The whole stored recording laid out for the saved ECG image. Pure Java
+     * so it can be tested against real captures without a phone.
+     */
+    public static final class Strip {
+        /** Display trace in mV (zero-phase 0.67-40 Hz + 50 Hz notch); NaN = no usable signal. */
+        public double[] mv = new double[0];
+        /** Strap quality byte (0-3) of the record each sample came from. */
+        public byte[] quality = new byte[0];
+        /** R-peak sample indices, found only inside quality-3 stretches of 5 s or more. */
+        public int[] beats = new int[0];
+        public long startUnix;
+    }
+
+    /** @param records stored R16 frames (1584 bytes each), any order */
+    public static Strip strip(List<byte[]> records) {
+        Strip s = new Strip();
+        List<byte[]> recs = new ArrayList<>();
+        for (byte[] f : records) if (f.length == 1584) recs.add(f);
+        if (recs.isEmpty()) return s;
+        recs.sort((a, b) -> Long.compare(u32(a, 11) & 0xffffffffL, u32(b, 11) & 0xffffffffL));
+        long first = u32(recs.get(0), 11) & 0xffffffffL;
+        long last = u32(recs.get(recs.size() - 1), 11) & 0xffffffffL;
+        int nRec = (int) Math.min(last - first + 1, 3600);          // at most one hour
+        int n = nRec * FS;
+        double[] raw = new double[n];
+        Arrays.fill(raw, Double.NaN);
+        byte[] q = new byte[n];
+        for (byte[] f : recs) {
+            long idx = (u32(f, 11) & 0xffffffffL) - first;
+            if (idx < 0 || idx >= nRec) continue;
+            int base = (int) idx * FS, cnt = EcgWhoopSpec.r16Count(f);
+            for (int k = 0; k < FS; k++) q[base + k] = f[21];
+            for (int k = 0; k < cnt; k++) {
+                int v = EcgWhoopSpec.r16Sample(f, k);
+                // rail samples and the amplifier's fast-recovery window are not ECG
+                if (Math.abs(v) >= EcgWhoopSpec.R16_RAIL || EcgWhoopSpec.r16FastRecovery(f, k)) continue;
+                raw[base + k] = v;
+            }
+        }
+        double[] mv = new double[n];
+        Arrays.fill(mv, Double.NaN);
+        int i = 0;
+        while (i < n) {
+            if (Double.isNaN(raw[i])) { i++; continue; }
+            int j = i;
+            while (j < n && !Double.isNaN(raw[j])) j++;
+            if (j - i >= FS) {
+                double[] uv = new double[j - i];
+                for (int k = 0; k < uv.length; k++) uv[k] = raw[i + k] * EcgWhoopSpec.R16_UV_PER_COUNT;
+                double[] z = EcgWhoopSpec.improvedFilter(uv);
+                for (int k = 0; k < z.length; k++) mv[i + k] = z[k] / 1000.0;
+            }
+            i = j;
+        }
+        List<Integer> beats = new ArrayList<>();
+        i = 0;
+        while (i < n) {
+            if (Double.isNaN(raw[i]) || q[i] != 3) { i++; continue; }
+            int j = i;
+            while (j < n && !Double.isNaN(raw[j]) && q[j] == 3) j++;
+            if (j - i >= 5 * FS) {
+                double[] seg = Arrays.copyOfRange(raw, i, j);
+                for (int p : peaks(seg)) beats.add(i + p);
+            }
+            i = j;
+        }
+        s.mv = mv;
+        s.quality = q;
+        s.beats = new int[beats.size()];
+        for (int k = 0; k < s.beats.length; k++) s.beats[k] = beats.get(k);
+        s.startUnix = u32(recs.get(0), 15) & 0xffffffffL;
+        return s;
+    }
 }
