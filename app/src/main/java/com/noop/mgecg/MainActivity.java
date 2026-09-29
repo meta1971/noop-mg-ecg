@@ -55,6 +55,7 @@ public class MainActivity extends Activity {
     private final java.util.List<Integer> ecgLiveBeatIntervalsMs =
             new java.util.ArrayList<>();
     private int ecgLastPeakSampleIndex = -1;
+    private long ecgLastR17Seq = -1;   // UI-handler thread only
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -6090,6 +6091,23 @@ public class MainActivity extends Activity {
         histTypeCensus.put(key, c == null ? 1 : c + 1);
     }
 
+    /**
+     * R17 sequence-gap guard. The u32 LE at frame offset 11 steps by one per
+     * record; when it doesn't, a notification was dropped and 100 samples are
+     * missing from ecgSampleCounter, so a beat interval spanning the gap would
+     * come out about 1 s short and still pass the 300-2000 ms filter. Drop the
+     * interval instead. Runs on ecgUiHandler like every other live-ECG state
+     * change. A clean run logs no ECG_SEQ_GAP lines.
+     */
+    private void noteR17Sequence(long seq) {
+        if (!ecgSessionRunning) return;
+        if (ecgLastR17Seq >= 0 && seq != ((ecgLastR17Seq + 1) & 0xFFFFFFFFL)) {
+            ecgLastPeakSampleIndex = -1;
+            logRaw("ECG_SEQ_GAP prev=" + ecgLastR17Seq + " seq=" + seq);
+        }
+        ecgLastR17Seq = seq;
+    }
+
     private static long u32leAt(byte[] v, int off) {
         return (v[off] & 0xffL) | ((v[off + 1] & 0xffL) << 8) |
                 ((v[off + 2] & 0xffL) << 16) | ((v[off + 3] & 0xffL) << 24);
@@ -8442,6 +8460,9 @@ public class MainActivity extends Activity {
             return;
         }
 
+        final long r17Seq = u32leAt(v, 11);
+        ecgUiHandler.post(() -> noteR17Sequence(r17Seq));
+
         int quality = v[21] & 0xff;
         int stateBits = v[22] & 0xff;
         boolean presence = (stateBits & 0x08) != 0;
@@ -9971,6 +9992,7 @@ public class MainActivity extends Activity {
         if (ecgStrapVerdictText != null) ecgStrapVerdictText.setText("");
         ecgRhythmResultText.setText("");
         ecgLastPeakSampleIndex = -1;
+        ecgLastR17Seq = -1;
         ecgCurrentQualityRunFrames = 0;
         ecgSampleCounter = 0;
         ecgHrText.setText("--");
