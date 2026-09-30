@@ -62,6 +62,12 @@ public final class EcgWhoopSpec {
      * R16 (stored, 500 Hz): passband gain R17/R16 = 0.0621 +/- 0.0003
      * (ten 20 s blocks, coherence > 0.98, 28 Sep session). As good as the
      * R17 figure above. R16 clips at +/-126976 counts = about +/-7.9 mV.
+     *
+     * NOTE 29 Sep 2026: two runs measured 0.0628 (spectral gain, 8 blocks of
+     * 20 s, SD 0.0001) and 0.0629-0.0630 (least-squares fit of the R17 filter),
+     * about 1.3% above this constant. The constant is left as it was because
+     * the difference moves every uV figure by only ~1% and it is not yet known
+     * whether the scale differs from day to day.
      */
     public static final double R16_UV_PER_COUNT = 0.0621;
     public static final int R16_RAIL = 126976;
@@ -142,9 +148,9 @@ public final class EcgWhoopSpec {
     /*
      * The strap's own live filter, measured from paired R16/R17 data:
      * 2nd-order Butterworth-like high-pass with -3 dB at 0.5 Hz, flat to
-     * ~35 Hz, linear-phase low-pass ~42 Hz, ~250 ms group delay, then every
+     * ~35 Hz, linear-phase low-pass ~41 Hz, ~270 ms group delay, then every
      * 5th sample kept (500 -> 100 Hz). whoopLiveReplica() reproduces it from
-     * R16 at r = 0.996. R17 needs no further filtering on the phone (WHOOP's
+     * R16 at r = 0.998 (refit 29 Sep 2026, see there). R17 needs no further filtering on the phone (WHOOP's
      * app applies none; 50 Hz mains sits at R17's Nyquist, above its band).
      *
      * improvedFilter() is for stored R16: zero-phase 0.67 Hz high-pass (the
@@ -232,19 +238,60 @@ public final class EcgWhoopSpec {
                 Biquad.lowPass(fs, 40.0, 1.3065630));
     }
 
-    /** Reproduces the strap's live R17 from R16 (uV in at 500 Hz, uV out at 100 Hz). */
+    /**
+     * Reproduces the strap's live R17 from R16 (uV in at 500 Hz, uV out at 100 Hz).
+     *
+     * Refitted 29 Sep 2026 on two runs (about 6 minutes of paired R16/R17, output
+     * of a free 800-tap least-squares filter as the ceiling): causal 2nd-order
+     * high-pass at 0.50 Hz (Q 0.716), then a 271-tap linear-phase low-pass
+     * (-3 dB about 41 Hz, Kaiser window beta 15, cutoff 42.6 Hz), keeping
+     * filtered samples 3, 8, 13 ... (500 -> 100 Hz). That has ~270 ms group
+     * delay and lines up with R17 sample for sample. Unexplained variance was
+     * 0.44% on run 1 and 0.26% on run 2, against 0.10% (in-sample) and 0.28%
+     * (out-of-sample) for the free filter, so what is left is not a fixed
+     * filter. The previous 125-tap version was ~140 ms too early, at a 1.6%
+     * higher gain than R17 counts (see R16_UV_PER_COUNT).
+     */
     public static double[] whoopLiveReplica(double[] uv500) {
         double fs = 500;
-        double[] y = runCausal(uv500, Biquad.highPass(fs, 0.5, Math.sqrt(0.5)));
-        double[] h = firLowPass(125, 42.0, fs);
-        double[] out = new double[y.length / 5];
+        double[] y = runCausal(uv500, Biquad.highPass(fs, 0.50, 0.7156));
+        double[] h = firLowPassKaiser(271, 42.6, fs, 15.0);
+        final int phase = 3;
+        int n = uv500.length - phase;
+        double[] out = new double[Math.max(0, (n + 4) / 5)];
         for (int k = 0; k < out.length; k++) {
-            int n = k * 5;
+            int idx = k * 5 + phase;
             double s = 0;
-            for (int j = 0; j < h.length; j++) s += h[j] * y[Math.max(0, n - j)];
+            for (int j = 0; j < h.length; j++) s += h[j] * y[Math.max(0, idx - j)];
             out[k] = s;
         }
         return out;
+    }
+
+    /** Zeroth-order modified Bessel function, series form (enough terms for a Kaiser window). */
+    private static double bessel0(double x) {
+        double sum = 1, term = 1, q = x * x / 4;
+        for (int k = 1; k < 60; k++) {
+            term *= q / ((double) k * k);
+            sum += term;
+        }
+        return sum;
+    }
+
+    /** Linear-phase low-pass, windowed sinc with a Kaiser window, unity gain at DC. */
+    static double[] firLowPassKaiser(int taps, double fc, double fs, double beta) {
+        double[] h = new double[taps];
+        double m = (taps - 1) / 2.0, sum = 0, i0b = bessel0(beta);
+        for (int i = 0; i < taps; i++) {
+            double t = i - m;
+            double sinc = t == 0 ? 2 * fc / fs : Math.sin(2 * Math.PI * fc / fs * t) / (Math.PI * t);
+            double r = t / m;
+            double w = bessel0(beta * Math.sqrt(Math.max(0, 1 - r * r))) / i0b;
+            h[i] = sinc * w;
+            sum += h[i];
+        }
+        for (int i = 0; i < taps; i++) h[i] /= sum;
+        return h;
     }
 
     static double[] firLowPass(int taps, double fc, double fs) {
