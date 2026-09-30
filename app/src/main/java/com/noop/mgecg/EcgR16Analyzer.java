@@ -496,6 +496,19 @@ public final class EcgR16Analyzer {
         /** R-peak sample indices, found only inside quality-3 stretches of 5 s or more. */
         public int[] beats = new int[0];
         public long startUnix;
+        /** Record sequence number of sample 0, so other streams can be laid on the same clock. */
+        public long firstSeq;
+        /**
+         * Optical pulse (R20), six channels at 50 Hz, band-passed and inverted so the pulse peak
+         * points up; NaN = none. Channel i sits at byte offset EcgAux.PULSE_OFFS[i]. See EcgAux.
+         */
+        public double[][] pulse = new double[0][];
+        /** Per channel {beat-locked swing, random-time control, steepest rise ms, its SD, foot ms, its SD, peak ms, beats}. */
+        public double[][] pulseStats = new double[0][];
+        /** Indices of the (up to two) channels that lock best to the heartbeat, best first. */
+        public int[] pulseShow = new int[0];
+        /** Wrist motion, 100 Hz, mg of acceleration change within each second; NaN = none. See EcgAux. */
+        public double[] motionMg = new double[0];
     }
 
     /** @param records stored R16 frames (1584 bytes each), any order */
@@ -556,6 +569,7 @@ public final class EcgR16Analyzer {
         s.beats = new int[beats.size()];
         for (int k = 0; k < s.beats.length; k++) s.beats[k] = beats.get(k);
         s.startUnix = u32(recs.get(0), 15) & 0xffffffffL;
+        s.firstSeq = first;
         return s;
     }
 }
