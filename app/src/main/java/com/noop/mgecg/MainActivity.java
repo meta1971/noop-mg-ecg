@@ -6811,15 +6811,27 @@ public class MainActivity extends Activity {
                 | ((v[25] & 0xffL) << 16)
                 | ((v[26] & 0xffL) << 24);
 
-        int[] samples = new int[28];
+        /*
+         * 29 Sep 2026: a record holds 24 samples (offsets 27-74), then a
+         * 4 x int16 trailer (75-82, not samples: two of the four are constant)
+         * and one zero byte at 83. Reading 28 samples put the trailer into the
+         * waveform as a fake spike every 28th sample.
+         */
+        int[] samples = new int[24];
 
-        for (int i = 0; i < 28; i++) {
+        for (int i = 0; i < 24; i++) {
 
             int lo = v[27 + i * 2] & 0xff;
             int hi = v[28 + i * 2];              // signed on purpose
 
             samples[i] = (hi << 8) | lo;
         }
+
+        int[] trailer = new int[4];
+        for (int i = 0; i < 4; i++) {
+            trailer[i] = (short) ((v[75 + i * 2] & 0xff) | (v[76 + i * 2] << 8));
+        }
+        final long seq32 = u32leAt(v, 11);
 
         int trailingByte = v[83] & 0xff;
 
@@ -6833,7 +6845,7 @@ public class MainActivity extends Activity {
             sum += s;
         }
 
-        double mean = sum / 28.0;
+        double mean = sum / 24.0;
 
         line(String.format(Locale.US,
                 "WAVEFORM-88 subId=%d offset=%d min=%d max=%d pp=%d " +
@@ -6856,9 +6868,12 @@ public class MainActivity extends Activity {
                 " channel=" + Protocol.hex(channelTag) +
                 " offset=" + offsetCounter +
                 " trailByte=0x" + String.format("%02X", trailingByte) +
+                " trailer=" + trailer[0] + "," + trailer[1] + "," + trailer[2] + "," + trailer[3] +
                 " samples=" + sampleStr.toString());
 
-        recordWaveformSample(subId, samples);
+        // keyed by the full sequence number (not its low byte) so blocks stay in
+        // time order across the 255 -> 0 wrap
+        recordWaveformSample((int) seq32, samples);
     }
 
     /*
@@ -7221,7 +7236,7 @@ public class MainActivity extends Activity {
     /*
      * Writes every completed (and any still-partial, now archived)
      * waveform block to a CSV, ordered by block then subId then
-     * sample index - stitching the 28-sample sub-records into one
+     * sample index - stitching the 24-sample sub-records into one
      * flat, continuous series per block, ready to plot.
      */
     private void saveReconstructedWaveform() {
@@ -7448,7 +7463,7 @@ public class MainActivity extends Activity {
         reasmBuf = null;
         synchronized (this) { sleepN = 0; }
         if (!pendingEcgStoredAnalysis) {
-            synchronized (pulledR16) { pulledR16.clear(); }
+            synchronized (pulledR16) { pulledR16.clear(); pulledAux.clear(); }
         }
 
         line("");
@@ -10718,6 +10733,7 @@ public class MainActivity extends Activity {
     private boolean pendingEcgStoredAnalysis = false;
     private long ecgSessionStartUnix = 0, ecgSessionStopUnix = 0;
     private final java.util.List<byte[]> pulledR16 = new java.util.ArrayList<>();
+    private final java.util.List<byte[]> pulledAux = new java.util.ArrayList<>();   // R20 + R21, guarded by pulledR16
     private TextView ecgStoredResultText;
 
     private void scheduleStoredEcgPull() {
@@ -10745,36 +10761,49 @@ public class MainActivity extends Activity {
     }
 
     private void captureStoredEcgRecord(byte[] value) {
-        if (!pendingEcgStoredAnalysis || value.length != 1584 || (value[9] & 0xff) != 16) return;
-        synchronized (pulledR16) { pulledR16.add(value.clone()); }
+        if (!pendingEcgStoredAnalysis || value.length < 12) return;
+        int ver = value[9] & 0xff;
+        if (value.length == 1584 && ver == 16) {
+            synchronized (pulledR16) { pulledR16.add(value.clone()); }
+        } else if ((value.length == 2140 && ver == 20) || (value.length == 1244 && ver == 21)) {
+            // optical pulse (R20) and motion (R21), banked once a second beside the ECG
+            synchronized (pulledR16) { pulledAux.add(value.clone()); }
+        }
     }
 
     /*
      * Saves the whole stored ECG as a PNG next to the logs: 20 s per row
      * (longer rows past 5 min so the picture stays at 15 rows or fewer),
      * 0.5 mV grid, red trace where the strap reported quality 3, grey where it
-     * did not, blue ticks at detected R peaks. Drawn from
-     * EcgR16Analyzer.strip(), which is pure Java and tested against real
-     * captures. Runs on the r16-analysis thread. Research capture, not a
-     * diagnosis.
+     * did not, blue ticks at detected R peaks. Under each ECG row, when the
+     * strap banked them: the optical pulse (R20, two channels, 50 Hz) and wrist
+     * motion (R21, 100 Hz), all on the same strap clock. Drawn from
+     * EcgR16Analyzer.strip() and EcgAux.attach(), which are pure Java and
+     * tested against real captures. Runs on the r16-analysis thread. Research
+     * capture, not a diagnosis.
      */
-    private void saveEcgStripPng(EcgR16Analyzer.Strip s, EcgR16Analyzer.Result r) {
+    private void saveEcgStripPng(EcgR16Analyzer.Strip s, EcgR16Analyzer.Result r, String timing) {
         final int fs = EcgR16Analyzer.FS;
         final int n = s.mv.length;
         if (n < 10 * fs) return;
         java.io.File dir = getExternalFilesDir(null);
         if (dir == null) return;
+        final int nPulse = s.pulseShow.length;              // the (up to two) best heartbeat-locked optical channels
+        final boolean hasPulse = nPulse > 0;
+        final boolean hasMotion = s.motionMg.length > 0;
         final double totalSec = n / (double) fs;
         int rowSec = 20;
         while (totalSec / rowSec > 15) rowSec += 10;
         final int rows = (int) Math.ceil(totalSec / rowSec);
-        final int W = 1600, left = 64, right = 16, rowH = 170, gap = 30, head = 118;
+        final int W = 1600, left = 64, right = 16, ecgH = 150, pulseH = 40, motionH = 30, gap = 26;
+        final int rowH = ecgH + nPulse * pulseH + (hasMotion ? motionH : 0);
+        final int head = (timing == null || timing.isEmpty()) ? 140 : 164;
         final int plotW = W - left - right;
         final int H = head + rows * (rowH + gap) + 8;
         final double ampMv = Double.isNaN(r.rAmpUv) ? 1.0 : r.rAmpUv / 1000.0;
         final double top = Math.max(1.6, 1.5 * ampMv);
         final double bot = -Math.max(1.2, 0.8 * top);
-        final double spc = rowSec * (double) fs / plotW;          // samples per pixel column
+        final double spc = rowSec * (double) fs / plotW;          // ECG samples per pixel column
 
         android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
                 W, H, android.graphics.Bitmap.Config.ARGB_8888);
@@ -10793,9 +10822,16 @@ public class MainActivity extends Activity {
                 Double.isNaN(r.rmssd) ? "-" : String.format(Locale.UK, "%.1f", r.rmssd),
                 s.beats.length), 16, 68, p);
         p.setColor(0xFF555555);
-        p.setTextSize(17f);
-        c.drawText("Red = strap quality 3, grey = below 3, blue ticks = detected R peaks. "
-                + "Research capture: not a medical device, not a diagnosis.", 16, 96, p);
+        p.setTextSize(16f);
+        c.drawText("Red = strap quality 3, grey = below 3, blue ticks = R peaks"
+                + (hasPulse ? ", teal = optical pulse (@ = R20 byte offset, each row scaled)" : "")
+                + (hasMotion ? ", black = wrist motion" : ""), 16, 94, p);
+        c.drawText("Research capture: not a medical device, not a diagnosis.", 16, 116, p);
+        if (timing != null && !timing.isEmpty()) {
+            p.setColor(0xFF1F6F8B);
+            p.setTextSize(15f);
+            c.drawText(timing, 16, 140, p);
+        }
 
         for (int row = 0; row < rows; row++) {
             final int s0 = row * rowSec * fs;
@@ -10805,14 +10841,14 @@ public class MainActivity extends Activity {
             p.setStrokeWidth(1f);
             p.setColor(0xFFF1D3D3);
             for (double gv = Math.ceil(bot * 2) / 2.0; gv <= top; gv += 0.5) {
-                float yy = (float) (y0 + (top - gv) / (top - bot) * rowH);
+                float yy = (float) (y0 + (top - gv) / (top - bot) * ecgH);
                 c.drawLine(left, yy, left + plotW, yy, p);
             }
             for (int sec = 0; sec <= rowSec; sec++) {
                 float xx = left + (float) sec * plotW / rowSec;
                 c.drawLine(xx, y0, xx, y0 + rowH, p);
             }
-            float yz = (float) (y0 + top / (top - bot) * rowH);
+            float yz = (float) (y0 + top / (top - bot) * ecgH);
             p.setColor(0xFFDDA0A0);
             c.drawLine(left, yz, left + plotW, yz, p);
             p.setColor(0xFF555555);
@@ -10820,7 +10856,7 @@ public class MainActivity extends Activity {
             c.drawText(String.format(Locale.UK, "%d s", row * rowSec), 4, y0 + 14, p);
             c.drawText("0 mV", 4, yz + 5, p);
 
-            // trace: one min-max bar per pixel column, joined to the previous column
+            // ECG trace: one min-max bar per pixel column, joined to the previous column
             p.setStrokeWidth(1.3f);
             float px = Float.NaN, py = Float.NaN;
             for (int col = 0; col < plotW; col++) {
@@ -10840,10 +10876,10 @@ public class MainActivity extends Activity {
                 if (Double.isNaN(firstV)) { px = Float.NaN; continue; }
                 p.setColor(s.quality[a] == 3 ? 0xFFC0392B : 0xFF9A9A9A);
                 float x = left + col;
-                float yMax = (float) (y0 + (top - Math.min(top, Math.max(bot, mx))) / (top - bot) * rowH);
-                float yMin = (float) (y0 + (top - Math.min(top, Math.max(bot, mn))) / (top - bot) * rowH);
-                float yFirst = (float) (y0 + (top - Math.min(top, Math.max(bot, firstV))) / (top - bot) * rowH);
-                float yLast = (float) (y0 + (top - Math.min(top, Math.max(bot, lastV))) / (top - bot) * rowH);
+                float yMax = (float) (y0 + (top - Math.min(top, Math.max(bot, mx))) / (top - bot) * ecgH);
+                float yMin = (float) (y0 + (top - Math.min(top, Math.max(bot, mn))) / (top - bot) * ecgH);
+                float yFirst = (float) (y0 + (top - Math.min(top, Math.max(bot, firstV))) / (top - bot) * ecgH);
+                float yLast = (float) (y0 + (top - Math.min(top, Math.max(bot, lastV))) / (top - bot) * ecgH);
                 if (!Float.isNaN(px)) c.drawLine(px, py, x, yFirst, p);
                 c.drawLine(x, yMax, x, yMin + 1f, p);
                 px = x;
@@ -10855,6 +10891,61 @@ public class MainActivity extends Activity {
                 if (bi < s0 || bi >= s1) continue;
                 float xx = left + (float) ((bi - s0) / spc);
                 c.drawLine(xx, y0, xx, y0 + 14f, p);
+            }
+
+            float yStrip = y0 + ecgH;
+            if (hasPulse) {
+                final int ps0 = row * rowSec * EcgAux.PULSE_FS;
+                for (int ch = 0; ch < nPulse; ch++) {
+                    final int ci = s.pulseShow[ch];
+                    final double[] y = s.pulse[ci];
+                    final int ps1 = Math.min(y.length, ps0 + rowSec * EcgAux.PULSE_FS);
+                    final float mid = yStrip + pulseH / 2f;
+                    // scaled per row (99th percentile of this row) so the shape stays readable
+                    // while the pulse amplitude itself grows or shrinks over the recording
+                    java.util.ArrayList<Double> ab = new java.util.ArrayList<>();
+                    for (int i = ps0; i < ps1; i++) if (!Double.isNaN(y[i])) ab.add(Math.abs(y[i]));
+                    java.util.Collections.sort(ab);
+                    final double amp = ab.isEmpty() ? 1.0 : Math.max(1e-6, 1.3 * ab.get((int) (0.99 * (ab.size() - 1))));
+                    p.setColor(0xFFE3EEF2);
+                    p.setStrokeWidth(1f);
+                    c.drawLine(left, mid, left + plotW, mid, p);
+                    p.setColor(0xFF555555);
+                    p.setTextSize(13f);
+                    c.drawText("@" + EcgAux.PULSE_OFFS[ci], 4, mid + 4, p);
+                    p.setColor(0xFF1F6F8B);
+                    p.setStrokeWidth(1.4f);
+                    float qx = Float.NaN, qy = Float.NaN;
+                    for (int i = ps0; i < ps1; i++) {
+                        double v = y[i];
+                        if (Double.isNaN(v)) { qx = Float.NaN; continue; }
+                        float x = left + (float) ((i - ps0) * (double) plotW / (rowSec * EcgAux.PULSE_FS));
+                        float yy = (float) (mid - Math.max(-1.0, Math.min(1.0, v / amp)) * (pulseH / 2f - 2f));
+                        if (!Float.isNaN(qx)) c.drawLine(qx, qy, x, yy, p);
+                        qx = x;
+                        qy = yy;
+                    }
+                    yStrip += pulseH;
+                }
+            }
+            if (hasMotion) {
+                final int ms0 = row * rowSec * EcgAux.MOTION_FS;
+                final int ms1 = Math.min(s.motionMg.length, ms0 + rowSec * EcgAux.MOTION_FS);
+                p.setColor(0xFFEEEEEE);
+                p.setStrokeWidth(1f);
+                c.drawLine(left, yStrip + motionH - 2, left + plotW, yStrip + motionH - 2, p);
+                p.setColor(0xFF555555);
+                p.setTextSize(12f);
+                c.drawText("mot", 4, yStrip + motionH - 4, p);
+                p.setColor(0xFF444444);
+                p.setStrokeWidth(1f);
+                for (int i = ms0; i < ms1; i++) {
+                    double v = s.motionMg[i];
+                    if (Double.isNaN(v)) continue;
+                    float x = left + (float) ((i - ms0) * (double) plotW / (rowSec * EcgAux.MOTION_FS));
+                    float h = (float) (Math.min(30.0, v) / 30.0 * (motionH - 4));
+                    c.drawLine(x, yStrip + motionH - 2, x, yStrip + motionH - 2 - h, p);
+                }
             }
         }
 
@@ -10869,7 +10960,7 @@ public class MainActivity extends Activity {
         bmp.recycle();
         final String path = out.getAbsolutePath();
         logRaw("ECG_STRIP_PNG path=" + path + " rows=" + rows + " rowSec=" + rowSec
-                + " beats=" + s.beats.length);
+                + " beats=" + s.beats.length + " pulse=" + hasPulse + " motion=" + hasMotion);
         runOnUiThread(() -> line("*** ECG image saved: " + path + " ***"));
     }
 
@@ -10877,19 +10968,36 @@ public class MainActivity extends Activity {
         if (!pendingEcgStoredAnalysis) return;
         pendingEcgStoredAnalysis = false;
         final java.util.List<byte[]> mine = new java.util.ArrayList<>();
+        final java.util.List<byte[]> mineAux = new java.util.ArrayList<>();
         synchronized (pulledR16) {
             for (byte[] f : pulledR16) {
                 long t = u32leAt(f, 15);
                 if (t >= ecgSessionStartUnix - 15 && t <= ecgSessionStopUnix + 30) mine.add(f);
             }
+            for (byte[] f : pulledAux) {
+                long t = u32leAt(f, 15);
+                if (t >= ecgSessionStartUnix - 15 && t <= ecgSessionStopUnix + 30) mineAux.add(f);
+            }
             pulledR16.clear();
+            pulledAux.clear();
         }
         new Thread(() -> {
             EcgR16Analyzer.Result r = EcgR16Analyzer.analyse(mine);
             saveEcgHistoryEntry(r);
             logRaw(r.toLog());
             try {
-                saveEcgStripPng(EcgR16Analyzer.strip(mine), r);
+                EcgR16Analyzer.Strip strip = EcgR16Analyzer.strip(mine);
+                EcgAux.attach(strip, mineAux);
+                String timing = EcgAux.timingText(strip);
+                logRaw("ECG_AUX records=" + mineAux.size() + " pulse=" + (strip.pulse.length > 0)
+                        + " motion=" + (strip.motionMg.length > 0)
+                        + (timing.isEmpty() ? "" : " " + timing));
+                for (int ci = 0; ci < strip.pulseStats.length; ci++) {
+                    double[] st = strip.pulseStats[ci];
+                    logRaw(String.format(Locale.US, "PULSE_LOCK @%d swing=%.2f control=%.2f rise_ms=%.0f+-%.1f foot_ms=%.0f+-%.1f peak_ms=%.0f beats=%.0f",
+                            EcgAux.PULSE_OFFS[ci], st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]));
+                }
+                saveEcgStripPng(strip, r, timing);
             } catch (Throwable t) {
                 logRaw("ECG_STRIP_PNG_FAILED " + t);
             }
