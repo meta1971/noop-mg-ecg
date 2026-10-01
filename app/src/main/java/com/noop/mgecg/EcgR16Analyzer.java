@@ -73,6 +73,9 @@ public final class EcgR16Analyzer {
         public boolean inverted;
         public boolean screenRun, afLike, inconclusive;
         public double[] dash;
+        /** 0.1.7 screen outcome: AfScreen.AF_LIKE / IRREGULAR / NOT_AF_LIKE / INCONCLUSIVE, and its detail. */
+        public int afState = AfScreen.INCONCLUSIVE;
+        public AfScreen.Outcome af;
         public String note = "";
 
         public String toLog() {
@@ -85,9 +88,10 @@ public final class EcgR16Analyzer {
                     beatsBadShape, beatsChecked, early, hr, rmssd,
                     inconclusive, screenRun, afLike, rAmpUv, noiseUv, inverted,
                     fastRecoverySeconds, leadOffSeconds,
-                    dash == null ? "" : String.format(Locale.US,
+                    (dash == null ? "" : String.format(Locale.US,
                             " nrmssd=%.4f she=%.3f tp=%d tpRandom=%b",
-                            dash[0], dash[1], (int) dash[2], dash[5] > 0.5));
+                            dash[0], dash[1], (int) dash[2], dash[5] > 0.5))
+                            + (af == null ? " afState=4 why=not_run" : " " + af.toLog()));
         }
 
         public String toHtml() {
@@ -110,30 +114,70 @@ public final class EcgR16Analyzer {
                                 "&micro;V; the rest is muscle and contact)</small><br>",
                         rAmpUv / 1000.0, inverted ? " (inverted)" : "", noiseUv));
             }
+            if (noiseFraction > 0.10) {
+                return b.append("<b>Inconclusive</b> &mdash; ")
+                        .append(String.format(Locale.UK, "%.0f%% of beats did not look like a clean " +
+                                "heartbeat (signal too noisy)", 100 * noiseFraction))
+                        .append(", so no heart rate or rhythm verdict. Hold still with firm, steady " +
+                                "finger contact and try again.").toString();
+            }
+            int shareOut = intervals == 0 ? 0 : (int) Math.round(100.0 * rhythmOut / intervals);
             if (inconclusive) {
-                String why = noiseFraction > 0.10
-                        ? String.format(Locale.UK, "%.0f%% of beats did not look like a clean " +
-                        "heartbeat (signal too noisy)", 100 * noiseFraction)
-                        : String.format(Locale.UK, "%.0f%% of beat intervals were irregular or " +
-                        "mis-detected", 100.0 * rhythmOut / intervals);
-                return b.append("<b>Inconclusive</b> &mdash; ").append(why).append(", so no heart " +
-                        "rate or rhythm verdict. Hold still with firm finger contact and try again.")
-                        .toString();
+                // more than 15% of intervals differ by over 20% from their neighbours: no heart-rate
+                // number, but say what the AF screen found
+                if (afState == AfScreen.AF_LIKE) {
+                    return b.append(afLikeHtml()).toString();
+                }
+                if (afState == AfScreen.IRREGULAR) {
+                    return b.append(irregularHtml(shareOut)).toString();
+                }
+                return b.append("<b>Inconclusive</b> &mdash; ")
+                        .append(String.format(Locale.UK, "%d%% of beat intervals were irregular or " +
+                                "mis-detected", shareOut))
+                        .append(", so no heart rate or rhythm verdict. Hold still with firm, steady " +
+                                "finger contact and try again.").toString();
             }
             b.append(String.format(Locale.UK, "Heart rate <b>%.0f</b> bpm &middot; HRV (RMSSD) <b>%.0f</b> ms<br>",
                     hr, rmssd));
-            if (screenRun) {
+            if (afState == AfScreen.AF_LIKE) {
+                b.append(afLikeHtml());
+            } else if (afState == AfScreen.IRREGULAR) {
+                b.append(irregularHtml(shareOut));
+            } else if (afState == AfScreen.NOT_AF_LIKE && dash != null) {
                 b.append(String.format(Locale.UK,
-                        "<b><font color='%s'>Published AF screen: %s</font></b> " +
-                                "<small>(nRMSSD %.3f, entropy %.2f, turning points %s)</small>",
-                        afLike ? "#FF5555" : "#39FF6A",
-                        afLike ? "AF-like pattern" : "no AF-like pattern",
-                        dash[0], dash[1], dash[5] > 0.5 ? "random-like" : "not random"));
+                        "<b><font color='#39FF6A'>AF screen (research): no AF-like pattern</font></b> " +
+                                "<small>(%d beats; nRMSSD %.3f, entropy %.2f, turning points %s)</small><br>" +
+                                "<small>A clean result does not rule anything out.</small>",
+                        af.window, dash[0], dash[1], dash[5] > 0.5 ? "random-like" : "not random"));
             } else {
-                b.append("<small>Published AF screen not run: it needs 128 clean beats " +
-                        "(this session had ").append(intervals - excluded).append(").</small>");
+                String why = af == null || af.why.isEmpty() ? "not enough clean beats" : af.why;
+                b.append("<small>AF screen not run: ").append(why).append(" (this session had ")
+                        .append(af == null ? intervals - excluded : af.cleaned)
+                        .append(" clean intervals; it needs ").append(AfScreen.MIN_WINDOW)
+                        .append(", about a minute of steady hold).</small>");
             }
             return b.toString();
+        }
+
+        private String afLikeHtml() {
+            return String.format(Locale.UK,
+                    "<b><font color='#FF5555'>AF screen (research): AF-like pattern</font></b><br>" +
+                            "<small>Last %d cleaned beats%s: nRMSSD %.3f, entropy %.2f, turning points %s. " +
+                            "%d merged, %d split, %d premature beat(s) removed first. Frequent premature " +
+                            "beats, poor contact or movement can also look like this. Not a diagnosis.</small>",
+                    af.window, af.window == AfScreen.WINDOW ? " (both halves agree)" : "",
+                    dash[0], dash[1], dash[5] > 0.5 ? "random-like" : "not random",
+                    af.merged, af.split, af.premature);
+        }
+
+        private String irregularHtml(int shareOut) {
+            return String.format(Locale.UK,
+                    "<b><font color='#FFB020'>Irregular rhythm, cause unclear</font></b><br>" +
+                            "<small>%d%% of beat intervals differ by more than 20%% from their neighbours%s. " +
+                            "Frequent premature beats, mis-detected beats or an irregular rhythm can each do " +
+                            "this and the screen cannot tell them apart here. This is not reassuring and not " +
+                            "a diagnosis. Hold still with firm, steady finger contact and try again.</small>",
+                    shareOut, af != null && af.rawAfLike ? ", and the uncleaned series is AF-like" : "");
         }
     }
 
@@ -400,12 +444,33 @@ public final class EcgR16Analyzer {
         r.inconclusive = r.rhythmOut > 0.15 * r.intervals || r.noiseFraction > 0.10;
         if (!clean.isEmpty()) r.hr = 60000.0 / median(clean);
         if (nDiff > 0) r.rmssd = Math.sqrt(sumSq / nDiff);
-        if (!r.inconclusive && clean.size() >= AfScreen.WINDOW) {
-            double[] w = new double[AfScreen.WINDOW];
-            for (int i = 0; i < AfScreen.WINDOW; i++) w[i] = clean.get(clean.size() - AfScreen.WINDOW + i);
-            r.dash = AfScreen.dash(w);
-            r.screenRun = true;
-            r.afLike = r.dash[6] > 0.5;
+        if (r.noiseFraction <= 0.10) {
+            // 0.1.7: repair detector errors, remove premature beats with their pauses, then the Dash
+            // screen on 128 (or 64) cleaned beats. A beat that failed the shape check is a rejected
+            // interval: runs are cut there, so no interval is ever joined across it.
+            List<double[]> segs = new ArrayList<>();
+            for (int ri = 0; ri < rrRuns.size(); ri++) {
+                List<Double> rr = rrRuns.get(ri);
+                List<Boolean> bd = badRuns.get(ri);
+                List<Double> seg = new ArrayList<>();
+                for (int i = 0; i <= rr.size(); i++) {
+                    if (i == rr.size() || bd.get(i)) {
+                        if (!seg.isEmpty()) {
+                            double[] a = new double[seg.size()];
+                            for (int k = 0; k < a.length; k++) a[k] = seg.get(k);
+                            segs.add(a);
+                            seg.clear();
+                        }
+                    } else {
+                        seg.add(rr.get(i));
+                    }
+                }
+            }
+            r.af = AfScreen.screen(segs);
+            r.afState = r.af.state;
+            r.dash = r.af.dash;
+            r.screenRun = r.af.dash != null;
+            r.afLike = r.af.state == AfScreen.AF_LIKE;
         }
         return r;
     }
