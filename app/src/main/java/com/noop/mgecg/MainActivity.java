@@ -60,6 +60,12 @@ public class MainActivity extends Activity {
     // analysis can time the beats offline (see EcgR17Beats). UI-handler thread only.
     private final java.util.List<Integer> ecgQ3Cur = new java.util.ArrayList<>();
     private final java.util.List<int[]> ecgQ3Segments = new java.util.ArrayList<>();
+    // 0.1.8 instrumentation (UI thread except where noted)
+    private final java.util.List<byte[]> ecgSessionR17Frames = new java.util.ArrayList<>();   // BLE thread adds, guarded by itself
+    private final java.util.List<Object[]> ecgMarks = new java.util.ArrayList<>();            // {Long unixMs, String label}
+    private final java.util.List<double[]> ecgCuffs = new java.util.ArrayList<>();            // {unixMs, systolic, diastolic, pulse}
+    private int lastBatteryPct = -1;
+    private long lastBatteryAtMs = 0, lastBatteryLoggedMs = 0;
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -1155,6 +1161,9 @@ public class MainActivity extends Activity {
         if (value == null) {
             return;
         }
+        if (battLevelChar.equals(c.getUuid()) && value.length > 0) {
+            noteBattery(value[0] & 0xff, "notify");
+        }
         if ("0005".equals(shortUuid(c.getUuid()))) {
             byte[] full = reassembleData0005(value);
             if (full == null) {
@@ -1749,6 +1758,13 @@ public class MainActivity extends Activity {
                         " startsSent=" + experimentStartsSent +
                         " completionsSeenBefore=" +
                         experimentCompletionsSeen);
+                // context for decoding the payload: what the session looked like when it fired
+                logRaw("ECG_COMPLETE_CONTEXT sessionRunning=" + ecgSessionRunning
+                        + " elapsedS=" + (ecgSessionRunning ? (System.currentTimeMillis() - ecgSessionStartMs) / 1000 : -1)
+                        + " strapState=" + ecgStrapState + " strapResult=" + ecgStrapResult
+                        + " strapHr=" + ecgStrapHr + " strapHrv=" + ecgStrapHrv
+                        + " interruptions=" + ecgRuleInterruptions + " marks=" + ecgMarks.size()
+                        + " batteryPct=" + lastBatteryPct);
 
                 /*
                  * UNCONDITIONAL AUTO-PULL - found by rechecking our
@@ -3752,6 +3768,7 @@ public class MainActivity extends Activity {
                 r.put("early", stored.early);
                 r.put("screenRun", stored.screenRun);
                 r.put("afLike", stored.afLike);
+                r.put("afState", stored.afState);
                 e.put("stored", r);
             }
             if (at >= 0) arr.put(at, e); else arr.put(e);
@@ -3797,6 +3814,10 @@ public class MainActivity extends Activity {
             org.json.JSONObject r = e.optJSONObject("stored");
             if (r == null) {
                 b.append("<br><small>Stored 500 Hz: not analysed</small>");
+            } else if (r.optInt("afState") == AfScreen.AF_LIKE) {
+                b.append("<br><small>Stored 500 Hz: <font color='#FF5555'>AF-like pattern</font> (research screen)</small>");
+            } else if (r.optInt("afState") == AfScreen.IRREGULAR) {
+                b.append("<br><small>Stored 500 Hz: <font color='#FFB020'>irregular rhythm, cause unclear</font></small>");
             } else if (r.optBoolean("inconclusive")) {
                 b.append("<br><small>Stored 500 Hz: inconclusive (").append(r.optInt("usableS"))
                         .append(" s usable)</small>");
@@ -8491,6 +8512,11 @@ public class MainActivity extends Activity {
 
         final long r17Seq = u32leAt(v, 11);
         ecgUiHandler.post(() -> noteR17Sequence(r17Seq));
+        if (ecgSessionRunning) {
+            synchronized (ecgSessionR17Frames) {
+                if (ecgSessionR17Frames.size() < 4000) ecgSessionR17Frames.add(v.clone());
+            }
+        }
 
         int quality = v[21] & 0xff;
         int stateBits = v[22] & 0xff;
@@ -9598,6 +9624,11 @@ public class MainActivity extends Activity {
             byte[] value,
             int status) {
 
+        if (battLevelChar.equals(c.getUuid()) && status == BluetoothGatt.GATT_SUCCESS
+                && value != null && value.length > 0) {
+            noteBattery(value[0] & 0xff, "read");
+        }
+
         String label = deviceInfoLabel(c.getUuid());
 
         if (label != null) {
@@ -9904,6 +9935,26 @@ public class MainActivity extends Activity {
         Space sp5 = new Space(this);
         col.addView(sp5, new LinearLayout.LayoutParams(-1, 14));
 
+        // 0.1.8: tap while recording to label what you are doing; each tap is logged and drawn on the saved image
+        TextView markLabel = new TextView(this);
+        markLabel.setText("MARK WHAT YOU ARE DOING (tap during a recording)");
+        markLabel.setTextSize(11);
+        markLabel.setTextColor(0xFF5A6B85);
+        col.addView(markLabel, new LinearLayout.LayoutParams(-1, -2));
+        col.addView(markRow("LIFT", "BACK", "LIGHT", "FIRM"), new LinearLayout.LayoutParams(-1, -2));
+        col.addView(markRow("BR ON", "BR OFF", "SHAKE", "STILL"), new LinearLayout.LayoutParams(-1, -2));
+        Button cuffButton = new Button(this);
+        cuffButton.setText("CUFF READING...");
+        cuffButton.setTextSize(13);
+        cuffButton.setTextColor(0xFFFFD27F);
+        cuffButton.setBackgroundColor(0xFF2A2210);
+        cuffButton.setOnClickListener(v -> showCuffDialog());
+        LinearLayout.LayoutParams cuffLp = new LinearLayout.LayoutParams(-1, -2);
+        cuffLp.topMargin = 8;
+        col.addView(cuffButton, cuffLp);
+        Space sp5b = new Space(this);
+        col.addView(sp5b, new LinearLayout.LayoutParams(-1, 14));
+
         /*
          * Rhythm-regularity result - shown only after a session ends
          * with enough clean beats. A real Poincaré-plot analysis
@@ -9998,6 +10049,81 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Battery level from the standard Battery Service. It was polled every 20 s but the value was dropped. */
+    private void noteBattery(int pct, String src) {
+        long now = System.currentTimeMillis();
+        boolean changed = pct != lastBatteryPct;
+        lastBatteryPct = pct;
+        lastBatteryAtMs = now;
+        if (changed || now - lastBatteryLoggedMs >= 300000L) {
+            lastBatteryLoggedMs = now;
+            logRaw("BATTERY_LEVEL pct=" + pct + " src=" + src);
+        }
+    }
+
+    private LinearLayout markRow(String... labels) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        for (final String label : labels) {
+            Button b = new Button(this);
+            b.setText(label);
+            b.setTextSize(12);
+            b.setTextColor(0xFFB8C4D9);
+            b.setBackgroundColor(0xFF1B2433);
+            b.setOnClickListener(v -> addEcgMark(label));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
+            lp.setMargins(2, 2, 2, 2);
+            row.addView(b, lp);
+        }
+        return row;
+    }
+
+    private void addEcgMark(String label) {
+        long now = System.currentTimeMillis();
+        synchronized (ecgMarks) { ecgMarks.add(new Object[]{now, label}); }
+        long el = ecgSessionRunning ? (now - ecgSessionStartMs) / 1000 : -1;
+        logRaw("ECG_MARK label=" + label.replace(' ', '_') + " unixMs=" + now + " elapsedS=" + el
+                + " running=" + ecgSessionRunning + " quality=" + ecgLatestQualityForGate
+                + " battery=" + lastBatteryPct);
+        line("MARK " + label + (el >= 0 ? String.format(Locale.UK, " at %d:%02d", el / 60, el % 60) : " (not recording)"));
+        Toast.makeText(this, label, Toast.LENGTH_SHORT).show();
+    }
+
+    private void showCuffDialog() {
+        final EditText sys = new EditText(this), dia = new EditText(this), pulse = new EditText(this);
+        sys.setHint("systolic (top number)");
+        dia.setHint("diastolic (bottom number)");
+        pulse.setHint("pulse (optional)");
+        for (EditText e : new EditText[]{sys, dia, pulse}) e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(40, 20, 40, 0);
+        l.addView(sys);
+        l.addView(dia);
+        l.addView(pulse);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Cuff reading, taken now")
+                .setView(l)
+                .setPositiveButton("Save", (d, w) -> {
+                    try {
+                        double sy = Double.parseDouble(sys.getText().toString().trim());
+                        double di = Double.parseDouble(dia.getText().toString().trim());
+                        String ps = pulse.getText().toString().trim();
+                        double pu = ps.isEmpty() ? -1 : Double.parseDouble(ps);
+                        long now = System.currentTimeMillis();
+                        synchronized (ecgCuffs) { ecgCuffs.add(new double[]{now, sy, di, pu}); }
+                        logRaw(String.format(Locale.US, "ECG_CUFF sys=%.0f dia=%.0f pulse=%.0f unixMs=%d running=%b",
+                                sy, di, pu, now, ecgSessionRunning));
+                        line(String.format(Locale.UK, "CUFF %.0f/%.0f%s", sy, di, pu >= 0 ? String.format(Locale.UK, " pulse %.0f", pu) : ""));
+                        if (ecgSessionRunning) addEcgMark(String.format(Locale.UK, "CUFF %.0f/%.0f", sy, di));
+                    } catch (NumberFormatException ex) {
+                        Toast.makeText(this, "Enter the numbers as digits", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private void startEcgScreenSession() {
 
         ecgSessionRunning = true;
@@ -10037,6 +10163,10 @@ public class MainActivity extends Activity {
                 ? "Official 30 s reading - keep fingers on the clasp"
                 : "Research recording (up to 10 min) - keep fingers on the clasp");
         logRaw("ECG_SESSION_MODE " + (ecgOfficialMode ? "official" : "research"));
+        logRaw("ECG_SESSION_BATTERY phase=start pct=" + lastBatteryPct
+                + " ageS=" + (lastBatteryAtMs == 0 ? -1 : (System.currentTimeMillis() - lastBatteryAtMs) / 1000));
+        synchronized (ecgSessionR17Frames) { ecgSessionR17Frames.clear(); }
+        synchronized (ecgMarks) { ecgMarks.clear(); }
 
         // exactly the confirmed-working sequence, unchanged
         runRealSequenceWithAbortHistorical();
@@ -10080,6 +10210,9 @@ public class MainActivity extends Activity {
     private void stopEcgScreenSession() {
 
         ecgSessionRunning = false;
+        logRaw("ECG_SESSION_BATTERY phase=stop pct=" + lastBatteryPct
+                + " ageS=" + (lastBatteryAtMs == 0 ? -1 : (System.currentTimeMillis() - lastBatteryAtMs) / 1000)
+                + " elapsedS=" + (System.currentTimeMillis() - ecgSessionStartMs) / 1000);
         if (ecgElapsedTicker != null) {
             ecgUiHandler.removeCallbacks(ecgElapsedTicker);
         }
@@ -10238,6 +10371,12 @@ public class MainActivity extends Activity {
          * than 15% would be set aside, no label is given at all.
          */
         int nRaw = rawRr.size();
+        // 0.1.7: the AF screen runs on the repaired and premature-beat-cleaned series, not on the
+        // neighbour-filtered one below (that filter removes exactly the irregularity an AF screen
+        // needs to see). The filtered series is still used for the descriptive numbers.
+        final double[] rawD = new double[nRaw];
+        for (int i = 0; i < nRaw; i++) rawD[i] = rawRr.get(i);
+        final AfScreen.Outcome oc = AfScreen.screen(java.util.Collections.singletonList(rawD));
         boolean[] keep = new boolean[nRaw];
         int excluded = 0;
         for (int i = 0; i < nRaw; i++) {
@@ -10265,19 +10404,40 @@ public class MainActivity extends Activity {
         }
 
         if (excludedFrac > 0.15 || rr.size() < 15 || diffList.size() < 10) {
-            String msg = String.format(Locale.US,
-                    "<b>Inconclusive</b><br>%d of %d beat intervals " +
-                            "(%.0f%%) differ by more than 20%% from their " +
-                            "neighbours. With this data that can't be " +
-                            "separated into detector errors versus a " +
-                            "genuinely irregular rhythm, so no label is " +
-                            "given. A longer, stiller hold usually helps.",
-                    excluded, nRaw, 100 * excludedFrac);
+            String msg;
+            if (oc.state == AfScreen.AF_LIKE) {
+                msg = String.format(Locale.US,
+                        "<b><font color='#FF5555'>AF screen (research): AF-like pattern</font></b><br>" +
+                                "<small>Last %d cleaned beats%s: nRMSSD %.3f, entropy %.2f. %d merged, %d split, " +
+                                "%d premature beat(s) removed first. %d of %d intervals (%.0f%%) differ by more " +
+                                "than 20%% from their neighbours. Frequent premature beats, poor contact or " +
+                                "movement can also look like this. Not a diagnosis.</small>",
+                        oc.window, oc.window == AfScreen.WINDOW ? " (both halves agree)" : "",
+                        oc.dash[0], oc.dash[1], oc.merged, oc.split, oc.premature,
+                        excluded, nRaw, 100 * excludedFrac);
+            } else if (oc.state == AfScreen.IRREGULAR) {
+                msg = String.format(Locale.US,
+                        "<b><font color='#FFB020'>Irregular rhythm, cause unclear</font></b><br>" +
+                                "<small>%d of %d beat intervals (%.0f%%) differ by more than 20%% from their " +
+                                "neighbours. Frequent premature beats, mis-detected beats or an irregular rhythm " +
+                                "can each do this and the screen cannot tell them apart here. Not reassuring and " +
+                                "not a diagnosis. Hold still with firm, steady finger contact and try again.</small>",
+                        excluded, nRaw, 100 * excludedFrac);
+            } else {
+                msg = String.format(Locale.US,
+                        "<b>Inconclusive</b><br>%d of %d beat intervals " +
+                                "(%.0f%%) differ by more than 20%% from their " +
+                                "neighbours. With this data that can't be " +
+                                "separated into detector errors versus a " +
+                                "genuinely irregular rhythm, so no label is " +
+                                "given. A longer, stiller hold usually helps.",
+                        excluded, nRaw, 100 * excludedFrac);
+            }
             ecgRhythmResultText.setText(android.text.Html.fromHtml(
                     msg, android.text.Html.FROM_HTML_MODE_LEGACY));
             logRaw("RHYTHM_ANALYSIS inconclusive beats=" + nRaw +
                     " excluded=" + excluded + String.format(Locale.US,
-                    " excludedFrac=%.3f", excludedFrac));
+                    " excludedFrac=%.3f", excludedFrac) + " " + oc.toLog());
             return;
         }
 
@@ -10332,34 +10492,35 @@ public class MainActivity extends Activity {
          */
         String dashHtml;
         String dashLog;
-        if (n >= AfScreen.WINDOW) {
-            double[] w = new double[AfScreen.WINDOW];
-            for (int i = 0; i < AfScreen.WINDOW; i++) w[i] = rr.get(n - AfScreen.WINDOW + i);
-            double[] d = AfScreen.dash(w);
-            boolean af = d[6] > 0.5;
+        if (oc.dash != null && (oc.state == AfScreen.AF_LIKE || oc.state == AfScreen.NOT_AF_LIKE
+                || oc.state == AfScreen.IRREGULAR)) {
+            double[] d = oc.dash;
+            String head = oc.state == AfScreen.AF_LIKE
+                    ? "<font color='#FF5555'>AF screen (research): AF-like pattern</font>"
+                    : oc.state == AfScreen.IRREGULAR
+                    ? "<font color='#FFB020'>Irregular rhythm, cause unclear</font>"
+                    : "<font color='#39FF6A'>AF screen (research): no AF-like pattern</font>";
             dashHtml = String.format(Locale.US,
-                    "<b><font color='%s'>Published AF screen: %s</font></b><br>" +
-                            "<small>Dash et al. 2009, last 128 clean beats. An AF-like " +
-                            "pattern needs all three:<br>" +
+                    "<b>%s</b><br>" +
+                            "<small>Dash et al. 2009 on the last %d cleaned beats%s (%d merged, %d split, " +
+                            "%d premature beat(s) removed first). An AF-like pattern needs all three:<br>" +
                             "&nbsp;nRMSSD %.3f (AF-like above 0.100) %s<br>" +
                             "&nbsp;Shannon entropy %.2f (AF-like above 0.70) %s<br>" +
                             "&nbsp;turning points %d (random-like %.0f &plusmn; %.0f) %s</small>",
-                    af ? "#FF5555" : "#39FF6A",
-                    af ? "AF-like pattern" : "no AF-like pattern",
+                    head, oc.window, oc.window == AfScreen.WINDOW ? ", both 64-beat halves checked" : "",
+                    oc.merged, oc.split, oc.premature,
                     d[0], d[0] > 0.1 ? "&#10003;" : "&#10007;",
                     d[1], d[1] > 0.7 ? "&#10003;" : "&#10007;",
                     (int) d[2], d[3], 1.96 * d[4], d[5] > 0.5 ? "&#10003;" : "&#10007;");
             dashLog = String.format(Locale.US,
-                    " dash_nrmssd=%.4f dash_she=%.3f dash_tp=%d dash_tpRandom=%b dash_afLike=%b",
-                    d[0], d[1], (int) d[2], d[5] > 0.5, af);
+                    " dash_nrmssd=%.4f dash_she=%.3f dash_tp=%d dash_tpRandom=%b dash_afLike=%b ",
+                    d[0], d[1], (int) d[2], d[5] > 0.5, oc.state == AfScreen.AF_LIKE) + oc.toLog();
         } else {
             dashHtml = String.format(Locale.US,
-                    "<b>Published AF screen: not run</b><br><small>It needs 128 clean " +
-                            "beats (about %d min of steady hold at your heart rate); this " +
-                            "session had %d. Shorter windows gave false alarms on normal " +
-                            "rhythm in testing.</small>",
-                    Math.max(2, (int) Math.ceil(AfScreen.WINDOW * meanRr / 60000.0) + 1), n);
-            dashLog = " dash=not_run beats=" + n;
+                    "<b>AF screen (research): not run</b><br><small>%s. It needs %d clean beats (about a " +
+                            "minute of steady hold at your heart rate); this session had %d.</small>",
+                    oc.why.isEmpty() ? "not enough clean beats" : oc.why, AfScreen.MIN_WINDOW, oc.cleaned);
+            dashLog = " dash=not_run beats=" + n + " " + oc.toLog();
         }
 
         int early = AfScreen.earlyBeats(rawRr);
@@ -10797,7 +10958,21 @@ public class MainActivity extends Activity {
         final int rows = (int) Math.ceil(totalSec / rowSec);
         final int W = 1600, left = 64, right = 16, ecgH = 150, pulseH = 40, motionH = 30, gap = 26;
         final int rowH = ecgH + nPulse * pulseH + (hasMotion ? motionH : 0);
-        final int head = (timing == null || timing.isEmpty()) ? 140 : 164;
+        // cuff readings entered within 20 minutes either side of the recording, for the header
+        final StringBuilder cuffB = new StringBuilder();
+        synchronized (ecgCuffs) {
+            for (double[] cf : ecgCuffs) {
+                double dt = cf[0] / 1000.0 - s.startUnix;
+                if (dt < -1200 || dt > totalSec + 1200) continue;
+                if (cuffB.length() > 0) cuffB.append("   ");
+                cuffB.append(String.format(Locale.UK, "%.0f/%.0f%s at %+.0f s", cf[1], cf[2],
+                        cf[3] >= 0 ? String.format(Locale.UK, " (pulse %.0f)", cf[3]) : "", dt));
+            }
+        }
+        final String cuffText = cuffB.length() == 0 ? "" : "Cuff (phone clock, s from first sample): " + cuffB;
+        final java.util.List<Object[]> marksCopy;
+        synchronized (ecgMarks) { marksCopy = new java.util.ArrayList<>(ecgMarks); }
+        final int head = ((timing == null || timing.isEmpty()) ? 140 : 164) + (cuffText.isEmpty() ? 0 : 22);
         final int plotW = W - left - right;
         final int H = head + rows * (rowH + gap) + 8;
         final double ampMv = Double.isNaN(r.rAmpUv) ? 1.0 : r.rAmpUv / 1000.0;
@@ -10831,6 +11006,11 @@ public class MainActivity extends Activity {
             p.setColor(0xFF1F6F8B);
             p.setTextSize(15f);
             c.drawText(timing, 16, 140, p);
+        }
+        if (!cuffText.isEmpty()) {
+            p.setColor(0xFF8A5A00);
+            p.setTextSize(15f);
+            c.drawText(cuffText, 16, head - 24, p);
         }
 
         for (int row = 0; row < rows; row++) {
@@ -10891,6 +11071,17 @@ public class MainActivity extends Activity {
                 if (bi < s0 || bi >= s1) continue;
                 float xx = left + (float) ((bi - s0) / spc);
                 c.drawLine(xx, y0, xx, y0 + 14f, p);
+            }
+            // marks you tapped during the recording (phone clock against the first stored sample, so +-1 s)
+            for (Object[] mk : marksCopy) {
+                double ts = ((Long) mk[0]) / 1000.0 - s.startUnix;
+                if (ts < row * rowSec || ts >= (row + 1) * rowSec) continue;
+                float xx = left + (float) ((ts - row * rowSec) * plotW / rowSec);
+                p.setColor(0xFF2E8B57);
+                p.setStrokeWidth(1.5f);
+                c.drawLine(xx, y0, xx, y0 + ecgH, p);
+                p.setTextSize(13f);
+                c.drawText((String) mk[1], xx + 3, y0 + 30, p);
             }
 
             float yStrip = y0 + ecgH;
@@ -10997,6 +11188,10 @@ public class MainActivity extends Activity {
                     logRaw(String.format(Locale.US, "PULSE_LOCK @%d swing=%.2f control=%.2f rise_ms=%.0f+-%.1f foot_ms=%.0f+-%.1f peak_ms=%.0f beats=%.0f",
                             EcgAux.PULSE_OFFS[ci], st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]));
                 }
+                java.util.List<byte[]> r17copy;
+                synchronized (ecgSessionR17Frames) { r17copy = new java.util.ArrayList<>(ecgSessionR17Frames); }
+                logRaw(EcgR17Fit.fit(mine, r17copy).toLog());
+                logRaw("R20_CONFIG " + EcgAux.configWords(mineAux));
                 saveEcgStripPng(strip, r, timing);
             } catch (Throwable t) {
                 logRaw("ECG_STRIP_PNG_FAILED " + t);
@@ -11010,7 +11205,9 @@ public class MainActivity extends Activity {
                 line("*** STORED 500 Hz ECG: " + (r.inconclusive ? "inconclusive" :
                         (Double.isNaN(r.hr) ? "not enough data" :
                                 String.format(Locale.UK, "HR %.0f, RMSSD %.0f ms", r.hr, r.rmssd))) +
-                        (r.screenRun ? (r.afLike ? ", AF-LIKE pattern" : ", no AF-like pattern") : "") +
+                        (r.afState == AfScreen.AF_LIKE ? ", AF-LIKE pattern (research screen)"
+                                : r.afState == AfScreen.IRREGULAR ? ", irregular rhythm, cause unclear"
+                                : r.afState == AfScreen.NOT_AF_LIKE ? ", no AF-like pattern" : "") +
                         " ***");
             });
         }, "r16-analysis").start();
