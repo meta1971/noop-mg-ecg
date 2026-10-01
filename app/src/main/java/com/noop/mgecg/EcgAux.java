@@ -3,6 +3,7 @@ package com.noop.mgecg;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Random;
 
@@ -11,8 +12,8 @@ import java.util.Random;
  * (R16), on the same strap clock and the same record sequence numbers:
  *
  *  R20 (2140 B): optical pulse. Header byte 26 = samples per channel (50; 25 on
- *      the first, partial record). Words are 4-byte little-endian, 24-bit
- *      values. Six channels of 50 samples each start at byte offsets
+ *      the first, partial record). Words are 4-byte little-endian, signed 24-bit
+ *      values sign-extended to 32 bits. Six channels of 50 samples each start at byte offsets
  *      47, 247, 1313, 1513, 1735 and 1935. Five of the six lock to the
  *      heartbeat; the one at 1513 does not (swing no bigger than a random
  *      control). What each channel measures (wavelength, photodiode) is unknown.
@@ -61,15 +62,24 @@ final class EcgAux {
             int ver = f[9] & 0xff;
             if (f.length == R20_LEN && ver == 20) {
                 if ((f[26] & 0xff) != PULSE_FS) continue;                 // partial first record
+                // Words are signed: a channel's DC can drift below zero (seen on 30 Sep 2026, channel
+                // 47 going from +10000 to -24000 over the last minute), so the top byte is 0x00 or
+                // 0xFF, the sign extension of a 24-bit value. Anything else is not a pulse sample.
                 boolean ok = true;
                 for (int c = 0; c < nc && ok; c++) {
-                    for (int k = 0; k < PULSE_FS && ok; k++) ok = f[PULSE_OFFS[c] + 4 * k + 3] == 0;
+                    for (int k = 0; k < PULSE_FS && ok; k++) {
+                        int o = PULSE_OFFS[c] + 4 * k;
+                        int top = f[o + 3] & 0xff;
+                        boolean neg = (f[o + 2] & 0x80) != 0;
+                        ok = neg ? top == 0xff : top == 0x00;
+                    }
                 }
                 if (!ok) continue;
                 for (int c = 0; c < nc; c++) {
                     for (int k = 0; k < PULSE_FS; k++) {
                         int o = PULSE_OFFS[c] + 4 * k;
-                        p[c][(int) idx * PULSE_FS + k] = (f[o] & 0xff) | ((f[o + 1] & 0xff) << 8) | ((f[o + 2] & 0xff) << 16);
+                        p[c][(int) idx * PULSE_FS + k] =
+                                (f[o] & 0xff) | ((f[o + 1] & 0xff) << 8) | ((f[o + 2] & 0xff) << 16) | (f[o + 3] << 24);
                     }
                 }
                 anyP = true;
@@ -305,6 +315,46 @@ final class EcgAux {
             b.append(String.format(Locale.UK, "@%d %.0f+-%.0f / %.0f+-%.0f", PULSE_OFFS[show[i]], st[2], st[3], st[4], st[5]));
         }
         b.append(String.format(Locale.UK, "  (n=%d)", (int) s.pulseStats[show[0]][7]));
+        return b.toString();
+    }
+
+    // ---------------------------------------------------------------- config words
+
+    /**
+     * R20's unused bytes are mostly zero. Across 565 records on 29-30 Sep 2026 only 20 words outside the six
+     * channels were ever non-zero, nearly all with one fixed value (config-like). This lists them so every
+     * session adds a data point: "offset:value x records", values that change between sessions are the
+     * interesting ones (byte 1291 had two).
+     */
+    static String configWords(List<byte[]> recs) {
+        java.util.TreeMap<Integer, java.util.TreeMap<Integer, Integer>> seen = new java.util.TreeMap<>();
+        int n = 0;
+        int[][] ch = {{47, 247}, {247, 447}, {1313, 1513}, {1513, 1713}, {1735, 1935}, {1935, 2135}};
+        for (byte[] f : recs) {
+            if (f == null || f.length != R20_LEN || (f[9] & 0xff) != 20) continue;
+            n++;
+            for (int o = 47; o + 4 <= R20_LEN - 4; o += 4) {
+                boolean inCh = false;
+                for (int[] c : ch) if (o >= c[0] && o < c[1]) { inCh = true; break; }
+                if (inCh) continue;
+                int v = (f[o] & 0xff) | ((f[o + 1] & 0xff) << 8) | ((f[o + 2] & 0xff) << 16) | (f[o + 3] << 24);
+                if (v != 0) seen.computeIfAbsent(o, k -> new java.util.TreeMap<>()).merge(v, 1, Integer::sum);
+            }
+        }
+        StringBuilder b = new StringBuilder("records=" + n + " nonzeroOffsets=" + seen.size());
+        int k = 0;
+        for (Map.Entry<Integer, java.util.TreeMap<Integer, Integer>> e : seen.entrySet()) {
+            if (k++ >= 60) break;
+            java.util.TreeMap<Integer, Integer> vals = e.getValue();
+            if (vals.size() <= 2) {
+                for (Map.Entry<Integer, Integer> ve : vals.entrySet()) {
+                    b.append(String.format(Locale.US, " %d=%dx%d", e.getKey(), ve.getKey(), ve.getValue()));
+                }
+            } else {
+                b.append(String.format(Locale.US, " %d=varies(%d values %d..%d)", e.getKey(), vals.size(),
+                        vals.firstKey(), vals.lastKey()));
+            }
+        }
         return b.toString();
     }
 }
