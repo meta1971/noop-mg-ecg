@@ -13,7 +13,7 @@ import android.widget.*;
 import java.util.*;
 import java.util.UUID;
 
-public class MainActivity extends Activity {
+public class MainActivity extends NewLookActivity {
 
     private static final int REQ = 42;
 
