@@ -84,6 +84,15 @@ public final class EcgR16Analyzer {
         public AfScreen.Outcome af;
         /** RR-irregularity screen (EcgRhythm) on the raw quality-3 beat timing; null if it did not run. */
         public EcgRhythm.Result rhythm;
+        /** EXPERIMENTAL QT from the averaged beat (EcgIntervals); null if it did not run. */
+        public EcgIntervals.Result qt;
+        /** For the report: every beat-to-beat interval (ms), the time its second beat occurred (s from the first
+         *  stored second), and whether it touches a beat that failed the shape check. */
+        public double[] rrMs = new double[0], rrTimeS = new double[0];
+        public boolean[] rrBad = new boolean[0];
+        /** For the report: one byte per second of the recording: 0 signal too weak, 1 usable but settling or too
+         *  short, 2 measured, 3 contact lost or amplifier recovering. */
+        public byte[] secondStates = new byte[0];
         public String note = "";
 
         public String toLog() {
@@ -100,7 +109,8 @@ public final class EcgR16Analyzer {
                             " nrmssd=%.4f she=%.3f tp=%d tpRandom=%b",
                             dash[0], dash[1], (int) dash[2], dash[5] > 0.5))
                             + (af == null ? " afState=4 why=not_run" : " " + af.toLog())
-                            + (rhythm == null ? " RR_SCREEN not_run" : " RR_SCREEN " + rhythm));
+                            + (rhythm == null ? " RR_SCREEN not_run" : " RR_SCREEN " + rhythm)
+                            + (qt == null ? " QT_EXPERIMENTAL not_run" : " QT_EXPERIMENTAL " + qt));
         }
 
         public String toHtml() {
@@ -135,16 +145,16 @@ public final class EcgR16Analyzer {
                 // more than 15% of intervals differ by over 20% from their neighbours: no heart-rate
                 // number, but say what the AF screen found
                 if (afState == AfScreen.AF_LIKE) {
-                    return b.append(afLikeHtml()).append(rhythmHtml()).toString();
+                    return b.append(afLikeHtml()).append(rhythmHtml()).append(qtHtml()).toString();
                 }
                 if (afState == AfScreen.IRREGULAR) {
-                    return b.append(irregularHtml(shareOut)).append(rhythmHtml()).toString();
+                    return b.append(irregularHtml(shareOut)).append(rhythmHtml()).append(qtHtml()).toString();
                 }
                 return b.append("<b>Inconclusive</b> &mdash; ")
                         .append(String.format(Locale.UK, "%d%% of beat intervals were irregular or " +
                                 "mis-detected", shareOut))
                         .append(", so no heart rate or rhythm verdict. Hold still with firm, steady " +
-                                "finger contact and try again.").append(rhythmHtml()).toString();
+                                "finger contact and try again.").append(rhythmHtml()).append(qtHtml()).toString();
             }
             b.append(String.format(Locale.UK, "Heart rate <b>%.0f</b> bpm &middot; HRV (RMSSD) <b>%.0f</b> ms<br>",
                     hr, rmssd));
@@ -165,7 +175,7 @@ public final class EcgR16Analyzer {
                         .append(" clean intervals; it needs ").append(AfScreen.MIN_WINDOW)
                         .append(", about a minute of steady hold).</small>");
             }
-            b.append(rhythmHtml());
+            b.append(rhythmHtml()).append(qtHtml());
             return b.toString();
         }
 
@@ -197,6 +207,23 @@ public final class EcgR16Analyzer {
             }
             s.append("<br>Beat timing only. Fitted on PhysioNet 2017 data, not checked on this strap. " +
                     "Regular does not mean normal. Not a diagnosis.</small>");
+            return s.toString();
+        }
+
+        /** EXPERIMENTAL QT from the averaged beat. Empty if it did not run. ST is logged only, never shown. */
+        private String qtHtml() {
+            if (qt == null) return "";
+            StringBuilder s = new StringBuilder("<br><small><b>QT (experimental):</b> ");
+            if (qt.status == EcgIntervals.Status.OK) {
+                s.append(String.format(Locale.UK,
+                        "<b>%.0f ms</b> (95%% range %.0f-%.0f) &middot; QTc Fridericia <b>%.0f ms</b> &middot; %d averaged beats, T wave %.0f &micro;V",
+                        qt.qtMs, qt.ciLoMs, qt.ciHiMs, qt.qtcFMs, qt.beatsUsed, qt.tAmpUv));
+                s.append("<br>Wrist-to-finger single lead, not checked against a 12-lead ECG. Smartwatch QTc studies " +
+                        "differ from 12-lead by up to about 60 ms. Not a diagnosis.</small>");
+            } else {
+                s.append("not measured (").append(qt.reason.isEmpty() ? "not enough clean data" : qt.reason)
+                        .append("). It needs about 40 clean beats and a clear T wave.</small>");
+            }
             return s.toString();
         }
 
@@ -382,6 +409,22 @@ public final class EcgR16Analyzer {
         List<Double> ampAll = new ArrayList<>(), noiseAll = new ArrayList<>();
         int invRuns = 0, runsMeasured = 0;
 
+        // per-second map for the report
+        final long firstSeq = recs.isEmpty() ? 0 : u32(recs.get(0), 11) & 0xffffffffL;
+        final long lastSeq = recs.isEmpty() ? 0 : u32(recs.get(recs.size() - 1), 11) & 0xffffffffL;
+        final int nSec = (int) Math.max(0, Math.min(lastSeq - firstSeq + 1, 7200));
+        final byte[] states = new byte[nSec];
+        for (byte[] f : recs) {
+            if (f.length != 1584) continue;
+            int si = (int) ((u32(f, 11) & 0xffffffffL) - firstSeq);
+            if (si < 0 || si >= nSec) continue;
+            boolean lost = EcgWhoopSpec.r16FastRecoveryCount(f) > 0 || EcgWhoopSpec.r16LeadOffCount(f) > 250
+                    || EcgWhoopSpec.r16LeadOffMeanI(f) > EcgWhoopSpec.LEAD_OFF_I_THRESHOLD || (f[21] & 0xff) == 0;
+            states[si] = (byte) (lost ? 3 : (usable(f) ? 1 : 0));
+        }
+        List<Double> rrAllMs = new ArrayList<>(), rrAllTime = new ArrayList<>();
+        List<Boolean> rrAllBad = new ArrayList<>();
+
         List<List<byte[]>> runs = new ArrayList<>();
         List<byte[]> cur = new ArrayList<>();
         for (byte[] f : recs) {
@@ -398,10 +441,16 @@ public final class EcgR16Analyzer {
 
         List<List<Double>> rrRuns = new ArrayList<>();
         List<List<Boolean>> badRuns = new ArrayList<>();
+        List<double[]> qtWins = new ArrayList<>();
         for (List<byte[]> run : runs) {
             if (run.size() - SETTLE_S < MIN_RUN_S) continue;
             List<byte[]> use = run.subList(SETTLE_S, run.size());
             r.usableSeconds += use.size();
+            final double runOffsetS = (u32(use.get(0), 11) & 0xffffffffL) - firstSeq;
+            for (byte[] uf : use) {
+                int si = (int) ((u32(uf, 11) & 0xffffffffL) - firstSeq);
+                if (si >= 0 && si < nSec) states[si] = 2;
+            }
             double[] x = new double[500 * use.size()];
             for (int s = 0; s < use.size(); s++)
                 for (int k = 0; k < 500; k++) x[500 * s + k] = sample(use.get(s), k);
@@ -430,6 +479,11 @@ public final class EcgR16Analyzer {
             }
             r.beatsChecked += ok.size();
             r.beatsBadShape += bad.size();
+            {   // beat windows (uV) for the averaged-beat QT measurement
+                double[] uvRun = new double[x.length];
+                for (int i = 0; i < uvRun.length; i++) uvRun[i] = x[i] * EcgWhoopSpec.R16_UV_PER_COUNT;
+                qtWins.addAll(EcgIntervals.windows(uvRun, pk, bad, inv));
+            }
             if (measureAmplitude(x, pk, bad, inv, ampAll, noiseAll)) {
                 runsMeasured++;
                 if (inv) invRuns++;
@@ -439,6 +493,9 @@ public final class EcgR16Analyzer {
             for (int i = 1; i < pk.size(); i++) {
                 rr.add((pk.get(i) - pk.get(i - 1)) * 1000.0 / FS);
                 bd.add(bad.contains(pk.get(i - 1)) || bad.contains(pk.get(i)));
+                rrAllMs.add((pk.get(i) - pk.get(i - 1)) * 1000.0 / FS);
+                rrAllTime.add(runOffsetS + pk.get(i) / (double) FS);
+                rrAllBad.add(bad.contains(pk.get(i - 1)) || bad.contains(pk.get(i)));
             }
             rrRuns.add(rr);
             badRuns.add(bd);
@@ -473,6 +530,15 @@ public final class EcgR16Analyzer {
             }
         }
         r.intervals = allRr.size();
+        r.secondStates = states;
+        r.rrMs = new double[rrAllMs.size()];
+        r.rrTimeS = new double[rrAllMs.size()];
+        r.rrBad = new boolean[rrAllMs.size()];
+        for (int i = 0; i < r.rrMs.length; i++) {
+            r.rrMs[i] = rrAllMs.get(i);
+            r.rrTimeS[i] = rrAllTime.get(i);
+            r.rrBad[i] = rrAllBad.get(i);
+        }
         r.early = AfScreen.earlyBeats(allRr);
         if (!ampAll.isEmpty()) r.rAmpUv = median(ampAll);
         if (!noiseAll.isEmpty()) r.noiseUv = median(noiseAll);
@@ -523,6 +589,16 @@ public final class EcgR16Analyzer {
                 beatRuns.add(bt);
             }
             r.rhythm = EcgRhythm.analyzeRuns(beatRuns);
+
+            // EXPERIMENTAL QT: averaged beat, tangent method, bootstrap interval
+            r.qt = EcgIntervals.analyse(qtWins, clean.isEmpty() ? 1.0 : median(clean) / 1000.0);
+            // QT depends on the beat before it, so averaging over an uneven rhythm is not meaningful
+            boolean uneven = r.afState == AfScreen.IRREGULAR || r.afState == AfScreen.AF_LIKE
+                    || (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR);
+            if (uneven && r.qt.status == EcgIntervals.Status.OK) {
+                r.qt.status = EcgIntervals.Status.UNCERTAIN;
+                r.qt.reason = "the rhythm was too uneven for an averaged QT";
+            }
         }
         return r;
     }
