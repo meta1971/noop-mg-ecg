@@ -17,6 +17,32 @@ public final class EcgReport {
 
     private EcgReport() {}
 
+    /** Where saved reports go (set by the app at start-up). Null = do not save. */
+    public static volatile java.io.File reportDir;
+
+    /**
+     * Writes the report for a finished stored-ECG analysis as ecg_report_&lt;strap unix time&gt;.html in
+     * reportDir. Never throws: a report that cannot be saved must not disturb the analysis.
+     */
+    public static void saveReportFile(EcgR16Analyzer.Result r, EcgR16Analyzer.Strip s) {
+        java.io.File dir = reportDir;
+        if (dir == null || r == null || s == null || r.recordsIn == 0 || s.mv.length == 0) return;
+        try {
+            String html = html(r, s, null);
+            long t = s.startUnix;
+            if (t < 1672531200L || t > 1924992000L) t = System.currentTimeMillis() / 1000L;
+            java.io.File f = new java.io.File(dir, "ecg_report_" + t + ".html");
+            java.io.FileOutputStream out = new java.io.FileOutputStream(f);
+            try {
+                out.write(html.getBytes("UTF-8"));
+            } finally {
+                out.close();
+            }
+        } catch (Throwable ignored) {
+            // best effort only
+        }
+    }
+
     /** Extra facts the analyzer does not know. All optional. */
     public static final class Meta {
         public long startUnix;            // 0 = take it from the strip
@@ -57,8 +83,15 @@ public final class EcgReport {
         Grade g = grade(r);
         boolean usableReading = g.letter != 'D';
         StringBuilder b = new StringBuilder(32000);
+        String[] rtMeta = rhythmTile(r);
+        double hrMeta = usableReading ? reportHr(r) : Double.NaN;
+        String hrvMeta = (usableReading && !r.inconclusive && !Double.isNaN(r.rmssd)) ? String.valueOf(Math.round(r.rmssd)) : "-";
         b.append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">")
                 .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
+                .append("<meta name=\"ecg-grade\" content=\"").append(g.letter).append("\">")
+                .append("<meta name=\"ecg-hr\" content=\"").append(Double.isNaN(hrMeta) ? "-" : String.valueOf(Math.round(hrMeta))).append("\">")
+                .append("<meta name=\"ecg-hrv\" content=\"").append(hrvMeta).append("\">")
+                .append("<meta name=\"ecg-rhythm\" content=\"").append(esc(rtMeta[0].replace("&ndash;", "-"))).append("\">")
                 .append("<title>ECG report</title><style>").append(CSS).append("</style></head><body><main>");
 
         long start = meta.startUnix != 0 ? meta.startUnix : (strip != null ? strip.startUnix : 0);
