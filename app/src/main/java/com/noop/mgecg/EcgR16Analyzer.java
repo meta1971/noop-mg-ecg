@@ -54,6 +54,12 @@ import java.util.Locale;
  *  - R-wave amplitude and beat-to-beat noise are reported in microvolts
  *    (R16 = 0.0621 uV/count, derived from R17 = 1 uV/count), measured on the
  *    zero-phase 0.67-40 Hz + 50 Hz-notch signal
+ *
+ * RR-irregularity screen (added 2 Oct, EcgRhythm): the raw beat timing of the
+ * same quality-3 runs, cut at bad-shape beats, with NO repair and NO premature-beat
+ * removal, goes to EcgRhythm (five features, logistic model fitted on the
+ * PhysioNet/CinC 2017 training set). It is shown and logged beside the AF screen
+ * so the two can be compared on the same recording. Research only.
  */
 public final class EcgR16Analyzer {
 
@@ -76,6 +82,8 @@ public final class EcgR16Analyzer {
         /** 0.1.7 screen outcome: AfScreen.AF_LIKE / IRREGULAR / NOT_AF_LIKE / INCONCLUSIVE, and its detail. */
         public int afState = AfScreen.INCONCLUSIVE;
         public AfScreen.Outcome af;
+        /** RR-irregularity screen (EcgRhythm) on the raw quality-3 beat timing; null if it did not run. */
+        public EcgRhythm.Result rhythm;
         public String note = "";
 
         public String toLog() {
@@ -91,7 +99,8 @@ public final class EcgR16Analyzer {
                     (dash == null ? "" : String.format(Locale.US,
                             " nrmssd=%.4f she=%.3f tp=%d tpRandom=%b",
                             dash[0], dash[1], (int) dash[2], dash[5] > 0.5))
-                            + (af == null ? " afState=4 why=not_run" : " " + af.toLog()));
+                            + (af == null ? " afState=4 why=not_run" : " " + af.toLog())
+                            + (rhythm == null ? " RR_SCREEN not_run" : " RR_SCREEN " + rhythm));
         }
 
         public String toHtml() {
@@ -126,16 +135,16 @@ public final class EcgR16Analyzer {
                 // more than 15% of intervals differ by over 20% from their neighbours: no heart-rate
                 // number, but say what the AF screen found
                 if (afState == AfScreen.AF_LIKE) {
-                    return b.append(afLikeHtml()).toString();
+                    return b.append(afLikeHtml()).append(rhythmHtml()).toString();
                 }
                 if (afState == AfScreen.IRREGULAR) {
-                    return b.append(irregularHtml(shareOut)).toString();
+                    return b.append(irregularHtml(shareOut)).append(rhythmHtml()).toString();
                 }
                 return b.append("<b>Inconclusive</b> &mdash; ")
                         .append(String.format(Locale.UK, "%d%% of beat intervals were irregular or " +
                                 "mis-detected", shareOut))
                         .append(", so no heart rate or rhythm verdict. Hold still with firm, steady " +
-                                "finger contact and try again.").toString();
+                                "finger contact and try again.").append(rhythmHtml()).toString();
             }
             b.append(String.format(Locale.UK, "Heart rate <b>%.0f</b> bpm &middot; HRV (RMSSD) <b>%.0f</b> ms<br>",
                     hr, rmssd));
@@ -156,7 +165,39 @@ public final class EcgR16Analyzer {
                         .append(" clean intervals; it needs ").append(AfScreen.MIN_WINDOW)
                         .append(", about a minute of steady hold).</small>");
             }
+            b.append(rhythmHtml());
             return b.toString();
+        }
+
+        /** RR-irregularity screen (EcgRhythm), research only. Empty if it did not run. */
+        private String rhythmHtml() {
+            if (rhythm == null) return "";
+            String head;
+            switch (rhythm.verdict) {
+                case REGULAR:
+                    head = "<font color='#39FF6A'>timing looks regular</font>";
+                    break;
+                case IRREGULAR:
+                    head = "<font color='#FFB020'>timing looks irregular</font>";
+                    break;
+                case CANNOT_ANALYSE:
+                    head = "not run (" + rhythm.reason + ")";
+                    break;
+                default:
+                    head = "not calibrated";
+                    break;
+            }
+            StringBuilder s = new StringBuilder("<br><small><b>RR screen (research):</b> ").append(head);
+            if (rhythm.features != null) {
+                s.append(String.format(Locale.UK, " &middot; %d intervals, nRMSSD %.3f, SampEn %.2f",
+                        rhythm.intervals, rhythm.features[0], rhythm.features[4]));
+                if (!Double.isNaN(rhythm.probability)) {
+                    s.append(String.format(Locale.UK, ", score %.2f", rhythm.probability));
+                }
+            }
+            s.append("<br>Beat timing only. Fitted on PhysioNet 2017 data, not checked on this strap. " +
+                    "Regular does not mean normal. Not a diagnosis.</small>");
+            return s.toString();
         }
 
         private String afLikeHtml() {
@@ -471,6 +512,17 @@ public final class EcgR16Analyzer {
             r.dash = r.af.dash;
             r.screenRun = r.af.dash != null;
             r.afLike = r.af.state == AfScreen.AF_LIKE;
+
+            // RR-irregularity screen: the same segments, but as raw beat times (no repair, no
+            // premature-beat removal). EcgRhythm splits at any interval outside 0.3-2.0 s and
+            // uses the longest clean stretch.
+            List<double[]> beatRuns = new ArrayList<>();
+            for (double[] sg : segs) {
+                double[] bt = new double[sg.length + 1];
+                for (int k = 0; k < sg.length; k++) bt[k + 1] = bt[k] + sg[k] / 1000.0;
+                beatRuns.add(bt);
+            }
+            r.rhythm = EcgRhythm.analyzeRuns(beatRuns);
         }
         return r;
     }
