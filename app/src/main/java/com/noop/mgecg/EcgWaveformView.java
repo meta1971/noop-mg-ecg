@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.3 (3 Oct): smooth scrolling playout + auto-scale (tap the graph to switch to WHOOP's fixed window)
+// FILE VERSION 0.2.4 (3 Oct): smooth playout, curve through every sample, scroll or sweep (tap = scale, hold = style)
 
 import android.animation.ValueAnimator;
 import android.content.Context;
@@ -35,6 +35,11 @@ import java.util.Arrays;
  * arrive moved the trace a sixth of the screen at once, once a second. Samples now go through EcgLivePlayout, which
  * plays them out at a steady 100 per second (about 0.7 s behind live) while the view redraws every screen refresh, and
  * the trace scrolls smoothly from right to left with the newest sample at the right edge.
+ *
+ * Drawing (0.2.4): the trace is a monotone cubic curve that passes exactly through every sample (no corner cutting, no
+ * overshoot, so each R wave is drawn at its true height). Two styles: SCROLL (default, the strip slides right to left)
+ * and SWEEP (like a bedside monitor: a pen writes left to right over a stationary trace and erases a gap ahead of it).
+ * Tap = switch between auto and fixed scale. Long-press = switch between scroll and sweep.
  *
  * Vertical scale (0.2.2): the window now follows the signal (EcgAutoScale) so R waves fill the box whatever the
  * contact; the grid stays calibrated (small box 0.1 mV, large box 0.5 mV, lines at fixed millivolt values) and
@@ -76,6 +81,8 @@ public class EcgWaveformView extends View {
     private final EcgAutoScale scale = new EcgAutoScale();
     private final float[] scaleBuf = new float[BUFFER_SIZE];
     private boolean autoScale = true;
+    private boolean sweepMode = false;
+    private static final int SWEEP_GAP = 30;                  // samples erased ahead of the pen (0.3 s)
     private int sinceScaleUpdate = 0;
 
     // ECG-paper grid: a fine minor grid, with a bolder major grid
@@ -165,6 +172,11 @@ public class EcgWaveformView extends View {
                 android.graphics.Typeface.MONOSPACE);
 
         setOnClickListener(v -> setAutoScale(!autoScale));
+        setOnLongClickListener(v -> {
+            sweepMode = !sweepMode;
+            postInvalidateOnAnimation();
+            return true;
+        });
     }
 
     /** Auto-scale on (default): the window follows the signal. Off: WHOOP's fixed -1 to +2 mV window. */
@@ -351,6 +363,38 @@ public class EcgWaveformView extends View {
         Paint corePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         corePaint.setColor(Color.parseColor("#2EE6A8"));
         canvas.drawCircle(sweepX, y, 4.5f, corePaint);
+
+        canvas.drawText("tap the graph: scale \u00b7 hold: scroll or sweep", 12, h - 14, scaleLabelPaint);
+    }
+
+    /**
+     * Adds a monotone cubic (Fritsch-Butland) curve through points from..to of xs/ys to the path. Slopes are the harmonic
+     * mean of the two neighbouring secants and zero at any local peak or trough, so the curve passes through every sample
+     * and never rises above a peak sample or dips below a trough sample.
+     */
+    static void appendCurve(Path path, float[] xs, float[] ys, int from, int to) {
+        int n = to - from + 1;
+        if (n <= 0) return;
+        path.moveTo(xs[from], ys[from]);
+        if (n == 1) return;
+        float[] m = new float[n];
+        float[] d = new float[n - 1];
+        for (int i = 0; i < n - 1; i++) {
+            float dx = xs[from + i + 1] - xs[from + i];
+            d[i] = dx == 0f ? 0f : (ys[from + i + 1] - ys[from + i]) / dx;
+        }
+        m[0] = d[0];
+        m[n - 1] = d[n - 2];
+        for (int i = 1; i < n - 1; i++) {
+            m[i] = (d[i - 1] * d[i] <= 0f) ? 0f : 2f * d[i - 1] * d[i] / (d[i - 1] + d[i]);
+        }
+        for (int i = 0; i < n - 1; i++) {
+            float x0 = xs[from + i], x1 = xs[from + i + 1];
+            float dx = (x1 - x0) / 3f;
+            path.cubicTo(x0 + dx, ys[from + i] + m[i] * dx,
+                    x1 - dx, ys[from + i + 1] - m[i + 1] * dx,
+                    x1, ys[from + i + 1]);
+        }
     }
 
     private void drawLiveTrace(Canvas canvas, int w, int h) {
@@ -360,34 +404,34 @@ public class EcgWaveformView extends View {
             range = 1f;
         }
 
-        // newest sample at the right edge, older ones to the left, the whole strip shifted by the playout's
-        // fractional progress so it moves continuously instead of in sample-sized steps
         float pxPerSample = w / (float) (BUFFER_SIZE - 1);
-        float shift = (float) playout.fraction() * pxPerSample;
-
-        int n = Math.min(shown, BUFFER_SIZE);
+        int total = Math.min(shown, BUFFER_SIZE);
+        int n = sweepMode ? Math.min(total, BUFFER_SIZE - SWEEP_GAP) : total;
         float[] xs = new float[n];
         float[] ys = new float[n];
+        int[] seg = new int[Math.max(1, n)];                  // start index of each unbroken piece (sweep wraps)
+        int segs = 0;
+        float shift = sweepMode ? 0f : (float) playout.fraction() * pxPerSample;
         for (int i = 0; i < n; i++) {
-            int idx = ((writeHead - n + i) % BUFFER_SIZE + BUFFER_SIZE) % BUFFER_SIZE;
-            xs[i] = w - shift - (n - 1 - i) * pxPerSample;
-            float v = Math.max(displayMin, Math.min(displayMax, samples[idx]));
+            int pos = ((writeHead - n + i) % BUFFER_SIZE + BUFFER_SIZE) % BUFFER_SIZE;   // ring position of this sample
+            if (sweepMode) {
+                xs[i] = pos * pxPerSample;
+                if (i == 0 || pos < ((writeHead - n + i - 1) % BUFFER_SIZE + BUFFER_SIZE) % BUFFER_SIZE) seg[segs++] = i;
+            } else {
+                // newest sample at the right edge, older to the left, shifted by the playout's fractional progress so the
+                // strip moves continuously instead of in sample-sized steps
+                xs[i] = w - shift - (n - 1 - i) * pxPerSample;
+            }
+            float v = Math.max(displayMin, Math.min(displayMax, samples[pos]));
             ys[i] = h - ((v - displayMin) / range) * h;
         }
+        if (!sweepMode && n > 0) seg[segs++] = 0;
 
         tracePath.reset();
-
-        if (n > 2) {
-            tracePath.moveTo(xs[0], ys[0]);
-            for (int i = 1; i < n - 1; i++) {
-                float midX = (xs[i] + xs[i + 1]) / 2f;
-                float midY = (ys[i] + ys[i + 1]) / 2f;
-                tracePath.quadTo(xs[i], ys[i], midX, midY);
-            }
-            tracePath.lineTo(xs[n - 1], ys[n - 1]);
-        } else if (n == 2) {
-            tracePath.moveTo(xs[0], ys[0]);
-            tracePath.lineTo(xs[1], ys[1]);
+        for (int k = 0; k < segs; k++) {
+            int from = seg[k];
+            int to = (k + 1 < segs ? seg[k + 1] : n) - 1;
+            appendCurve(tracePath, xs, ys, from, to);
         }
 
         if (n > 0) {
@@ -406,8 +450,7 @@ public class EcgWaveformView extends View {
                         displayMin * UV_PER_COUNT / 1000.0,
                         displayMax * UV_PER_COUNT / 1000.0),
                 12, 30, scaleLabelPaint);
-        canvas.drawText((autoScale ? "auto scale \u00b7 tap for WHOOP's fixed window"
-                        : "fixed scale \u00b7 tap for auto")
+        canvas.drawText((autoScale ? "auto scale" : "fixed scale") + " \u00b7 " + (sweepMode ? "sweep" : "scroll")
                         + String.format(java.util.Locale.UK, " \u00b7 %.1f s behind live", playout.lagSeconds()),
                 12, 58, scaleLabelPaint);
 
