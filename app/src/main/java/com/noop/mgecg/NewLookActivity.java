@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.0 (3 Oct)
+// FILE VERSION 0.2.1 (3 Oct): restyled ECG screen
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -85,6 +85,13 @@ public class NewLookActivity extends Activity {
     private View ecgContainerCache, statusViewCache;
     private int tickCount;
 
+    // restyled ECG screen
+    private boolean ecgStyled;
+    private Button ecgBackBtn, ecgStartBtn, markToggle, detailsToggle;
+    private TextView ecgTips, ecgPrep, ecgStoredView;
+    private View[] markViews, detailViews;
+    private int lastRunningState = -1;
+
     // ------------------------------------------------------------------ lifecycle
 
     @Override
@@ -165,7 +172,7 @@ public class NewLookActivity extends Activity {
                 return;
             case ST_ECG: {
                 View c = ecgContainer();
-                View back = c == null ? null : findText(c, BACK_TEXT);
+                View back = ecgBackBtn != null ? ecgBackBtn : (c == null ? null : findText(c, BACK_TEXT));
                 if (back != null) back.performClick();      // the old handler hides its screen; the tick brings Home back
                 else showHome();
                 return;
@@ -194,6 +201,7 @@ public class NewLookActivity extends Activity {
         if (state == ST_ECG) {
             View c = ecgContainer();
             if (c != null && c.getVisibility() != View.VISIBLE) showHome();    // the old ECG screen was closed
+            else updateEcgExtras();
         }
         checkNewReport();
         if (state == ST_HOME && tickCount++ % 10 == 0) refreshHome();
@@ -336,6 +344,8 @@ public class NewLookActivity extends Activity {
             return;
         }
         state = ST_ECG;
+        restyleEcgOnce();
+        updateEcgExtras();
     }
 
     private void connectOnly() {
@@ -348,6 +358,167 @@ public class NewLookActivity extends Activity {
 
     private void toast(String s) {
         Toast.makeText(this, s, Toast.LENGTH_LONG).show();
+    }
+
+
+    // ------------------------------------------------------------------ restyled ECG screen
+
+    /**
+     * Restyles the old ECG screen in place (cards, big round Start/Stop, a tips card, markers and research text folded
+     * away). It finds the pieces by their position in the old screen and checks each one's type and text first; if
+     * anything does not match it leaves the old look untouched, so the recording itself can never be affected.
+     */
+    private void restyleEcgOnce() {
+        if (ecgStyled) return;
+        try {
+            View c = ecgContainer();
+            if (!(c instanceof ViewGroup)) return;
+            View sv = ((ViewGroup) c).getChildAt(0);
+            if (!(sv instanceof ViewGroup) || !(((ViewGroup) sv).getChildAt(0) instanceof LinearLayout)) return;
+            LinearLayout col = (LinearLayout) ((ViewGroup) sv).getChildAt(0);
+            if (col.getChildCount() < 19 || !(col.getChildAt(0) instanceof LinearLayout) || !(col.getChildAt(2) instanceof TextView)
+                    || !(col.getChildAt(3) instanceof TextView) || !(col.getChildAt(5) instanceof LinearLayout)
+                    || !(col.getChildAt(7) instanceof LinearLayout) || !(col.getChildAt(9) instanceof Button)
+                    || !(col.getChildAt(11) instanceof TextView) || !(col.getChildAt(16) instanceof TextView)
+                    || !(col.getChildAt(17) instanceof TextView) || !(col.getChildAt(18) instanceof TextView)) return;
+            if (!((TextView) col.getChildAt(11)).getText().toString().startsWith(ECG_SCREEN_MARKER)) return;
+            String bt = ((Button) col.getChildAt(9)).getText().toString();
+            if (!bt.startsWith("START") && !bt.startsWith("STOP")) return;
+            styleEcgColumn(c, col);
+            ecgStyled = true;
+        } catch (Throwable ignored) {
+            // keep the old look
+        }
+    }
+
+    private void styleEcgColumn(View container, LinearLayout col) {
+        container.setBackgroundColor(BG);
+        col.setPadding(dp(18), dp(36), dp(18), dp(24));
+
+        // keep references first: inserting views below shifts the positions
+        LinearLayout top = (LinearLayout) col.getChildAt(0);
+        TextView status = (TextView) col.getChildAt(2);
+        TextView verdict = (TextView) col.getChildAt(3);
+        LinearLayout waveCard = (LinearLayout) col.getChildAt(5);
+        LinearLayout stats = (LinearLayout) col.getChildAt(7);
+        ecgStartBtn = (Button) col.getChildAt(9);
+        View markLabel = col.getChildAt(11), markRow1 = col.getChildAt(12), markRow2 = col.getChildAt(13), cuff = col.getChildAt(14);
+        TextView rhythm = (TextView) col.getChildAt(16);
+        ecgStoredView = (TextView) col.getChildAt(17);
+        TextView disclaimer = (TextView) col.getChildAt(18);
+
+        // top row: round back arrow, title, mode chip
+        if (top.getChildCount() >= 3 && top.getChildAt(0) instanceof Button && top.getChildAt(1) instanceof TextView
+                && top.getChildAt(2) instanceof Button) {
+            ecgBackBtn = (Button) top.getChildAt(0);
+            ecgBackBtn.setText("\u2039");
+            ecgBackBtn.setAllCaps(false);
+            ecgBackBtn.setTextSize(26);
+            ecgBackBtn.setTextColor(TEXT);
+            ecgBackBtn.setBackground(round(CARD, 22));
+            ecgBackBtn.setMinWidth(0);
+            ecgBackBtn.setMinimumWidth(0);
+            ecgBackBtn.setMinHeight(0);
+            ecgBackBtn.setMinimumHeight(0);
+            ecgBackBtn.setPadding(0, 0, 0, 0);
+            ecgBackBtn.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
+            TextView heading = (TextView) top.getChildAt(1);
+            heading.setTextColor(TEXT);
+            heading.setPadding(dp(8), 0, 0, 0);
+            Button mode = (Button) top.getChildAt(2);
+            mode.setAllCaps(false);
+            mode.setTextSize(12);
+            mode.setTextColor(MUTED);
+            mode.setBackground(round(CARD, 16));
+            mode.setMinWidth(0);
+            mode.setMinimumWidth(0);
+            mode.setMinHeight(dp(36));
+            mode.setMinimumHeight(dp(36));
+            mode.setPadding(dp(12), 0, dp(12), 0);
+        }
+
+        status.setTextSize(16);
+        status.setTextColor(TEXT);
+        status.setBackground(round(CARD, 16));
+        status.setPadding(dp(16), dp(14), dp(16), dp(14));
+        verdict.setTextSize(13);
+        verdict.setTextColor(MUTED);
+
+        waveCard.setBackground(round(CARD, 18));
+        waveCard.setPadding(dp(8), dp(8), dp(8), dp(8));
+
+        for (int i = 0; i < stats.getChildCount(); i++) {
+            View blk = stats.getChildAt(i);
+            blk.setBackground(round(CARD, 18));
+            blk.setPadding(dp(8), dp(12), dp(8), dp(12));
+            if (blk.getLayoutParams() instanceof LinearLayout.LayoutParams) {
+                ((LinearLayout.LayoutParams) blk.getLayoutParams()).setMargins(dp(4), 0, dp(4), 0);
+            }
+        }
+
+        ecgStartBtn.setAllCaps(false);
+        ecgStartBtn.setTextSize(20);
+        ecgStartBtn.setMinHeight(dp(68));
+        ecgStartBtn.setMinimumHeight(dp(68));
+        ecgStartBtn.setBackground(round(GREEN, 34));
+        lastRunningState = -1;
+
+        // tips card above the button (idle only)
+        ecgTips = tv("Rest your forearm on a table  \u00b7  hold steady contact with both fingers  \u00b7  stay on for a minute or more",
+                13, MUTED, false);
+        ecgTips.setGravity(Gravity.CENTER);
+        ecgTips.setPadding(dp(8), dp(4), dp(8), dp(10));
+        col.addView(ecgTips, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
+
+        // markers folded away (still work when opened)
+        markViews = new View[]{markLabel, markRow1, markRow2, cuff};
+        for (View v : markViews) v.setVisibility(View.GONE);
+        markToggle = pillButton("Markers  \u25be", CARD, MUTED);
+        markToggle.setTextSize(13);
+        markToggle.setOnClickListener(v -> toggle(markToggle, markViews, "Markers"));
+        LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(-1, dp(44));
+        mp.topMargin = dp(12);
+        col.addView(markToggle, col.indexOfChild(markLabel), mp);
+
+        // "preparing your report" line, and the research text folded away
+        ecgPrep = tv("Preparing your report\u2026 this takes 1 to 3 minutes. A green banner appears when it is ready.", 14, AMBER, false);
+        ecgPrep.setGravity(Gravity.CENTER);
+        ecgPrep.setPadding(dp(8), dp(12), dp(8), dp(4));
+        ecgPrep.setVisibility(View.GONE);
+        col.addView(ecgPrep, col.indexOfChild(rhythm), new LinearLayout.LayoutParams(-1, -2));
+        detailViews = new View[]{rhythm, ecgStoredView};
+        for (View v : detailViews) v.setVisibility(View.GONE);
+        detailsToggle = pillButton("Research details  \u25be", CARD, MUTED);
+        detailsToggle.setTextSize(13);
+        detailsToggle.setOnClickListener(v -> toggle(detailsToggle, detailViews, "Research details"));
+        LinearLayout.LayoutParams dp2 = new LinearLayout.LayoutParams(-1, dp(44));
+        dp2.topMargin = dp(8);
+        col.addView(detailsToggle, col.indexOfChild(rhythm), dp2);
+
+        disclaimer.setTextColor(MUTED);
+        disclaimer.setTextSize(11);
+    }
+
+    private void toggle(Button b, View[] views, String label) {
+        boolean open = views[0].getVisibility() != View.VISIBLE;
+        for (View v : views) v.setVisibility(open ? View.VISIBLE : View.GONE);
+        b.setText(label + (open ? "  \u25b4" : "  \u25be"));
+    }
+
+    /** Keeps the restyled screen in step with the old one: tips only when idle, button colour, the report line. */
+    private void updateEcgExtras() {
+        if (!ecgStyled || ecgStartBtn == null) return;
+        boolean running = ecgStartBtn.getText().toString().startsWith("STOP");
+        int rs = running ? 1 : 0;
+        if (rs != lastRunningState) {                       // the old code resets the colour whenever it flips the button
+            lastRunningState = rs;
+            ecgStartBtn.setBackground(round(running ? RED : GREEN, 34));
+            if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
+        }
+        if (ecgPrep != null && ecgStoredView != null) {
+            boolean fetching = ecgStoredView.getText().toString().contains("Fetching the stored");
+            ecgPrep.setVisibility(fetching ? View.VISIBLE : View.GONE);
+        }
     }
 
     // ------------------------------------------------------------------ screen switching
