@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.1 (3 Oct): contains saveReportFile and reportDir
+// FILE VERSION 0.2.6 (3 Oct): contains saveReportFile and reportDir; research-only reading and in-depth explanations
 
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
@@ -127,6 +127,10 @@ public final class EcgReport {
         // ---- QT
         b.append(qtCard(r.qt));
 
+        // ---- research-only reading
+        EcgOpinion.Result op = EcgOpinion.build(r, g);
+        b.append(opinionCard(op));
+
         // ---- graphs
         if (usableReading) {
             String tr = traceChart(strip);
@@ -186,6 +190,8 @@ public final class EcgReport {
                 .append("<li>Regular timing does not mean a healthy heart.</li><li>It cannot diagnose or rule out any condition.</li></ul>")
                 .append("<p class=\"lead\">If you feel unwell, or have chest pain, fainting or palpitations, get medical advice.</p></section>");
 
+        b.append(explainSection(r, g, op));
+
         b.append("<section class=\"card\"><h2>Technical details</h2>");
         b.append(row("Recording", secs + " s at 500 samples a second"));
         b.append(row("Filters", "0.67 to 40 Hz, zero-phase, 50 Hz notch"));
@@ -202,6 +208,10 @@ public final class EcgReport {
             b.append(row("Rhythm screen", String.format(Locale.US, "%d intervals, nRMSSD %.3f, sample entropy %.2f", r.rhythm.intervals, r.rhythm.features[0], r.rhythm.features[4])));
         }
         b.append("</section>");
+
+        b.append("<section class=\"card\"><details class=\"why\"><summary>Sources and methods</summary><ol class=\"src\">");
+        for (String src : EcgOpinion.SOURCES) b.append("<li>").append(esc(src)).append("</li>");
+        b.append("</ol></details></section>");
 
         b.append("<p class=\"foot\">Research instrumentation. Not a medical device and not a diagnosis. It cannot detect or rule out any heart condition.</p>");
         b.append("</main></body></html>");
@@ -294,6 +304,67 @@ public final class EcgReport {
             s += " The amber markers at the edges are gaps about double or half the usual, most likely a beat the detector missed or doubled rather than a skipped heartbeat.";
         }
         return s;
+    }
+
+
+    // ------------------------------------------------------------------ research-only reading and explanations
+
+    static String opinionCard(EcgOpinion.Result o) {
+        StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><div class=\"k\">Research-only reading</div><span class=\"pill\">Not a diagnosis</span></div>");
+        if (!o.summary.isEmpty()) b.append("<p class=\"lead\">").append(esc(o.summary)).append("</p>");
+        for (EcgOpinion.Item it : o.items) {
+            b.append("<div class=\"op\"><span class=\"dot l").append(it.level).append("\"></span><div><b>").append(esc(it.label))
+                    .append("</b> <span class=\"mut\">").append(esc(it.value)).append("</span><p class=\"cap\">").append(esc(it.text)).append("</p></div></div>");
+        }
+        if (!o.ask.isEmpty()) {
+            b.append("<h3>Worth knowing</h3><ul>");
+            for (String a : o.ask) b.append("<li>").append(esc(a)).append("</li>");
+            b.append("</ul>");
+        }
+        b.append("<p class=\"cap\">Green dot: inside the usual range. Amber: worth noting. Grey: could not be judged. "
+                + "Every comparison is with published reference values for healthy adults and standard 12-lead limits, applied to a single lead from wrist to finger.</p></section>");
+        return b.toString();
+    }
+
+    static String why(String title, String... paras) {
+        StringBuilder b = new StringBuilder("<details class=\"why\"><summary>").append(title).append("</summary><div class=\"wb\">");
+        for (String p : paras) b.append("<p>").append(p).append("</p>");
+        return b.append("</div></details>").toString();
+    }
+
+    static String explainSection(EcgR16Analyzer.Result r, Grade g, EcgOpinion.Result o) {
+        double hr = reportHr(r);
+        StringBuilder b = new StringBuilder("<section class=\"card\"><h2>What each box means</h2><p class=\"hint\">Tap a heading to open it.</p>");
+        b.append(why("Reading quality (grade " + g.letter + ")",
+                "The grade says how much of the recording could be trusted, not how healthy your heart is. It compares the seconds that were clean enough to measure with the seconds recorded, and counts heartbeats whose shape was distorted by movement or poor contact.",
+                "A: at least 80% clean and under 3% distorted beats. B: 60% and 6%. C: 30% or 25 seconds. D: anything less, or too noisy to tell beats apart."));
+        b.append(why("Heart rate" + (Double.isNaN(hr) ? "" : " (" + Math.round(hr) + " bpm)"),
+                "Counted from the gaps between R peaks, the tall spikes of each beat, in the clean stretches. Shown as the average over those stretches.",
+                "The usual adult resting range is 60 to 100 beats a minute. Fit people are often in the 40s and 50s. Recent activity, caffeine, stress, heat, illness, dehydration and standing up all raise it. Compare with your own readings taken in the same way."));
+        b.append(why("HRV, RMSSD" + (r.inconclusive || Double.isNaN(r.rmssd) ? "" : " (" + Math.round(r.rmssd) + " ms)"),
+                "Heart rate variability is how much the gap between beats changes from one beat to the next. RMSSD is the root mean square of those successive changes, in milliseconds. It mostly reflects the vagus nerve's calming influence, rising and falling with each breath.",
+                "Higher usually means more relaxed and better recovered; lower is expected with age, tiredness, poor sleep, alcohol, caffeine, illness, stress and shallow breathing. Healthy adults measured over 5 minutes average 42 ms (usual range 19 to 75 ms). Your recording is shorter and seated, and uneven beats or missed detections distort the number, so use it mainly to compare with your own readings.",
+                "How it was calculated: gaps between clean beats, with any gap that touches an odd-shaped beat or differs by more than 20% from its neighbours set aside first."));
+        b.append(why("Rhythm timing",
+                "Whether the gaps between beats form a steady pattern. It uses a published screen (Dash et al. 2009) that looks at three things together: how much successive gaps differ (above 0.10 of the average gap), how unpredictable the pattern is (entropy above 0.70), and whether the ups and downs look random.",
+                "Steady means none of the screen's AF-like signs were present. Irregular means the gaps were uneven, which early beats, mis-detected beats, movement or poor contact can all cause as well as an irregular rhythm. It looks only at timing, never at the shape of the beats."));
+        b.append(why("Early beats",
+                "A beat that arrives clearly sooner than the pattern predicts, followed by a longer pause. Occasional early beats happen in most healthy people. This count comes from timing alone, so it cannot say where in the heart they start."));
+        b.append(why("QT interval and corrected QT",
+                "QT is the time from the start of the QRS (the main spike) to the end of the T wave, which is the heart's electrical recharging after each beat. It shortens as the heart speeds up, so it is corrected for rate. This report uses Fridericia's formula, QT divided by the cube root of the beat-to-beat gap in seconds, which holds up better than Bazett's at faster and slower rates.",
+                "The start is found where the QRS begins (slope method). The end is found with the tangent method: a line along the steepest downslope of the T wave is extended to the baseline. The range shown comes from 200 resamplings of the averaged beats.",
+                "It needs about 40 clean beats, a T wave at least 8 times the noise, and a rate between 40 and 110 beats a minute, and it is withheld when the rhythm is uneven. It is experimental and has not been checked against a 12-lead ECG."));
+        b.append(why("The average heartbeat, R wave height and T wave vs noise",
+                "Every clean beat is laid on top of the others and averaged, which cancels random noise and leaves the typical beat. <b>P</b> is the top chambers contracting, <b>Q R S</b> the main pump, <b>T</b> the pump resetting.",
+                "R wave height is the size of the main spike. It changes with how you sit or lie, arm position, breathing, skin dryness and electrode contact, so a different value on another day is usually one of these and not a sign about your heart. The band's own contact check is not sensitive enough to tell which. T wave vs noise says how many times larger the T wave is than the leftover noise; QT is only measured above 8 times.",
+                "The width of the R wave and the span between the Q and S dips are shape measurements only. They are not the QRS duration clinicians quote, which depends on the filter and needs a 12-lead ECG to check."));
+        b.append(why("The charts",
+                "<b>Ten seconds of your heartbeat</b>: the cleaned trace with each detected beat marked. <b>Time between beats</b>: each dot is one gap; an amber marker is a gap about double or half the usual, usually a missed or doubled detection. <b>Steadiness plot</b>: each dot compares one gap with the next; a tight cluster on the dashed line is a steady rhythm.",
+                "<b>Heart rate across the reading</b>: the average in 12-second steps; rises and falls with breathing are normal. <b>Which seconds counted</b>: green seconds were measured, amber were settling or too short, grey were too weak, red lost contact."));
+        b.append(why("How the numbers were produced",
+                "The stored 500-per-second ECG is filtered between 0.67 and 40 Hz with no phase shift (zero-phase filtering, within the limit the AHA allows for linear digital filters) and a 50 Hz notch. Beats are found with a band-pass peak detector and checked for shape against the median beat. Beat gaps are cleaned before the rhythm screen and the variability numbers.",
+                "Everything is computed on the phone from the band's stored recording. Nothing is sent anywhere."));
+        return b.append("</section>").toString();
     }
 
     // ------------------------------------------------------------------ QT card
@@ -609,5 +680,10 @@ public final class EcgReport {
             + ".dot{fill:var(--green);fill-opacity:.8}.dotbad{fill:var(--grey)}.dotb{fill:var(--blue)}.hrline{fill:none;stroke:var(--blue);stroke-width:2}"
             + ".wave{fill:var(--text);font-size:13px;font-weight:700}.qtlab{fill:var(--amber);font-size:12px;font-weight:600}"
             + ".qgreen{fill:var(--green)}.qamber{fill:var(--amber)}.qgrey{fill:var(--grey)}.qred{fill:var(--red)}"
-            + ".rtrack{fill:none;stroke:var(--line);stroke-width:9}.rfill{fill:none;stroke-width:9;stroke-linecap:round}.rfill.g{stroke:var(--green)}.rfill.a{stroke:var(--amber)}.rfill.r{stroke:var(--red)}.grade{fill:var(--text);font-size:30px;font-weight:700}";
+            + ".rtrack{fill:none;stroke:var(--line);stroke-width:9}.rfill{fill:none;stroke-width:9;stroke-linecap:round}.rfill.g{stroke:var(--green)}.rfill.a{stroke:var(--amber)}.rfill.r{stroke:var(--red)}.grade{fill:var(--text);font-size:30px;font-weight:700}"
+            + ".op{display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--line)}.op p{margin:2px 0 0}.mut{color:var(--muted);font-size:13px}"
+            + ".dot{width:10px;height:10px;border-radius:5px;margin-top:6px;flex:none}.dot.l0{background:var(--green)}.dot.l1{background:var(--amber)}.dot.l2{background:var(--grey)}h3{font-size:14px;margin:14px 0 2px}"
+            + "details.why{border-top:1px solid var(--line);padding:2px 0}details.why summary{cursor:pointer;font-weight:600;font-size:15px;padding:10px 0;list-style:none}"
+            + "details.why summary::-webkit-details-marker{display:none}details.why summary::after{content:\" \\25be\";color:var(--muted)}details.why[open] summary::after{content:\" \\25b4\"}"
+            + ".wb p{font-size:14px;line-height:1.5;color:var(--muted);margin:0 0 10px}ol.src{margin:8px 0 0;padding-left:18px;font-size:12px;line-height:1.5;color:var(--muted)}";
 }
