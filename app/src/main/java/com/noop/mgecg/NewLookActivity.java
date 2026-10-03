@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.2.0 (3 Oct)
+
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
