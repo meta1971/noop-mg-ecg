@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.2.1 (3 Oct): slope-based QRS onset, shape gate 0.60
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -42,7 +44,9 @@ public final class EcgIntervals {
     public static final int MIN_BEATS = 40;
     public static final double MIN_T_TO_NOISE = 8.0;
     public static final double MAX_HALF_WIDTH_MS = 30.0;
-    public static final double SHAPE_GATE = 0.90;
+    /** Beats must correlate this well with the median beat. 0.90 threw away about 60% of beats that were only noisy, not odd
+     *  (two real sessions); 0.60 keeps them, narrows the QT range, and still rejects genuinely different beats. */
+    public static final double SHAPE_GATE = 0.60;
     public static final int BOOTSTRAPS = 200;
 
     public enum Status { OK, TOO_FEW_BEATS, NO_CLEAR_T_WAVE, UNCERTAIN, RATE_OUT_OF_RANGE, FAILED }
@@ -55,6 +59,9 @@ public final class EcgIntervals {
         public double qtMs = Double.NaN, ciLoMs = Double.NaN, ciHiMs = Double.NaN, qtcFMs = Double.NaN;
         public double qrsOnsetMs = Double.NaN, tApexMs = Double.NaN, tEndMs = Double.NaN;
         public double tAmpUv = Double.NaN, rAmpUv = Double.NaN, noiseUv = Double.NaN;
+        /** QRS shape of the averaged beat (research; QRS duration is logged only, never shown). */
+        public double qrsOffMs = Double.NaN, qrsDurMs = Double.NaN, rHalfWidthMs = Double.NaN, qsSpanMs = Double.NaN,
+                qDepthUv = Double.NaN, sDepthUv = Double.NaN;
         public double stUv = Double.NaN, stSdUv = Double.NaN;
         public int validBootstraps;
         /** Averaged beat in uV, PRE samples before R (for drawing). Null if not computed. */
@@ -65,10 +72,11 @@ public final class EcgIntervals {
         @Override public String toString() {
             return String.format(Locale.US,
                     "%s%s beats=%d/%d rr=%.3f qt=%.0f ci=%.0f-%.0f qtcF=%.0f qrsOnset=%.0f tApex=%.0f tEnd=%.0f " +
-                            "tAmpUv=%.0f rAmpUv=%.0f noiseUv=%.1f stUv=%.0f stSdUv=%.1f boot=%d",
+                            "tAmpUv=%.0f rAmpUv=%.0f noiseUv=%.1f stUv=%.0f stSdUv=%.1f boot=%d " +
+                            "qrsDur=%.0f rHalfW=%.1f qsSpan=%.0f qDepth=%.0f sDepth=%.0f",
                     status, reason.isEmpty() ? "" : "(" + reason + ")", beatsUsed, beatsOffered, rrS, qtMs,
                     ciLoMs, ciHiMs, qtcFMs, qrsOnsetMs, tApexMs, tEndMs, tAmpUv, rAmpUv, noiseUv, stUv, stSdUv,
-                    validBootstraps);
+                    validBootstraps, qrsDurMs, rHalfWidthMs, qsSpanMs, qDepthUv, sDepthUv);
         }
     }
 
@@ -223,11 +231,17 @@ public final class EcgIntervals {
         r.tApexMs = m[1];
         r.tEndMs = m[2];
         r.qtMs = m[3];
+        r.qrsOffMs = m[4];
+        r.qrsDurMs = m[4] - m[0];
+        r.qDepthUv = m[5];
+        r.sDepthUv = m[6];
+        r.rHalfWidthMs = m[10];
+        r.qsSpanMs = m[11];
     }
 
     /**
-     * Measures one averaged beat. Returns {qrsOnsetMs, tApexMs, tEndMs, qtMs, -, -, -, tAmpUv(signed), rAmpUv, stUv}
-     * with times relative to the R peak, or null if no T wave is found.
+     * Measures one averaged beat. Returns {qrsOnsetMs, tApexMs, tEndMs, qtMs, qrsOffMs, qDepthUv, sDepthUv,
+     * tAmpUv(signed), rAmpUv, stUv, rHalfWidthMs, qsSpanMs} with times relative to the R peak, or null if no T wave is found.
      */
     static double[] measure(double[] w, double rrS) {
         int r = PRE;
@@ -240,22 +254,30 @@ public final class EcgIntervals {
         double pr = median(w, r - (int) (0.11 * FS), r - (int) (0.075 * FS));
         double base = medianTwo(w, 0, (int) (0.08 * FS), w.length - (int) (0.10 * FS), w.length);
 
-        // QRS onset
-        int qa = r - (int) (0.09 * FS), qb = r - (int) (0.012 * FS);
-        int qtr = qa;
-        for (int i = qa; i < qb; i++) if (w[i] < w[qtr]) qtr = i;
-        double q;
-        if (w[qtr] < pr - 20.0) {                       // a real Q dip: more than 20 uV below the PR baseline
-            int sa = Math.max(r - (int) (0.12 * FS), qtr - (int) (0.05 * FS));
-            int sl = sa;
-            for (int i = sa; i <= qtr; i++) if (d1[i] < d1[sl]) sl = i;
-            q = Math.abs(d1[sl]) > 1e-6 ? sl + (pr - w[sl]) / d1[sl] * FS : sl;
-        } else {                                         // no Q wave: steepest R upstroke
-            int sa = r - (int) (0.06 * FS);
-            int sl = sa;
-            for (int i = sa; i < r; i++) if (d1[i] > d1[sl]) sl = i;
-            q = Math.abs(d1[sl]) > 1e-6 ? sl + (pr - w[sl]) / d1[sl] * FS : sl;
-        }
+        // QRS bounds from the slope envelope: walk out from the R peak until the smoothed |slope| stays under
+        // max(12% of the steepest slope, 3x the baseline slope noise) for 12 ms. Unlike picking the Q dip, this does not
+        // jump between two similar small dips when noise changes (it moved QT by 33 ms between gate settings).
+        double[] env = new double[w.length];
+        for (int i = 2; i < w.length - 2; i++) env[i] = (Math.abs(d1[i - 2]) + Math.abs(d1[i - 1]) + Math.abs(d1[i])
+                + Math.abs(d1[i + 1]) + Math.abs(d1[i + 2])) / 5.0;
+        double peakSlope = 0;
+        for (int i = r - 30; i <= r + 30; i++) peakSlope = Math.max(peakSlope, env[i]);
+        double[] ns = Arrays.copyOfRange(env, 5, 60);
+        Arrays.sort(ns);
+        double thr = Math.max(0.12 * peakSlope, 3.0 * ns[ns.length / 2]);
+        int on = walkOut(env, r, -1, thr), off = walkOut(env, r, +1, thr);
+        double q = on;
+
+        // shape numbers of the R, Q and S waves
+        int ir = r;
+        for (int i = r - 6; i <= r + 6; i++) if (w[i] > w[ir]) ir = i;
+        int qi = r - 40, si = r + 3;
+        for (int i = r - 40; i <= r - 3; i++) if (w[i] < w[qi]) qi = i;
+        for (int i = r + 3; i <= r + 40; i++) if (w[i] < w[si]) si = i;
+        double rAmpPr = w[ir] - pr, halfLevel = pr + rAmpPr / 2.0;
+        double left = ir, right = ir;
+        for (int i = ir; i > ir - 40; i--) if (w[i - 1] <= halfLevel) { left = i - 1 + (halfLevel - w[i - 1]) / (w[i] - w[i - 1]); break; }
+        for (int i = ir; i < ir + 40; i++) if (w[i + 1] <= halfLevel) { right = i + (w[i] - halfLevel) / (w[i] - w[i + 1]); break; }
 
         // T wave apex: largest deviation from baseline between R+120 ms and R+min(450 ms, 0.55 RR)
         int lo = r + (int) (0.12 * FS);
@@ -277,11 +299,23 @@ public final class EcgIntervals {
         rAmp -= pr;
         double st = meanRange(w, r + (int) (0.10 * FS), r + (int) (0.12 * FS)) - pr;
         double ms = 1000.0 / FS;
-        return new double[]{(q - r) * ms, (ta - r) * ms, (te - r) * ms, (te - q) * ms, 0, 0, 0,
-                w[ta] - base, rAmp, st};
+        return new double[]{(q - r) * ms, (ta - r) * ms, (te - r) * ms, (te - q) * ms, (off - r) * ms,
+                Math.max(0, pr - w[qi]), Math.max(0, pr - w[si]), w[ta] - base, rAmp, st,
+                (right - left) * ms, (si - qi) * ms};
     }
 
     // ---------------------------------------------------------------- small helpers
+
+    /** Walks from the R peak in one direction until the slope envelope has stayed under thr for 6 samples (12 ms). */
+    static int walkOut(double[] env, int r, int step, double thr) {
+        int i = r, quiet = 0;
+        while (i > 2 && i < env.length - 3 && Math.abs(i - r) < 60) {
+            i += step;
+            quiet = env[i] < thr ? quiet + 1 : 0;
+            if (quiet >= 6) return i - step * 5;
+        }
+        return i;
+    }
 
     static double[] mean(List<double[]> ws, int[] pick) {
         int len = ws.get(0).length;
