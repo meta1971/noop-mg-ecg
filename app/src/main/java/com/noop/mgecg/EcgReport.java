@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.2.0 (3 Oct): contains saveReportFile and reportDir
+
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
