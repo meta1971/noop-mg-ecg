@@ -1,607 +1,776 @@
 package com.noop.mgecg;
 
-import java.text.SimpleDateFormat;
+// FILE VERSION 0.2.0 (3 Oct): contains lastResult and the report hook in strip()
+
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /**
- * Builds the plain-English ECG report as ONE self-contained HTML page (inline CSS and SVG, no network,
- * no scripts). Pure Java, no Android. Show it in a WebView, save it as a file, or print it to PDF.
+ * Analyses the strap's STORED 500 Hz ECG (history record type 47, layout 16,
+ * 1584 bytes) after a session. Pure Java (no Android) so it can be tested
+ * off-device against the Python reference.
  *
- * RESEARCH ONLY. Not a medical device, not a diagnosis. The wording never names a condition as a finding:
- * the rhythm result says whether beat timing looked steady, and any irregular result is hedged and
- * points to a doctor if it keeps happening or the person feels unwell.
+ * Record: samples @34, 500 x 3 bytes (tag byte bits 1-0 + 2 bytes = 18-bit
+ * signed); tag bit 7 = electrode-contact flag (0 in every quality-0 record,
+ * 1 in quality 1-3); quality @21; word count @32-33; record index @11.
+ *
+ * Method (validated 27 Sep 2026 on this project's 24 stored sessions):
+ *  - a second is usable if: 500 samples, strap quality >= 2, contact flag on
+ *    >= 450 of 500 samples, no sample beyond +-125,000 (clipping guard)
+ *  - consecutive usable seconds form runs; the first 3 s of each run are
+ *    skipped (settling); runs need >= 10 s after that
+ *  - beats: 2nd-order Butterworth high-pass 5 Hz + low-pass 20 Hz, run
+ *    forward and backward; polarity from the larger tail; energy peaks above
+ *    0.35 x the 99.5th percentile of a local 15 s window; >= 330 ms apart;
+ *    then each beat is placed where it best matches the session's median
+ *    beat shape (+-100 ms window, +-25 ms search). No beat is dropped for
+ *    being irregular (that would hide AF).
+ *  - intervals only within runs; a beat interval differing by > 20% from
+ *    the median of its up-to-4 neighbours is set aside; RMSSD only between
+ *    adjacent kept intervals
+ *  - if > 15% of intervals are set aside the result is Inconclusive (no HR
+ *    or rhythm verdict shown)
+ *  - with >= 128 clean intervals, the published AF screen (AfScreen, Dash et
+ *    al. 2009) runs on the last 128
+ * Checked: over the 30 s before the strap's verdict, our RMSSD fell within
+ * the strap's own RMSSD values (+-3 ms) in 13/13 readable sessions.
+ *
+ * Beat-shape gate (added 28 Sep after a noisy session the strap called
+ * Unreadable: 27% of beats misshapen, misplaced beats 13-18% off time slipped
+ * past the 20% rule and pushed nRMSSD to 0.090). Each beat (+-100 ms) is
+ * correlated with its run's median beat; below 0.8 = bad shape. Intervals
+ * touching a bad-shape beat are left out of HR, HRV and the AF screen.
+ * Inconclusive if > 15% of intervals fail the rhythm rule OR > 10% of beats
+ * fail the shape test. On 25 sessions: all 16 the strap could read (codes 1
+ * and 6) give a result (bad shapes 0-9.4%); 6 of 7 it called unreadable
+ * (code 2) come out Inconclusive (5.9-82%); RMSSD agreement stays 13/13.
+ * Not a diagnosis.
+ *
+ * Contact and units (added 28 Sep, from the official WHOOP app + this
+ * project's data; constants in EcgWhoopSpec):
+ *  - a second is also unusable if any sample carries tag bit 6 (the
+ *    amplifier's 500 ms fast-recovery window after saturation) or if the
+ *    electrode-impedance block @1534 reads lead-off (mean I > 200)
+ *  - R-wave amplitude and beat-to-beat noise are reported in microvolts
+ *    (R16 = 0.0621 uV/count, derived from R17 = 1 uV/count), measured on the
+ *    zero-phase 0.67-40 Hz + 50 Hz-notch signal
+ *
+ * RR-irregularity screen (added 2 Oct, EcgRhythm): the raw beat timing of the
+ * same quality-3 runs, cut at bad-shape beats, with NO repair and NO premature-beat
+ * removal, goes to EcgRhythm (five features, logistic model fitted on the
+ * PhysioNet/CinC 2017 training set). It is shown and logged beside the AF screen
+ * so the two can be compared on the same recording. Research only.
  */
-public final class EcgReport {
+public final class EcgR16Analyzer {
 
-    private EcgReport() {}
+    static final int FS = 500;
+    static final int SETTLE_S = 3;
+    static final int MIN_RUN_S = 10;
 
-    /** Where saved reports go (set by the app at start-up). Null = do not save. */
-    public static volatile java.io.File reportDir;
+    private EcgR16Analyzer() {}
 
-    /**
-     * Writes the report for a finished stored-ECG analysis as ecg_report_&lt;strap unix time&gt;.html in
-     * reportDir. Never throws: a report that cannot be saved must not disturb the analysis.
-     */
-    public static void saveReportFile(EcgR16Analyzer.Result r, EcgR16Analyzer.Strip s) {
-        java.io.File dir = reportDir;
-        if (dir == null || r == null || s == null || r.recordsIn == 0 || s.mv.length == 0) return;
-        try {
-            String html = html(r, s, null);
-            long t = s.startUnix;
-            if (t < 1672531200L || t > 1924992000L) t = System.currentTimeMillis() / 1000L;
-            java.io.File f = new java.io.File(dir, "ecg_report_" + t + ".html");
-            java.io.FileOutputStream out = new java.io.FileOutputStream(f);
-            try {
-                out.write(html.getBytes("UTF-8"));
-            } finally {
-                out.close();
-            }
-        } catch (Throwable ignored) {
-            // best effort only
+    /** The most recent analyse() result, so strip() (called right after it on the same data) can write the report. */
+    static volatile Result lastResult;
+
+    public static final class Result {
+        public int recordsIn, usableSeconds, intervals, excluded, early, rhythmOut;
+        public int beatsChecked, beatsBadShape;
+        public double noiseFraction;
+        public double hr = Double.NaN, rmssd = Double.NaN;
+        public int fastRecoverySeconds, leadOffSeconds;
+        public double rAmpUv = Double.NaN, noiseUv = Double.NaN;
+        public boolean inverted;
+        public boolean screenRun, afLike, inconclusive;
+        public double[] dash;
+        /** 0.1.7 screen outcome: AfScreen.AF_LIKE / IRREGULAR / NOT_AF_LIKE / INCONCLUSIVE, and its detail. */
+        public int afState = AfScreen.INCONCLUSIVE;
+        public AfScreen.Outcome af;
+        /** RR-irregularity screen (EcgRhythm) on the raw quality-3 beat timing; null if it did not run. */
+        public EcgRhythm.Result rhythm;
+        /** EXPERIMENTAL QT from the averaged beat (EcgIntervals); null if it did not run. */
+        public EcgIntervals.Result qt;
+        /** For the report: every beat-to-beat interval (ms), the time its second beat occurred (s from the first
+         *  stored second), and whether it touches a beat that failed the shape check. */
+        public double[] rrMs = new double[0], rrTimeS = new double[0];
+        public boolean[] rrBad = new boolean[0];
+        /** For the report: one byte per second of the recording: 0 signal too weak, 1 usable but settling or too
+         *  short, 2 measured, 3 contact lost or amplifier recovering. */
+        public byte[] secondStates = new byte[0];
+        public String note = "";
+
+        public String toLog() {
+            return String.format(Locale.US,
+                    "R16_ANALYSIS records=%d usableS=%d intervals=%d excluded=%d rhythmOut=%d " +
+                            "badShape=%d/%d early=%d hr=%.1f rmssd=%.1f inconclusive=%b " +
+                            "screenRun=%b afLike=%b rAmpUv=%.0f noiseUv=%.0f inverted=%b " +
+                            "fastRecoveryS=%d leadOffS=%d%s",
+                    recordsIn, usableSeconds, intervals, excluded, rhythmOut,
+                    beatsBadShape, beatsChecked, early, hr, rmssd,
+                    inconclusive, screenRun, afLike, rAmpUv, noiseUv, inverted,
+                    fastRecoverySeconds, leadOffSeconds,
+                    (dash == null ? "" : String.format(Locale.US,
+                            " nrmssd=%.4f she=%.3f tp=%d tpRandom=%b",
+                            dash[0], dash[1], (int) dash[2], dash[5] > 0.5))
+                            + (af == null ? " afState=4 why=not_run" : " " + af.toLog())
+                            + (rhythm == null ? " RR_SCREEN not_run" : " RR_SCREEN " + rhythm)
+                            + (qt == null ? " QT_EXPERIMENTAL not_run" : " QT_EXPERIMENTAL " + qt));
         }
-    }
 
-    /** Extra facts the analyzer does not know. All optional. */
-    public static final class Meta {
-        public long startUnix;            // 0 = take it from the strip
-        public String strapCategory;      // the band's own verdict, e.g. "Unreadable"; null if not known
-        public String strapReasons;       // e.g. "significant noise"; null if none
-        public String device = "WHOOP MG, wrist to finger";
-    }
-
-    public static final class Grade {
-        public final char letter;
-        public final String word;
-        public final double fraction;     // measured seconds / recorded seconds
-        Grade(char letter, String word, double fraction) { this.letter = letter; this.word = word; this.fraction = fraction; }
-    }
-
-    // ------------------------------------------------------------------ grading
-
-    /**
-     * Signal quality only, never the rhythm: an uneven rhythm on a clean signal is still a good reading.
-     * A: at least 80% of seconds measured and under 3% odd-shaped beats. B: 60% and 6%. C: 30% (or 25 s).
-     * D: anything else, including too noisy (over 10% odd-shaped beats) or too few beats.
-     */
-    public static Grade grade(EcgR16Analyzer.Result r) {
-        int total = Math.max(1, r.secondStates.length > 0 ? r.secondStates.length : r.recordsIn);
-        double frac = r.usableSeconds / (double) total;
-        double bad = r.beatsChecked == 0 ? 1.0 : r.beatsBadShape / (double) r.beatsChecked;
-        if (r.usableSeconds == 0 || r.intervals < 10 || r.noiseFraction > 0.10) return new Grade('D', "Poor", frac);
-        if (frac >= 0.80 && bad <= 0.03) return new Grade('A', "Excellent", frac);
-        if (frac >= 0.60 && bad <= 0.06) return new Grade('B', "Good", frac);
-        if (frac >= 0.30 || r.usableSeconds >= 25) return new Grade('C', "Fair", frac);
-        return new Grade('D', "Poor", frac);
-    }
-
-    // ------------------------------------------------------------------ page
-
-    public static String html(EcgR16Analyzer.Result r, EcgR16Analyzer.Strip strip, Meta meta) {
-        if (meta == null) meta = new Meta();
-        Grade g = grade(r);
-        boolean usableReading = g.letter != 'D';
-        StringBuilder b = new StringBuilder(32000);
-        String[] rtMeta = rhythmTile(r);
-        double hrMeta = usableReading ? reportHr(r) : Double.NaN;
-        String hrvMeta = (usableReading && !r.inconclusive && !Double.isNaN(r.rmssd)) ? String.valueOf(Math.round(r.rmssd)) : "-";
-        b.append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">")
-                .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
-                .append("<meta name=\"ecg-grade\" content=\"").append(g.letter).append("\">")
-                .append("<meta name=\"ecg-hr\" content=\"").append(Double.isNaN(hrMeta) ? "-" : String.valueOf(Math.round(hrMeta))).append("\">")
-                .append("<meta name=\"ecg-hrv\" content=\"").append(hrvMeta).append("\">")
-                .append("<meta name=\"ecg-rhythm\" content=\"").append(esc(rtMeta[0].replace("&ndash;", "-"))).append("\">")
-                .append("<title>ECG report</title><style>").append(CSS).append("</style></head><body><main>");
-
-        long start = meta.startUnix != 0 ? meta.startUnix : (strip != null ? strip.startUnix : 0);
-        int secs = r.secondStates.length > 0 ? r.secondStates.length : r.recordsIn;
-        String when = start == 0 ? "" : new SimpleDateFormat("EEE d MMM, HH:mm", Locale.UK).format(new Date(start * 1000L)) + " &middot; ";
-        b.append("<header><h1>Your reading</h1><p class=\"sub\">").append(when).append(formatDuration(secs)).append(" &middot; ")
-                .append(esc(meta.device)).append("</p></header>");
-
-        // ---- quality
-        b.append("<section class=\"card q\">").append(ring(g)).append("<div><div class=\"k\">Reading quality</div><div class=\"big\">")
-                .append(g.word).append("</div><p>").append(qualitySentence(r, g, secs, meta)).append("</p></div></section>");
-
-        // ---- what we found
-        b.append("<section class=\"card\"><h2>What we found</h2><p class=\"lead\">").append(foundSentence(r, g, usableReading)).append("</p></section>");
-
-        // ---- tiles
-        double hrShown = reportHr(r);
-        boolean showHr = usableReading && !Double.isNaN(hrShown);
-        b.append("<div class=\"grid\">");
-        b.append(tile("Heart rate", showHr ? String.valueOf(Math.round(hrShown)) : "&ndash;", showHr ? "bpm" : "",
-                showHr ? (r.inconclusive ? "Average of all measured beats." : "Average of the clean beats.") : "Not shown: the reading was not clean enough.", null));
-        boolean showHrv = showHr && !r.inconclusive && !Double.isNaN(r.rmssd);
-        b.append(tile("HRV (RMSSD)", showHrv ? String.valueOf(Math.round(r.rmssd)) : "&ndash;", showHrv ? "ms" : "",
-                showHrv ? "How much the gap between beats varies. Compare with your own past readings, not other people's."
-                        : "Not shown: uneven timing makes this number unreliable.", null));
-        String[] rt = rhythmTile(r);
-        b.append(tile("Rhythm timing", rt[0], "", rt[1], rt[2]));
-        b.append(tile("Early beats", usableReading ? String.valueOf(r.early) : "&ndash;", "", "Beats that came sooner than expected.", null));
-        b.append("</div>");
-
-        // ---- QT
-        b.append(qtCard(r.qt));
-
-        // ---- graphs
-        if (usableReading) {
-            String tr = traceChart(strip);
-            if (tr != null) {
-                b.append("<section class=\"card\"><h2>Ten seconds of your heartbeat</h2><p class=\"hint\">Each amber marker is one heartbeat.</p>")
-                        .append(tr).append("<p class=\"cap\">Every tall spike is one beat. The space between spikes sets your heart rate: wider gaps mean a slower rate. Small wobbles between beats are movement and muscle noise.</p></section>");
+        public String toHtml() {
+            StringBuilder b = new StringBuilder("<b>Stored 500 Hz ECG (from the strap's memory)</b><br>");
+            if (leadOffSeconds > 0 || fastRecoverySeconds > 0) {
+                b.append(String.format(Locale.UK, "<small>Contact: fingers off for %d s, " +
+                        "amplifier recovering for %d s (both left out)</small><br>",
+                        leadOffSeconds, fastRecoverySeconds));
             }
-            if (r.qt != null && r.qt.avg != null) {
-                b.append("<section class=\"card\"><h2>Your average heartbeat</h2><p class=\"hint\">").append(r.qt.beatsUsed)
-                        .append(" clean beats laid on top of each other and averaged.</p>").append(avgChart(r.qt))
-                        .append("<p class=\"cap\"><b>P</b> the top chambers firing. <b>Q R S</b> the main pump firing. <b>T</b> the pump resetting. QT is the time from the start of Q to the end of T.</p>")
-                        .append("<div class=\"grid2\"><div class=\"mini\"><span>R wave height</span><b>")
-                        .append(String.format(Locale.US, "%.2f mV", r.qt.rAmpUv / 1000.0)).append("</b></div><div class=\"mini\"><span>T wave vs noise</span><b>")
-                        .append(String.format(Locale.US, "%.0f&times;", r.qt.tAmpUv / Math.max(1e-9, r.qt.noiseUv))).append("</b></div></div></section>");
+            if (usableSeconds == 0 || intervals < 10) {
+                return b.append("<small>").append(note.isEmpty() ?
+                        "Not enough usable stored ECG for an analysis." : note)
+                        .append("</small>").toString();
             }
-            if (r.rrMs.length >= 8) {
-                double[] ax = tachAxis(r);
-                b.append("<section class=\"card\"><h2>Time between beats</h2><p class=\"hint\">Each dot is the gap before one heartbeat.</p>")
-                        .append(tachChart(r, ax)).append("<p class=\"cap\">").append(tachCaption(r)).append("</p></section>");
-                String po = poincare(r, ax);
-                if (po != null) {
-                    b.append("<section class=\"card\"><h2>Steadiness plot</h2><p class=\"hint\">Each dot compares one gap with the next.</p>")
-                            .append(po).append("<p class=\"cap\">A tight cluster on the dashed line means a steady rhythm. A wide scatter means uneven timing.</p></section>");
+            b.append(String.format(Locale.UK, "<small>%d s usable, %d beat intervals, " +
+                    "%d set aside, %d early beat(s)</small><br>", usableSeconds, intervals, excluded, early));
+            if (!Double.isNaN(rAmpUv)) {
+                b.append(String.format(Locale.UK, "<small>R wave %.2f mV%s &middot; " +
+                                "beat-to-beat noise %.0f &micro;V (the chip itself adds ~0.6 " +
+                                "&micro;V; the rest is muscle and contact)</small><br>",
+                        rAmpUv / 1000.0, inverted ? " (inverted)" : "", noiseUv));
+            }
+            if (noiseFraction > 0.10) {
+                return b.append("<b>Inconclusive</b> &mdash; ")
+                        .append(String.format(Locale.UK, "%.0f%% of beats did not look like a clean " +
+                                "heartbeat (signal too noisy)", 100 * noiseFraction))
+                        .append(", so no heart rate or rhythm verdict. Hold still with firm, steady " +
+                                "finger contact and try again.").toString();
+            }
+            int shareOut = intervals == 0 ? 0 : (int) Math.round(100.0 * rhythmOut / intervals);
+            if (inconclusive) {
+                // more than 15% of intervals differ by over 20% from their neighbours: no heart-rate
+                // number, but say what the AF screen found
+                if (afState == AfScreen.AF_LIKE) {
+                    return b.append(afLikeHtml()).append(rhythmHtml()).append(qtHtml()).toString();
                 }
-                String hrc = hrChart(r);
-                if (hrc != null) {
-                    b.append("<section class=\"card\"><h2>Heart rate across the reading</h2><p class=\"hint\">Average in 12 second steps.</p>")
-                            .append(hrc).append("<p class=\"cap\">A flat line means a steady rate. Rises and falls are normal with breathing, movement and talking.</p></section>");
+                if (afState == AfScreen.IRREGULAR) {
+                    return b.append(irregularHtml(shareOut)).append(rhythmHtml()).append(qtHtml()).toString();
+                }
+                return b.append("<b>Inconclusive</b> &mdash; ")
+                        .append(String.format(Locale.UK, "%d%% of beat intervals were irregular or " +
+                                "mis-detected", shareOut))
+                        .append(", so no heart rate or rhythm verdict. Hold still with firm, steady " +
+                                "finger contact and try again.").append(rhythmHtml()).append(qtHtml()).toString();
+            }
+            b.append(String.format(Locale.UK, "Heart rate <b>%.0f</b> bpm &middot; HRV (RMSSD) <b>%.0f</b> ms<br>",
+                    hr, rmssd));
+            if (afState == AfScreen.AF_LIKE) {
+                b.append(afLikeHtml());
+            } else if (afState == AfScreen.IRREGULAR) {
+                b.append(irregularHtml(shareOut));
+            } else if (afState == AfScreen.NOT_AF_LIKE && dash != null) {
+                b.append(String.format(Locale.UK,
+                        "<b><font color='#39FF6A'>AF screen (research): no AF-like pattern</font></b> " +
+                                "<small>(%d beats; nRMSSD %.3f, entropy %.2f, turning points %s)</small><br>" +
+                                "<small>A clean result does not rule anything out.</small>",
+                        af.window, dash[0], dash[1], dash[5] > 0.5 ? "random-like" : "not random"));
+            } else {
+                String why = af == null || af.why.isEmpty() ? "not enough clean beats" : af.why;
+                b.append("<small>AF screen not run: ").append(why).append(" (this session had ")
+                        .append(af == null ? intervals - excluded : af.cleaned)
+                        .append(" clean intervals; it needs ").append(AfScreen.MIN_WINDOW)
+                        .append(", about a minute of steady hold).</small>");
+            }
+            b.append(rhythmHtml()).append(qtHtml());
+            return b.toString();
+        }
+
+        /** RR-irregularity screen (EcgRhythm), research only. Empty if it did not run. */
+        private String rhythmHtml() {
+            if (rhythm == null) return "";
+            String head;
+            switch (rhythm.verdict) {
+                case REGULAR:
+                    head = "<font color='#39FF6A'>timing looks regular</font>";
+                    break;
+                case IRREGULAR:
+                    head = "<font color='#FFB020'>timing looks irregular</font>";
+                    break;
+                case CANNOT_ANALYSE:
+                    head = "not run (" + rhythm.reason + ")";
+                    break;
+                default:
+                    head = "not calibrated";
+                    break;
+            }
+            StringBuilder s = new StringBuilder("<br><small><b>RR screen (research):</b> ").append(head);
+            if (rhythm.features != null) {
+                s.append(String.format(Locale.UK, " &middot; %d intervals, nRMSSD %.3f, SampEn %.2f",
+                        rhythm.intervals, rhythm.features[0], rhythm.features[4]));
+                if (!Double.isNaN(rhythm.probability)) {
+                    s.append(String.format(Locale.UK, ", score %.2f", rhythm.probability));
+                }
+            }
+            s.append("<br>Beat timing only. Fitted on PhysioNet 2017 data, not checked on this strap. " +
+                    "Regular does not mean normal. Not a diagnosis.</small>");
+            return s.toString();
+        }
+
+        /** EXPERIMENTAL QT from the averaged beat. Empty if it did not run. ST is logged only, never shown. */
+        private String qtHtml() {
+            if (qt == null) return "";
+            StringBuilder s = new StringBuilder("<br><small><b>QT (experimental):</b> ");
+            if (qt.status == EcgIntervals.Status.OK) {
+                s.append(String.format(Locale.UK,
+                        "<b>%.0f ms</b> (95%% range %.0f-%.0f) &middot; QTc Fridericia <b>%.0f ms</b> &middot; %d averaged beats, T wave %.0f &micro;V",
+                        qt.qtMs, qt.ciLoMs, qt.ciHiMs, qt.qtcFMs, qt.beatsUsed, qt.tAmpUv));
+                s.append("<br>Wrist-to-finger single lead, not checked against a 12-lead ECG. Smartwatch QTc studies " +
+                        "differ from 12-lead by up to about 60 ms. Not a diagnosis.</small>");
+            } else {
+                s.append("not measured (").append(qt.reason.isEmpty() ? "not enough clean data" : qt.reason)
+                        .append("). It needs about 40 clean beats and a clear T wave.</small>");
+            }
+            return s.toString();
+        }
+
+        private String afLikeHtml() {
+            return String.format(Locale.UK,
+                    "<b><font color='#FF5555'>AF screen (research): AF-like pattern</font></b><br>" +
+                            "<small>Last %d cleaned beats%s: nRMSSD %.3f, entropy %.2f, turning points %s. " +
+                            "%d merged, %d split, %d premature beat(s) removed first. Frequent premature " +
+                            "beats, poor contact or movement can also look like this. Not a diagnosis.</small>",
+                    af.window, af.window == AfScreen.WINDOW ? " (both halves agree)" : "",
+                    dash[0], dash[1], dash[5] > 0.5 ? "random-like" : "not random",
+                    af.merged, af.split, af.premature);
+        }
+
+        private String irregularHtml(int shareOut) {
+            return String.format(Locale.UK,
+                    "<b><font color='#FFB020'>Irregular rhythm, cause unclear</font></b><br>" +
+                            "<small>%d%% of beat intervals differ by more than 20%% from their neighbours%s. " +
+                            "Frequent premature beats, mis-detected beats or an irregular rhythm can each do " +
+                            "this and the screen cannot tell them apart here. This is not reassuring and not " +
+                            "a diagnosis. Hold still with firm, steady finger contact and try again.</small>",
+                    shareOut, af != null && af.rawAfLike ? ", and the uncleaned series is AF-like" : "");
+        }
+    }
+
+    // ---------------------------------------------------------------- decode
+
+    static int u32(byte[] f, int o) {
+        return (f[o] & 0xff) | ((f[o + 1] & 0xff) << 8) | ((f[o + 2] & 0xff) << 16) | ((f[o + 3] & 0xff) << 24);
+    }
+
+    static boolean usable(byte[] f) {
+        if (f.length != 1584) return false;
+        if (((f[32] & 0xff) | ((f[33] & 0xff) << 8)) != 500) return false;
+        if ((f[21] & 0xff) < 3) return false;   // quality 3 only, matches the live path
+        int contact = 0, maxAbs = 0;
+        for (int k = 0; k < 500; k++) {
+            int o = 34 + 3 * k;
+            int t = f[o] & 0xff;
+            contact += (t >> 7) & 1;
+            int v = sample(f, k);
+            maxAbs = Math.max(maxAbs, Math.abs(v));
+        }
+        return contact >= 450 && maxAbs < 125000
+                && EcgWhoopSpec.r16FastRecoveryCount(f) == 0
+                && EcgWhoopSpec.r16LeadOffMeanI(f) <= EcgWhoopSpec.LEAD_OFF_I_THRESHOLD;
+    }
+
+    static int sample(byte[] f, int k) {
+        int o = 34 + 3 * k;
+        int raw = ((f[o] & 0x03) << 16) | ((f[o + 1] & 0xff) << 8) | (f[o + 2] & 0xff);
+        return raw >= 131072 ? raw - 262144 : raw;
+    }
+
+    // --------------------------------------------------------------- filters
+
+    static double[][] coeffs(boolean low, double fc) {
+        double K = Math.tan(Math.PI * fc / FS), q = 1 / Math.sqrt(2), n = 1 / (1 + K / q + K * K);
+        double[] b = low ? new double[]{K * K * n, 2 * K * K * n, K * K * n} : new double[]{n, -2 * n, n};
+        double[] a = {1, 2 * (K * K - 1) * n, (1 - K / q + K * K) * n};
+        return new double[][]{b, a};
+    }
+
+    static double[] biquad(double[] x, double[] b, double[] a) {
+        double[] y = new double[x.length];
+        double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+        for (int i = 0; i < x.length; i++) {
+            double o = b[0] * x[i] + b[1] * x1 + b[2] * x2 - a[1] * y1 - a[2] * y2;
+            x2 = x1; x1 = x[i]; y2 = y1; y1 = o; y[i] = o;
+        }
+        return y;
+    }
+
+    static double[] reverse(double[] x) {
+        double[] r = new double[x.length];
+        for (int i = 0; i < x.length; i++) r[i] = x[x.length - 1 - i];
+        return r;
+    }
+
+    static double[] filtfilt(double[] x) {
+        boolean[] kinds = {false, true};          // high-pass 5 Hz, then low-pass 20 Hz
+        double[] fcs = {5.0, 20.0};
+        for (int i = 0; i < 2; i++) {
+            double[][] c = coeffs(kinds[i], fcs[i]);
+            x = biquad(x, c[0], c[1]);
+            x = reverse(biquad(reverse(x), c[0], c[1]));
+        }
+        return x;
+    }
+
+    static double percentile(double[] v, int from, int to, double p) {   // numpy 'linear'
+        double[] a = Arrays.copyOfRange(v, from, to);
+        Arrays.sort(a);
+        double pos = p / 100.0 * (a.length - 1);
+        int f = (int) Math.floor(pos), c = Math.min(f + 1, a.length - 1);
+        return a[f] + (a[c] - a[f]) * (pos - f);
+    }
+
+    // ----------------------------------------------------------------- beats
+
+    static List<Integer> peaks(double[] x) {
+        int n = x.length;
+        double[] y = filtfilt(x);
+        double hi = percentile(y, 0, n, 99.5), lo = -percentile(y, 0, n, 0.5);
+        if (lo > hi) for (int i = 0; i < n; i++) y[i] = -y[i];
+        double[] e = new double[n];
+        for (int i = 0; i < n; i++) e[i] = y[i] * y[i];
+        int w = 5 * FS;
+        double[] thr = new double[n];
+        for (int s = 0; s < n; s += w) {
+            double t = 0.35 * percentile(e, Math.max(0, s - w), Math.min(n, s + 2 * w), 99.5);
+            for (int i = s; i < Math.min(n, s + w); i++) thr[i] = t;
+        }
+        List<Integer> pk = new ArrayList<>();
+        int last = Integer.MIN_VALUE / 2, refr = (int) (0.33 * FS);
+        for (int i = 1; i < n - 1; i++) {
+            if (e[i] > thr[i] && e[i] >= e[i - 1] && e[i] >= e[i + 1] && i - last >= refr) {
+                pk.add(i); last = i;
+            }
+        }
+        // template alignment
+        int h = (int) (0.10 * FS), L = (int) (0.025 * FS);
+        List<Integer> good = new ArrayList<>();
+        for (int p : pk) if (p - h - L >= 0 && p + h + L < n) good.add(p);
+        if (good.size() < 5) return pk;
+        double[] tmpl = new double[2 * h];
+        double[] col = new double[good.size()];
+        for (int j = 0; j < 2 * h; j++) {
+            for (int g = 0; g < good.size(); g++) col[g] = y[good.get(g) - h + j];
+            double[] s = col.clone();
+            Arrays.sort(s);
+            int m = s.length / 2;
+            tmpl[j] = s.length % 2 == 1 ? s[m] : (s[m - 1] + s[m]) / 2.0;
+        }
+        double tm = 0;
+        for (double v : tmpl) tm += v;
+        tm /= tmpl.length;
+        double tn = 0;
+        for (int j = 0; j < tmpl.length; j++) { tmpl[j] -= tm; tn += tmpl[j] * tmpl[j]; }
+        tn = Math.sqrt(tn) + 1e-9;
+        List<Integer> ref = new ArrayList<>();
+        for (int p : pk) {
+            int q = p;
+            if (!(p - h - L >= 0 && p + h + L < n)) { ref.add(p); continue; }
+            {
+                double best = -2;
+                int bl = 0;
+                for (int l = -L; l <= L; l++) {
+                    int a0 = p + l - h;
+                    double wm = 0;
+                    for (int j = 0; j < 2 * h; j++) wm += y[a0 + j];
+                    wm /= 2 * h;
+                    double dot = 0, wn = 0;
+                    for (int j = 0; j < 2 * h; j++) {
+                        double d = y[a0 + j] - wm;
+                        dot += d * tmpl[j];
+                        wn += d * d;
+                    }
+                    double c = dot / (Math.sqrt(wn) * tn + 1e-9);
+                    if (c > best) { best = c; bl = l; }
+                }
+                q = p + bl;
+            }
+            if (ref.isEmpty() || q - ref.get(ref.size() - 1) >= refr) ref.add(q);
+        }
+        return ref;
+    }
+
+    // --------------------------------------------------------------- analyse
+
+    /** @param records stored R16 frames (1584 bytes each), any order */
+    public static Result analyse(List<byte[]> records) {
+        Result r = new Result();
+        lastResult = r;
+        r.recordsIn = records.size();
+        List<byte[]> recs = new ArrayList<>(records);
+        recs.sort((a, b) -> Long.compare(u32(a, 11) & 0xffffffffL, u32(b, 11) & 0xffffffffL));
+        for (byte[] f : recs) {
+            if (f.length != 1584 || EcgWhoopSpec.r16Count(f) == 0) continue;
+            if (EcgWhoopSpec.r16FastRecoveryCount(f) > 0) r.fastRecoverySeconds++;
+            if (EcgWhoopSpec.r16LeadOffCount(f) > 250
+                    || EcgWhoopSpec.r16LeadOffMeanI(f) > EcgWhoopSpec.LEAD_OFF_I_THRESHOLD) r.leadOffSeconds++;
+        }
+        List<Double> ampAll = new ArrayList<>(), noiseAll = new ArrayList<>();
+        int invRuns = 0, runsMeasured = 0;
+
+        // per-second map for the report
+        final long firstSeq = recs.isEmpty() ? 0 : u32(recs.get(0), 11) & 0xffffffffL;
+        final long lastSeq = recs.isEmpty() ? 0 : u32(recs.get(recs.size() - 1), 11) & 0xffffffffL;
+        final int nSec = (int) Math.max(0, Math.min(lastSeq - firstSeq + 1, 7200));
+        final byte[] states = new byte[nSec];
+        for (byte[] f : recs) {
+            if (f.length != 1584) continue;
+            int si = (int) ((u32(f, 11) & 0xffffffffL) - firstSeq);
+            if (si < 0 || si >= nSec) continue;
+            boolean lost = EcgWhoopSpec.r16FastRecoveryCount(f) > 0 || EcgWhoopSpec.r16LeadOffCount(f) > 250
+                    || EcgWhoopSpec.r16LeadOffMeanI(f) > EcgWhoopSpec.LEAD_OFF_I_THRESHOLD || (f[21] & 0xff) == 0;
+            states[si] = (byte) (lost ? 3 : (usable(f) ? 1 : 0));
+        }
+        List<Double> rrAllMs = new ArrayList<>(), rrAllTime = new ArrayList<>();
+        List<Boolean> rrAllBad = new ArrayList<>();
+
+        List<List<byte[]>> runs = new ArrayList<>();
+        List<byte[]> cur = new ArrayList<>();
+        for (byte[] f : recs) {
+            boolean ok = usable(f);
+            if (ok && !cur.isEmpty() && (u32(f, 11) & 0xffffffffL) == (u32(cur.get(cur.size() - 1), 11) & 0xffffffffL) + 1) {
+                cur.add(f);
+            } else {
+                if (cur.size() >= MIN_RUN_S) runs.add(cur);
+                cur = new ArrayList<>();
+                if (ok) cur.add(f);
+            }
+        }
+        if (cur.size() >= MIN_RUN_S) runs.add(cur);
+
+        List<List<Double>> rrRuns = new ArrayList<>();
+        List<List<Boolean>> badRuns = new ArrayList<>();
+        List<double[]> qtWins = new ArrayList<>();
+        for (List<byte[]> run : runs) {
+            if (run.size() - SETTLE_S < MIN_RUN_S) continue;
+            List<byte[]> use = run.subList(SETTLE_S, run.size());
+            r.usableSeconds += use.size();
+            final double runOffsetS = (u32(use.get(0), 11) & 0xffffffffL) - firstSeq;
+            for (byte[] uf : use) {
+                int si = (int) ((u32(uf, 11) & 0xffffffffL) - firstSeq);
+                if (si >= 0 && si < nSec) states[si] = 2;
+            }
+            double[] x = new double[500 * use.size()];
+            for (int s = 0; s < use.size(); s++)
+                for (int k = 0; k < 500; k++) x[500 * s + k] = sample(use.get(s), k);
+            List<Integer> pk = peaks(x);
+            // same filtered, polarity-corrected signal peaks() used
+            double[] y = filtfilt(x);
+            int n = y.length;
+            double hi = percentile(y, 0, n, 99.5), lo = -percentile(y, 0, n, 0.5);
+            boolean inv = lo > hi;
+            if (inv) for (int i = 0; i < n; i++) y[i] = -y[i];
+            int h = 50;
+            List<Integer> ok = new ArrayList<>();
+            for (int p : pk) if (p - h >= 0 && p + h < n) ok.add(p);
+            java.util.Set<Integer> bad = new java.util.HashSet<>();
+            if (ok.size() >= 5) {
+                double[] T = new double[2 * h];
+                double[] col = new double[ok.size()];
+                for (int j = 0; j < 2 * h; j++) {
+                    for (int g = 0; g < ok.size(); g++) col[g] = y[ok.get(g) - h + j];
+                    double[] srt = col.clone();
+                    Arrays.sort(srt);
+                    int m = srt.length / 2;
+                    T[j] = srt.length % 2 == 1 ? srt[m] : (srt[m - 1] + srt[m]) / 2.0;
+                }
+                for (int p : ok) if (pearson(y, p - h, T) < 0.8) bad.add(p);
+            }
+            r.beatsChecked += ok.size();
+            r.beatsBadShape += bad.size();
+            {   // beat windows (uV) for the averaged-beat QT measurement
+                double[] uvRun = new double[x.length];
+                for (int i = 0; i < uvRun.length; i++) uvRun[i] = x[i] * EcgWhoopSpec.R16_UV_PER_COUNT;
+                qtWins.addAll(EcgIntervals.windows(uvRun, pk, bad, inv));
+            }
+            if (measureAmplitude(x, pk, bad, inv, ampAll, noiseAll)) {
+                runsMeasured++;
+                if (inv) invRuns++;
+            }
+            List<Double> rr = new ArrayList<>();
+            List<Boolean> bd = new ArrayList<>();
+            for (int i = 1; i < pk.size(); i++) {
+                rr.add((pk.get(i) - pk.get(i - 1)) * 1000.0 / FS);
+                bd.add(bad.contains(pk.get(i - 1)) || bad.contains(pk.get(i)));
+                rrAllMs.add((pk.get(i) - pk.get(i - 1)) * 1000.0 / FS);
+                rrAllTime.add(runOffsetS + pk.get(i) / (double) FS);
+                rrAllBad.add(bad.contains(pk.get(i - 1)) || bad.contains(pk.get(i)));
+            }
+            rrRuns.add(rr);
+            badRuns.add(bd);
+        }
+
+        List<Double> clean = new ArrayList<>();
+        List<Integer> allRr = new ArrayList<>();
+        double sumSq = 0;
+        int nDiff = 0;
+        for (int ri = 0; ri < rrRuns.size(); ri++) {
+            List<Double> rr = rrRuns.get(ri);
+            List<Boolean> bd = badRuns.get(ri);
+            boolean[] keep = new boolean[rr.size()];
+            for (int i = 0; i < rr.size(); i++) {
+                List<Double> nb = new ArrayList<>();
+                for (int j = Math.max(0, i - 2); j < i; j++) nb.add(rr.get(j));
+                for (int j = i + 1; j < Math.min(rr.size(), i + 3); j++) nb.add(rr.get(j));
+                double med = nb.isEmpty() ? rr.get(i) : median(nb);
+                boolean rhythmOk = Math.abs(rr.get(i) - med) <= 0.2 * med;
+                if (!rhythmOk) r.rhythmOut++;
+                keep[i] = rhythmOk && !bd.get(i);
+                if (!keep[i]) r.excluded++;
+                else clean.add(rr.get(i));
+                allRr.add((int) Math.round(rr.get(i)));
+            }
+            for (int i = 0; i < rr.size() - 1; i++) {
+                if (keep[i] && keep[i + 1]) {
+                    double d = rr.get(i + 1) - rr.get(i);
+                    sumSq += d * d;
+                    nDiff++;
                 }
             }
         }
-        if (r.secondStates.length > 0) {
-            b.append("<section class=\"card\"><h2>Which seconds counted</h2><p class=\"hint\">Only clean, settled seconds are measured.</p>")
-                    .append(qualityBar(r)).append("<div class=\"legend\"><span><i style=\"background:var(--green)\"></i>Measured</span><span><i style=\"background:var(--amber)\"></i>Settling or too short</span>")
-                    .append("<span><i style=\"background:var(--grey)\"></i>Signal too weak</span><span><i style=\"background:var(--red)\"></i>Contact lost</span></div>")
-                    .append("<p class=\"cap\">").append(r.noiseFraction > 0.10
-                            ? "Green here means the band had a signal, not that the heartbeats were clean: this reading was too noisy."
-                            : "Gaps in the bar are where contact slipped or the signal was too noisy. A steadier hold fills it in.").append("</p></section>");
-        }
-
-        // ---- reliability
-        b.append("<section class=\"card\"><h2>How reliable is this reading?</h2><p class=\"hint\">").append(reliabilityLine(g, r)).append("</p>");
-        b.append(row("Clean seconds", r.usableSeconds + " of " + Math.max(secs, r.usableSeconds) + " (" + Math.round(g.fraction * 100) + "%)"));
-        b.append(row("Beats checked", r.beatsChecked + " in the measured seconds, " + r.beatsBadShape + " odd-shaped"));
-        if (!Double.isNaN(r.rAmpUv)) {
-            b.append(row("Signal vs noise", String.format(Locale.US, "R wave about %.1f mV, noise about %.2f mV", r.rAmpUv / 1000.0, r.noiseUv / 1000.0)));
-        }
-        if (meta.strapCategory != null) {
-            b.append(row("Band's own check", esc(meta.strapCategory) + (meta.strapReasons != null && !meta.strapReasons.isEmpty() ? " (" + esc(meta.strapReasons) + ")" : "")));
-        }
-        b.append("</section>");
-
-        b.append("<section class=\"card\"><h2>For a better reading next time</h2><ul><li>Rest your forearm on a table and keep still.</li>")
-                .append("<li>Hold steady, even contact with both fingers.</li><li>Stay on for at least 60 seconds.</li><li>Breathe normally and avoid talking.</li></ul></section>");
-
-        b.append("<section class=\"card\"><h2>What this cannot tell you</h2><ul><li>It is one signal from wrist to finger, not a 12-lead ECG.</li>")
-                .append("<li>Regular timing does not mean a healthy heart.</li><li>It cannot diagnose or rule out any condition.</li></ul>")
-                .append("<p class=\"lead\">If you feel unwell, or have chest pain, fainting or palpitations, get medical advice.</p></section>");
-
-        b.append("<section class=\"card\"><h2>Technical details</h2>");
-        b.append(row("Recording", secs + " s at 500 samples a second"));
-        b.append(row("Filters", "0.67 to 40 Hz, zero-phase, 50 Hz notch"));
-        if (strip != null) b.append(row("Heartbeats found", strip.beats.length + " in clean stretches"));
-        if (r.qt != null) {
-            b.append(row("Averaged beats", r.qt.beatsUsed + " of " + r.qt.beatsOffered + " matched the typical shape"));
-            b.append(row("QT method", "Tangent method, 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
-        }
-        if (r.rhythm != null && r.rhythm.features != null) {
-            b.append(row("Rhythm screen", String.format(Locale.US, "%d intervals, nRMSSD %.3f, sample entropy %.2f", r.rhythm.intervals, r.rhythm.features[0], r.rhythm.features[4])));
-        }
-        b.append("</section>");
-
-        b.append("<p class=\"foot\">Research instrumentation. Not a medical device and not a diagnosis. It cannot detect or rule out any heart condition.</p>");
-        b.append("</main></body></html>");
-        return b.toString();
-    }
-
-    // ------------------------------------------------------------------ text
-
-    /** Heart rate for the report: the analyzer's clean-beat rate, else the mean of every plausible interval. */
-    static double reportHr(EcgR16Analyzer.Result r) {
-        if (!r.inconclusive && !Double.isNaN(r.hr)) return r.hr;
-        double sum = 0;
-        int n = 0;
+        r.intervals = allRr.size();
+        r.secondStates = states;
+        r.rrMs = new double[rrAllMs.size()];
+        r.rrTimeS = new double[rrAllMs.size()];
+        r.rrBad = new boolean[rrAllMs.size()];
         for (int i = 0; i < r.rrMs.length; i++) {
-            if (!r.rrBad[i] && r.rrMs[i] >= 300 && r.rrMs[i] <= 2000) { sum += r.rrMs[i]; n++; }
+            r.rrMs[i] = rrAllMs.get(i);
+            r.rrTimeS[i] = rrAllTime.get(i);
+            r.rrBad[i] = rrAllBad.get(i);
         }
-        return n >= 10 ? 60000.0 / (sum / n) : Double.NaN;
-    }
-
-    static String qualitySentence(EcgR16Analyzer.Result r, Grade g, int secs, Meta meta) {
-        if (r.noiseFraction > 0.10 && r.usableSeconds > 0) {
-            return "The band had a signal for " + r.usableSeconds + " of " + Math.max(secs, r.usableSeconds) + " seconds, but "
-                    + Math.round(r.noiseFraction * 100) + "% of the heartbeats looked distorted, so it was too noisy to trust.";
+        r.early = AfScreen.earlyBeats(allRr);
+        if (!ampAll.isEmpty()) r.rAmpUv = median(ampAll);
+        if (!noiseAll.isEmpty()) r.noiseUv = median(noiseAll);
+        r.inverted = runsMeasured > 0 && invRuns * 2 > runsMeasured;
+        if (r.intervals < 10) {
+            r.note = "Only " + r.usableSeconds + " s of settled, good-contact stored ECG.";
+            return r;
         }
-        String s = r.usableSeconds + " of " + Math.max(secs, r.usableSeconds) + " seconds were clean enough to measure (" + Math.round(g.fraction * 100) + "%).";
-        if (meta.strapCategory != null && (meta.strapCategory.equals("Unreadable") || meta.strapCategory.equals("Inconclusive"))) {
-            s += " The band also flagged noise.";
-        }
-        return s;
-    }
-
-    static String foundSentence(EcgR16Analyzer.Result r, Grade g, boolean usable) {
-        if (!usable) {
-            return "We could not get a reliable reading this time. " + (r.usableSeconds == 0 || r.intervals < 10
-                    ? "There were too few clean seconds in a row."
-                    : "The signal was too noisy to tell heartbeats apart.")
-                    + " Rest your forearm on a table, hold steady contact with both fingers for at least a minute, and try again.";
-        }
-        StringBuilder s = new StringBuilder();
-        double hrNow = reportHr(r);
-        if (!Double.isNaN(hrNow)) {
-            s.append("Your heart rate averaged about ").append(Math.round(hrNow)).append(" beats a minute. ");
-        }
-        boolean irregular = r.afState == AfScreen.IRREGULAR || r.afState == AfScreen.AF_LIKE
-                || (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR);
-        boolean regular = !irregular && r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.REGULAR;
-        if (irregular) {
-            s.append("The timing between your beats looked uneven. Early beats, movement or poor contact can cause this, so repeat the reading. ");
-            if (r.afState == AfScreen.AF_LIKE) {
-                s.append("The pattern can also be seen with atrial fibrillation; this research screen cannot tell the difference. ");
+        r.noiseFraction = r.beatsBadShape / (double) Math.max(1, r.beatsChecked);
+        r.inconclusive = r.rhythmOut > 0.15 * r.intervals || r.noiseFraction > 0.10;
+        if (!clean.isEmpty()) r.hr = 60000.0 / median(clean);
+        if (nDiff > 0) r.rmssd = Math.sqrt(sumSq / nDiff);
+        if (r.noiseFraction <= 0.10) {
+            // 0.1.7: repair detector errors, remove premature beats with their pauses, then the Dash
+            // screen on 128 (or 64) cleaned beats. A beat that failed the shape check is a rejected
+            // interval: runs are cut there, so no interval is ever joined across it.
+            List<double[]> segs = new ArrayList<>();
+            for (int ri = 0; ri < rrRuns.size(); ri++) {
+                List<Double> rr = rrRuns.get(ri);
+                List<Boolean> bd = badRuns.get(ri);
+                List<Double> seg = new ArrayList<>();
+                for (int i = 0; i <= rr.size(); i++) {
+                    if (i == rr.size() || bd.get(i)) {
+                        if (!seg.isEmpty()) {
+                            double[] a = new double[seg.size()];
+                            for (int k = 0; k < a.length; k++) a[k] = seg.get(k);
+                            segs.add(a);
+                            seg.clear();
+                        }
+                    } else {
+                        seg.add(rr.get(i));
+                    }
+                }
             }
-            s.append("Speak to a doctor if it keeps happening or you feel unwell.");
-        } else if (regular) {
-            s.append("The timing between your beats looked steady.");
-        } else {
-            s.append("There were not enough clean beats in a row to judge the rhythm.");
-        }
-        if (g.letter == 'C') s.append(" Only part of this reading was clean, so treat the numbers as a guide and try again with a longer, stiller hold.");
-        return esc(s.toString());
-    }
+            r.af = AfScreen.screen(segs);
+            r.afState = r.af.state;
+            r.dash = r.af.dash;
+            r.screenRun = r.af.dash != null;
+            r.afLike = r.af.state == AfScreen.AF_LIKE;
 
-    /** {value, caption, colourVar} */
-    static String[] rhythmTile(EcgR16Analyzer.Result r) {
-        boolean irregular = r.afState == AfScreen.IRREGULAR || r.afState == AfScreen.AF_LIKE
-                || (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR);
-        if (irregular) return new String[]{"Irregular", "Gaps between beats were uneven. This is not a diagnosis.", "var(--amber)"};
-        if (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.REGULAR) {
-            return new String[]{"Regular", r.rhythm.intervals + " even beats in a row. Regular timing is not the same as a healthy heart.", "var(--green)"};
-        }
-        String why = r.rhythm != null && r.rhythm.reason != null && r.rhythm.reason.length() > 0 ? "Not enough clean beats in a row to judge." : "Not judged this time.";
-        return new String[]{"Not judged", why, null};
-    }
-
-    static String reliabilityLine(Grade g, EcgR16Analyzer.Result r) {
-        if (g.letter == 'D' && r.noiseFraction > 0.10) return "Grade D. The signal was there but too noisy: many heartbeats had a distorted shape.";
-        switch (g.letter) {
-            case 'A': return "Grade A. Most of the reading was clean, so the numbers are well supported.";
-            case 'B': return "Grade B. Most of the reading was clean.";
-            case 'C': return "Grade C. The beats we could measure look trustworthy, but there were not many of them.";
-            default: return "Grade D. Too little of the reading was clean to rely on.";
-        }
-    }
-
-    static String tachCaption(EcgR16Analyzer.Result r) {
-        double med = median(cleanRr(r));
-        int odd = 0;
-        for (int i = 0; i < r.rrMs.length; i++) if (!r.rrBad[i] && (r.rrMs[i] > 1.7 * med || r.rrMs[i] < 0.6 * med)) odd++;
-        String s = "Most gaps were close to " + String.format(Locale.US, "%.1f", med / 1000.0) + " seconds.";
-        if (odd > 0) {
-            s += " The amber markers at the edges are gaps about double or half the usual, most likely a beat the detector missed or doubled rather than a skipped heartbeat.";
-        }
-        return s;
-    }
-
-    // ------------------------------------------------------------------ QT card
-
-    static String qtCard(EcgIntervals.Result q) {
-        StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><div class=\"k\">QT interval</div><span class=\"pill\">Experimental</span></div>");
-        if (q != null && q.status == EcgIntervals.Status.OK) {
-            b.append("<div class=\"big\">").append(String.format(Locale.US, "%.0f", q.qtMs)).append(" <small>ms</small></div><p>95% range ")
-                    .append(String.format(Locale.US, "%.0f&ndash;%.0f", q.ciLoMs, q.ciHiMs)).append(" ms. Corrected for heart rate (Fridericia): <b>")
-                    .append(String.format(Locale.US, "%.0f", q.qtcFMs)).append(" ms</b>, from ").append(q.beatsUsed)
-                    .append(" averaged beats.</p><p class=\"cap\">Single lead from wrist to finger and not checked against a 12-lead ECG. Smartwatch QT studies differ from a 12-lead by up to about 60 ms. Not a diagnosis.</p>");
-        } else {
-            String why = q == null ? "It needs about 40 clean beats and a clear T wave."
-                    : "It needs about 40 clean beats and a clear T wave. " + esc(q.reason.isEmpty() ? "" : "This time: " + q.reason + ".");
-            b.append("<div class=\"big\">Not measured this time</div><p>").append(why).append(q != null && q.avg != null ? " A preview is shown on the average heartbeat below." : "").append("</p>");
-        }
-        return b.append("</section>").toString();
-    }
-
-    // ------------------------------------------------------------------ charts
-
-    static final int W = 342;
-
-    static String svgOpen(int h, String label) {
-        return "<svg viewBox=\"0 0 " + W + " " + h + "\" role=\"img\" aria-label=\"" + esc(label) + "\" preserveAspectRatio=\"xMidYMid meet\">";
-    }
-
-    static String f(double v) {
-        if (Double.isNaN(v) || Double.isInfinite(v)) return "0";
-        String s = String.format(Locale.US, "%.1f", v);
-        return s.endsWith(".0") ? s.substring(0, s.length() - 2) : s;
-    }
-
-    static String line(double x1, double y1, double x2, double y2, String cls) {
-        return "<line x1=\"" + f(x1) + "\" y1=\"" + f(y1) + "\" x2=\"" + f(x2) + "\" y2=\"" + f(y2) + "\" class=\"" + cls + "\"></line>";
-    }
-
-    static String text(double x, double y, String s, String cls, String anchor) {
-        return "<text x=\"" + f(x) + "\" y=\"" + f(y) + "\" class=\"" + cls + "\" text-anchor=\"" + anchor + "\">" + s + "</text>";
-    }
-
-    static String dot(double x, double y, double rad, String cls) {
-        return "<circle cx=\"" + f(x) + "\" cy=\"" + f(y) + "\" r=\"" + f(rad) + "\" class=\"" + cls + "\"></circle>";
-    }
-
-    /** 10 s of the cleaned trace with beat markers; null if there is no clean 10 s. */
-    static String traceChart(EcgR16Analyzer.Strip s) {
-        if (s == null || s.mv.length < 10 * EcgR16Analyzer.FS) return null;
-        final int fs = EcgR16Analyzer.FS, win = 10 * fs;
-        int best = -1, bestBeats = -1;
-        for (int st = 0; st + win <= s.mv.length; st += fs) {
-            boolean ok = true;
-            for (int i = st; i < st + win; i += 5) {
-                if (Double.isNaN(s.mv[i]) || s.quality[i] != 3) { ok = false; break; }
+            // RR-irregularity screen: the same segments, but as raw beat times (no repair, no
+            // premature-beat removal). EcgRhythm splits at any interval outside 0.3-2.0 s and
+            // uses the longest clean stretch.
+            List<double[]> beatRuns = new ArrayList<>();
+            for (double[] sg : segs) {
+                double[] bt = new double[sg.length + 1];
+                for (int k = 0; k < sg.length; k++) bt[k + 1] = bt[k] + sg[k] / 1000.0;
+                beatRuns.add(bt);
             }
-            if (!ok) continue;
-            int nb = 0;
-            for (int bi : s.beats) if (bi >= st && bi < st + win) nb++;
-            if (nb > bestBeats) { bestBeats = nb; best = st; }
+            r.rhythm = EcgRhythm.analyzeRuns(beatRuns);
+
+            // EXPERIMENTAL QT: averaged beat, tangent method, bootstrap interval
+            r.qt = EcgIntervals.analyse(qtWins, clean.isEmpty() ? 1.0 : median(clean) / 1000.0);
+            // QT depends on the beat before it, so averaging over an uneven rhythm is not meaningful
+            boolean uneven = r.afState == AfScreen.IRREGULAR || r.afState == AfScreen.AF_LIKE
+                    || (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR);
+            if (uneven && r.qt.status == EcgIntervals.Status.OK) {
+                r.qt.status = EcgIntervals.Status.UNCERTAIN;
+                r.qt.reason = "the rhythm was too uneven for an averaged QT";
+            }
         }
-        if (best < 0) return null;
-        double[] w = Arrays.copyOfRange(s.mv, best, best + win);
-        double[] sorted = w.clone();
-        Arrays.sort(sorted);
-        double lo = Math.min(sorted[(int) (0.005 * win)], -0.3) * 1.15;
-        double hi = Math.max(0.5, Math.min(sorted[win - 1], 2.0)) * 1.15;
-        final int H = 170, L = 46;          // L = left margin for the mV labels
-        final double pw = W - L - 2;
-        StringBuilder b = new StringBuilder(svgOpen(H, "Ten seconds of the ECG trace with each heartbeat marked"));
-        for (double mv = Math.ceil(lo * 2) / 2; mv <= hi; mv += 0.5) {
-            double y = H - 26 - (mv - lo) / (hi - lo) * (H - 40);
-            b.append(line(L, y, W, y, "gl")).append(text(L - 4, y + 3, mv == 0 ? "0 mV" : String.format(Locale.US, "%.1f mV", mv), "axis", "end"));
-        }
-        StringBuilder pts = new StringBuilder();
-        int step = 4;
-        for (int i = 0; i + step <= win; i += step) {
-            double pick = w[i];
-            for (int k = i; k < i + step; k++) if (Math.abs(w[k]) > Math.abs(pick)) pick = w[k];
-            double y = H - 26 - (Math.min(Math.max(pick, lo), hi) - lo) / (hi - lo) * (H - 40);
-            pts.append(f(L + i / (double) win * pw)).append(',').append(f(y)).append(' ');
-        }
-        b.append("<polyline points=\"").append(pts).append("\" class=\"trace\"></polyline>");
-        for (int bi : s.beats) {
-            if (bi < best || bi >= best + win) continue;
-            double x = L + (bi - best) / (double) win * pw;
-            b.append("<polygon points=\"").append(f(x - 4)).append(",4 ").append(f(x + 4)).append(",4 ").append(f(x)).append(",12\" class=\"mark\"></polygon>");
-        }
-        b.append(text(L, H - 8, "0 s", "axis", "start")).append(text(L + pw / 2.0, H - 8, "5 s", "axis", "middle")).append(text(W - 2, H - 8, "10 s", "axis", "end"));
-        return b.append("</svg>").toString();
+        return r;
     }
 
-    /** The averaged beat with P, Q, R, S, T labels and the QT bracket. */
-    static String avgChart(EcgIntervals.Result q) {
-        double[] a = q.avg;
-        final int H = 250, n = a.length;
-        double t0 = -EcgIntervals.PRE * 1000.0 / EcgIntervals.FS, t1 = EcgIntervals.POST * 1000.0 / EcgIntervals.FS;
-        double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
-        for (double v : a) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
-        lo -= 90; hi += 40;
-        StringBuilder b = new StringBuilder(svgOpen(H, "The average heartbeat with the P, Q, R, S and T waves labelled and the QT interval marked"));
-        final double top = 24, bottom = H - 78;
-        for (int ms = -400; ms <= 600; ms += 200) {
-            double x = (ms - t0) / (t1 - t0) * W;
-            b.append(line(x, top, x, bottom + 52, "gl")).append(text(Math.min(Math.max(x, 10), W - 10), H - 14, String.valueOf(ms), "axis", "middle"));
+    /*
+     * R-wave amplitude (uV) and beat-to-beat noise (uV RMS of each beat minus
+     * the run's median beat, -300..+550 ms) on the zero-phase 0.67-40 Hz +
+     * 50 Hz-notch signal. Baseline = median of -200..-80 ms (PR segment).
+     * Misshapen beats are skipped. Returns false if too few beats.
+     */
+    static boolean measureAmplitude(double[] counts, List<Integer> pk, java.util.Set<Integer> bad,
+                                    boolean inv, List<Double> ampOut, List<Double> noiseOut) {
+        double[] u = new double[counts.length];
+        for (int i = 0; i < u.length; i++) u[i] = counts[i] * EcgWhoopSpec.R16_UV_PER_COUNT;
+        double[] z = EcgWhoopSpec.improvedFilter(u);
+        int pre = (int) (0.30 * FS), post = (int) (0.55 * FS), srch = (int) (0.03 * FS);
+        int b0 = (int) (0.20 * FS), b1 = (int) (0.08 * FS);
+        List<double[]> beats = new ArrayList<>();
+        List<Double> amps = new ArrayList<>();
+        for (int p : pk) {
+            if (bad.contains(p) || p - pre < 0 || p + post >= z.length) continue;
+            double base = median(sub(z, p - b0, p - b1));
+            double pkv = inv ? Double.MAX_VALUE : -Double.MAX_VALUE;
+            for (int i = p - srch; i <= p + srch; i++) pkv = inv ? Math.min(pkv, z[i]) : Math.max(pkv, z[i]);
+            amps.add(Math.abs(pkv - base));
+            double[] w = new double[pre + post];
+            for (int j = 0; j < w.length; j++) w[j] = z[p - pre + j] - base;
+            beats.add(w);
         }
-        b.append(text(W / 2.0, H - 1, "milliseconds from the R peak", "axis", "middle"));
-        StringBuilder pts = new StringBuilder();
+        if (beats.size() < 5) return false;
+        int len = pre + post;
+        double[] tmpl = new double[len];
+        double[] col = new double[beats.size()];
+        for (int j = 0; j < len; j++) {
+            for (int g = 0; g < beats.size(); g++) col[g] = beats.get(g)[j];
+            Arrays.sort(col);
+            int m = col.length / 2;
+            tmpl[j] = col.length % 2 == 1 ? col[m] : (col[m - 1] + col[m]) / 2.0;
+        }
+        for (double[] w : beats) {
+            double ss = 0;
+            for (int j = 0; j < len; j++) { double d = w[j] - tmpl[j]; ss += d * d; }
+            noiseOut.add(Math.sqrt(ss / len));
+        }
+        ampOut.addAll(amps);
+        return true;
+    }
+
+    static List<Double> sub(double[] a, int from, int to) {
+        List<Double> out = new ArrayList<>();
+        for (int i = from; i < to; i++) out.add(a[i]);
+        return out;
+    }
+
+    /** Pearson correlation of y[from .. from+t.length) with t (numpy corrcoef) */
+    static double pearson(double[] y, int from, double[] t) {
+        int n = t.length;
+        double my = 0, mt = 0;
+        for (int i = 0; i < n; i++) { my += y[from + i]; mt += t[i]; }
+        my /= n; mt /= n;
+        double sxy = 0, sxx = 0, syy = 0;
         for (int i = 0; i < n; i++) {
-            double ms = (i - EcgIntervals.PRE) * 1000.0 / EcgIntervals.FS;
-            double x = (ms - t0) / (t1 - t0) * W;
-            double y = bottom - (a[i] - lo) / (hi - lo) * (bottom - top);
-            pts.append(f(x)).append(',').append(f(y)).append(' ');
+            double a = y[from + i] - my, c = t[i] - mt;
+            sxy += a * c; sxx += a * a; syy += c * c;
         }
-        b.append("<polyline points=\"").append(pts).append("\" class=\"trace thick\"></polyline>");
-        if (!Double.isNaN(q.qtMs)) {
-            double xq = (q.qrsOnsetMs - t0) / (t1 - t0) * W, xt = (q.tEndMs - t0) / (t1 - t0) * W, yb = bottom + 30;
-            b.append(line(xq, yb, xt, yb, "qt")).append(line(xq, yb - 6, xq, yb + 6, "qt")).append(line(xt, yb - 6, xt, yb + 6, "qt"));
-            String lab = q.status == EcgIntervals.Status.OK ? "QT about " : "QT preview about ";
-            b.append(text((xq + xt) / 2, yb - 9, lab + Math.round(q.qtMs) + " ms", "qtlab", "middle"));
-        }
-        int r = EcgIntervals.PRE;
-        b.append(waveLabel("P", a, r - 85, r - 40, true, lo, hi, t0, t1, top, bottom, -9));
-        b.append(waveLabel("Q", a, r - 45, r - 6, false, lo, hi, t0, t1, top, bottom, 15));
-        b.append(waveLabel("R", a, r - 10, r + 10, true, lo, hi, t0, t1, top, bottom, -8));
-        b.append(waveLabel("S", a, r + 4, r + 30, false, lo, hi, t0, t1, top, bottom, 15));
-        b.append(waveLabel("T", a, r + 75, r + 225, true, lo, hi, t0, t1, top, bottom, -10));
-        return b.append("</svg>").toString();
+        return sxy / Math.sqrt(sxx * syy);
     }
 
-    static String waveLabel(String lab, double[] a, int from, int to, boolean max, double lo, double hi, double t0, double t1,
-                            double top, double bottom, double dy) {
-        int k = from;
-        for (int i = from; i <= to && i < a.length; i++) if (max ? a[i] > a[k] : a[i] < a[k]) k = i;
-        double ms = (k - EcgIntervals.PRE) * 1000.0 / EcgIntervals.FS;
-        double x = (ms - t0) / (t1 - t0) * W, y = bottom - (a[k] - lo) / (hi - lo) * (bottom - top);
-        return text(x, y + dy, lab, "wave", "middle");
+    static double median(List<Double> v) {
+        double[] a = new double[v.size()];
+        for (int i = 0; i < a.length; i++) a[i] = v.get(i);
+        Arrays.sort(a);
+        int m = a.length / 2;
+        return a.length % 2 == 1 ? a[m] : (a[m - 1] + a[m]) / 2.0;
     }
 
-    // ---- beat-to-beat charts
+    // ------------------------------------------------------------------ strip
 
-    static double[] cleanRr(EcgR16Analyzer.Result r) {
-        double[] t = new double[r.rrMs.length];
-        int n = 0;
-        for (int i = 0; i < t.length; i++) if (!r.rrBad[i]) t[n++] = r.rrMs[i];
-        return Arrays.copyOf(t, n);
+    /**
+     * The whole stored recording laid out for the saved ECG image. Pure Java
+     * so it can be tested against real captures without a phone.
+     */
+    public static final class Strip {
+        /** Display trace in mV (zero-phase 0.67-40 Hz + 50 Hz notch); NaN = no usable signal. */
+        public double[] mv = new double[0];
+        /** Strap quality byte (0-3) of the record each sample came from. */
+        public byte[] quality = new byte[0];
+        /** R-peak sample indices, found only inside quality-3 stretches of 5 s or more. */
+        public int[] beats = new int[0];
+        public long startUnix;
+        /** Record sequence number of sample 0, so other streams can be laid on the same clock. */
+        public long firstSeq;
+        /**
+         * Optical pulse (R20), six channels at 50 Hz, band-passed and inverted so the pulse peak
+         * points up; NaN = none. Channel i sits at byte offset EcgAux.PULSE_OFFS[i]. See EcgAux.
+         */
+        public double[][] pulse = new double[0][];
+        /** Per channel {beat-locked swing, random-time control, steepest rise ms, its SD, foot ms, its SD, peak ms, beats}. */
+        public double[][] pulseStats = new double[0][];
+        /** Indices of the (up to two) channels that lock best to the heartbeat, best first. */
+        public int[] pulseShow = new int[0];
+        /** Wrist motion, 100 Hz, mg of acceleration change within each second; NaN = none. See EcgAux. */
+        public double[] motionMg = new double[0];
     }
 
-    static double median(double[] v) {
-        if (v.length == 0) return 1000;
-        double[] c = v.clone();
-        Arrays.sort(c);
-        return c.length % 2 == 1 ? c[c.length / 2] : 0.5 * (c[c.length / 2 - 1] + c[c.length / 2]);
-    }
-
-    /** {lo, hi} in ms, shared by the time-between-beats chart and the steadiness plot. */
-    static double[] tachAxis(EcgR16Analyzer.Result r) {
-        double[] c = cleanRr(r);
-        if (c.length == 0) return new double[]{800, 1200};
-        double[] s = c.clone();
-        Arrays.sort(s);
-        double med = median(c), p5 = s[(int) (0.05 * (s.length - 1))], p95 = s[(int) (0.95 * (s.length - 1))];
-        double lo = Math.floor((Math.min(p5, med - 100) - 40) / 50) * 50, hi = Math.ceil((Math.max(p95, med + 100) + 40) / 50) * 50;
-        return new double[]{Math.max(lo, 250), Math.min(hi, 2200)};
-    }
-
-    static String tachChart(EcgR16Analyzer.Result r, double[] ax) {
-        final int H = 170;
-        double total = Math.max(1, r.secondStates.length);
-        double lo = ax[0], hi = ax[1];
-        StringBuilder b = new StringBuilder(svgOpen(H, "Time between each pair of heartbeats across the whole reading"));
-        double step = (hi - lo) > 500 ? 200 : 100;
-        for (double v = Math.ceil(lo / step) * step; v <= hi; v += step) {
-            double y = H - 26 - (v - lo) / (hi - lo) * (H - 40);
-            b.append(line(0, y, W, y, "gl")).append(text(2, y - 3, (long) v + " ms", "axis", "start"));
-        }
-        for (int i = 0; i < r.rrMs.length; i++) {
-            double x = r.rrTimeS[i] / total * W, v = r.rrMs[i];
-            if (v > hi) b.append("<polygon points=\"").append(f(x - 4)).append(",12 ").append(f(x + 4)).append(",12 ").append(f(x)).append(",4\" class=\"mark\"></polygon>");
-            else if (v < lo) b.append("<polygon points=\"").append(f(x - 4)).append(',').append(H - 30).append(' ').append(f(x + 4)).append(',').append(H - 30).append(' ').append(f(x)).append(',').append(H - 22).append("\" class=\"mark\"></polygon>");
-            else b.append(dot(x, H - 26 - (v - lo) / (hi - lo) * (H - 40), 2.4, r.rrBad[i] ? "dotbad" : "dot"));
-        }
-        for (int s = 0; s <= 180; s += 60) if (s <= total) b.append(text(Math.min(Math.max(s / total * W, 8), W - 8), H - 8, s + " s", "axis", "middle"));
-        return b.append("</svg>").toString();
-    }
-
-    static String poincare(EcgR16Analyzer.Result r, double[] ax) {
-        double lo = ax[0], hi = ax[1];
-        final int S = 250, pad = 34;
-        StringBuilder pts = new StringBuilder();
-        int n = 0;
-        for (int i = 0; i + 1 < r.rrMs.length; i++) {
-            if (r.rrBad[i] || r.rrBad[i + 1]) continue;
-            if (Math.abs((r.rrTimeS[i + 1] - r.rrTimeS[i]) * 1000.0 - r.rrMs[i + 1]) > 8) continue;   // not consecutive
-            double a = r.rrMs[i], c = r.rrMs[i + 1];
-            if (a < lo || a > hi || c < lo || c > hi) continue;
-            pts.append(dot(pad + (a - lo) / (hi - lo) * (S - pad - 10), S - 26 - (c - lo) / (hi - lo) * (S - 26 - 8), 2.8, "dot"));
-            n++;
-        }
-        if (n < 8) return null;
-        StringBuilder b = new StringBuilder("<svg viewBox=\"0 0 " + S + " " + (S + 4) + "\" role=\"img\" aria-label=\"Each dot compares one beat gap with the next\" class=\"sq\">");
-        b.append("<rect x=\"").append(pad).append("\" y=\"8\" width=\"").append(S - pad - 10).append("\" height=\"").append(S - 34).append("\" class=\"frame\"></rect>");
-        b.append(line(pad, S - 26, S - 10, 8, "ident"));
-        double step = (hi - lo) > 500 ? 200 : 100;
-        for (double v = Math.ceil(lo / step) * step; v <= hi; v += step) {
-            b.append(text(pad + (v - lo) / (hi - lo) * (S - pad - 10), S - 10, String.valueOf((long) v), "axis", "middle"));
-            b.append(text(30, S - 26 - (v - lo) / (hi - lo) * (S - 34) + 3, String.valueOf((long) v), "axis", "end"));
-        }
-        b.append(pts).append(text(S / 2.0 + 10, S, "this gap (ms)", "axis", "middle"));
-        return b.append("</svg>").toString();
-    }
-
-    static String hrChart(EcgR16Analyzer.Result r) {
-        double total = Math.max(1, r.secondStates.length);
-        double med = median(cleanRr(r));
-        double[] hr = new double[(int) Math.ceil(total / 12.0)];
-        Arrays.fill(hr, Double.NaN);
-        for (int bin = 0; bin < hr.length; bin++) {
-            double sum = 0;
-            int c = 0;
-            for (int i = 0; i < r.rrMs.length; i++) {
-                if (r.rrBad[i] || r.rrMs[i] > 1.4 * med || r.rrMs[i] < 0.6 * med) continue;
-                if (r.rrTimeS[i] >= bin * 12 && r.rrTimeS[i] < (bin + 1) * 12) { sum += r.rrMs[i]; c++; }
+    /** @param records stored R16 frames (1584 bytes each), any order */
+    public static Strip strip(List<byte[]> records) {
+        Strip s = new Strip();
+        List<byte[]> recs = new ArrayList<>();
+        for (byte[] f : records) if (f.length == 1584) recs.add(f);
+        if (recs.isEmpty()) return s;
+        recs.sort((a, b) -> Long.compare(u32(a, 11) & 0xffffffffL, u32(b, 11) & 0xffffffffL));
+        long first = u32(recs.get(0), 11) & 0xffffffffL;
+        long last = u32(recs.get(recs.size() - 1), 11) & 0xffffffffL;
+        int nRec = (int) Math.min(last - first + 1, 3600);          // at most one hour
+        int n = nRec * FS;
+        double[] raw = new double[n];
+        Arrays.fill(raw, Double.NaN);
+        byte[] q = new byte[n];
+        for (byte[] f : recs) {
+            long idx = (u32(f, 11) & 0xffffffffL) - first;
+            if (idx < 0 || idx >= nRec) continue;
+            int base = (int) idx * FS, cnt = EcgWhoopSpec.r16Count(f);
+            for (int k = 0; k < FS; k++) q[base + k] = f[21];
+            for (int k = 0; k < cnt; k++) {
+                int v = EcgWhoopSpec.r16Sample(f, k);
+                // rail samples and the amplifier's fast-recovery window are not ECG
+                if (Math.abs(v) >= EcgWhoopSpec.R16_RAIL || EcgWhoopSpec.r16FastRecovery(f, k)) continue;
+                raw[base + k] = v;
             }
-            if (c >= 4) hr[bin] = 60000.0 / (sum / c);
         }
-        double mn = Double.MAX_VALUE, mx = -Double.MAX_VALUE;
-        int valid = 0;
-        for (double v : hr) if (!Double.isNaN(v)) { mn = Math.min(mn, v); mx = Math.max(mx, v); valid++; }
-        if (valid < 3) return null;
-        double lo = Math.floor((mn - 3) / 5) * 5, hi = Math.max(Math.ceil((mx + 3) / 5) * 5, lo + 15);
-        final int H = 130;
-        StringBuilder b = new StringBuilder(svgOpen(H, "Average heart rate over time in twelve second steps"));
-        for (double v = lo + 5; v < hi; v += 5) {
-            double y = H - 26 - (v - lo) / (hi - lo) * (H - 40);
-            b.append(line(0, y, W, y, "gl")).append(text(2, y - 3, (long) v + " bpm", "axis", "start"));
-        }
-        StringBuilder pts = new StringBuilder(), dots = new StringBuilder();
-        for (int bin = 0; bin < hr.length; bin++) {
-            if (Double.isNaN(hr[bin])) continue;
-            double x = (bin * 12 + 6) / total * W, y = H - 26 - (hr[bin] - lo) / (hi - lo) * (H - 40);
-            pts.append(f(x)).append(',').append(f(y)).append(' ');
-            dots.append(dot(x, y, 2.6, "dotb"));
-        }
-        b.append("<polyline points=\"").append(pts).append("\" class=\"hrline\"></polyline>").append(dots);
-        for (int s = 0; s <= 180; s += 60) if (s <= total) b.append(text(Math.min(Math.max(s / total * W, 8), W - 8), H - 8, s + " s", "axis", "middle"));
-        return b.append("</svg>").toString();
-    }
-
-    static String qualityBar(EcgR16Analyzer.Result r) {
-        byte[] st = r.secondStates;
-        int n = st.length;
-        StringBuilder b = new StringBuilder(svgOpen(56, "Second by second map of which parts of the reading were clean enough to use"));
-        String[] cls = {"qgrey", "qamber", "qgreen", "qred"};
+        double[] mv = new double[n];
+        Arrays.fill(mv, Double.NaN);
         int i = 0;
         while (i < n) {
+            if (Double.isNaN(raw[i])) { i++; continue; }
             int j = i;
-            while (j < n && st[j] == st[i]) j++;
-            double x = i / (double) n * W, w = Math.max((j - i) / (double) n * W, 1);
-            b.append("<rect x=\"").append(f(x)).append("\" y=\"4\" width=\"").append(f(w)).append("\" height=\"28\" rx=\"2\" class=\"").append(cls[Math.min(Math.max(st[i], 0), 3)]).append("\"></rect>");
+            while (j < n && !Double.isNaN(raw[j])) j++;
+            if (j - i >= FS) {
+                double[] uv = new double[j - i];
+                for (int k = 0; k < uv.length; k++) uv[k] = raw[i + k] * EcgWhoopSpec.R16_UV_PER_COUNT;
+                double[] z = EcgWhoopSpec.improvedFilter(uv);
+                for (int k = 0; k < z.length; k++) mv[i + k] = z[k] / 1000.0;
+            }
             i = j;
         }
-        for (int s = 0; s <= 180; s += 60) if (s <= n) b.append(text(Math.min(Math.max(s / (double) n * W, 8), W - 8), 50, s + " s", "axis", "middle"));
-        return b.append("</svg>").toString();
+        List<Integer> beats = new ArrayList<>();
+        i = 0;
+        while (i < n) {
+            if (Double.isNaN(raw[i]) || q[i] != 3) { i++; continue; }
+            int j = i;
+            while (j < n && !Double.isNaN(raw[j]) && q[j] == 3) j++;
+            if (j - i >= 5 * FS) {
+                double[] seg = Arrays.copyOfRange(raw, i, j);
+                for (int p : peaks(seg)) beats.add(i + p);
+            }
+            i = j;
+        }
+        s.mv = mv;
+        s.quality = q;
+        s.beats = new int[beats.size()];
+        for (int k = 0; k < s.beats.length; k++) s.beats[k] = beats.get(k);
+        s.startUnix = u32(recs.get(0), 15) & 0xffffffffL;
+        s.firstSeq = first;
+        Result analysed = lastResult;
+        if (analysed != null && analysed.recordsIn == records.size()) EcgReport.saveReportFile(analysed, s);
+        return s;
     }
-
-    static String ring(Grade g) {
-        double circ = 2 * Math.PI * 36;
-        return "<svg class=\"ring\" viewBox=\"0 0 96 96\" role=\"img\" aria-label=\"Reading quality grade " + g.letter + ", " + Math.round(g.fraction * 100) + " percent of the reading was clean\">"
-                + "<circle cx=\"48\" cy=\"48\" r=\"36\" class=\"rtrack\"></circle><circle cx=\"48\" cy=\"48\" r=\"36\" class=\"rfill " + (g.letter <= 'B' ? "g" : g.letter == 'C' ? "a" : "r")
-                + "\" stroke-dasharray=\"" + f(circ * (g.letter == 'D' ? Math.min(g.fraction, 0.25) : Math.min(1, g.fraction))) + " " + f(circ) + "\" transform=\"rotate(-90 48 48)\"></circle>"
-                + "<text x=\"48\" y=\"57\" text-anchor=\"middle\" class=\"grade\">" + g.letter + "</text></svg>";
-    }
-
-    // ------------------------------------------------------------------ small pieces
-
-    static String tile(String label, String value, String unit, String caption, String colour) {
-        return "<div class=\"card tile\"><div class=\"k\">" + label + "</div><div class=\"val\"" + (colour != null ? " style=\"color:" + colour + "\"" : "") + ">" + value
-                + (unit.isEmpty() ? "" : "<small>" + unit + "</small>") + "</div><p class=\"cap\">" + caption + "</p></div>";
-    }
-
-    static String row(String k, String v) {
-        return "<div class=\"row\"><span>" + k + "</span><span>" + v + "</span></div>";
-    }
-
-    static String formatDuration(int secs) {
-        return (secs / 60) + " min " + String.format(Locale.US, "%02d", secs % 60) + " s";
-    }
-
-    static String esc(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
-    }
-
-    private static final String CSS =
-            ":root{--bg:#0B0F14;--card:#131A23;--line:#243244;--text:#E8EEF5;--muted:#A3B2C5;--green:#3DDC97;--amber:#FFB454;--red:#FF7A7A;--blue:#6CB6FF;--grey:#46566A}"
-            + "@media print{:root{--bg:#fff;--card:#fff;--line:#c9d2dc;--text:#111;--muted:#444;--green:#0a8a54;--amber:#b36200;--red:#c0392b;--blue:#1565c0;--grey:#8a97a6}.card{break-inside:avoid;border:1px solid var(--line)}}"
-            + "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Roboto,'Segoe UI',system-ui,sans-serif;line-height:1.45}"
-            + "main{max-width:480px;margin:0 auto;padding:20px 16px 32px;display:flex;flex-direction:column;gap:14px}"
-            + "h1{font-size:24px;margin:0}h2{font-size:17px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin:2px 0 0}"
-            + ".card{background:var(--card);border-radius:18px;padding:16px}.q{display:flex;gap:16px;align-items:center}.q p{margin:4px 0 0;color:var(--muted);font-size:14px}"
-            + ".k{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}.big{font-size:22px;font-weight:700;margin-top:4px}"
-            + ".lead{font-size:15px;line-height:1.5;margin:6px 0 0}.hint{font-size:13px;color:var(--muted);margin:0 0 10px}.cap{font-size:14px;line-height:1.45;color:var(--muted);margin:10px 0 0}"
-            + ".grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.tile{min-height:140px}.tile .cap{font-size:13px;margin-top:8px}"
-            + ".val{font-size:32px;font-weight:700;margin-top:8px;line-height:1}.val small{font-size:14px;color:var(--muted);font-weight:400;margin-left:6px}"
-            + ".row2{display:flex;justify-content:space-between;align-items:center;gap:8px}.pill{border:1px solid var(--amber);color:var(--amber);border-radius:999px;padding:2px 10px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}"
-            + ".grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}.mini{border:1px solid var(--line);border-radius:12px;padding:10px}.mini span{display:block;font-size:11px;color:var(--muted)}.mini b{font-size:18px}"
-            + ".row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line);font-size:14px}.row span:first-child{color:var(--muted)}.row span:last-child{text-align:right}"
-            + "ul{margin:8px 0 0;padding-left:20px;font-size:14px;line-height:1.6;color:var(--muted)}.foot{font-size:12px;color:var(--muted);text-align:center;margin:4px 8px 0}"
-            + ".legend{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:6px;font-size:13px;color:var(--muted)}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}"
-            + "svg{display:block;width:100%;height:auto}svg.ring{width:96px;flex:none}svg.sq{max-width:250px;margin:0 auto}"
-            + ".axis{fill:var(--muted);font-size:10px}line.gl{stroke:var(--line);stroke-width:1}line.ident{stroke:var(--grey);stroke-width:1;stroke-dasharray:4 4}line.qt{stroke:var(--amber);stroke-width:2}"
-            + ".frame{fill:none;stroke:var(--line)}.trace{fill:none;stroke:var(--green);stroke-width:1.5;stroke-linejoin:round}.trace.thick{stroke-width:2.2}.mark{fill:var(--amber)}"
-            + ".dot{fill:var(--green);fill-opacity:.8}.dotbad{fill:var(--grey)}.dotb{fill:var(--blue)}.hrline{fill:none;stroke:var(--blue);stroke-width:2}"
-            + ".wave{fill:var(--text);font-size:13px;font-weight:700}.qtlab{fill:var(--amber);font-size:12px;font-weight:600}"
-            + ".qgreen{fill:var(--green)}.qamber{fill:var(--amber)}.qgrey{fill:var(--grey)}.qred{fill:var(--red)}"
-            + ".rtrack{fill:none;stroke:var(--line);stroke-width:9}.rfill{fill:none;stroke-width:9;stroke-linecap:round}.rfill.g{stroke:var(--green)}.rfill.a{stroke:var(--amber)}.rfill.r{stroke:var(--red)}.grade{fill:var(--text);font-size:30px;font-weight:700}";
 }
