@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.0 (3 Oct): contains saveReportFile and reportDir
+// FILE VERSION 0.2.1 (3 Oct): contains saveReportFile and reportDir
 
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
@@ -192,7 +192,11 @@ public final class EcgReport {
         if (strip != null) b.append(row("Heartbeats found", strip.beats.length + " in clean stretches"));
         if (r.qt != null) {
             b.append(row("Averaged beats", r.qt.beatsUsed + " of " + r.qt.beatsOffered + " matched the typical shape"));
-            b.append(row("QT method", "Tangent method, 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
+            if (!Double.isNaN(r.qt.rHalfWidthMs)) {
+                b.append(row("R wave width", String.format(Locale.US, "%.0f ms at half height", r.qt.rHalfWidthMs)));
+                b.append(row("Q to S span", String.format(Locale.US, "%.0f ms between the dips either side of R", r.qt.qsSpanMs)));
+            }
+            b.append(row("QT method", "Start = where the QRS begins (slope), end = tangent on the T wave; 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
         }
         if (r.rhythm != null && r.rhythm.features != null) {
             b.append(row("Rhythm screen", String.format(Locale.US, "%d intervals, nRMSSD %.3f, sample entropy %.2f", r.rhythm.intervals, r.rhythm.features[0], r.rhythm.features[4])));
