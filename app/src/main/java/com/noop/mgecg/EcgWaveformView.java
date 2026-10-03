@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.2.2 (3 Oct): auto-scale added (tap the graph to switch to WHOOP's fixed window)
+
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
@@ -29,6 +31,10 @@ import java.util.Arrays;
  * underlying data - the same points are used, just connected more
  * smoothly, exactly as a real chart-rendering library would.
  *
+ * Vertical scale (0.2.2): the window now follows the signal (EcgAutoScale) so R waves fill the box whatever the
+ * contact; the grid stays calibrated (small box 0.1 mV, large box 0.5 mV, lines at fixed millivolt values) and
+ * the label states the true window. Tap the graph to switch between auto and WHOOP's fixed -1 to +2 mV window.
+ *
  * Purely a rendering component - knows nothing about BLE, opcodes, or
  * frame decoding. The host screen calls addSample(int) for every real,
  * decoded ECG sample as it arrives.
@@ -46,10 +52,11 @@ public class EcgWaveformView extends View {
     private int totalSamplesReceived = 0;
 
     /*
-     * Calibrated, fixed vertical scale - WHOOP's own window: its report
-     * waveform is drawn from -1000 to +2000 uV on 6 boxes of 500 uV, and its
-     * live screen plots raw R17 counts (= uV) with no auto-scaling. Samples
-     * outside the window are clamped to its edge, as WHOOP does.
+     * Default window - WHOOP's own: its report waveform is drawn from -1000 to
+     * +2000 uV on 6 boxes of 500 uV, and its live screen plots raw R17 counts
+     * (= uV) with no auto-scaling. Used when auto-scale is off and until two
+     * seconds of signal exist. Samples outside the window are clamped to its
+     * edge, as WHOOP does.
      */
     private static final float DISPLAY_MIN_UV = -1000f;
     private static final float DISPLAY_MAX_UV = 2000f;
@@ -57,6 +64,11 @@ public class EcgWaveformView extends View {
     private float displayMax = DISPLAY_MAX_UV;
     private boolean contactLost = false;
     private final Paint contactLostPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    private final EcgAutoScale scale = new EcgAutoScale();
+    private final float[] scaleBuf = new float[BUFFER_SIZE];
+    private boolean autoScale = true;
+    private int sinceScaleUpdate = 0;
 
     // ECG-paper grid: a fine minor grid, with a bolder major grid
     // every 5th line - the real clinical convention.
@@ -145,6 +157,29 @@ public class EcgWaveformView extends View {
                 android.graphics.Typeface.MONOSPACE);
 
         Arrays.fill(hasSample, false);
+
+        setOnClickListener(v -> setAutoScale(!autoScale));
+    }
+
+    /** Auto-scale on (default): the window follows the signal. Off: WHOOP's fixed -1 to +2 mV window. */
+    public void setAutoScale(boolean on) {
+        autoScale = on;
+        scale.reset();
+        displayMin = DISPLAY_MIN_UV;
+        displayMax = DISPLAY_MAX_UV;
+        sinceScaleUpdate = 0;
+        if (on) refreshScale();
+        postInvalidateOnAnimation();
+    }
+
+    private void refreshScale() {
+        int n = 0;
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            if (hasSample[i]) scaleBuf[n++] = samples[i];
+        }
+        scale.update(scaleBuf, n);
+        displayMin = scale.min;
+        displayMax = scale.max;
     }
 
     public void addSample(int value) {
@@ -159,6 +194,11 @@ public class EcgWaveformView extends View {
         writeHead = (writeHead + 1) % BUFFER_SIZE;
         totalSamplesReceived++;
 
+        if (autoScale && ++sinceScaleUpdate >= 25) {      // every 0.25 s
+            sinceScaleUpdate = 0;
+            refreshScale();
+        }
+
         postInvalidateOnAnimation();
     }
 
@@ -166,6 +206,8 @@ public class EcgWaveformView extends View {
         Arrays.fill(hasSample, false);
         writeHead = 0;
         totalSamplesReceived = 0;
+        scale.reset();
+        sinceScaleUpdate = 0;
         displayMin = DISPLAY_MIN_UV;
         displayMax = DISPLAY_MAX_UV;
         contactLost = false;
@@ -238,7 +280,9 @@ public class EcgWaveformView extends View {
      * Calibrated ECG paper: small box 0.04 s x 0.1 mV, large box (every 5th
      * line) 0.2 s x 0.5 mV - the standard grid, and the one WHOOP's report
      * uses. Boxes are not square on a phone-shaped view (WHOOP's aren't
-     * either); the values per box are exact.
+     * either); the values per box are exact. Horizontal lines sit at fixed
+     * millivolt values (every 0.1 mV, bold at multiples of 0.5 mV, so 0 mV is
+     * always a bold line) and move with the window.
      */
     private void drawEcgPaperGrid(Canvas canvas, int w, int h) {
         float minorSpacing = w / (WINDOW_SECONDS / 0.04f);
@@ -249,10 +293,15 @@ public class EcgWaveformView extends View {
             canvas.drawLine(x, 0, x, h, p);
         }
 
-        float minorSpacingY = h / ((DISPLAY_MAX_UV - DISPLAY_MIN_UV) / 100f);
-        int row = 0;
-        for (float y = 0; y <= h; y += minorSpacingY, row++) {
-            Paint p = (row % 5 == 0) ? majorGridPaint : minorGridPaint;
+        float range = displayMax - displayMin;
+        if (range < 1f) {
+            return;
+        }
+        int first = (int) Math.ceil(displayMin / 100f);
+        int last = (int) Math.floor(displayMax / 100f);
+        for (int k = first; k <= last; k++) {
+            float y = h - ((k * 100f - displayMin) / range) * h;
+            Paint p = (k % 5 == 0) ? majorGridPaint : minorGridPaint;
             canvas.drawLine(0, y, w, y, p);
         }
     }
@@ -340,10 +389,13 @@ public class EcgWaveformView extends View {
 
         canvas.drawText(
                 String.format(java.util.Locale.UK,
-                        "%.0f to +%.0f mV \u00b7 large box 0.2 s \u00d7 0.5 mV",
+                        "%+.1f to %+.1f mV \u00b7 small box 0.1 mV \u00b7 large 0.5 mV",
                         displayMin * UV_PER_COUNT / 1000.0,
                         displayMax * UV_PER_COUNT / 1000.0),
                 12, 30, scaleLabelPaint);
+        canvas.drawText(autoScale ? "auto scale \u00b7 tap for WHOOP's fixed window"
+                        : "fixed scale \u00b7 tap for auto",
+                12, 58, scaleLabelPaint);
 
         if (contactLost) {
             canvas.drawText("NO CONTACT \u2014 fingers off the clasp",
