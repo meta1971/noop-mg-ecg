@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.2 (3 Oct): auto-scale added (tap the graph to switch to WHOOP's fixed window)
+// FILE VERSION 0.2.3 (3 Oct): smooth scrolling playout + auto-scale (tap the graph to switch to WHOOP's fixed window)
 
 import android.animation.ValueAnimator;
 import android.content.Context;
@@ -31,6 +31,11 @@ import java.util.Arrays;
  * underlying data - the same points are used, just connected more
  * smoothly, exactly as a real chart-rendering library would.
  *
+ * Motion (0.2.3): the strap delivers the live ECG as one frame of 100 samples per second, so drawing samples as they
+ * arrive moved the trace a sixth of the screen at once, once a second. Samples now go through EcgLivePlayout, which
+ * plays them out at a steady 100 per second (about 0.7 s behind live) while the view redraws every screen refresh, and
+ * the trace scrolls smoothly from right to left with the newest sample at the right edge.
+ *
  * Vertical scale (0.2.2): the window now follows the signal (EcgAutoScale) so R waves fill the box whatever the
  * contact; the grid stays calibrated (small box 0.1 mV, large box 0.5 mV, lines at fixed millivolt values) and
  * the label states the true window. Tap the graph to switch between auto and WHOOP's fixed -1 to +2 mV window.
@@ -46,10 +51,13 @@ public class EcgWaveformView extends View {
     private static final int BUFFER_SIZE =
             (int) (WINDOW_SECONDS * SAMPLE_RATE_HZ);
 
-    private final int[] samples = new int[BUFFER_SIZE];
-    private final boolean[] hasSample = new boolean[BUFFER_SIZE];
+    private final float[] samples = new float[BUFFER_SIZE];   // the samples already played out, as a ring
     private int writeHead = 0;
+    private int shown = 0;                                     // how many valid samples are in the ring (up to BUFFER_SIZE)
     private int totalSamplesReceived = 0;
+
+    private final EcgLivePlayout playout = new EcgLivePlayout();
+    private long lastFrameNanos = 0;
 
     /*
      * Default window - WHOOP's own: its report waveform is drawn from -1000 to
@@ -127,19 +135,19 @@ public class EcgWaveformView extends View {
 
         tracePaint.setColor(traceColor);
         tracePaint.setStyle(Paint.Style.STROKE);
-        tracePaint.setStrokeWidth(3.4f);
+        tracePaint.setStrokeWidth(2.6f);
         tracePaint.setStrokeJoin(Paint.Join.ROUND);
         tracePaint.setStrokeCap(Paint.Cap.ROUND);
 
-        traceGlowPaint.setColor(Color.parseColor("#402EE6A8"));
+        traceGlowPaint.setColor(Color.parseColor("#282EE6A8"));
         traceGlowPaint.setStyle(Paint.Style.STROKE);
-        traceGlowPaint.setStrokeWidth(9f);
+        traceGlowPaint.setStrokeWidth(6.5f);
         traceGlowPaint.setStrokeJoin(Paint.Join.ROUND);
         traceGlowPaint.setStrokeCap(Paint.Cap.ROUND);
 
         traceCoreHighlight.setColor(Color.parseColor("#C8FFF4E8"));
         traceCoreHighlight.setStyle(Paint.Style.STROKE);
-        traceCoreHighlight.setStrokeWidth(1.1f);
+        traceCoreHighlight.setStrokeWidth(0.9f);
         traceCoreHighlight.setStrokeJoin(Paint.Join.ROUND);
         traceCoreHighlight.setStrokeCap(Paint.Cap.ROUND);
 
@@ -156,8 +164,6 @@ public class EcgWaveformView extends View {
         scaleLabelPaint.setTypeface(
                 android.graphics.Typeface.MONOSPACE);
 
-        Arrays.fill(hasSample, false);
-
         setOnClickListener(v -> setAutoScale(!autoScale));
     }
 
@@ -173,39 +179,47 @@ public class EcgWaveformView extends View {
     }
 
     private void refreshScale() {
-        int n = 0;
-        for (int i = 0; i < BUFFER_SIZE; i++) {
-            if (hasSample[i]) scaleBuf[n++] = samples[i];
-        }
+        int n = Math.min(shown, BUFFER_SIZE);
+        System.arraycopy(samples, 0, scaleBuf, 0, n);        // order does not matter for the window
         scale.update(scaleBuf, n);
         displayMin = scale.min;
         displayMax = scale.max;
     }
 
+    /** A live sample arrived (called 100 times when a frame arrives, once a second). It is played out smoothly. */
     public void addSample(int value) {
         if (idleSweepAnimator != null) {
             idleSweepAnimator.cancel();
             idleSweepAnimator = null;
         }
         liveMode = true;
-
-        samples[writeHead] = value;
-        hasSample[writeHead] = true;
-        writeHead = (writeHead + 1) % BUFFER_SIZE;
         totalSamplesReceived++;
-
-        if (autoScale && ++sinceScaleUpdate >= 25) {      // every 0.25 s
-            sinceScaleUpdate = 0;
-            refreshScale();
-        }
-
+        playout.push(value);
         postInvalidateOnAnimation();
     }
 
+    /** One released sample goes into the display ring and, every 0.25 s, the auto-scale looks at the window. */
+    private void showSample(float v) {
+        samples[writeHead] = v;
+        writeHead = (writeHead + 1) % BUFFER_SIZE;
+        if (shown < BUFFER_SIZE) shown++;
+        if (autoScale && ++sinceScaleUpdate >= 25) {
+            sinceScaleUpdate = 0;
+            refreshScale();
+        }
+    }
+
+    /** Moves the playout on by dt seconds (the screen refresh interval). Package-private so tests can drive it. */
+    void advanceBy(double dt) {
+        playout.advance(dt, this::showSample);
+    }
+
     public void reset() {
-        Arrays.fill(hasSample, false);
         writeHead = 0;
+        shown = 0;
         totalSamplesReceived = 0;
+        playout.reset();
+        lastFrameNanos = 0;
         scale.reset();
         sinceScaleUpdate = 0;
         displayMin = DISPLAY_MIN_UV;
@@ -256,6 +270,13 @@ public class EcgWaveformView extends View {
             return;
         }
 
+        if (liveMode) {
+            long now = System.nanoTime();
+            double dt = lastFrameNanos == 0 ? 0 : (now - lastFrameNanos) / 1e9;
+            lastFrameNanos = now;
+            advanceBy(dt);
+        }
+
         canvas.drawRect(0, 0, w, h, bgPaint);
         drawEcgPaperGrid(canvas, w, h);
 
@@ -266,6 +287,8 @@ public class EcgWaveformView extends View {
         }
 
         canvas.drawRect(1, 1, w - 1, h - 1, borderPaint);
+
+        if (liveMode) postInvalidateOnAnimation();       // keep redrawing every screen refresh while live
     }
 
     /** Shown when the strap zeroes the live samples (fingers off the clasp). */
@@ -332,30 +355,24 @@ public class EcgWaveformView extends View {
 
     private void drawLiveTrace(Canvas canvas, int w, int h) {
 
-        float sweepFrac = writeHead / (float) BUFFER_SIZE;
-        float sweepX = w * sweepFrac;
-
         float range = (displayMax - displayMin);
         if (range < 1f) {
             range = 1f;
         }
 
-        float[] xs = new float[BUFFER_SIZE];
-        float[] ys = new float[BUFFER_SIZE];
-        int n = 0;
+        // newest sample at the right edge, older ones to the left, the whole strip shifted by the playout's
+        // fractional progress so it moves continuously instead of in sample-sized steps
+        float pxPerSample = w / (float) (BUFFER_SIZE - 1);
+        float shift = (float) playout.fraction() * pxPerSample;
 
-        for (int i = 0; i < BUFFER_SIZE; i++) {
-            int idx = (writeHead + i) % BUFFER_SIZE;
-            if (!hasSample[idx]) {
-                continue;
-            }
-            float x = w * i / (float) BUFFER_SIZE;
+        int n = Math.min(shown, BUFFER_SIZE);
+        float[] xs = new float[n];
+        float[] ys = new float[n];
+        for (int i = 0; i < n; i++) {
+            int idx = ((writeHead - n + i) % BUFFER_SIZE + BUFFER_SIZE) % BUFFER_SIZE;
+            xs[i] = w - shift - (n - 1 - i) * pxPerSample;
             float v = Math.max(displayMin, Math.min(displayMax, samples[idx]));
-            float norm = (v - displayMin) / range;
-            float y = h - (norm * h);
-            xs[n] = x;
-            ys[n] = y;
-            n++;
+            ys[i] = h - ((v - displayMin) / range) * h;
         }
 
         tracePath.reset();
@@ -377,15 +394,11 @@ public class EcgWaveformView extends View {
             canvas.drawPath(tracePath, traceGlowPaint);
             canvas.drawPath(tracePath, tracePaint);
             canvas.drawPath(tracePath, traceCoreHighlight);
+            // a bright point where "now" is
+            Paint head = new Paint(Paint.ANTI_ALIAS_FLAG);
+            head.setColor(Color.parseColor("#2EE6A8"));
+            canvas.drawCircle(xs[n - 1], ys[n - 1], 6f, head);
         }
-
-        Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        glow.setShader(new LinearGradient(
-                sweepX - 24, 0, sweepX, 0,
-                Color.TRANSPARENT, Color.parseColor("#382EE6A8"),
-                Shader.TileMode.CLAMP));
-        canvas.drawRect(sweepX - 24, 0, sweepX, h, glow);
-        canvas.drawLine(sweepX, 0, sweepX, h, sweepPaint);
 
         canvas.drawText(
                 String.format(java.util.Locale.UK,
@@ -393,8 +406,9 @@ public class EcgWaveformView extends View {
                         displayMin * UV_PER_COUNT / 1000.0,
                         displayMax * UV_PER_COUNT / 1000.0),
                 12, 30, scaleLabelPaint);
-        canvas.drawText(autoScale ? "auto scale \u00b7 tap for WHOOP's fixed window"
-                        : "fixed scale \u00b7 tap for auto",
+        canvas.drawText((autoScale ? "auto scale \u00b7 tap for WHOOP's fixed window"
+                        : "fixed scale \u00b7 tap for auto")
+                        + String.format(java.util.Locale.UK, " \u00b7 %.1f s behind live", playout.lagSeconds()),
                 12, 58, scaleLabelPaint);
 
         if (contactLost) {
