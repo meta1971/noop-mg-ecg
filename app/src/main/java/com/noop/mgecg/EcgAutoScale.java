@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.2 (3 Oct): live graph auto-scale
+// FILE VERSION 0.2.3 (3 Oct): live graph auto-scale (calmer zoom)
 
 import java.util.Arrays;
 
@@ -14,9 +14,9 @@ import java.util.Arrays;
 public final class EcgAutoScale {
 
     public static final float DEFAULT_MIN = -1000f, DEFAULT_MAX = 2000f;   // WHOOP's own window, uV
-    public static final float MIN_RANGE = 800f, MAX_RANGE = 3000f;
+    public static final float MIN_RANGE = 1000f, MAX_RANGE = 3000f;
     static final int MIN_SAMPLES = 200;                                   // 2 s at 100 Hz before the window moves
-    static final float ABOVE = 1.45f, BELOW = 0.55f;                      // window = peak x (1.45 above, 0.55 below baseline)
+    static final float ABOVE = 1.6f, BELOW = 0.65f;                       // window = peak x (1.6 above, 0.65 below baseline)
 
     public float min = DEFAULT_MIN, max = DEFAULT_MAX;
 
