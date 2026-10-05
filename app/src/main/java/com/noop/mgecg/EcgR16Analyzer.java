@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.0 (3 Oct): contains lastResult and the report hook in strip()
+// FILE VERSION 0.2.8 (3 Oct): contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -91,6 +91,8 @@ public final class EcgR16Analyzer {
         public EcgRhythm.Result rhythm;
         /** EXPERIMENTAL QT from the averaged beat (EcgIntervals); null if it did not run. */
         public EcgIntervals.Result qt;
+        /** QT measured separately in 2 or 3 heart-rate bands when the rate changed during the recording (else empty). */
+        public List<EcgIntervals.Band> qtBands = new ArrayList<>();
         /** For the report: every beat-to-beat interval (ms), the time its second beat occurred (s from the first
          *  stored second), and whether it touches a beat that failed the shape check. */
         public double[] rrMs = new double[0], rrTimeS = new double[0];
@@ -115,7 +117,18 @@ public final class EcgR16Analyzer {
                             dash[0], dash[1], (int) dash[2], dash[5] > 0.5))
                             + (af == null ? " afState=4 why=not_run" : " " + af.toLog())
                             + (rhythm == null ? " RR_SCREEN not_run" : " RR_SCREEN " + rhythm)
-                            + (qt == null ? " QT_EXPERIMENTAL not_run" : " QT_EXPERIMENTAL " + qt));
+                            + (qt == null ? " QT_EXPERIMENTAL not_run" : " QT_EXPERIMENTAL " + qt)
+                            + qtBandsLog());
+        }
+
+        String qtBandsLog() {
+            if (qtBands == null || qtBands.isEmpty()) return "";
+            StringBuilder b = new StringBuilder(" QT_BANDS");
+            for (EcgIntervals.Band bd : qtBands) {
+                b.append(String.format(Locale.US, " [hr=%.0f %s beats=%d qt=%.0f qtcF=%.0f ci=%.0f-%.0f]", bd.hr, bd.res.status,
+                        bd.res.beatsUsed, bd.res.qtMs, bd.res.qtcFMs, bd.res.ciLoMs, bd.res.ciHiMs));
+            }
+            return b.toString();
         }
 
         public String toHtml() {
@@ -448,6 +461,8 @@ public final class EcgR16Analyzer {
         List<List<Double>> rrRuns = new ArrayList<>();
         List<List<Boolean>> badRuns = new ArrayList<>();
         List<double[]> qtWins = new ArrayList<>();
+        List<Double> qtRrs = new ArrayList<>();
+        List<double[]> qtWide = new ArrayList<>();
         for (List<byte[]> run : runs) {
             if (run.size() - SETTLE_S < MIN_RUN_S) continue;
             List<byte[]> use = run.subList(SETTLE_S, run.size());
@@ -488,7 +503,7 @@ public final class EcgR16Analyzer {
             {   // beat windows (uV) for the averaged-beat QT measurement
                 double[] uvRun = new double[x.length];
                 for (int i = 0; i < uvRun.length; i++) uvRun[i] = x[i] * EcgWhoopSpec.R16_UV_PER_COUNT;
-                qtWins.addAll(EcgIntervals.windows(uvRun, pk, bad, inv));
+                qtWins.addAll(EcgIntervals.windows(uvRun, pk, bad, inv, qtRrs, qtWide));
             }
             if (measureAmplitude(x, pk, bad, inv, ampAll, noiseAll)) {
                 runsMeasured++;
@@ -597,7 +612,7 @@ public final class EcgR16Analyzer {
             r.rhythm = EcgRhythm.analyzeRuns(beatRuns);
 
             // EXPERIMENTAL QT: averaged beat, tangent method, bootstrap interval
-            r.qt = EcgIntervals.analyse(qtWins, clean.isEmpty() ? 1.0 : median(clean) / 1000.0);
+            r.qt = EcgIntervals.analyse(qtWins, clean.isEmpty() ? 1.0 : median(clean) / 1000.0, qtWide);
             // QT depends on the beat before it, so averaging over an uneven rhythm is not meaningful
             boolean uneven = r.afState == AfScreen.IRREGULAR || r.afState == AfScreen.AF_LIKE
                     || (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR);
@@ -605,6 +620,8 @@ public final class EcgR16Analyzer {
                 r.qt.status = EcgIntervals.Status.UNCERTAIN;
                 r.qt.reason = "the rhythm was too uneven for an averaged QT";
             }
+            // heart rate changed during the recording (for example recovering from exercise): measure per band
+            if (!uneven) r.qtBands = EcgIntervals.bands(qtWins, qtRrs);
         }
         return r;
     }
