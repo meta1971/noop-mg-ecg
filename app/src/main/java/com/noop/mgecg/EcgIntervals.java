@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.1 (3 Oct): slope-based QRS onset, shape gate 0.60
+// FILE VERSION 0.2.8 (3 Oct): slope-based QRS onset, shape gate 0.60, QT per heart-rate band, wide-band detail beat
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -66,6 +66,8 @@ public final class EcgIntervals {
         public int validBootstraps;
         /** Averaged beat in uV, PRE samples before R (for drawing). Null if not computed. */
         public double[] avg;
+        /** The same beats averaged with a 0.5-150 Hz band (fine detail of the QRS). Null if not computed. */
+        public double[] avgWide;
 
         public double halfWidthMs() { return (ciHiMs - ciLoMs) / 2.0; }
 
@@ -93,6 +95,16 @@ public final class EcgIntervals {
         return zeroPhase(y, nt[0], nt[1]);
     }
 
+    /** Zero-phase 0.5-150 Hz plus 50 Hz notch: the "detail" band. Used only for the averaged beat, never for rhythm. */
+    public static double[] cleanWide(double[] uv) {
+        double[][] hp = EcgR16Analyzer.coeffs(false, 0.5);
+        double[][] lp = EcgR16Analyzer.coeffs(true, 150.0);
+        double[] y = zeroPhase(uv, hp[0], hp[1]);
+        y = zeroPhase(y, lp[0], lp[1]);
+        double[][] nt = notch(50.0, 30.0);
+        return zeroPhase(y, nt[0], nt[1]);
+    }
+
     static double[][] notch(double f0, double q) {
         double w = 2 * Math.PI * f0 / FS, c = Math.cos(w), al = Math.sin(w) / (2 * q);
         double a0 = 1 + al;
@@ -109,16 +121,83 @@ public final class EcgIntervals {
      * sample indices in that run, bad = peaks that failed the shape check, inv = run polarity is inverted.
      */
     public static List<double[]> windows(double[] uv, List<Integer> pk, Set<Integer> bad, boolean inv) {
+        return windows(uv, pk, bad, inv, null);
+    }
+
+    /** As above; rrOut (if given) receives, for each kept window, the gap since the previous R peak in seconds (NaN if none). */
+    public static List<double[]> windows(double[] uv, List<Integer> pk, Set<Integer> bad, boolean inv, List<Double> rrOut) {
+        return windows(uv, pk, bad, inv, rrOut, null);
+    }
+
+    /** As above; wideOut (if given) receives, for each kept window, the same beat filtered 0.5-150 Hz. */
+    public static List<double[]> windows(double[] uv, List<Integer> pk, Set<Integer> bad, boolean inv, List<Double> rrOut,
+                                         List<double[]> wideOut) {
         List<double[]> out = new ArrayList<>();
         if (uv.length < EDGE_START + EDGE_END + PRE + POST) return out;
         double[] z = clean(uv);
+        double[] zw = wideOut == null ? null : cleanWide(uv);
         double sign = inv ? -1.0 : 1.0;
-        for (int p : pk) {
+        for (int i = 0; i < pk.size(); i++) {
+            int p = pk.get(i);
             if (bad != null && bad.contains(p)) continue;
             if (p < EDGE_START || p > z.length - EDGE_END || p - PRE < 0 || p + POST > z.length) continue;
             double[] w = new double[PRE + POST];
-            for (int i = 0; i < w.length; i++) w[i] = sign * z[p - PRE + i];
+            for (int j = 0; j < w.length; j++) w[j] = sign * z[p - PRE + j];
             out.add(w);
+            if (zw != null) {
+                double[] ww = new double[PRE + POST];
+                for (int j = 0; j < ww.length; j++) ww[j] = sign * zw[p - PRE + j];
+                wideOut.add(ww);
+            }
+            if (rrOut != null) rrOut.add(i > 0 ? (p - pk.get(i - 1)) / (double) FS : Double.NaN);
+        }
+        return out;
+    }
+
+    // ---------------------------------------------------------------- QT per heart-rate band
+
+    /** One slice of the recording measured on its own, so a changing heart rate does not smear the T wave. */
+    public static final class Band {
+        public double rrS, hr;
+        public Result res;
+    }
+
+    public static final double BAND_MIN_SPREAD = 1.20;   // slowest/fastest typical gap must differ by at least this much
+
+    /**
+     * Splits the beat windows by the gap before each beat into 2 or 3 equal groups and measures each group separately.
+     * Returns an empty list when the heart rate barely changed (one average is then right) or there are too few beats.
+     */
+    public static List<Band> bands(List<double[]> wins, List<Double> rrs) {
+        List<Band> out = new ArrayList<>();
+        if (wins == null || rrs == null || wins.size() != rrs.size()) return out;
+        List<Integer> idx = new ArrayList<>();
+        for (int i = 0; i < wins.size(); i++) {
+            double v = rrs.get(i);
+            if (!Double.isNaN(v) && v > 0.35 && v < 1.8) idx.add(i);
+        }
+        int n = idx.size();
+        if (n < 2 * MIN_BEATS) return out;
+        final List<Double> fr = rrs;
+        java.util.Collections.sort(idx, (a, b) -> Double.compare(fr.get(a), fr.get(b)));
+        double p10 = rrs.get(idx.get((int) (0.10 * (n - 1)))), p90 = rrs.get(idx.get((int) (0.90 * (n - 1))));
+        if (p90 / p10 < BAND_MIN_SPREAD) return out;
+        int nb = n >= 3 * MIN_BEATS + 30 ? 3 : 2;
+        for (int g = 0; g < nb; g++) {
+            int a = g * n / nb, b = (g + 1) * n / nb;
+            List<double[]> gw = new ArrayList<>();
+            double[] gr = new double[b - a];
+            for (int k = a; k < b; k++) {
+                gw.add(wins.get(idx.get(k)));
+                gr[k - a] = rrs.get(idx.get(k));
+            }
+            java.util.Arrays.sort(gr);
+            double med = gr[gr.length / 2];
+            Band bd = new Band();
+            bd.rrS = med;
+            bd.hr = 60.0 / med;
+            bd.res = analyse(gw, med);
+            out.add(bd);
         }
         return out;
     }
@@ -126,6 +205,11 @@ public final class EcgIntervals {
     // ---------------------------------------------------------------- analysis
 
     public static Result analyse(List<double[]> wins, double rrMedianS) {
+        return analyse(wins, rrMedianS, null);
+    }
+
+    /** wide (optional) holds the same beats filtered 0.5-150 Hz, in the same order as wins. */
+    public static Result analyse(List<double[]> wins, double rrMedianS, List<double[]> wide) {
         Result r = new Result();
         r.beatsOffered = wins == null ? 0 : wins.size();
         r.rrS = rrMedianS;
@@ -146,8 +230,14 @@ public final class EcgIntervals {
             tmpl[j] = s.length % 2 == 1 ? s[m] : (s[m - 1] + s[m]) / 2.0;
         }
         List<double[]> kept = new ArrayList<>();
-        for (double[] w : wins) {
-            if (corr(w, tmpl, PRE - 50, PRE + 225) >= SHAPE_GATE) kept.add(w);
+        List<double[]> keptWide = new ArrayList<>();
+        boolean haveWide = wide != null && wide.size() == wins.size();
+        for (int wi = 0; wi < wins.size(); wi++) {
+            double[] w = wins.get(wi);
+            if (corr(w, tmpl, PRE - 50, PRE + 225) >= SHAPE_GATE) {
+                kept.add(w);
+                if (haveWide) keptWide.add(wide.get(wi));
+            }
         }
         r.beatsUsed = kept.size();
         if (kept.size() < 10) {
@@ -157,6 +247,7 @@ public final class EcgIntervals {
         }
         double[] avg = mean(kept, null);
         r.avg = avg;
+        if (haveWide && keptWide.size() == kept.size()) r.avgWide = mean(keptWide, null);
 
         // noise of the averaged beat from an odd/even split: sd(a1 - a2) = 2 x sd of the full average
         double[] a1 = new double[len], a2 = new double[len];
