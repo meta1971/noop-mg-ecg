@@ -1,7 +1,8 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.6 (3 Oct): contains saveReportFile and reportDir; research-only reading and in-depth explanations
+// FILE VERSION 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
 
+import java.util.List;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
@@ -125,7 +126,8 @@ public final class EcgReport {
         b.append("</div>");
 
         // ---- QT
-        b.append(qtCard(r.qt));
+        b.append(qtCard(r.qt, r.qtBands));
+        b.append(bandsCard(r.qtBands));
 
         // ---- research-only reading
         EcgOpinion.Result op = EcgOpinion.build(r, g);
@@ -133,10 +135,10 @@ public final class EcgReport {
 
         // ---- graphs
         if (usableReading) {
-            String tr = traceChart(strip);
+            String tr = traceChart(strip, r.inverted);
             if (tr != null) {
                 b.append("<section class=\"card\"><h2>Ten seconds of your heartbeat</h2><p class=\"hint\">Each amber marker is one heartbeat.</p>")
-                        .append(tr).append("<p class=\"cap\">Every tall spike is one beat. The space between spikes sets your heart rate: wider gaps mean a slower rate. Small wobbles between beats are movement and muscle noise.</p></section>");
+                        .append(tr).append("<p class=\"cap\">").append(r.inverted ? "This recording came in upside down, which happens when the two electrode contacts are the other way round, for example with the other hand or wrist. It is flipped here so the main spike points up. " : "").append("Every tall spike is one beat. The space between spikes sets your heart rate: wider gaps mean a slower rate. Small wobbles between beats are movement and muscle noise.</p></section>");
             }
             if (r.qt != null && r.qt.avg != null) {
                 b.append("<section class=\"card\"><h2>Your average heartbeat</h2><p class=\"hint\">").append(r.qt.beatsUsed)
@@ -145,6 +147,7 @@ public final class EcgReport {
                         .append("<div class=\"grid2\"><div class=\"mini\"><span>R wave height</span><b>")
                         .append(String.format(Locale.US, "%.2f mV", r.qt.rAmpUv / 1000.0)).append("</b></div><div class=\"mini\"><span>T wave vs noise</span><b>")
                         .append(String.format(Locale.US, "%.0f&times;", r.qt.tAmpUv / Math.max(1e-9, r.qt.noiseUv))).append("</b></div></div></section>");
+                b.append(detailCard(r.qt));
             }
             if (r.rrMs.length >= 8) {
                 double[] ax = tachAxis(r);
@@ -202,6 +205,7 @@ public final class EcgReport {
                 b.append(row("R wave width", String.format(Locale.US, "%.0f ms at half height", r.qt.rHalfWidthMs)));
                 b.append(row("Q to S span", String.format(Locale.US, "%.0f ms between the dips either side of R", r.qt.qsSpanMs)));
             }
+            if (r.inverted) b.append(row("Orientation", "Recording came in upside down; flipped for display and measurement"));
             b.append(row("QT method", "Start = where the QRS begins (slope), end = tangent on the T wave; 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
         }
         if (r.rhythm != null && r.rhythm.features != null) {
@@ -358,6 +362,10 @@ public final class EcgReport {
                 "Every clean beat is laid on top of the others and averaged, which cancels random noise and leaves the typical beat. <b>P</b> is the top chambers contracting, <b>Q R S</b> the main pump, <b>T</b> the pump resetting.",
                 "R wave height is the size of the main spike. It changes with how you sit or lie, arm position, breathing, skin dryness and electrode contact, so a different value on another day is usually one of these and not a sign about your heart. The band's own contact check is not sensitive enough to tell which. T wave vs noise says how many times larger the T wave is than the leftover noise; QT is only measured above 8 times.",
                 "The width of the R wave and the span between the Q and S dips are shape measurements only. They are not the QRS duration clinicians quote, which depends on the filter and needs a 12-lead ECG to check."));
+        b.append(why("Fine detail of the main spike (the wide-band view)",
+                "The strap does not low-pass its stored ECG at 40 Hz: it records 500 samples a second and the noise and signal both extend towards 250 Hz. The standard view filters to 0.5&ndash;40 Hz to keep noise down. The detail view uses 0.5&ndash;150 Hz on the same averaged beat.",
+                "A wider band does not help the rhythm check. The rhythm check uses beat timing, and in testing a wider band made the beat timing no sharper because it let in more noise than it added in steepness. Atrial fibrillation is judged from the timing of the beats and from the small waves before them, which sit between roughly 4 and 10 Hz, inside the standard band.",
+                "What the detail view can show is the finer shape of the main spike: sharper points and deeper dips that the standard filter rounds off. It only works on an average of many clean beats; a single beat is too noisy at that bandwidth."));
         b.append(why("The charts",
                 "<b>Ten seconds of your heartbeat</b>: the cleaned trace with each detected beat marked. <b>Time between beats</b>: each dot is one gap; an amber marker is a gap about double or half the usual, usually a missed or doubled detection. <b>Steadiness plot</b>: each dot compares one gap with the next; a tight cluster on the dashed line is a steady rhythm.",
                 "<b>Heart rate across the reading</b>: the average in 12-second steps; rises and falls with breathing are normal. <b>Which seconds counted</b>: green seconds were measured, amber were settling or too short, grey were too weak, red lost contact."));
@@ -367,9 +375,109 @@ public final class EcgReport {
         return b.append("</section>").toString();
     }
 
+
+    static int okBands(List<EcgIntervals.Band> bands) {
+        int n = 0;
+        if (bands != null) for (EcgIntervals.Band b : bands) if (b.res != null && b.res.status == EcgIntervals.Status.OK) n++;
+        return n;
+    }
+
+    /** QT measured separately in heart-rate bands (only when the rate changed during the recording). */
+    static String bandsCard(List<EcgIntervals.Band> bands) {
+        if (okBands(bands) < 2) return "";
+        StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><div class=\"k\">QT across heart rates</div><span class=\"pill\">Experimental</span></div>");
+        b.append("<p>Your heart rate changed during this recording, so the beats were split by rate and each group was measured on its own.</p>");
+        double minF = Double.MAX_VALUE, maxF = -Double.MAX_VALUE, minB = Double.MAX_VALUE, maxB = -Double.MAX_VALUE;
+        int ok = 0;
+        b.append("<div class=\"rows\">");
+        for (int i = bands.size() - 1; i >= 0; i--) {                 // fastest first
+            EcgIntervals.Band bd = bands.get(i);
+            String lab = "about " + Math.round(bd.hr) + " bpm";
+            StringBuilder val = new StringBuilder();
+            if (bd.res.status == EcgIntervals.Status.OK) {
+                double qtcB = bd.res.qtMs / Math.sqrt(bd.rrS);
+                val.append(String.format(Locale.US, "QT %.0f ms, corrected %.0f ms, %d beats", bd.res.qtMs, bd.res.qtcFMs, bd.res.beatsUsed));
+                minF = Math.min(minF, bd.res.qtcFMs); maxF = Math.max(maxF, bd.res.qtcFMs);
+                minB = Math.min(minB, qtcB); maxB = Math.max(maxB, qtcB);
+                ok++;
+            } else {
+                val.append("not measured (").append(bd.res.reason.isEmpty() ? bd.res.status.toString() : bd.res.reason).append(")");
+            }
+            b.append(row(lab, val.toString()));
+        }
+        b.append("</div>");
+        if (ok >= 2) {
+            b.append(String.format(Locale.US, "<p>QT gets shorter as the heart speeds up, so it is corrected for rate. The corrected values differ by <b>%.0f ms</b> across these bands (Fridericia). "
+                    + "Bazett's older formula would differ by %.0f ms. Smaller means the correction is working for your heart at these rates.</p>", maxF - minF, maxB - minB));
+        } else {
+            b.append("<p class=\"cap\">Fewer than two bands had enough clean beats to compare.</p>");
+        }
+        b.append("<p class=\"cap\">Single lead from wrist to finger, not checked against a 12-lead ECG. Not a diagnosis.</p></section>");
+        return b.toString();
+    }
+
+
+    // ------------------------------------------------------------------ fine detail (wide band) view
+
+    /** Zoomed QRS: the standard 0.5-40 Hz average beat against the same beats at 0.5-150 Hz. Null-safe. */
+    static String detailCard(EcgIntervals.Result q) {
+        if (q == null || q.avg == null || q.avgWide == null || q.beatsUsed < 30) return "";
+        double[] a = q.avg, w = q.avgWide;
+        final int H = 200, r = EcgIntervals.PRE;
+        final double t0 = -80, t1 = 110;
+        int i0 = r + (int) (t0 * EcgIntervals.FS / 1000.0), i1 = r + (int) (t1 * EcgIntervals.FS / 1000.0);
+        double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
+        for (int i = i0; i <= i1; i++) { lo = Math.min(lo, Math.min(a[i], w[i])); hi = Math.max(hi, Math.max(a[i], w[i])); }
+        double pad = 0.08 * (hi - lo);
+        lo -= pad; hi += pad;
+        final double top = 14, bottom = H - 34;
+        StringBuilder b = new StringBuilder("<section class=\"card\"><h2>Fine detail of the main spike</h2><p class=\"hint\">The same beats at two bandwidths, zoomed in.</p>");
+        b.append(svgOpen(H, "The main spike of the average beat at two bandwidths, 40 hertz and 150 hertz"));
+        for (int ms = -60; ms <= 100; ms += 40) {
+            double x = (ms - t0) / (t1 - t0) * W;
+            b.append(line(x, top, x, bottom, "gl")).append(text(x, H - 16, String.valueOf(ms), "axis", "middle"));
+        }
+        b.append(text(W / 2.0, H - 2, "milliseconds from the R peak", "axis", "middle"));
+        double yz = bottom - (0 - lo) / (hi - lo) * (bottom - top);
+        if (yz > top && yz < bottom) b.append(line(0, yz, W, yz, "gl"));
+        for (int pass = 0; pass < 2; pass++) {
+            double[] d = pass == 0 ? a : w;
+            StringBuilder pts = new StringBuilder();
+            for (int i = i0; i <= i1; i++) {
+                double ms = (i - r) * 1000.0 / EcgIntervals.FS;
+                pts.append(f((ms - t0) / (t1 - t0) * W)).append(',').append(f(bottom - (d[i] - lo) / (hi - lo) * (bottom - top))).append(' ');
+            }
+            b.append("<polyline points=\"").append(pts).append("\" class=\"").append(pass == 0 ? "trace thick" : "trace thin2").append("\"></polyline>");
+        }
+        b.append("</svg><div class=\"legend\"><span><i class=\"sw g\"></i>Standard, 0.5&ndash;40 Hz</span><span><i class=\"sw w\"></i>Detail, 0.5&ndash;150 Hz</span></div>");
+        double rS = peak(a, r - 12, r + 12, true) - median(a, r - 100, r - 60), rD = peak(w, r - 12, r + 12, true) - median(w, r - 100, r - 60);
+        double sS = median(a, r - 100, r - 60) - peak(a, r + 3, r + 40, false), sD = median(w, r - 100, r - 60) - peak(w, r + 3, r + 40, false);
+        b.append("<div class=\"rows\">")
+                .append(row("R wave height", String.format(Locale.US, "%.0f &micro;V standard, %.0f &micro;V detail", rS, rD)))
+                .append(row("S dip depth", String.format(Locale.US, "%.0f &micro;V standard, %.0f &micro;V detail", sS, sD)))
+                .append("</div>");
+        b.append("<p class=\"cap\">The strap records 500 samples a second with no 40 Hz cut-off, so a wider view is possible. Averaging ")
+                .append(q.beatsUsed).append(" beats removes most of the noise, which is why detail above 40 Hz shows here but not in a single beat. "
+                        + "Sharper or deeper points on the detail trace are real signal that the standard view smooths away. This is a morphology view: it does not change the heart rate, "
+                        + "the rhythm timing or any other number, because a wider band did not make beat timing more precise in testing. Not a diagnosis.</p></section>");
+        return b.toString();
+    }
+
+    static double peak(double[] a, int from, int to, boolean max) {
+        double v = max ? -Double.MAX_VALUE : Double.MAX_VALUE;
+        for (int i = Math.max(0, from); i <= to && i < a.length; i++) v = max ? Math.max(v, a[i]) : Math.min(v, a[i]);
+        return v;
+    }
+
+    static double median(double[] a, int from, int to) {
+        double[] c = Arrays.copyOfRange(a, Math.max(0, from), Math.min(a.length, to));
+        Arrays.sort(c);
+        return c.length == 0 ? 0 : c[c.length / 2];
+    }
+
     // ------------------------------------------------------------------ QT card
 
-    static String qtCard(EcgIntervals.Result q) {
+    static String qtCard(EcgIntervals.Result q, List<EcgIntervals.Band> bands) {
         StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><div class=\"k\">QT interval</div><span class=\"pill\">Experimental</span></div>");
         if (q != null && q.status == EcgIntervals.Status.OK) {
             b.append("<div class=\"big\">").append(String.format(Locale.US, "%.0f", q.qtMs)).append(" <small>ms</small></div><p>95% range ")
@@ -379,7 +487,11 @@ public final class EcgReport {
         } else {
             String why = q == null ? "It needs about 40 clean beats and a clear T wave."
                     : "It needs about 40 clean beats and a clear T wave. " + esc(q.reason.isEmpty() ? "" : "This time: " + q.reason + ".");
-            b.append("<div class=\"big\">Not measured this time</div><p>").append(why).append(q != null && q.avg != null ? " A preview is shown on the average heartbeat below." : "").append("</p>");
+            boolean banded = okBands(bands) >= 2;
+            b.append("<div class=\"big\">").append(banded ? "See the heart-rate bands below" : "Not measured this time").append("</div><p>").append(why)
+                    .append(banded ? " Your heart rate changed during the recording, so one average would blur the T wave. It was measured in separate heart-rate bands instead."
+                            : (bands != null && !bands.isEmpty() ? " Your heart rate changed during the recording and the beats were measured in separate rate bands, but the T wave was too small or too noisy in each band to place its end. A small T wave is normal soon after exercise. Measure again at rest." : ""))
+                    .append(!banded && q != null && q.avg != null ? " A preview is shown on the average heartbeat below." : "").append("</p>");
         }
         return b.append("</section>").toString();
     }
@@ -411,7 +523,7 @@ public final class EcgReport {
     }
 
     /** 10 s of the cleaned trace with beat markers; null if there is no clean 10 s. */
-    static String traceChart(EcgR16Analyzer.Strip s) {
+    static String traceChart(EcgR16Analyzer.Strip s, boolean inverted) {
         if (s == null || s.mv.length < 10 * EcgR16Analyzer.FS) return null;
         final int fs = EcgR16Analyzer.FS, win = 10 * fs;
         int best = -1, bestBeats = -1;
@@ -427,6 +539,7 @@ public final class EcgReport {
         }
         if (best < 0) return null;
         double[] w = Arrays.copyOfRange(s.mv, best, best + win);
+        if (inverted) for (int i = 0; i < w.length; i++) w[i] = -w[i];          // the recording came in upside down: draw it the usual way up
         double[] sorted = w.clone();
         Arrays.sort(sorted);
         double lo = Math.min(sorted[(int) (0.005 * win)], -0.3) * 1.15;
@@ -685,5 +798,5 @@ public final class EcgReport {
             + ".dot{width:10px;height:10px;border-radius:5px;margin-top:6px;flex:none}.dot.l0{background:var(--green)}.dot.l1{background:var(--amber)}.dot.l2{background:var(--grey)}h3{font-size:14px;margin:14px 0 2px}"
             + "details.why{border-top:1px solid var(--line);padding:2px 0}details.why summary{cursor:pointer;font-weight:600;font-size:15px;padding:10px 0;list-style:none}"
             + "details.why summary::-webkit-details-marker{display:none}details.why summary::after{content:\" \\25be\";color:var(--muted)}details.why[open] summary::after{content:\" \\25b4\"}"
-            + ".wb p{font-size:14px;line-height:1.5;color:var(--muted);margin:0 0 10px}ol.src{margin:8px 0 0;padding-left:18px;font-size:12px;line-height:1.5;color:var(--muted)}";
+            + ".legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:2px 0 8px}.sw{display:inline-block;width:18px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}.sw.g{background:var(--green)}.sw.w{background:#cfd8e3}.trace.thin2{stroke:#cfd8e3;stroke-width:1.2;fill:none}.wb p{font-size:14px;line-height:1.5;color:var(--muted);margin:0 0 10px}ol.src{margin:8px 0 0;padding-left:18px;font-size:12px;line-height:1.5;color:var(--muted)}";
 }
