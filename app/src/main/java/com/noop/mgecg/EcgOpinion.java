@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.5 (3 Oct): research-only reading
+// FILE VERSION 0.2.7 (3 Oct): research-only reading; heart-rate trend and banded QT
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,6 +40,8 @@ public final class EcgOpinion {
         public final List<String> ask = new ArrayList<>();
         public String summary = "";
         public double sdnnMs = Double.NaN;
+        public double hrStart = Double.NaN, hrEnd = Double.NaN;
+        public boolean settling;                       // heart rate fell clearly during the reading
         public double pnn50 = Double.NaN;
     }
 
@@ -58,9 +60,17 @@ public final class EcgOpinion {
                 || (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR);
         boolean regular = !irregular && r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.REGULAR;
 
+        trend(r, o);
+
         // ---- heart rate
         double hr = EcgReport.reportHr(r);
-        if (!Double.isNaN(hr)) {
+        if (o.settling) {
+            String v = "fell from about " + Math.round(o.hrStart) + " to " + Math.round(o.hrEnd) + " bpm";
+            o.items.add(new Item("Heart rate", v, NOTE, "Your heart rate came down by " + Math.round(o.hrStart - o.hrEnd)
+                    + " beats a minute while you were recording. That is the pattern of settling after activity, stress, caffeine or a big breath-up, not a resting value. "
+                    + "How fast it falls is a research marker of recovery: the faster it settles, the better the recovery, but one reading says little. Compare it with your own repeats under the same conditions."));
+            sum.append("a heart rate that settled from about ").append(Math.round(o.hrStart)).append(" to ").append(Math.round(o.hrEnd)).append(" bpm");
+        } else if (!Double.isNaN(hr)) {
             String v = Math.round(hr) + " bpm";
             if (hr < 50) {
                 o.items.add(new Item("Heart rate", v, NOTE, "Below 50 beats a minute. This is common in people who train a lot and during rest, and it is not a problem in itself. If you feel faint, dizzy or very tired with a rate this low, mention it to a doctor."));
@@ -109,7 +119,11 @@ public final class EcgOpinion {
         if (!r.inconclusive && !Double.isNaN(r.rmssd)) {
             String v = Math.round(r.rmssd) + " ms RMSSD" + (Double.isNaN(o.sdnnMs) ? "" : ", " + Math.round(o.sdnnMs) + " ms SDNN");
             String ref = "In healthy adults measured over about 5 minutes, published values average 42 ms (usual range 19 to 75 ms) for RMSSD and 50 ms (32 to 93 ms) for SDNN. ";
-            if (r.rmssd < 19) {
+            if (o.settling) {
+                o.items.add(new Item("Heart rate variability", v, LIMITED, ref
+                        + "Your rate was still settling during this recording, and variability is temporarily suppressed for a while after activity, so this number cannot be compared with the healthy range. Measure again at complete rest, seated, forearm supported."));
+                sum.append(sum.length() > 0 ? "; " : "").append("variability not comparable while the rate was settling");
+            } else if (r.rmssd < 19) {
                 o.items.add(new Item("Heart rate variability", v, NOTE, ref
                         + "Yours is below that range. That is common with age, tiredness, poor sleep, alcohol or caffeine, a short seated recording, or shallow breathing, and it is not a medical finding on its own. What matters is your own trend over weeks: measure at the same time of day, seated, forearm supported."));
                 sum.append(sum.length() > 0 ? "; " : "").append("heart-rate variability below the healthy reference range (").append(Math.round(r.rmssd)).append(" ms against 19 to 75)");
@@ -124,9 +138,26 @@ public final class EcgOpinion {
 
         // ---- QT
         EcgIntervals.Result q = r.qt;
-        if (q != null && q.status == EcgIntervals.Status.OK) {
-            double qtc = q.qtcFMs;
-            String v = Math.round(qtc) + " ms (QT " + Math.round(q.qtMs) + " ms)";
+        boolean useBands = EcgReport.okBands(r.qtBands) >= 2 && (q == null || q.status != EcgIntervals.Status.OK);
+        double qtcHead = Double.NaN, qtHead = Double.NaN, spread = Double.NaN;
+        if (useBands) {
+            List<Double> f = new ArrayList<>();
+            double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
+            for (EcgIntervals.Band bd : r.qtBands) {
+                if (bd.res.status != EcgIntervals.Status.OK) continue;
+                f.add(bd.res.qtcFMs);
+                lo = Math.min(lo, bd.res.qtcFMs); hi = Math.max(hi, bd.res.qtcFMs);
+            }
+            java.util.Collections.sort(f);
+            qtcHead = f.get(f.size() / 2);
+            spread = hi - lo;
+        } else if (q != null && q.status == EcgIntervals.Status.OK) {
+            qtcHead = q.qtcFMs;
+            qtHead = q.qtMs;
+        }
+        if (!Double.isNaN(qtcHead)) {
+            double qtc = qtcHead;
+            String v = Math.round(qtc) + " ms corrected" + (useBands ? " (middle of " + EcgReport.okBands(r.qtBands) + " heart-rate bands, spread " + Math.round(spread) + " ms)" : " (QT " + Math.round(qtHead) + " ms)");
             String base = "Standard 12-lead limits (AHA/ACCF/HRS 2009): normal below 450 ms in men and 460 ms in women, prolonged at or above those, markedly prolonged at or above 500 ms, and short at or below 390 ms. "
                     + "This reading comes from one lead between wrist and finger, so it has a wide error: smartwatch QT studies differ from a 12-lead by up to about 60 ms, and even experts measuring the same 12-lead beats by hand differ by about 43 ms (standard deviation). ";
             if (qtc >= 500) {
@@ -142,7 +173,8 @@ public final class EcgOpinion {
                 sum.append(sum.length() > 0 ? "; " : "").append("a corrected QT of ").append(Math.round(qtc)).append(" ms, inside the usual range");
             } else {
                 o.items.add(new Item("Corrected QT (Fridericia)", v, NOTE, base
-                        + "Yours is at or below the short limit. That cannot be called a short QT from this device: single-lead tangent readings can sit a few tens of milliseconds away from a 12-lead measurement, and the direction of that error varies between studies. True short QT is rare. Only a 12-lead ECG can say whether it is real."));
+                        + "Yours is at or below the short limit. That cannot be called a short QT from this device: single-lead tangent readings can sit a few tens of milliseconds away from a 12-lead measurement, and the direction of that error varies between studies. True short QT is rare. Only a 12-lead ECG can say whether it is real."
+                        + (useBands ? " The corrected value stayed within " + Math.round(spread) + " ms across heart rates, which suggests a steady measurement offset rather than noise." : "")));
                 sum.append(sum.length() > 0 ? "; " : "").append("a corrected QT of ").append(Math.round(qtc)).append(" ms, at the low end, which this single-lead method cannot call short or normal");
                 o.ask.add("If you want the QT question settled, ask for a 12-lead ECG with a measured QT.");
             }
@@ -160,6 +192,35 @@ public final class EcgOpinion {
                 + "These are measurements compared with published reference ranges, not a diagnosis.";
         o.ask.add(0, "If you ever feel palpitations, dizziness, fainting, chest pain or breathlessness, get medical advice whatever this report says.");
         return o;
+    }
+
+
+    /** Heart rate over the first and last 45 s of clean beats; "settling" when it fell by 12 bpm or more. */
+    static void trend(EcgR16Analyzer.Result r, Result o) {
+        if (r.rrMs == null || r.rrTimeS == null || r.rrMs.length < 40 || r.rrTimeS.length != r.rrMs.length) return;
+        double t0 = Double.MAX_VALUE, t1 = -Double.MAX_VALUE;
+        for (int i = 0; i < r.rrMs.length; i++) {
+            if (r.rrBad != null && i < r.rrBad.length && r.rrBad[i]) continue;
+            t0 = Math.min(t0, r.rrTimeS[i]);
+            t1 = Math.max(t1, r.rrTimeS[i]);
+        }
+        if (t1 - t0 < 120) return;
+        List<Double> a = new ArrayList<>(), b = new ArrayList<>();
+        for (int i = 0; i < r.rrMs.length; i++) {
+            if (r.rrBad != null && i < r.rrBad.length && r.rrBad[i]) continue;
+            if (r.rrTimeS[i] <= t0 + 45) a.add(r.rrMs[i]);
+            else if (r.rrTimeS[i] >= t1 - 45) b.add(r.rrMs[i]);
+        }
+        if (a.size() < 20 || b.size() < 20) return;
+        o.hrStart = 60000.0 / med(a);
+        o.hrEnd = 60000.0 / med(b);
+        o.settling = o.hrStart - o.hrEnd >= 12.0;
+    }
+
+    private static double med(List<Double> v) {
+        List<Double> c = new ArrayList<>(v);
+        java.util.Collections.sort(c);
+        return c.get(c.size() / 2);
     }
 
     /** SDNN and pNN50 from the clean intervals (those not touching an odd-shaped beat and within 30% of the median). */
