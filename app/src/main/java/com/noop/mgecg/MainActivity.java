@@ -66,6 +66,10 @@ public class MainActivity extends NewLookActivity {
     private final java.util.List<double[]> ecgCuffs = new java.util.ArrayList<>();            // {unixMs, systolic, diastolic, pulse}
     private int lastBatteryPct = -1;
     private long lastBatteryAtMs = 0, lastBatteryLoggedMs = 0;
+    // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
+    private TextView batteryText;
+    private boolean batteryCmdsSent = false;
+    private static final String BUILD_TAG = "0.3.0-events-battery-loosen";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -807,7 +811,20 @@ public class MainActivity extends NewLookActivity {
 
             rssiMonitoringActive = true;
             g.readRemoteRssi();
+            logRaw("BUILD " + BUILD_TAG);
+            batteryCmdsSent = false;
             schedulePeriodicBatteryRead(g);
+            // 0.3.0: ask the strap itself for battery level and extended battery info once per
+            // connection, 10 s after discovery, never during a recording or a history pull.
+            mainH.postDelayed(() -> {
+                if (batteryCmdsSent || gatt == null || cmdWrite == null
+                        || ecgSessionRunning || pullAckActive) {
+                    return;
+                }
+                batteryCmdsSent = true;
+                sendPuffinPayload(26, new byte[0], "GET_BATTERY_LEVEL");
+                sendPuffinPayload(98, new byte[]{0x01}, "GET_EXTENDED_BATTERY_INFO");
+            }, 10000);
 
             /*
              * Request the 2M PHY explicitly. Real finding from NOOP's
@@ -1224,6 +1241,8 @@ public class MainActivity extends NewLookActivity {
                     " len=" + value.length +
                     " raw=" + Protocol.hex(value));
         }
+
+        logEventFrame(uuid, value);
 
         checkPendingEcgGateConfirmation(value);
 
@@ -9821,6 +9840,15 @@ public class MainActivity extends NewLookActivity {
         topRow.addView(ecgModeButton,
                 new LinearLayout.LayoutParams(-2, -2));
 
+        // 0.3.0: battery readout, child 3 of the top row so the new look's indexes 0..2 still match
+        batteryText = new TextView(this);
+        batteryText.setTextSize(12);
+        batteryText.setPadding(12, 0, 4, 0);
+        LinearLayout.LayoutParams battLp = new LinearLayout.LayoutParams(-2, -2);
+        battLp.gravity = Gravity.CENTER_VERTICAL;
+        topRow.addView(batteryText, battLp);
+        refreshBatteryText();
+
         col.addView(topRow,
                 new LinearLayout.LayoutParams(-1, -2));
 
@@ -9942,7 +9970,12 @@ public class MainActivity extends NewLookActivity {
         markLabel.setTextColor(0xFF5A6B85);
         col.addView(markLabel, new LinearLayout.LayoutParams(-1, -2));
         col.addView(markRow("LIFT", "BACK", "LIGHT", "FIRM"), new LinearLayout.LayoutParams(-1, -2));
-        col.addView(markRow("BR ON", "BR OFF", "SHAKE", "STILL"), new LinearLayout.LayoutParams(-1, -2));
+        // 0.3.0: row 2 and the new strap row share one child, so the new look's child indexes are unchanged
+        LinearLayout markRow2Box = new LinearLayout(this);
+        markRow2Box.setOrientation(LinearLayout.VERTICAL);
+        markRow2Box.addView(markRow("BR ON", "BR OFF", "SHAKE", "STILL"), new LinearLayout.LayoutParams(-1, -2));
+        markRow2Box.addView(markRow("LOOSEN", "TIGHTEN", "STRAP OFF", "STRAP ON"), new LinearLayout.LayoutParams(-1, -2));
+        col.addView(markRow2Box, new LinearLayout.LayoutParams(-1, -2));
         Button cuffButton = new Button(this);
         cuffButton.setText("CUFF READING...");
         cuffButton.setTextSize(13);
@@ -10055,9 +10088,114 @@ public class MainActivity extends NewLookActivity {
         boolean changed = pct != lastBatteryPct;
         lastBatteryPct = pct;
         lastBatteryAtMs = now;
+        refreshBatteryText();
         if (changed || now - lastBatteryLoggedMs >= 300000L) {
             lastBatteryLoggedMs = now;
             logRaw("BATTERY_LEVEL pct=" + pct + " src=" + src);
+        }
+    }
+
+    /*
+     * 0.3.0: refresh the on-screen battery label. Called from noteBattery on any thread.
+     */
+    private void refreshBatteryText() {
+        final int pct = lastBatteryPct;
+        mainH.post(() -> {
+            if (batteryText == null) return;
+            if (pct < 0) {
+                batteryText.setText("Batt --");
+                batteryText.setTextColor(0xFF8FA1BD);
+            } else {
+                batteryText.setText("Batt " + pct + "%");
+                batteryText.setTextColor(pct < 10 ? 0xFFFF5555 : pct < 20 ? 0xFFFFC857 : 0xFF8FA1BD);
+            }
+        });
+    }
+
+    /*
+     * 0.3.0: names for strap event ids (frame type 0x30, id at byte 10). The names come from
+     * an older APK enum published in the whoop-vault project and are NOT validated on the MG;
+     * the numeric id and the raw payload are the facts, the name is only a hint.
+     */
+    private static String eventName(int id) {
+        switch (id) {
+            case 1: return "ERROR";
+            case 2: return "CONSOLE_OUTPUT";
+            case 3: return "BATTERY_LEVEL";
+            case 4: return "SYSTEM_CONTROL";
+            case 7: return "CHARGING_ON";
+            case 8: return "CHARGING_OFF";
+            case 9: return "WRIST_ON";
+            case 10: return "WRIST_OFF";
+            case 11: return "BLE_CONNECTION_UP";
+            case 12: return "BLE_CONNECTION_DOWN";
+            case 13: return "RTC_LOST";
+            case 14: return "DOUBLE_TAP";
+            case 15: return "BOOT";
+            case 16: return "SET_RTC";
+            case 17: return "TEMPERATURE_LEVEL";
+            case 23: return "BLE_BONDED";
+            case 26: return "TRIM_ALL_DATA";
+            case 27: return "TRIM_ALL_DATA_ENDED";
+            case 28: return "FLASH_INIT_COMPLETE";
+            case 29: return "STRAP_CONDITION_REPORT";
+            case 30: return "BOOT_REPORT";
+            case 32: return "CAPTOUCH_AUTOTHRESHOLD_ACTION";
+            case 33: return "BLE_REALTIME_HR_ON";
+            case 34: return "BLE_REALTIME_HR_OFF";
+            case 35: return "ACCELEROMETER_RESET";
+            case 36: return "AFE_RESET";
+            case 40: return "CH1_SATURATION_DETECTED";
+            case 41: return "CH2_SATURATION_DETECTED";
+            case 42: return "ACCELEROMETER_SATURATION";
+            case 43: return "BLE_SYSTEM_RESET";
+            case 44: return "BLE_SYSTEM_ON";
+            case 45: return "BLE_SYSTEM_INITIALIZED";
+            case 46: return "RAW_DATA_COLLECTION_ON";
+            case 47: return "RAW_DATA_COLLECTION_OFF";
+            case 60: return "HAPTICS_FIRED";
+            case 63: return "EXTENDED_BATTERY_INFORMATION";
+            case 96: return "HIGH_FREQ_SYNC_PROMPT";
+            case 97: return "HIGH_FREQ_SYNC_ENABLED";
+            case 98: return "HIGH_FREQ_SYNC_DISABLED";
+            case 123: return "GENERIC_FIRMWARE_EVENT";
+            default: return "UNKNOWN";
+        }
+    }
+
+    /*
+     * 0.3.0: one EVENT line per strap event frame, live or inside a history pull. The pull path
+     * only kept a counter before, so event ids and payloads were lost. Frame layout as used by
+     * isRecordingComplete: type at byte 8, seq at byte 9, event id at byte 10, payload from
+     * byte 11 up to the 4-byte CRC. tsGuess is the first 4 payload bytes read as a little-endian
+     * u32; it is only a guess and is printed with a plausibility flag.
+     */
+    private void logEventFrame(String uuid, byte[] v) {
+        try {
+            if (v == null || v.length < 15 || (v[0] & 0xff) != 0xAA || (v[8] & 0xff) != 0x30) {
+                return;
+            }
+            int id = v[10] & 0xff;
+            int end = v.length - 4;
+            byte[] payload = end > 11 ? java.util.Arrays.copyOfRange(v, 11, end) : new byte[0];
+            StringBuilder sb = new StringBuilder("EVENT id=").append(id)
+                    .append(" name=").append(eventName(id))
+                    .append(" seq=").append(v[9] & 0xff)
+                    .append(" ch=").append(uuid)
+                    .append(" src=").append(pullAckActive ? "pull" : "live")
+                    .append(" frameLen=").append(v.length)
+                    .append(" payloadLen=").append(payload.length);
+            if (payload.length >= 4) {
+                long guess = Protocol.u32le(payload, 0);
+                long nowS = System.currentTimeMillis() / 1000L;
+                boolean plausible = guess > 1700000000L && guess < nowS + 86400L;
+                sb.append(" tsGuess=").append(guess)
+                        .append(plausible ? " tsPlausible=1" : " tsPlausible=0");
+            }
+            sb.append(" payload=").append(Protocol.hex(payload));
+            logRaw(sb.toString());
+        } catch (Throwable t) {
+            logRaw("EVENT_LOG_ERROR " + t);
         }
     }
 
