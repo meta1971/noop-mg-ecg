@@ -69,7 +69,7 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.3.0-events-battery-loosen";
+    private static final String BUILD_TAG = "0.3.1-event-fixes";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -823,7 +823,6 @@ public class MainActivity extends NewLookActivity {
                 }
                 batteryCmdsSent = true;
                 sendPuffinPayload(26, new byte[0], "GET_BATTERY_LEVEL");
-                sendPuffinPayload(98, new byte[]{0x01}, "GET_EXTENDED_BATTERY_INFO");
             }, 10000);
 
             /*
@@ -10158,7 +10157,17 @@ public class MainActivity extends NewLookActivity {
             case 96: return "HIGH_FREQ_SYNC_PROMPT";
             case 97: return "HIGH_FREQ_SYNC_ENABLED";
             case 98: return "HIGH_FREQ_SYNC_DISABLED";
+            case 108: return "SESSION_PARAM_108? (50 at start, 25 at stop)";
+            case 110: return "PERIODIC_10MIN_110?";
+            case 113: return "ECG_SESSION_START?";
+            case 114: return "ECG_SESSION_STOP?";
+            case 115: return "ECG_RECORD_START?";
+            case 116: return "ECG_RECORD_STOP?";
+            case 118: return "ECG_END_RESULT_A?";
+            case 119: return "ECG_END_RESULT_B?";
+            case 120: return "PERIODIC_60S_120?";
             case 123: return "GENERIC_FIRMWARE_EVENT";
+            case 124: return "ECG_STATE_124? (float at end)";
             default: return "UNKNOWN";
         }
     }
@@ -10167,8 +10176,7 @@ public class MainActivity extends NewLookActivity {
      * 0.3.0: one EVENT line per strap event frame, live or inside a history pull. The pull path
      * only kept a counter before, so event ids and payloads were lost. Frame layout as used by
      * isRecordingComplete: type at byte 8, seq at byte 9, event id at byte 10, payload from
-     * byte 11 up to the 4-byte CRC. tsGuess is the first 4 payload bytes read as a little-endian
-     * u32; it is only a guess and is printed with a plausibility flag.
+     * byte 11 up to the 4-byte CRC. ts/sub are the strap clock (see the fix below).
      */
     private void logEventFrame(String uuid, byte[] v) {
         try {
@@ -10185,12 +10193,19 @@ public class MainActivity extends NewLookActivity {
                     .append(" src=").append(pullAckActive ? "pull" : "live")
                     .append(" frameLen=").append(v.length)
                     .append(" payloadLen=").append(payload.length);
-            if (payload.length >= 4) {
-                long guess = Protocol.u32le(payload, 0);
-                long nowS = System.currentTimeMillis() / 1000L;
-                boolean plausible = guess > 1700000000L && guess < nowS + 86400L;
-                sb.append(" tsGuess=").append(guess)
+            if (payload.length >= 7) {
+                // 0.3.1: checked against live events, strap time = u32 at payload byte 1,
+                // sub-second = u16 at byte 5 in 1/32768 s (byte 0 is always 0)
+                long ts = Protocol.u32le(payload, 1);
+                double sub = ((payload[5] & 0xff) | ((payload[6] & 0xff) << 8)) / 32768.0;
+                long nowMs = System.currentTimeMillis();
+                boolean plausible = ts > 1700000000L && ts < nowMs / 1000L + 86400L;
+                sb.append(" ts=").append(ts)
+                        .append(String.format(Locale.US, " sub=%.3f", sub))
                         .append(plausible ? " tsPlausible=1" : " tsPlausible=0");
+                if (!pullAckActive && plausible) {
+                    sb.append(String.format(Locale.US, " phoneMinusStrapS=%.1f", nowMs / 1000.0 - (ts + sub)));
+                }
             }
             sb.append(" payload=").append(Protocol.hex(payload));
             logRaw(sb.toString());
