@@ -89,6 +89,8 @@ public final class EcgR16Analyzer {
         public AfScreen.Outcome af;
         /** RR-irregularity screen (EcgRhythm) on the raw quality-3 beat timing; null if it did not run. */
         public EcgRhythm.Result rhythm;
+        /** 0.3.2 breathing rate from R-wave height and beat timing (research only); null if it did not run. */
+        public Breath.Result breath;
         /** EXPERIMENTAL QT from the averaged beat (EcgIntervals); null if it did not run. */
         public EcgIntervals.Result qt;
         /** QT measured separately in 2 or 3 heart-rate bands when the rate changed during the recording (else empty). */
@@ -117,6 +119,7 @@ public final class EcgR16Analyzer {
                             dash[0], dash[1], (int) dash[2], dash[5] > 0.5))
                             + (af == null ? " afState=4 why=not_run" : " " + af.toLog())
                             + (rhythm == null ? " RR_SCREEN not_run" : " RR_SCREEN " + rhythm)
+                            + (breath == null ? " BREATH not_run" : " BREATH " + breath)
                             + (qt == null ? " QT_EXPERIMENTAL not_run" : " QT_EXPERIMENTAL " + qt)
                             + qtBandsLog());
         }
@@ -426,6 +429,7 @@ public final class EcgR16Analyzer {
                     || EcgWhoopSpec.r16LeadOffMeanI(f) > EcgWhoopSpec.LEAD_OFF_I_THRESHOLD) r.leadOffSeconds++;
         }
         List<Double> ampAll = new ArrayList<>(), noiseAll = new ArrayList<>();
+        List<Double> brT = new ArrayList<>(), brA = new ArrayList<>();   // 0.3.2: per-beat R-S height for breathing
         int invRuns = 0, runsMeasured = 0;
 
         // per-second map for the report
@@ -509,6 +513,14 @@ public final class EcgR16Analyzer {
                 runsMeasured++;
                 if (inv) invRuns++;
             }
+            for (int p : pk) {   // 0.3.2: R-S height of every accepted beat, for the breathing estimate
+                if (bad.contains(p) || p < 20 || p + 30 >= n) continue;
+                double mx = -1e18, mn = 1e18;
+                for (int q = p - 10; q <= p + 10; q++) mx = Math.max(mx, y[q]);
+                for (int q = p + 5; q <= p + 30; q++) mn = Math.min(mn, y[q]);
+                brT.add(runOffsetS + p / (double) FS);
+                brA.add(mx - mn);
+            }
             List<Double> rr = new ArrayList<>();
             List<Boolean> bd = new ArrayList<>();
             for (int i = 1; i < pk.size(); i++) {
@@ -559,6 +571,18 @@ public final class EcgR16Analyzer {
             r.rrMs[i] = rrAllMs.get(i);
             r.rrTimeS[i] = rrAllTime.get(i);
             r.rrBad[i] = rrAllBad.get(i);
+        }
+        {   // 0.3.2: breathing from R-wave height (EDR) and from interval timing (RSA)
+            int gi = 0;
+            for (boolean bdv : rrAllBad) if (!bdv) gi++;
+            double[] gt = new double[gi], gv = new double[gi];
+            int gk = 0;
+            for (int i = 0; i < rrAllMs.size(); i++) {
+                if (!rrAllBad.get(i)) { gt[gk] = rrAllTime.get(i); gv[gk] = rrAllMs.get(i); gk++; }
+            }
+            double[] bt = new double[brT.size()], ba = new double[brA.size()];
+            for (int i = 0; i < bt.length; i++) { bt[i] = brT.get(i); ba[i] = brA.get(i); }
+            try { r.breath = Breath.estimate(bt, ba, gt, gv); } catch (RuntimeException ex) { r.breath = null; }
         }
         r.early = AfScreen.earlyBeats(allRr);
         if (!ampAll.isEmpty()) r.rAmpUv = median(ampAll);
@@ -790,4 +814,128 @@ public final class EcgR16Analyzer {
         if (analysed != null && analysed.recordsIn == records.size()) EcgReport.saveReportFile(analysed, s);
         return s;
     }
+
+    /*
+     * Breathing rate from the ECG, research only (0.3.2). Two independent estimates from the same beats:
+     * EDR (R-S height modulated by breathing: with paced breathing at 6 and 12 per minute the height swings
+     * peaked at 6.0 and 12.3 per minute) and RSA (beat interval lengthens and shortens with breathing).
+     * Both are a Lomb-Scargle peak between 6 and 30 per minute. When they agree within 1 per minute the
+     * estimate is marked good. Not a medical measurement.
+     */
+    public static final class Breath {
+    private Breath() {}
+
+    public static final double MIN_PER_MIN = 6, MAX_PER_MIN = 30;
+    public static final int MIN_BEATS = 40;
+    public static final double MIN_SPAN_S = 40;
+
+    public static final class Result {
+        public int beats, intervals;
+        public double spanS = Double.NaN;
+        public double edrRate = Double.NaN, edrRatio = Double.NaN;
+        public double rsaRate = Double.NaN, rsaRatio = Double.NaN;
+        public double ampModPct = Double.NaN;
+        public boolean enough, agree;
+        public String note = "";
+
+        /** Best single estimate: the EDR rate (it held at paced 6 and 12 per minute; the RSA peak did not at 6). */
+        public double rate() { return enough ? edrRate : Double.NaN; }
+
+        @Override
+        public String toString() {
+            if (!enough) return String.format(Locale.US, "not_enough beats=%d spanS=%.0f %s", beats, spanS, note).trim();
+            return String.format(Locale.US,
+                    "rate=%.1f ratio=%.1f rsa=%.1f rsaRatio=%.1f ampModPct=%.1f agree=%b beats=%d intervals=%d spanS=%.0f",
+                    edrRate, edrRatio, rsaRate, rsaRatio, ampModPct, agree, beats, intervals, spanS);
+        }
+    }
+
+    /**
+     * @param beatT   time (s) of each accepted beat
+     * @param beatAmp R-S height of that beat (any consistent unit)
+     * @param rrT     time (s) of the beat that ends each interval
+     * @param rrMs    interval (ms); intervals touching a rejected beat must already be left out
+     */
+    public static Result estimate(double[] beatT, double[] beatAmp, double[] rrT, double[] rrMs) {
+        Result r = new Result();
+        int n = Math.min(beatT.length, beatAmp.length);
+        r.beats = n;
+        if (n < MIN_BEATS) { r.note = "few_beats"; return r; }
+        double[] med = new double[n];
+        System.arraycopy(beatAmp, 0, med, 0, n);
+        java.util.Arrays.sort(med);
+        double m = med[n / 2];
+        if (!(m > 0)) { r.note = "no_amplitude"; return r; }
+        double[] t = new double[n], a = new double[n];
+        int k = 0;
+        for (int i = 0; i < n; i++) {
+            if (beatAmp[i] > 0.5 * m && beatAmp[i] < 1.8 * m) { t[k] = beatT[i]; a[k] = beatAmp[i]; k++; }
+        }
+        if (k < MIN_BEATS) { r.note = "few_beats_after_outliers"; return r; }
+        t = java.util.Arrays.copyOf(t, k);
+        a = java.util.Arrays.copyOf(a, k);
+        r.beats = k;
+        r.spanS = t[k - 1] - t[0];
+        if (r.spanS < MIN_SPAN_S) { r.note = "short"; return r; }
+        double mean = 0;
+        for (double v : a) mean += v;
+        mean /= k;
+        double var = 0;
+        for (double v : a) var += (v - mean) * (v - mean);
+        r.ampModPct = 100.0 * Math.sqrt(var / k) / mean;
+        double[] e = peak(t, a);
+        r.edrRate = e[0];
+        r.edrRatio = e[1];
+        // interval series
+        int cnt = 0;
+        int rn = Math.min(rrT.length, rrMs.length);
+        double[] rt = new double[rn], rv = new double[rn];
+        for (int i = 0; i < rn; i++) {
+            if (rrMs[i] > 500 && rrMs[i] < 1500) { rt[cnt] = rrT[i]; rv[cnt] = rrMs[i]; cnt++; }
+        }
+        r.intervals = cnt;
+        if (cnt >= MIN_BEATS) {
+            double[] s = peak(java.util.Arrays.copyOf(rt, cnt), java.util.Arrays.copyOf(rv, cnt));
+            r.rsaRate = s[0];
+            r.rsaRatio = s[1];
+            r.agree = Math.abs(r.rsaRate - r.edrRate) <= 1.5;
+        }
+        r.enough = true;
+        return r;
+    }
+
+    /** Lomb-Scargle over 6..30 per minute; returns {peak rate per minute, peak power / median power}. */
+    static double[] peak(double[] t, double[] x) {
+        int n = t.length;
+        double mean = 0;
+        for (double v : x) mean += v;
+        mean /= n;
+        double[] y = new double[n];
+        for (int i = 0; i < n; i++) y[i] = x[i] - mean;
+        int steps = 81;
+        double lo = MIN_PER_MIN / 60.0, hi = MAX_PER_MIN / 60.0;
+        double[] p = new double[steps];
+        double bestP = -1;
+        int best = 0;
+        for (int s = 0; s < steps; s++) {
+            double f = lo + (hi - lo) * s / (steps - 1);
+            double w = 2 * Math.PI * f;
+            double sn = 0, cs = 0;
+            for (int i = 0; i < n; i++) { sn += Math.sin(2 * w * t[i]); cs += Math.cos(2 * w * t[i]); }
+            double tau = Math.atan2(sn, cs) / (2 * w);
+            double yc = 0, ys = 0, cc = 0, ss = 0;
+            for (int i = 0; i < n; i++) {
+                double c = Math.cos(w * (t[i] - tau)), si = Math.sin(w * (t[i] - tau));
+                yc += y[i] * c; ys += y[i] * si; cc += c * c; ss += si * si;
+            }
+            p[s] = 0.5 * ((cc > 1e-12 ? yc * yc / cc : 0) + (ss > 1e-12 ? ys * ys / ss : 0));
+            if (p[s] > bestP) { bestP = p[s]; best = s; }
+        }
+        double[] srt = p.clone();
+        java.util.Arrays.sort(srt);
+        double med = (srt[steps / 2 - 1] + srt[steps / 2]) / 2.0;
+        double f = lo + (hi - lo) * best / (steps - 1);
+        return new double[]{f * 60.0, med > 0 ? bestP / med : Double.NaN};
+    }
+}
 }
