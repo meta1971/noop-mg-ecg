@@ -211,6 +211,13 @@ public final class EcgReport {
         if (r.rhythm != null && r.rhythm.features != null) {
             b.append(row("Rhythm screen", String.format(Locale.US, "%d intervals, nRMSSD %.3f, sample entropy %.2f", r.rhythm.intervals, r.rhythm.features[0], r.rhythm.features[4])));
         }
+        if (r.breath != null && r.breath.enough && !Double.isNaN(r.breath.edrRate)) {
+            b.append(row("Breathing (from the ECG)", String.format(Locale.US,
+                    "about %.0f per minute, %s. R-wave height varies by %.0f%% with each breath.",
+                    r.breath.edrRate,
+                    r.breath.agree ? "confirmed by the heartbeat timing" : "the heartbeat timing disagrees, so treat as uncertain",
+                    r.breath.ampModPct)));
+        }
         b.append("</section>");
 
         b.append("<section class=\"card\"><details class=\"why\"><summary>Sources and methods</summary><ol class=\"src\">");
