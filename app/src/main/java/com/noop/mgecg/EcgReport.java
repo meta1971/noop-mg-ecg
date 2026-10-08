@@ -271,7 +271,7 @@ public final class EcgReport {
         boolean regular = !irregular && r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.REGULAR;
         if (irregular) {
             s.append("The timing between your beats looked uneven. Early beats, movement or poor contact can cause this, so repeat the reading. ");
-            if (r.afState == AfScreen.AF_LIKE) {
+            if (r.afState == AfScreen.AF_LIKE || (r.rhythm != null && r.rhythm.strong)) {
                 s.append("The pattern can also be seen with atrial fibrillation; this research screen cannot tell the difference. ");
             }
             s.append("Speak to a doctor if it keeps happening or you feel unwell.");
