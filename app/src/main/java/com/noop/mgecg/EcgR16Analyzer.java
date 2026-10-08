@@ -209,7 +209,8 @@ public final class EcgR16Analyzer {
                     head = "<font color='#39FF6A'>timing looks regular</font>";
                     break;
                 case IRREGULAR:
-                    head = "<font color='#FFB020'>timing looks irregular</font>";
+                    head = rhythm.strong ? "<font color='#FF5555'>AF-like timing pattern</font>"
+                            : "<font color='#FFB020'>timing looks irregular</font>";
                     break;
                 case CANNOT_ANALYSE:
                     head = "not run (" + rhythm.reason + ")";
@@ -226,7 +227,7 @@ public final class EcgR16Analyzer {
                     s.append(String.format(Locale.UK, ", score %.2f", rhythm.probability));
                 }
             }
-            s.append("<br>Beat timing only. Fitted on PhysioNet 2017 data, not checked on this strap. " +
+            s.append("<br>Beat timing only. Fitted on 109 PhysioNet AF-database Holter patients (v2), not checked on this strap. " +
                     "Regular does not mean normal. Not a diagnosis.</small>");
             return s.toString();
         }
