@@ -14,10 +14,11 @@ import java.util.Locale;
  * Feed it beat times (seconds, ascending) from quality-3 seconds only, from the OFFLINE beat
  * detector (not the old live one, which inflated RMSSD about 4x).
  *
- * The model in the fitted block was fitted on the PhysioNet/CinC 2017 training set (AliveCor
- * single lead, 300 Hz): AF versus Normal, 5-fold AUC 0.978, threshold set for 98% of Normal records
- * to stay REGULAR (83% of analysable AF flagged). It has NOT been validated on MG data.
- * If MODEL_FITTED is false the verdict is NOT_CALIBRATED; the features are still computed.
+ * The model in the fitted block (v2) was fitted on the PhysioNet MIT-BIH Atrial Fibrillation Database and
+ * Long-Term AF Database (109 Holter patients, hand-labelled rhythm), on 30 s and 3 min windows of beat timing.
+ * Patient-grouped cross-validation: 94% of AF windows flagged with 1.2-1.6% of sinus windows flagged at 30 s;
+ * 98% and 0.4-0.8% at 3 min. Score above THRESHOLD_STRONG marks an AF-like pattern (86% and 0.25% at 30 s).
+ * Other irregular rhythms (frequent atrial ectopy, short SVT) are also flagged. It has NOT been validated on MG data.
  * REGULAR does not mean normal: regular-timed arrhythmias and conduction problems pass.
  */
 public final class EcgRhythm {
@@ -26,22 +27,23 @@ public final class EcgRhythm {
 
     public enum Verdict { REGULAR, IRREGULAR, CANNOT_ANALYSE, NOT_CALIBRATED }
 
-    // ===== BEGIN FITTED BLOCK (replace with the block printed by physionet_rr_eval.py) =====
+    // ===== BEGIN FITTED BLOCK (v2: fitted on PhysioNet MIT-BIH AF DB + Long-Term AF DB, 109 patients) =====
     public static final boolean MODEL_FITTED = true;
     public static final int MIN_INTERVALS = 20;
     public static final double MAX_SUSPECT_FRACTION = 0.1;
-    public static final double[] FEATURE_MEAN  = {0.09537569951914383, 0.08906628269590408, 0.5136881185163641, 0.6262344751983354, 1.1998413890386697};
-    public static final double[] FEATURE_SCALE = {0.09959812721247684, 0.07281575572660863, 0.1361979844421205, 0.41732666551347725, 0.6568186000465759};
-    public static final double[] WEIGHTS       = {3.6392424276512507, -1.4360287149349271, 0.942011410853356, -0.15470138841659264, 0.8324871855516435};
-    public static final double INTERCEPT = -3.7793415846952887;
-    public static final double THRESHOLD = 0.3657557282486893;
+    public static final double[] FEATURE_MEAN  = {0.1915408343299813, 0.14006060239819995, 0.5511210479720331, 0.9281592052559742, 1.519685958484666, -1.2520688752829292, 0.11674891123293302, 0.4417221528332365, 0.035602689274737094};
+    public static final double[] FEATURE_SCALE = {0.13760222829378335, 0.09163426259522256, 0.15063828979612762, 1.1699912447382315, 0.6721354365896501, 0.9934428740583704, 0.1049880093202434, 0.3494931370320718, 0.0465585266995468};
+    public static final double[] WEIGHTS       = {0.7493262192329084, -0.1319365032449861, -0.2546909983773472, -1.511004987738392, 0.54232689237211, 3.0419240854366145, -0.6704199809256892, 3.2861205886217073, -1.2338045643167581};
+    public static final double INTERCEPT = 0.1332214729687626;
+    public static final double THRESHOLD = 0.5491340225003096;
+    public static final double THRESHOLD_STRONG = 0.9390492145511384;
     // ===== END FITTED BLOCK =====
 
     /** An R-R interval outside this range breaks the run (lost beat, noise or contact loss). */
     public static final double MIN_RR_S = 0.30;
     public static final double MAX_RR_S = 2.00;
 
-    public static final String[] FEATURE_NAMES = {"nRMSSD", "CV", "TPR", "SD1/SD2", "SampEn"};
+    public static final String[] FEATURE_NAMES = {"nRMSSD", "CV", "TPR", "SD1/SD2", "SampEn", "CoSEn", "MADD", "PD8", "Premature"};
 
     public static final class Result {
         public final Verdict verdict;
@@ -51,6 +53,7 @@ public final class EcgRhythm {
         public final double[] features;      // FEATURE_NAMES order; null if not computed
         public final double suspectFraction; // NaN if not computed
         public final double probability;     // model output 0..1; NaN if not calibrated
+        public boolean strong;               // v2: score above the strict AF-like cutoff
 
         Result(Verdict verdict, String reason, int intervals, double meanHrBpm,
                double[] features, double suspectFraction, double probability) {
@@ -66,6 +69,7 @@ public final class EcgRhythm {
         @Override public String toString() {
             StringBuilder sb = new StringBuilder();
             sb.append(verdict.name());
+            if (strong) sb.append(" AF_LIKE_PATTERN");
             if (reason.length() > 0) sb.append(" (").append(reason).append(")");
             sb.append(String.format(Locale.US, " | n=%d", intervals));
             if (!Double.isNaN(meanHrBpm)) sb.append(String.format(Locale.US, " HR=%.1f", meanHrBpm));
@@ -123,7 +127,8 @@ public final class EcgRhythm {
     }
 
     /** Gate, features, verdict for a clean R-R series in seconds. */
-    public static Result analyzeIntervals(double[] rr) {
+    public static Result analyzeIntervals(double[] rrIn) {
+        double[] rr = tidy(rrIn);
         int n = rr == null ? 0 : rr.length;
         if (n < MIN_INTERVALS) {
             return new Result(Verdict.CANNOT_ANALYSE,
@@ -150,8 +155,10 @@ public final class EcgRhythm {
             s += WEIGHTS[i] * (f[i] - FEATURE_MEAN[i]) / FEATURE_SCALE[i];
         }
         double p = 1.0 / (1.0 + Math.exp(-s));
-        return new Result(p >= THRESHOLD ? Verdict.IRREGULAR : Verdict.REGULAR,
+        Result res = new Result(p >= THRESHOLD ? Verdict.IRREGULAR : Verdict.REGULAR,
                 "", n, hr, f, susp, p);
+        res.strong = p >= THRESHOLD_STRONG;
+        return res;
     }
 
     /**
@@ -206,7 +213,26 @@ public final class EcgRhythm {
         double sd1sd2 = sd2 < 1e-9 ? 1.0 : sd1 / sd2;
 
         double se = sampEn(rr, 2, 0.2 * sd);
-        return new double[] {nRmssd, cv, tpr, sd1sd2, se};
+
+        // v2 extras. CoSEn: sample entropy with a fixed 30 ms tolerance, offset for rate (Lake and Moorman).
+        double cosen = sampEn(rr, 1, 0.03) + Math.log(0.06) - Math.log(mean);
+        double med = median(rr);
+        double[] ad = new double[nd];
+        int big = 0;
+        for (int i = 0; i < nd; i++) {
+            ad[i] = Math.abs(d[i]);
+            if (ad[i] > 0.08 * med) big++;
+        }
+        double madd = median(ad) / med;
+        double pd8 = (double) big / nd;
+        // premature beats: an interval under 80% of the median of the 4 before it, followed by a longer one
+        int prem = 0;
+        for (int i = 4; i < n - 1; i++) {
+            double m4 = median(Arrays.copyOfRange(rr, i - 4, i));
+            if (rr[i] < 0.8 * m4 && rr[i + 1] > m4) prem++;
+        }
+        double pf = (double) prem / n;
+        return new double[] {nRmssd, cv, tpr, sd1sd2, se, cosen, madd, pd8, pf};
     }
 
     /**
@@ -224,15 +250,24 @@ public final class EcgRhythm {
                     double dd = Math.abs(x[i + k] - x[j + k]);
                     if (dd > dmax) dmax = dd;
                 }
-                if (dmax <= r) {
+                if (dmax <= r + 1e-9) {
                     b++;
-                    if (Math.abs(x[i + m] - x[j + m]) <= r) a++;
+                    if (Math.abs(x[i + m] - x[j + m]) <= r + 1e-9) a++;
                 }
             }
         }
         if (a < 1) a = 1;
         if (b < 1) b = 1;
         return -Math.log((double) a / (double) b) + 0.0; // + 0.0 turns -0.0 into 0.0
+    }
+
+    /** Intervals are rebuilt by adding up beat times, which leaves rounding noise of about 1e-16 s. Equal intervals
+     *  would then count as a random turning point, so round to 0.1 ms (500 Hz data is exact at 2 ms). */
+    public static double[] tidy(double[] rr) {
+        if (rr == null) return null;
+        double[] o = new double[rr.length];
+        for (int i = 0; i < o.length; i++) o[i] = Math.round(rr[i] * 1e4) / 1e4;
+        return o;
     }
 
     static double median(double[] v) {
