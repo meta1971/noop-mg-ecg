@@ -49,6 +49,17 @@ public final class EcgIntervals {
     public static final double SHAPE_GATE = 0.60;
     public static final int BOOTSTRAPS = 200;
 
+    /** T-end method: 0 = tangent on the steepest descent (used; best across both high-pass cases on 95 annotated QT Database records),
+     *  1 = cumulative-area point (overshot by 19-87 ms, unused), 2 = fraction of the T amplitude (good only if the strap has the high-pass). */
+    public static volatile int TEND_METHOD = 0;
+    /** Share of the area under the T wave (apex to apex + 300 ms) that must be reached for the area method. */
+    public static volatile double AREA_FRAC = 0.95;
+    /** Fraction of the T amplitude the smoothed down-slope must fall to for the threshold method. */
+    public static volatile double THR_FRAC = 0.10;
+    /** The strap's stored ECG looks like it passed a first-order high-pass near 1.5 Hz (T wave about halved, deeper dip after
+     *  the QRS). PROVISIONAL: one person, one reference device, cause open (issue #891). 0 = leave the beat as recorded. */
+    public static volatile double STRAP_HP_FC_HZ = 1.5;
+
     public enum Status { OK, TOO_FEW_BEATS, NO_CLEAR_T_WAVE, UNCERTAIN, RATE_OUT_OF_RANGE, FAILED }
 
     public static final class Result {
@@ -57,6 +68,7 @@ public final class EcgIntervals {
         public int beatsUsed, beatsOffered;
         public double rrS = Double.NaN;
         public double qtMs = Double.NaN, ciLoMs = Double.NaN, ciHiMs = Double.NaN, qtcFMs = Double.NaN;
+        public double qtAsRecordedMs = Double.NaN;   // same beat and T-end method, strap high-pass NOT undone
         public double qrsOnsetMs = Double.NaN, tApexMs = Double.NaN, tEndMs = Double.NaN;
         public double tAmpUv = Double.NaN, rAmpUv = Double.NaN, noiseUv = Double.NaN;
         /** QRS shape of the averaged beat (research; QRS duration is logged only, never shown). */
@@ -268,6 +280,8 @@ public final class EcgIntervals {
             return r;
         }
         fill(r, m);
+        double[] m0 = measure(avg, rrMedianS, 0, TEND_METHOD);
+        if (m0 != null) r.qtAsRecordedMs = m0[3];
         r.rAmpUv = m[8];
         r.tAmpUv = Math.abs(m[7]);
         r.stUv = m[9];
@@ -335,6 +349,52 @@ public final class EcgIntervals {
      * tAmpUv(signed), rAmpUv, stUv, rHalfWidthMs, qsSpanMs} with times relative to the R peak, or null if no T wave is found.
      */
     static double[] measure(double[] w, double rrS) {
+        return measure(w, rrS, STRAP_HP_FC_HZ, TEND_METHOD);
+    }
+
+    /** Undoes a first-order high-pass of corner fc on one averaged beat: x[n] = x[n-1] + y[n]/a - y[n-1], then removes the
+     *  straight-line drift between the two quiet ends of the window (the integration turns small offsets into a ramp). */
+    static double[] undoHighPass(double[] y, double fc) {
+        int n = y.length;
+        double rc = 1.0 / (2 * Math.PI * fc), dt = 1.0 / FS, a = rc / (rc + dt);
+        double[] x = new double[n];
+        x[0] = 0;
+        for (int i = 1; i < n; i++) x[i] = x[i - 1] + y[i] / a - y[i - 1];
+        int e = (int) (0.08 * FS);
+        double m0 = median(x, 0, e), m1 = median(x, n - e, n);
+        double c0 = e / 2.0, c1 = n - e / 2.0;
+        for (int i = 0; i < n; i++) x[i] -= m0 + (m1 - m0) * (i - c0) / (c1 - c0);
+        return x;
+    }
+
+    /** T end by the chosen method; falls back to NaN when the method cannot decide. */
+    static double tEnd(double[] w, int ta, double base, double tpol, int method) {
+        int xmax = Math.min(w.length - 3, ta + (int) (0.30 * FS));
+        if (method == 1) {
+            double tot = 0;
+            for (int i = ta; i <= xmax; i++) tot += Math.max(0, (w[i] - base) * tpol);
+            if (tot <= 0) return Double.NaN;
+            double acc = 0;
+            for (int i = ta; i <= xmax; i++) {
+                acc += Math.max(0, (w[i] - base) * tpol);
+                if (acc >= AREA_FRAC * tot) return i;
+            }
+            return Double.NaN;
+        }
+        if (method == 2) {
+            double amp = (w[ta] - base) * tpol;
+            if (amp <= 0) return Double.NaN;
+            for (int i = ta + 2; i <= xmax - 2; i++) {
+                double sm = (w[i - 2] + w[i - 1] + w[i] + w[i + 1] + w[i + 2]) / 5.0;
+                if ((sm - base) * tpol <= THR_FRAC * amp) return i;
+            }
+            return Double.NaN;
+        }
+        return Double.NaN;
+    }
+
+    static double[] measure(double[] w0, double rrS, double hpFc, int tendMethod) {
+        double[] w = hpFc > 0 ? undoHighPass(w0, hpFc) : w0;
         int r = PRE;
         double[] d1 = new double[w.length];
         for (int i = 1; i < w.length - 1; i++) d1[i] = (w[i + 1] - w[i - 1]) / 2.0 * FS;
@@ -384,6 +444,10 @@ public final class EcgIntervals {
         double slope = d1[ts];
         if (Math.abs(slope) < 1e-6) return null;
         double te = ts + (base - w[ts]) / slope * FS;
+        if (tendMethod != 0) {
+            double alt = tEnd(w, ta, base, tpol, tendMethod);
+            if (!Double.isNaN(alt)) te = alt;
+        }
 
         double rAmp = w[r];
         for (int i = r - 6; i <= r + 6; i++) if (w[i] > rAmp) rAmp = w[i];
