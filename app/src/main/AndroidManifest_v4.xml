@@ -31,6 +31,8 @@
         android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <application
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/AppTheme"
         android:label="NOOP MG ECG Experimental"
         android:allowBackup="false"
