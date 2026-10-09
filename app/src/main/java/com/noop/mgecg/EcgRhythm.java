@@ -53,7 +53,9 @@ public final class EcgRhythm {
         public final double[] features;      // FEATURE_NAMES order; null if not computed
         public final double suspectFraction; // NaN if not computed
         public final double probability;     // model output 0..1; NaN if not calibrated
-        public boolean strong;               // v2: score above the strict AF-like cutoff
+        public boolean strong;               // score above the strict AF-like cutoff
+        public double[] atrial;              // v4: {P-wave amplitude / R, split-half reliability, bad-shape share}; null if unavailable
+        public String model = "A";           // A = timing only, B = timing + P wave
 
         Result(Verdict verdict, String reason, int intervals, double meanHrBpm,
                double[] features, double suspectFraction, double probability) {
@@ -84,6 +86,10 @@ public final class EcgRhythm {
             if (!Double.isNaN(probability)) {
                 sb.append(String.format(Locale.US, " p=%.3f", probability));
             }
+            sb.append(" model=").append(model);
+            if (atrial != null && atrial.length >= 3) {
+                sb.append(String.format(Locale.US, " pAmpRel=%.3f pSplit=%.2f badShare=%.3f", atrial[0], atrial[1], atrial[2]));
+            }
             return sb.toString();
         }
     }
@@ -95,6 +101,10 @@ public final class EcgRhythm {
 
     /** Several runs (for example separate quality-3 stretches). Uses the longest clean piece of any of them. */
     public static Result analyzeRuns(List<double[]> runs) {
+        return analyzeRuns(runs, null);
+    }
+
+    public static Result analyzeRuns(List<double[]> runs, double[] atrial) {
         double[] best = new double[0];
         if (runs != null) {
             for (double[] r : runs) {
@@ -102,7 +112,7 @@ public final class EcgRhythm {
                 if (rr.length > best.length) best = rr;
             }
         }
-        return analyzeIntervals(best);
+        return analyzeIntervals(best, atrial);
     }
 
     /** Longest stretch of consecutive beats whose R-R intervals are all inside [MIN_RR_S, MAX_RR_S]. */
@@ -128,6 +138,10 @@ public final class EcgRhythm {
 
     /** Gate, features, verdict for a clean R-R series in seconds. */
     public static Result analyzeIntervals(double[] rrIn) {
+        return analyzeIntervals(rrIn, null);
+    }
+
+    public static Result analyzeIntervals(double[] rrIn, double[] atrial) {
         double[] rr = tidy(rrIn);
         int n = rr == null ? 0 : rr.length;
         if (n < MIN_INTERVALS) {
@@ -155,9 +169,20 @@ public final class EcgRhythm {
             s += WEIGHTS[i] * (f[i] - FEATURE_MEAN[i]) / FEATURE_SCALE[i];
         }
         double p = 1.0 / (1.0 + Math.exp(-s));
-        Result res = new Result(p >= THRESHOLD ? Verdict.IRREGULAR : Verdict.REGULAR,
+        double lo = THRESHOLD, hi = THRESHOLD_STRONG;
+        String model = "A";
+        if (EcgRhythmB.READY && atrial != null && atrial.length >= 3 && finite(atrial)) {
+            double[] f12 = new double[f.length + 3];
+            System.arraycopy(f, 0, f12, 0, f.length);
+            f12[f.length] = atrial[0]; f12[f.length + 1] = Math.max(-1.0, Math.min(1.0, atrial[1])); f12[f.length + 2] = atrial[2];
+            double pb = EcgRhythmB.predict(f12);
+            if (!Double.isNaN(pb)) { p = pb; lo = EcgRhythmB.THRESHOLD; hi = EcgRhythmB.THRESHOLD_STRONG; model = "B"; }
+        }
+        Result res = new Result(p >= lo ? Verdict.IRREGULAR : Verdict.REGULAR,
                 "", n, hr, f, susp, p);
-        res.strong = p >= THRESHOLD_STRONG;
+        res.strong = p >= hi;
+        res.atrial = atrial;
+        res.model = model;
         return res;
     }
 
@@ -263,6 +288,11 @@ public final class EcgRhythm {
 
     /** Intervals are rebuilt by adding up beat times, which leaves rounding noise of about 1e-16 s. Equal intervals
      *  would then count as a random turning point, so round to 0.1 ms (500 Hz data is exact at 2 ms). */
+    static boolean finite(double[] v) {
+        for (double x : v) if (Double.isNaN(x) || Double.isInfinite(x)) return false;
+        return true;
+    }
+
     public static double[] tidy(double[] rr) {
         if (rr == null) return null;
         double[] o = new double[rr.length];
