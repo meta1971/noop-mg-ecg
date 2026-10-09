@@ -69,7 +69,7 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.3.1-event-fixes";
+    private static final String BUILD_TAG = "0.3.5-qt-seqtest";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -5252,13 +5252,13 @@ public class MainActivity extends NewLookActivity {
         send(0x7B, WRIST_ARG, "SELECT_WRIST (real sequence, prepare)");
 
         mainH.postDelayed(() ->
-                send(0x8B, 1,
-                        "TOGGLE_LABRADOR_FILTERED_ON (real sequence, " +
+                send(0x8B, ecgSeqVariant == 1 ? 0 : 1,
+                        "TOGGLE_LABRADOR_FILTERED_" + (ecgSeqVariant == 1 ? "OFF [TEST]" : "ON") + " (real sequence, " +
                                 "prepare)"), 500);
 
         mainH.postDelayed(() ->
-                send(0x7D, 1,
-                        "TOGGLE_LABRADOR_RAW_SAVE_ON (real sequence, " +
+                send(0x7D, ecgSeqVariant == 2 ? 0 : 1,
+                        "TOGGLE_LABRADOR_RAW_SAVE_" + (ecgSeqVariant == 2 ? "OFF [TEST]" : "ON") + " (real sequence, " +
                                 "prepare)"), 1000);
 
         mainH.postDelayed(() -> {
@@ -9836,6 +9836,23 @@ public class MainActivity extends NewLookActivity {
                     .putBoolean("ecg_mode_official", ecgOfficialMode).apply();
             updateEcgModeButton();
         });
+        // 0.3.5: LONG-PRESS the mode button to pick a one-run sequence test (asked for in ryanbr/noop#891): 139 OFF = stored
+        // R16 but no live R17 expected, 125 OFF = live R17 but nothing stored expected. It resets to FULL after that run.
+        // Deliberately no new view, so the new look's child indexes are untouched.
+        ecgModeButton.setOnLongClickListener(v -> {
+            if (ecgSessionRunning) {
+                ecgStatusText.setText("Stop the current recording to change the test sequence");
+                return true;
+            }
+            ecgSeqVariant = (ecgSeqVariant + 1) % 3;
+            updateEcgModeButton();
+            ecgStatusText.setText(ecgSeqVariant == 0
+                    ? "Normal sequence (139 on, 125 on, 124 start)"
+                    : ecgSeqVariant == 1
+                    ? "TEST for the next run only: 139 OFF (expect stored R16 but no live R17). Use RESEARCH mode."
+                    : "TEST for the next run only: 125 OFF (expect live R17 but nothing stored). Use RESEARCH mode.");
+            return true;
+        });
         topRow.addView(ecgModeButton,
                 new LinearLayout.LayoutParams(-2, -2));
 
@@ -10316,6 +10333,7 @@ public class MainActivity extends NewLookActivity {
                 ? "Official 30 s reading - keep fingers on the clasp"
                 : "Research recording (up to 10 min) - keep fingers on the clasp");
         logRaw("ECG_SESSION_MODE " + (ecgOfficialMode ? "official" : "research"));
+        logRaw("ECG_SEQ_VARIANT " + (ecgSeqVariant == 0 ? "full (139 on, 125 on)" : ecgSeqVariant == 1 ? "139 OFF test" : "125 OFF test"));
         logRaw("ECG_SESSION_BATTERY phase=start pct=" + lastBatteryPct
                 + " ageS=" + (lastBatteryAtMs == 0 ? -1 : (System.currentTimeMillis() - lastBatteryAtMs) / 1000));
         synchronized (ecgSessionR17Frames) { ecgSessionR17Frames.clear(); }
@@ -10399,6 +10417,11 @@ public class MainActivity extends NewLookActivity {
         getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit()
                 .putBoolean("ecg_session_guard", false).apply();
         ecgSessionStopUnix = System.currentTimeMillis() / 1000L;
+        if (ecgSeqVariant != 0) {
+            logRaw("ECG_SEQ_VARIANT reset to full after the test run");
+            ecgSeqVariant = 0;
+            updateEcgModeButton();
+        }
         saveEcgHistoryEntry(null);
         scheduleStoredEcgPull();
     }
@@ -10808,6 +10831,8 @@ public class MainActivity extends NewLookActivity {
      */
     private boolean ecgOfficialMode = false;
     private boolean ecgOfficialStopScheduled = false;
+    /** 0 = normal (139 on, 125 on), 1 = 139 off, 2 = 125 off. One run only; reset when that run stops. */
+    private int ecgSeqVariant = 0;
     private Button ecgModeButton;
 
     /*
@@ -10836,7 +10861,8 @@ public class MainActivity extends NewLookActivity {
 
     private void updateEcgModeButton() {
         if (ecgModeButton == null) return;
-        ecgModeButton.setText(ecgOfficialMode ? "MODE: OFFICIAL 30 s" : "MODE: RESEARCH");
+        ecgModeButton.setText((ecgOfficialMode ? "MODE: OFFICIAL 30 s" : "MODE: RESEARCH")
+                + (ecgSeqVariant == 1 ? "  [TEST: 139 OFF]" : ecgSeqVariant == 2 ? "  [TEST: 125 OFF]" : ""));
     }
 
     private int ecgStrapState = 0, ecgStrapResult = 0, ecgStrapMask = 0;
@@ -10903,10 +10929,23 @@ public class MainActivity extends NewLookActivity {
     private void scheduleOfficialStop(String why) {
         if (ecgOfficialStopScheduled) return;
         ecgOfficialStopScheduled = true;
-        logRaw("ECG_OFFICIAL_MODE_STOP reason=\"" + why + "\" in 2 s");
-        ecgUiHandler.postDelayed(() -> {
-            if (ecgSessionRunning) stopEcgScreenSession();
-        }, 2000);
+        // The strap's HRV field is still 0xffff on the verdict frame and fills in 9-17 s later on 50.40.1.0 (2-9 s on
+        // other firmware reports), so stopping 2 s after the verdict never captured it. Wait until it is valid, at most 20 s.
+        logRaw("ECG_OFFICIAL_MODE_STOP reason=\"" + why + "\" after the HRV field fills (max 20 s)");
+        final long verdictAtMs = System.currentTimeMillis();
+        Runnable stopWhenReady = new Runnable() {
+            @Override public void run() {
+                if (!ecgSessionRunning) return;
+                long waited = System.currentTimeMillis() - verdictAtMs;
+                if (ecgStrapHrv > 0 || waited >= 20000L) {
+                    logRaw("ECG_OFFICIAL_MODE_STOP now: strapHrv=" + ecgStrapHrv + " waitedMs=" + waited);
+                    stopEcgScreenSession();
+                } else {
+                    ecgUiHandler.postDelayed(this, 1000);
+                }
+            }
+        };
+        ecgUiHandler.postDelayed(stopWhenReady, 2000);
     }
 
     private String describeStrapVerdictHtml() {
@@ -10924,7 +10963,7 @@ public class MainActivity extends NewLookActivity {
         b.append("<b>Strap verdict: <font color='").append(color).append("'>")
                 .append(cat).append("</font></b><br><small>code ").append(ecgStrapResult);
         if (hrForScreen > 0) b.append(", heart rate ").append(hrForScreen).append(" bpm");
-        if (ecgStrapHrv > 0) b.append(", HRV (RMSSD) ").append(ecgStrapHrv).append(" ms");
+        if (ecgStrapHrv > 0) b.append(", strap HRV field (RMSSD-like, unverified) ").append(ecgStrapHrv).append(" ms");
         if (ecgStrapMask != 0) {
             b.append(" &middot; reasons: ").append(android.text.TextUtils.join(", ",
                     EcgWhoopSpec.reasons(ecgStrapMask)));
