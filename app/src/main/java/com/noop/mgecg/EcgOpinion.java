@@ -89,7 +89,7 @@ public final class EcgOpinion {
 
         // ---- rhythm
         if (irregular) {
-            o.items.add(new Item("Rhythm timing", "uneven", NOTE,
+            o.items.add(new Item("Rhythm timing", (r.afState == AfScreen.AF_LIKE || (r.rhythm != null && r.rhythm.strong)) ? "AF-like pattern" : "inconclusive", NOTE,
                     "The gaps between beats were uneven. Early beats (very common and usually harmless), missed or doubled detections, movement and poor contact all cause this, and this screen cannot tell them apart. "
                             + ((r.afState == AfScreen.AF_LIKE || (r.rhythm != null && r.rhythm.strong)) ? "The pattern also matches what published screens use to flag atrial fibrillation, so a repeat reading matters. " : "")
                             + "One reading is not a finding: repeat it, still and rested."));
