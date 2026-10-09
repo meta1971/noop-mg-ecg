@@ -270,7 +270,7 @@ public final class EcgReport {
                 || (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR);
         boolean regular = !irregular && r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.REGULAR;
         if (irregular) {
-            s.append("The timing between your beats looked uneven. Early beats, movement or poor contact can cause this, so repeat the reading. ");
+            s.append("The reading was inconclusive: the timing between your beats, or the P waves before them, were not clearly regular. Early beats, movement or poor contact can cause this, so repeat the reading. ");
             if (r.afState == AfScreen.AF_LIKE || (r.rhythm != null && r.rhythm.strong)) {
                 s.append("The pattern can also be seen with atrial fibrillation; this research screen cannot tell the difference. ");
             }
@@ -288,7 +288,11 @@ public final class EcgReport {
     static String[] rhythmTile(EcgR16Analyzer.Result r) {
         boolean irregular = r.afState == AfScreen.IRREGULAR || r.afState == AfScreen.AF_LIKE
                 || (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR);
-        if (irregular) return new String[]{"Irregular", "Gaps between beats were uneven. This is not a diagnosis.", "var(--amber)"};
+        if (irregular) {
+            boolean afl = r.afState == AfScreen.AF_LIKE || (r.rhythm != null && r.rhythm.strong);
+            return afl ? new String[]{"AF-like pattern", "A pattern also seen with atrial fibrillation. This research screen cannot diagnose it: repeat the reading, and speak to a doctor if it keeps happening.", "var(--red)"}
+                    : new String[]{"Inconclusive", "The beat timing or the P waves were not clearly regular. Early beats, movement or poor contact can cause this. This is not a diagnosis.", "var(--amber)"};
+        }
         if (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.REGULAR) {
             return new String[]{"Regular", r.rhythm.intervals + " even beats in a row. Regular timing is not the same as a healthy heart.", "var(--green)"};
         }
