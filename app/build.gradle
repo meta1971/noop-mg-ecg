@@ -1,5 +1,5 @@
 plugins { id 'com.android.application' }
 
 android { namespace 'com.noop.mgecg'; compileSdk 34
-    defaultConfig { applicationId 'com.noop.mgecg'; minSdk 26; targetSdk 34; versionCode 21; versionName '0.3.5-qt-seqtest' }
+    defaultConfig { applicationId 'com.noop.mgecg'; minSdk 26; targetSdk 34; versionCode 22; versionName '0.4.0-atrial-model' }
 }
