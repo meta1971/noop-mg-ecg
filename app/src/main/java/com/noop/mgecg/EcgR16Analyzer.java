@@ -209,8 +209,8 @@ public final class EcgR16Analyzer {
                     head = "<font color='#39FF6A'>timing looks regular</font>";
                     break;
                 case IRREGULAR:
-                    head = rhythm.strong ? "<font color='#FF5555'>AF-like timing pattern</font>"
-                            : "<font color='#FFB020'>timing looks irregular</font>";
+                    head = rhythm.strong ? "<font color='#FF5555'>AF-like pattern</font>"
+                            : "<font color='#FFB020'>inconclusive: the rhythm did not look clearly regular</font>";
                     break;
                 case CANNOT_ANALYSE:
                     head = "not run (" + rhythm.reason + ")";
@@ -227,7 +227,7 @@ public final class EcgR16Analyzer {
                     s.append(String.format(Locale.UK, ", score %.2f", rhythm.probability));
                 }
             }
-            s.append("<br>Beat timing only. Fitted on 109 PhysioNet AF-database Holter patients (v2), not checked on this strap. " +
+            s.append("<br>Beat timing only. Fitted on PhysioNet AF Holter and CinC 2017 recordings (v4), not checked against AF on this strap. " +
                     "Regular does not mean normal. Not a diagnosis.</small>");
             return s.toString();
         }
@@ -291,7 +291,18 @@ public final class EcgR16Analyzer {
         }
         return contact >= 450 && maxAbs < 125000
                 && EcgWhoopSpec.r16FastRecoveryCount(f) == 0
-                && EcgWhoopSpec.r16LeadOffMeanI(f) <= EcgWhoopSpec.LEAD_OFF_I_THRESHOLD;
+                && EcgWhoopSpec.r16LeadOffMeanI(f) <= EcgWhoopSpec.LEAD_OFF_I_THRESHOLD
+                && EcgWhoopSpec.r16LeadOffMeanMag(f) <= EcgWhoopSpec.LEAD_OFF_MAG_THRESHOLD;
+    }
+
+    /** The strap's own artifact flags for one second: lost contact, an amplifier recovery sample, or a high lead-off impedance. */
+    static boolean tagFlag(byte[] f) {
+        if (f.length != 1584) return false;
+        int contact = 0;
+        for (int k = 0; k < 500; k++) contact += ((f[34 + 3 * k] & 0xff) >> 7) & 1;
+        return contact < 450 || EcgWhoopSpec.r16FastRecoveryCount(f) > 0
+                || EcgWhoopSpec.r16LeadOffMeanI(f) > EcgWhoopSpec.LEAD_OFF_I_THRESHOLD
+                || EcgWhoopSpec.r16LeadOffMeanMag(f) > EcgWhoopSpec.LEAD_OFF_MAG_THRESHOLD;
     }
 
     static int sample(byte[] f, int k) {
@@ -449,10 +460,20 @@ public final class EcgR16Analyzer {
         List<Double> rrAllMs = new ArrayList<>(), rrAllTime = new ArrayList<>();
         List<Boolean> rrAllBad = new ArrayList<>();
 
+        // v4: one second either side of a second the strap itself flagged is not trusted either (settling after contact changes)
+        java.util.Set<Long> guard = new java.util.HashSet<>();
+        for (byte[] f : recs) {
+            if (f.length == 1584 && (f[21] & 0xff) > 0 && tagFlag(f)) {
+                long q = u32(f, 11) & 0xffffffffL;
+                guard.add(q - 1); guard.add(q + 1);
+            }
+        }
+        List<double[]> atrialSegs = new ArrayList<>();
+        List<Double> atrialAbs = new ArrayList<>();
         List<List<byte[]>> runs = new ArrayList<>();
         List<byte[]> cur = new ArrayList<>();
         for (byte[] f : recs) {
-            boolean ok = usable(f);
+            boolean ok = usable(f) && !guard.contains(u32(f, 11) & 0xffffffffL);
             if (ok && !cur.isEmpty() && (u32(f, 11) & 0xffffffffL) == (u32(cur.get(cur.size() - 1), 11) & 0xffffffffL) + 1) {
                 cur.add(f);
             } else {
@@ -505,6 +526,7 @@ public final class EcgR16Analyzer {
             }
             r.beatsChecked += ok.size();
             r.beatsBadShape += bad.size();
+            EcgAtrial.collect(x, pk, bad, inv, atrialSegs, atrialAbs);
             {   // beat windows (uV) for the averaged-beat QT measurement
                 double[] uvRun = new double[x.length];
                 for (int i = 0; i < uvRun.length; i++) uvRun[i] = x[i] * EcgWhoopSpec.R16_UV_PER_COUNT;
@@ -634,7 +656,8 @@ public final class EcgR16Analyzer {
                 for (int k = 0; k < sg.length; k++) bt[k + 1] = bt[k] + sg[k] / 1000.0;
                 beatRuns.add(bt);
             }
-            r.rhythm = EcgRhythm.analyzeRuns(beatRuns);
+            double[] atr = EcgAtrial.features(atrialSegs, atrialAbs);
+            r.rhythm = EcgRhythm.analyzeRuns(beatRuns, atr == null ? null : new double[] {atr[0], atr[1], r.noiseFraction});
 
             // EXPERIMENTAL QT: averaged beat, tangent method, bootstrap interval
             r.qt = EcgIntervals.analyse(qtWins, clean.isEmpty() ? 1.0 : median(clean) / 1000.0, qtWide);
