@@ -69,7 +69,7 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.3.5-qt-seqtest";
+    private static final String BUILD_TAG = "0.4.0-atrial-model";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -5249,7 +5249,7 @@ public class MainActivity extends NewLookActivity {
 
         line("--- PREPARE: SELECT_WRIST -> FILTERED ON -> RAW_SAVE ON ---");
 
-        send(0x7B, WRIST_ARG, "SELECT_WRIST (real sequence, prepare)");
+        send(0x7B, ecgSeqVariant == 3 ? 1 : WRIST_ARG, "SELECT_WRIST" + (ecgSeqVariant == 3 ? " arg 1 [TEST]" : "") + " (real sequence, prepare)");
 
         mainH.postDelayed(() ->
                 send(0x8B, ecgSeqVariant == 1 ? 0 : 1,
@@ -5295,6 +5295,17 @@ public class MainActivity extends NewLookActivity {
             final int myGen = ecgListenGeneration;
 
             mainH.postDelayed(() -> runEcgListenHeartbeat(myGen), 5000);
+
+            // v0.4.0 test option 4: 124=3 is what another client calls RESTART. Sent once, 45 s after the start (after the
+            // verdict), so the log shows what the strap does with it. Only when that test was picked for this run.
+            if (ecgSeqVariant == 4) {
+                mainH.postDelayed(() -> {
+                    if (ecgSeqVariant == 4 && ecgSessionRunning) {
+                        logRaw("ECG_RESTART_TEST sending 124 arg 3 at about 45 s");
+                        send(0x7C, 3, "MAIN_CONTROL_ECG_DATA_GENERATION arg 3 [TEST at 45 s]");
+                    }
+                }, 45000);
+            }
 
         }, 1500);
     }
@@ -9844,13 +9855,17 @@ public class MainActivity extends NewLookActivity {
                 ecgStatusText.setText("Stop the current recording to change the test sequence");
                 return true;
             }
-            ecgSeqVariant = (ecgSeqVariant + 1) % 3;
+            ecgSeqVariant = (ecgSeqVariant + 1) % 5;
             updateEcgModeButton();
             ecgStatusText.setText(ecgSeqVariant == 0
                     ? "Normal sequence (139 on, 125 on, 124 start)"
                     : ecgSeqVariant == 1
                     ? "TEST for the next run only: 139 OFF (expect stored R16 but no live R17). Use RESEARCH mode."
-                    : "TEST for the next run only: 125 OFF (expect live R17 but nothing stored). Use RESEARCH mode.");
+                    : ecgSeqVariant == 2
+                    ? "TEST for the next run only: 125 OFF (expect live R17 but nothing stored). Use RESEARCH mode."
+                    : ecgSeqVariant == 3
+                    ? "TEST for the next run only: wrist select 1 instead of 2 (does the trace or verdict change?). Use RESEARCH mode."
+                    : "TEST for the next run only: 124=3 is sent 45 s after the start (what does the strap do?). Use RESEARCH mode.");
             return true;
         });
         topRow.addView(ecgModeButton,
@@ -10862,7 +10877,8 @@ public class MainActivity extends NewLookActivity {
     private void updateEcgModeButton() {
         if (ecgModeButton == null) return;
         ecgModeButton.setText((ecgOfficialMode ? "MODE: OFFICIAL 30 s" : "MODE: RESEARCH")
-                + (ecgSeqVariant == 1 ? "  [TEST: 139 OFF]" : ecgSeqVariant == 2 ? "  [TEST: 125 OFF]" : ""));
+                + (ecgSeqVariant == 1 ? "  [TEST: 139 OFF]" : ecgSeqVariant == 2 ? "  [TEST: 125 OFF]"
+                : ecgSeqVariant == 3 ? "  [TEST: WRIST 1]" : ecgSeqVariant == 4 ? "  [TEST: 124=3 AT 45 s]" : ""));
     }
 
     private int ecgStrapState = 0, ecgStrapResult = 0, ecgStrapMask = 0;
