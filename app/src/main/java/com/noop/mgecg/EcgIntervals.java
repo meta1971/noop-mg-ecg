@@ -52,6 +52,9 @@ public final class EcgIntervals {
     /** T-end method: 0 = tangent on the steepest descent (used; best across both high-pass cases on 95 annotated QT Database records),
      *  1 = cumulative-area point (overshot by 19-87 ms, unused), 2 = fraction of the T amplitude (good only if the strap has the high-pass). */
     public static volatile int TEND_METHOD = 0;
+    /** The tangent crosses the baseline a little before the true T end, so published tangent implementations take the point
+     *  this many ms after the crossing (Moeyersons et al. 2017 use 20 ms). 15 ms balances the bias whether or not the strap has the high-pass (QT Database, 95 records). */
+    public static volatile double TANGENT_OFFSET_MS = 15;
     /** Share of the area under the T wave (apex to apex + 300 ms) that must be reached for the area method. */
     public static volatile double AREA_FRAC = 0.95;
     /** Fraction of the T amplitude the smoothed down-slope must fall to for the threshold method. */
@@ -443,7 +446,7 @@ public final class EcgIntervals {
         for (int i = ta; i < end; i++) if (d1[i] * -tpol > d1[ts] * -tpol) ts = i;
         double slope = d1[ts];
         if (Math.abs(slope) < 1e-6) return null;
-        double te = ts + (base - w[ts]) / slope * FS;
+        double te = ts + (base - w[ts]) / slope * FS + TANGENT_OFFSET_MS * FS / 1000.0;
         if (tendMethod != 0) {
             double alt = tEnd(w, ta, base, tpol, tendMethod);
             if (!Double.isNaN(alt)) te = alt;
