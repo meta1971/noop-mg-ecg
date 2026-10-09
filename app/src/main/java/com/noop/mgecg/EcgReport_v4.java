@@ -206,7 +206,7 @@ public final class EcgReport {
                 b.append(row("Q to S span", String.format(Locale.US, "%.0f ms between the dips either side of R", r.qt.qsSpanMs)));
             }
             if (r.inverted) b.append(row("Orientation", "Recording came in upside down; flipped for display and measurement"));
-            b.append(row("QT method", "Start = where the QRS begins (slope), end = tangent on the T wave; 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
+            b.append(row("QT method", "Start = where the QRS begins (slope), end = tangent on the T wave, after undoing the strap's apparent 1.5 Hz high-pass (provisional); 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
         }
         if (r.rhythm != null && r.rhythm.features != null) {
             b.append(row("Rhythm screen", String.format(Locale.US, "%d intervals, nRMSSD %.3f, sample entropy %.2f", r.rhythm.intervals, r.rhythm.features[0], r.rhythm.features[4])));
@@ -363,7 +363,7 @@ public final class EcgReport {
                 "A beat that arrives clearly sooner than the pattern predicts, followed by a longer pause. Occasional early beats happen in most healthy people. This count comes from timing alone, so it cannot say where in the heart they start."));
         b.append(why("QT interval and corrected QT",
                 "QT is the time from the start of the QRS (the main spike) to the end of the T wave, which is the heart's electrical recharging after each beat. It shortens as the heart speeds up, so it is corrected for rate. This report uses Fridericia's formula, QT divided by the cube root of the beat-to-beat gap in seconds, which holds up better than Bazett's at faster and slower rates.",
-                "The start is found where the QRS begins (slope method). The end is found with the tangent method: a line along the steepest downslope of the T wave is extended to the baseline. The range shown comes from 200 resamplings of the averaged beats.",
+                "The start is found where the QRS begins (slope method). The end is found with the tangent method: a line along the steepest downslope of the T wave is extended to the baseline. Before that, the averaged beat has a first-order 1.5 Hz high-pass undone, because the strap's trace looks like it passed through one (the T wave comes out about half as tall and the QT about 30-40 ms short). That correction is provisional: it comes from one person compared with one reference device, and on public annotated ECGs it cut the average QT error from 33 ms short to 11-19 ms short. The range shown comes from 200 resamplings of the averaged beats.",
                 "It needs about 40 clean beats, a T wave at least 8 times the noise, and a rate between 40 and 110 beats a minute, and it is withheld when the rhythm is uneven. It is experimental and has not been checked against a 12-lead ECG."));
         b.append(why("The average heartbeat, R wave height and T wave vs noise",
                 "Every clean beat is laid on top of the others and averaged, which cancels random noise and leaves the typical beat. <b>P</b> is the top chambers contracting, <b>Q R S</b> the main pump, <b>T</b> the pump resetting.",
@@ -484,13 +484,19 @@ public final class EcgReport {
 
     // ------------------------------------------------------------------ QT card
 
+    /** The QT as recorded, before the strap's apparent high-pass is undone, so the correction is never hidden. */
+    static String asRecordedSentence(EcgIntervals.Result q) {
+        if (EcgIntervals.STRAP_HP_FC_HZ <= 0 || Double.isNaN(q.qtAsRecordedMs)) return "";
+        return String.format(Locale.US, "As recorded, without undoing the strap&rsquo;s apparent 1.5 Hz high-pass (a provisional correction from one comparison), it reads <b>%.0f ms</b>.", q.qtAsRecordedMs);
+    }
+
     static String qtCard(EcgIntervals.Result q, List<EcgIntervals.Band> bands) {
         StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><div class=\"k\">QT interval</div><span class=\"pill\">Experimental</span></div>");
         if (q != null && q.status == EcgIntervals.Status.OK) {
             b.append("<div class=\"big\">").append(String.format(Locale.US, "%.0f", q.qtMs)).append(" <small>ms</small></div><p>95% range ")
                     .append(String.format(Locale.US, "%.0f&ndash;%.0f", q.ciLoMs, q.ciHiMs)).append(" ms. Corrected for heart rate (Fridericia): <b>")
                     .append(String.format(Locale.US, "%.0f", q.qtcFMs)).append(" ms</b>, from ").append(q.beatsUsed)
-                    .append(" averaged beats.</p><p class=\"cap\">Single lead from wrist to finger and not checked against a 12-lead ECG. Smartwatch QT studies differ from a 12-lead by up to about 60 ms. Not a diagnosis.</p>");
+                    .append(" averaged beats. ").append(asRecordedSentence(q)).append("</p><p class=\"cap\">Single lead from wrist to finger and not checked against a 12-lead ECG. Smartwatch QT studies differ from a 12-lead by up to about 60 ms. Not a diagnosis.</p>");
         } else {
             String why = q == null ? "It needs about 40 clean beats and a clear T wave."
                     : "It needs about 40 clean beats and a clear T wave. " + esc(q.reason.isEmpty() ? "" : "This time: " + q.reason + ".");
