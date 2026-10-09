@@ -119,6 +119,22 @@ public final class EcgWhoopSpec {
      */
     public static final int F_LEADOFF_IQ = F_SAMPLES + 3 * 500;   // 1534
     public static final double LEAD_OFF_I_THRESHOLD = 200;
+    /** Mean |I+jQ| of the lead-off trailer: about 80-90 with good contact, about 450 for the seconds after a finger lift. */
+    public static final double LEAD_OFF_MAG_THRESHOLD = 250;
+
+    public static double r16LeadOffMeanMag(byte[] f) {
+        if (f.length < F_LEADOFF_IQ + 1 + 44) return 0;
+        int n = Math.min(11, f[F_LEADOFF_IQ] & 0xFF);
+        if (n == 0) return 0;
+        double s = 0;
+        for (int k = 0; k < n; k++) {
+            int oi = F_LEADOFF_IQ + 1 + 2 * k, oq = F_LEADOFF_IQ + 1 + 22 + 2 * k;
+            double i = (short) ((f[oi] & 0xFF) | ((f[oi + 1] & 0xFF) << 8));
+            double q = (short) ((f[oq] & 0xFF) | ((f[oq + 1] & 0xFF) << 8));
+            s += Math.hypot(i, q);
+        }
+        return s / n;
+    }
 
     public static double r16LeadOffMeanI(byte[] f) {
         if (f.length < F_LEADOFF_IQ + 1 + 44) return 0;
