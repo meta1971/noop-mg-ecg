@@ -69,7 +69,7 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.5.5-own-gate";
+    private static final String BUILD_TAG = "0.5.6-easy-connect";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -771,6 +771,11 @@ public class MainActivity extends NewLookActivity {
                 updateStatus("● CONNECTED");
                 try { DayLog.setLastAddr(MainActivity.this, g.getDevice().getAddress()); } catch (Throwable ignored) { }
                 dayLogBackoffMs = 60000L;
+                if (easyConnectPending) logRaw("EASY_CONNECT_OK mode=" + (passiveConnectPending ? "passive" : "direct"));
+                easyConnectPending = false;
+                passiveConnectPending = false;
+                easyConnectFails = 0;
+                dayLogReconnectAttempts = 0;
                 g.discoverServices();
 
             } else if (state ==
@@ -779,6 +784,14 @@ public class MainActivity extends NewLookActivity {
                 line("GATT DISCONNECTED");
                 logRaw("GATT_DISCONNECTED");
                 updateStatus("○ DISCONNECTED");
+
+                if (easyConnectPending) {
+                    easyConnectFails++;
+                    logRaw("EASY_CONNECT_FAILED status=" + status + " mode=" + (passiveConnectPending ? "passive" : "direct") +
+                            " fails=" + easyConnectFails + (easyConnectFails >= 2 ? " (the next SCAN / CONNECT tap scans instead)" : ""));
+                }
+                easyConnectPending = false;
+                passiveConnectPending = false;
 
                 rssiMonitoringActive = false;
                 alreadyHandledThisConnection = false;
@@ -3535,6 +3548,88 @@ public class MainActivity extends NewLookActivity {
         }
         return name != null && name.contains(RESEARCH_STRAP_SERIAL);
     }
+
+    /*
+     * 0.5.6 EASY-CONNECT (the route NOOP uses, WhoopBleClient "Easy-connect: attaching directly ... no scan
+     * needed"). Connecting to a strap the phone is already bonded with needs no scan, and on Android 11 and
+     * lower only a scan needs Location, so with this the strap connects with Location off and the day logger
+     * can reconnect while the screen is off. A scan is still used for a first-time pairing.
+     */
+    private boolean easyConnectPending = false;      // a direct/passive connect is in flight and not yet connected
+    private boolean passiveConnectPending = false;   // connectGatt(autoConnect=true): the OS connects when the strap is in range
+    private int easyConnectFails = 0;                 // easy-connects that ended before GATT_CONNECTED; 2 in a row -> the button scans
+    private int dayLogReconnectAttempts = 0;
+
+    /** True only for the dedicated research MG, from a BluetoothDevice the OS already knows. */
+    private boolean isResearchDevice(BluetoothDevice d) {
+        if (d == null) return false;
+        if (KNOWN_STRAP_ADDR.equalsIgnoreCase(d.getAddress())) return true;
+        String name = null;
+        try { name = d.getName(); } catch (SecurityException ignored) { }
+        return name != null && name.contains(RESEARCH_STRAP_SERIAL);
+    }
+
+    /**
+     * Connects to the research MG without scanning: first a link the OS already holds, then the bonded
+     * device. passive = connectGatt(autoConnect=true), which waits (no timeout) until the strap is reachable.
+     * Returns false if the research MG is not bonded to this phone (a scan is then needed once).
+     */
+    private boolean connectBondedResearchStrap(String why, boolean passive) {
+        if (gatt != null || pendingDevice != null) return true;
+        if (adapter == null || !adapter.isEnabled()) return false;
+        if (Build.VERSION.SDK_INT >= 31 &&
+                checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+                        != PackageManager.PERMISSION_GRANTED) {
+            requestPerms();
+            return false;
+        }
+        BluetoothDevice d = null;
+        String route = null;
+        try {
+            BluetoothManager bm = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+            if (bm != null) {
+                for (BluetoothDevice c : bm.getConnectedDevices(BluetoothProfile.GATT)) {
+                    if (isResearchDevice(c)) { d = c; route = "os_connected"; break; }
+                }
+            }
+        } catch (Throwable ignored) { }
+        if (d == null) {
+            try {
+                java.util.Set<BluetoothDevice> bonded = adapter.getBondedDevices();
+                if (bonded != null) {
+                    for (BluetoothDevice b : bonded) {
+                        if (isResearchDevice(b)) { d = b; route = "bonded"; break; }
+                    }
+                }
+            } catch (Throwable ignored) { }
+        }
+        if (d == null) {
+            logRaw("EASY_CONNECT_UNAVAILABLE why=" + why + " (research MG not bonded to this phone; scanning instead)");
+            return false;
+        }
+        stopScanning();
+        String nm = null;
+        try { nm = d.getName(); } catch (SecurityException ignored) { }
+        line("EASY-CONNECT: attaching directly to " + nm + " " + d.getAddress() + " (no scan, Location not needed)" +
+                (passive ? " - waiting until the strap is in range" : ""));
+        logRaw("EASY_CONNECT route=" + route + " addr=" + d.getAddress() + " mode=" + (passive ? "passive" : "direct") + " why=" + why);
+        updateStatus(passive ? "● WAITING FOR STRAP " + nm : "● CONNECTING " + nm);
+        easyConnectPending = true;
+        passiveConnectPending = passive;
+        try {
+            gatt = d.connectGatt(MainActivity.this, passive, cb, BluetoothDevice.TRANSPORT_LE);
+        } catch (SecurityException se) {
+            logRaw("EASY_CONNECT_THREW_SECURITY_EXCEPTION msg=" + se.getMessage());
+            gatt = null;
+        }
+        if (gatt == null) {
+            easyConnectPending = false;
+            passiveConnectPending = false;
+            return false;
+        }
+        return true;
+    }
+
     private ScanCallback advertScanCallback;
     private final java.util.Set<String> advertPayloadsSeen =
             new java.util.HashSet<>();
@@ -10166,7 +10261,7 @@ public class MainActivity extends NewLookActivity {
         long now = System.currentTimeMillis();
         boolean connected = gatt != null && cmdWrite != null;
         // a link that exists but never became ready (no command channel) for 3 minutes is dropped so the retry can run
-        if (gatt != null && cmdWrite == null) {
+        if (gatt != null && cmdWrite == null && !passiveConnectPending) {   // 0.5.6: a passive wait is not stuck
             if (dayLogStuckSinceMs == 0L) dayLogStuckSinceMs = now;
             else if (now - dayLogStuckSinceMs > 180000L) {
                 logRaw("DAYLOG_WATCHDOG dropping a link that never became ready");
@@ -10178,14 +10273,19 @@ public class MainActivity extends NewLookActivity {
         if (!connected) {
             if (gatt == null && now - dayLogLastReconnectMs >= dayLogBackoffMs) {
                 String addr = DayLog.lastAddr(this);
-                if (addr != null && adapter != null && adapter.isEnabled()) {
+                if (adapter != null && adapter.isEnabled()) {
                     dayLogLastReconnectMs = now;
                     dayLogBackoffMs = Math.min(dayLogBackoffMs * 2, 300000L);
-                    // v0.5.4: a blind connectGatt to a strap that has only just dropped failed with status 133 in the field;
-                    // the same 10 s scan the manual connect uses finds it first, then connects.
-                    logRaw("DAYLOG_RECONNECT_SCAN addr=" + addr + " next_backoff_ms=" + dayLogBackoffMs);
+                    // 0.5.6: NOOP's route. Reconnect to the bonded MG with no scan (no Location needed, works with the
+                    // screen off): two direct attempts (a direct connect right after a drop can fail with status 133),
+                    // then a passive connectGatt(autoConnect=true) that the OS completes whenever the strap is in range.
+                    // A scan is used only if the MG is not bonded to this phone.
+                    dayLogReconnectAttempts++;
+                    boolean passive = dayLogReconnectAttempts >= 3;
+                    logRaw("DAYLOG_RECONNECT attempt=" + dayLogReconnectAttempts + " mode=" + (passive ? "passive" : "direct") +
+                            " addr=" + addr + " next_backoff_ms=" + dayLogBackoffMs);
                     try {
-                        if (scanner == null) scan();
+                        if (!connectBondedResearchStrap("daylog", passive) && scanner == null) scan();
                     } catch (Throwable t) {
                         logRaw("DAYLOG_RECONNECT_FAILED " + t);
                     }
@@ -12776,6 +12876,38 @@ public class MainActivity extends NewLookActivity {
 
             requestPerms();
             return;
+        }
+
+        if (gatt != null && passiveConnectPending && cmdWrite == null) {
+            // the logger's passive wait can be slow to complete; a tap means the strap is at hand, so connect directly now
+            logRaw("EASY_CONNECT_PASSIVE_CANCELLED_FOR_BUTTON");
+            try { gatt.close(); } catch (Throwable ignored) { }
+            gatt = null;
+            passiveConnectPending = false;
+            easyConnectPending = false;
+        }
+        if (gatt != null) {
+            line("ALREADY CONNECTED OR CONNECTING - nothing to do");
+            return;
+        }
+        // 0.5.6: no scan when the phone is already bonded with the research MG (Location not needed)
+        if (easyConnectFails < 2 && connectBondedResearchStrap("button", false)) return;
+        if (easyConnectFails >= 2) {
+            logRaw("SCAN_AFTER_EASY_CONNECT_FAILS fails=" + easyConnectFails);
+            easyConnectFails = 0;   // the next tap tries the direct route again
+        }
+        if (Build.VERSION.SDK_INT <= 30) {
+            boolean locOn = true;
+            try {
+                android.location.LocationManager lm =
+                        (android.location.LocationManager) getSystemService(Context.LOCATION_SERVICE);
+                if (lm != null && Build.VERSION.SDK_INT >= 28) locOn = lm.isLocationEnabled();
+            } catch (Throwable ignored) { }
+            if (!locOn) {
+                line("NOTE: Location is off. On Android 11 and lower a scan finds nothing without it; " +
+                        "turn it on for this first pairing only.");
+                logRaw("SCAN_LOCATION_OFF");
+            }
         }
 
         scanner =
