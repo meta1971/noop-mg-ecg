@@ -30,6 +30,11 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_CONNECT" />
 
+    <!-- All-day logger: keep running in the background and show its status -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
@@ -54,6 +59,26 @@
             </intent-filter>
 
         </activity>
+
+        <activity
+            android:name=".DayLogActivity"
+            android:label="MG Day Log"
+            android:screenOrientation="portrait"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".DayLogService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <receiver
+            android:name=".DayLogReceiver"
+            android:exported="false" />
 
     </application>
 
