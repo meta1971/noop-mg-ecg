@@ -69,7 +69,7 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.4.0-atrial-model";
+    private static final String BUILD_TAG = "0.5.2-timer-notes";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -763,6 +763,8 @@ public class MainActivity extends NewLookActivity {
                 line("GATT CONNECTED");
                 logRaw("GATT_CONNECTED");
                 updateStatus("● CONNECTED");
+                try { DayLog.setLastAddr(MainActivity.this, g.getDevice().getAddress()); } catch (Throwable ignored) { }
+                dayLogBackoffMs = 60000L;
                 g.discoverServices();
 
             } else if (state ==
@@ -1765,10 +1767,17 @@ public class MainActivity extends NewLookActivity {
             if (isRecordingComplete(value)) {
                 recordingComplete = true;
 
-                line("");
-                line("*** RECORDING COMPLETE DETECTED ***");
+                // 0x1D is a free-running strap timer (about every 600.6 s, also when no session is running), not an
+                // ECG completion signal: 8 messages over 49 h fit one period to within 0.8 s. Only the old EXPERIMENT path
+                // still treats it as a completion; everywhere else it is logged and nothing else happens.
+                if (experimentActive) {
+                    line("");
+                    line("*** RECORDING COMPLETE DETECTED ***");
 
-                runFullCborAnalysisOnCompletion();
+                    runFullCborAnalysisOnCompletion();
+                } else {
+                    logRaw("STRAP_TIMER_MESSAGE_0x1D (periodic, about every 600.6 s; not an ECG completion)");
+                }
 
                 logRaw("RECORDING_COMPLETE raw=" +
                         Protocol.hex(value) +
@@ -9765,6 +9774,9 @@ public class MainActivity extends NewLookActivity {
 
         super.onCreate(b);
 
+        instance = this;
+        mainH.postDelayed(dayLogTick, 20000L);
+
         adapter =
                 ((BluetoothManager)
                         getSystemService(
@@ -10113,12 +10125,73 @@ public class MainActivity extends NewLookActivity {
         }
     }
 
+    // ------------------------------------------------------------------ all-day logger (v0.5.0)
+    // The strap keeps one summary record per second in its own flash. While the logger is on, this tick (once a minute)
+    // reconnects to the last strap if the link dropped, pulls the history every N minutes when nothing else is running,
+    // decodes any finished capture file into the day-log database, and samples the phone's light and pressure.
+
+    static MainActivity instance;
+    private long dayLogLastReconnectMs = 0L;
+    private long dayLogBackoffMs = 60000L;
+    private int dayLogTickCount = 0;
+
+    private final Runnable dayLogTick = new Runnable() {
+        @Override public void run() {
+            try { dayLogTickBody(); } catch (Throwable t) { logRaw("DAYLOG_TICK_ERROR " + t); }
+            mainH.postDelayed(this, 60000L);
+        }
+    };
+
+    static void requestPull() {
+        final MainActivity m = instance;
+        if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNow(); } });
+    }
+
+    private void dayLogTickBody() {
+        if (!DayLog.enabled(this)) return;
+        dayLogTickCount++;
+        long now = System.currentTimeMillis();
+        boolean connected = gatt != null && cmdWrite != null;
+        if (!connected) {
+            if (gatt == null && now - dayLogLastReconnectMs >= dayLogBackoffMs) {
+                String addr = DayLog.lastAddr(this);
+                if (addr != null && adapter != null && adapter.isEnabled()) {
+                    dayLogLastReconnectMs = now;
+                    dayLogBackoffMs = Math.min(dayLogBackoffMs * 2, 600000L);
+                    logRaw("DAYLOG_RECONNECT addr=" + addr + " next_backoff_ms=" + dayLogBackoffMs);
+                    try {
+                        BluetoothDevice d = adapter.getRemoteDevice(addr);
+                        updateStatus("● RECONNECTING (day logger)");
+                        gatt = d.connectGatt(MainActivity.this, false, cb, BluetoothDevice.TRANSPORT_LE);
+                    } catch (Throwable t) {
+                        logRaw("DAYLOG_RECONNECT_FAILED " + t);
+                    }
+                }
+            }
+        } else {
+            long dueMs = DayLog.intervalMin(this) * 60000L;
+            if (now - DayLog.lastPullMs(this) >= dueMs) dayLogPullNow();
+        }
+        DayLog.scanNewFiles(this);
+        if (dayLogTickCount % 5 == 0) DayLog.sampleSensors(this);
+        DayLogService.refresh(this);
+    }
+
+    void dayLogPullNow() {
+        if (gatt == null || cmdWrite == null) return;
+        if (pullAckActive || ecgSessionRunning || pendingEcgStoredAnalysis) return;
+        DayLog.setLastPullMs(this, System.currentTimeMillis());
+        logRaw("DAYLOG_PULL");
+        startRealHistoricalPull();
+    }
+
     /** Battery level from the standard Battery Service. It was polled every 20 s but the value was dropped. */
     private void noteBattery(int pct, String src) {
         long now = System.currentTimeMillis();
         boolean changed = pct != lastBatteryPct;
         lastBatteryPct = pct;
         lastBatteryAtMs = now;
+        DayLog.addBattery(this, pct);
         refreshBatteryText();
         if (changed || now - lastBatteryLoggedMs >= 300000L) {
             lastBatteryLoggedMs = now;
@@ -10979,7 +11052,7 @@ public class MainActivity extends NewLookActivity {
         b.append("<b>Strap verdict: <font color='").append(color).append("'>")
                 .append(cat).append("</font></b><br><small>code ").append(ecgStrapResult);
         if (hrForScreen > 0) b.append(", heart rate ").append(hrForScreen).append(" bpm");
-        if (ecgStrapHrv > 0) b.append(", strap HRV field (RMSSD-like, unverified) ").append(ecgStrapHrv).append(" ms");
+        if (ecgStrapHrv > 0) b.append(", strap HRV field (RMSSD over about the last 45 s) ").append(ecgStrapHrv).append(" ms");
         if (ecgStrapMask != 0) {
             b.append(" &middot; reasons: ").append(android.text.TextUtils.join(", ",
                     EcgWhoopSpec.reasons(ecgStrapMask)));
@@ -10989,6 +11062,10 @@ public class MainActivity extends NewLookActivity {
         if (ecgStrapResult == 6) {
             b.append("<br><small>The official app offers one retry after a first " +
                     "inconclusive reading.</small>");
+        }
+        if (ecgStrapResult == 2) {
+            b.append("<br><small>On this strap this verdict, including 'significant noise', also appeared on clean " +
+                    "recordings (11 of 17 runs), so it does not on its own mean the trace was noisy.</small>");
         }
         if (!session.isEmpty()) b.append("<br>").append(session);
         return b.toString();
@@ -13106,6 +13183,9 @@ public class MainActivity extends NewLookActivity {
 
     @Override
     protected void onDestroy() {
+
+        if (instance == this) instance = null;
+        mainH.removeCallbacks(dayLogTick);
 
         try {
             unregisterReceiver(
