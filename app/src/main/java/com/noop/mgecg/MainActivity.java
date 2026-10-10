@@ -69,7 +69,7 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.5.2-timer-notes";
+    private static final String BUILD_TAG = "0.5.3-daylog-button";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -12140,6 +12140,12 @@ public class MainActivity extends NewLookActivity {
          * (unlock, then pull), so keeping them adjacent means
          * reaching the second one never needs any scrolling.
          */
+        // v0.5.3: a way into the all-day logger that does not depend on the launcher showing a second icon
+        Button dayLogBtn = btn(
+                "MG DAY LOG (all-day logger, sleep report, markers)",
+                v -> startActivity(new android.content.Intent(this, DayLogActivity.class)));
+        addToCurrentSection(dayLogBtn);
+
         Button realPullBtn = btn(
                 "REAL HISTORICAL PULL (SET_CLOCK...SEND_HIST_DATA)",
                 v -> startRealHistoricalPull());
