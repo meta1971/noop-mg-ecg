@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.8 (3 Oct): contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
+// FILE VERSION 0.5.5 (10 Oct): own-validity gate (strap quality 1-2 seconds admitted on our own shape check); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -17,8 +17,9 @@ import java.util.Locale;
  * 1 in quality 1-3); quality @21; word count @32-33; record index @11.
  *
  * Method (validated 27 Sep 2026 on this project's 24 stored sessions):
- *  - a second is usable if: 500 samples, strap quality >= 2, contact flag on
- *    >= 450 of 500 samples, no sample beyond +-125,000 (clipping guard)
+ *  - a second is usable if: 500 samples, strap quality >= 1, contact flag on
+ *    >= 450 of 500 samples, no sample beyond +-125,000 (clipping guard), no
+ *    fast-recovery sample, no lead-off (see "Own-validity gate" below)
  *  - consecutive usable seconds form runs; the first 3 s of each run are
  *    skipped (settling); runs need >= 10 s after that
  *  - beats: 2nd-order Butterworth high-pass 5 Hz + low-pass 20 Hz, run
@@ -57,8 +58,26 @@ import java.util.Locale;
  *    (R16 = 0.0621 uV/count, derived from R17 = 1 uV/count), measured on the
  *    zero-phase 0.67-40 Hz + 50 Hz-notch signal
  *
+ * Own-validity gate (0.5.5, 10 Oct): the strap's quality byte is no longer the
+ * gate for beat timing. On the 10 Oct staged run (602 s, nine contact
+ * conditions) the shipped quality-3-only rule kept 205 intervals; the optical
+ * pulse showed beats still present in 91% / 75% of quality-2 / quality-1
+ * seconds. Now a quality 1-2 second counts if the strap does not flag it
+ * (contact, fast recovery, lead-off, clipping) AND every beat in it passes our
+ * own shape check: analyse() runs twice and the second pass drops any quality
+ * 1-2 second that held a misshapen beat. Validity is decided by shape only,
+ * never by rhythm, so an irregular stretch cannot be preferentially dropped.
+ * Staged run: 409 intervals, HR 58.8 (58.7), RMSSD 22.0 (21.4), 0 irregular /
+ * AF-like windows, every interval with an optical pulse pair within 60 ms of
+ * it. Morphology (QT, P wave, R height, noise) still uses only quality-3
+ * seconds at least SETTLE_S into an unbroken quality-3 stretch, and the
+ * breathing R-height series only quality-3 seconds, because the strap's first
+ * ~8 s after contact (quality 1) moved QT and noise in the 10 Oct readings.
+ * Optical-pulse corroboration was tested and left out: the pulse drops out
+ * during muscle tension while the ECG beats stay regular.
+ *
  * RR-irregularity screen (added 2 Oct, EcgRhythm): the raw beat timing of the
- * same quality-3 runs, cut at bad-shape beats, with NO repair and NO premature-beat
+ * same accepted runs, cut at bad-shape beats, with NO repair and NO premature-beat
  * removal, goes to EcgRhythm (five features, logistic model fitted on the
  * PhysioNet/CinC 2017 training set). It is shown and logged beside the AF screen
  * so the two can be compared on the same recording. Research only.
@@ -68,6 +87,8 @@ public final class EcgR16Analyzer {
     static final int FS = 500;
     static final int SETTLE_S = 3;
     static final int MIN_RUN_S = 10;
+    /** 0.5.5 own-validity gate: lowest strap quality byte a second may carry (see the class comment). */
+    static final int MIN_STRAP_Q = 1;
 
     private EcgR16Analyzer() {}
 
@@ -77,6 +98,8 @@ public final class EcgR16Analyzer {
     public static final class Result {
         public int recordsIn, usableSeconds, intervals, excluded, early, rhythmOut;
         public int beatsChecked, beatsBadShape;
+        /** 0.5.5: usable seconds the strap rated quality 1-2, and quality 1-2 seconds our shape check dropped. */
+        public int lowQSeconds, ownGateDroppedS;
         public double noiseFraction;
         public double hr = Double.NaN, rmssd = Double.NaN;
         public int fastRecoverySeconds, leadOffSeconds;
@@ -87,7 +110,7 @@ public final class EcgR16Analyzer {
         /** 0.1.7 screen outcome: AfScreen.AF_LIKE / IRREGULAR / NOT_AF_LIKE / INCONCLUSIVE, and its detail. */
         public int afState = AfScreen.INCONCLUSIVE;
         public AfScreen.Outcome af;
-        /** RR-irregularity screen (EcgRhythm) on the raw quality-3 beat timing; null if it did not run. */
+        /** RR-irregularity screen (EcgRhythm) on the raw beat timing of the accepted runs; null if it did not run. */
         public EcgRhythm.Result rhythm;
         /** 0.3.2 breathing rate from R-wave height and beat timing (research only); null if it did not run. */
         public Breath.Result breath;
@@ -109,11 +132,11 @@ public final class EcgR16Analyzer {
                     "R16_ANALYSIS records=%d usableS=%d intervals=%d excluded=%d rhythmOut=%d " +
                             "badShape=%d/%d early=%d hr=%.1f rmssd=%.1f inconclusive=%b " +
                             "screenRun=%b afLike=%b rAmpUv=%.0f noiseUv=%.0f inverted=%b " +
-                            "fastRecoveryS=%d leadOffS=%d%s",
+                            "fastRecoveryS=%d leadOffS=%d lowQS=%d ownDropS=%d%s",
                     recordsIn, usableSeconds, intervals, excluded, rhythmOut,
                     beatsBadShape, beatsChecked, early, hr, rmssd,
                     inconclusive, screenRun, afLike, rAmpUv, noiseUv, inverted,
-                    fastRecoverySeconds, leadOffSeconds,
+                    fastRecoverySeconds, leadOffSeconds, lowQSeconds, ownGateDroppedS,
                     (dash == null ? "" : String.format(Locale.US,
                             " nrmssd=%.4f she=%.3f tp=%d tpRandom=%b",
                             dash[0], dash[1], (int) dash[2], dash[5] > 0.5))
@@ -280,7 +303,7 @@ public final class EcgR16Analyzer {
     static boolean usable(byte[] f) {
         if (f.length != 1584) return false;
         if (((f[32] & 0xff) | ((f[33] & 0xff) << 8)) != 500) return false;
-        if ((f[21] & 0xff) < 3) return false;   // quality 3 only, matches the live path
+        if ((f[21] & 0xff) < MIN_STRAP_Q) return false;   // 0.5.5: quality 1-2 admitted, then checked by shape
         int contact = 0, maxAbs = 0;
         for (int k = 0; k < 500; k++) {
             int o = 34 + 3 * k;
@@ -296,6 +319,16 @@ public final class EcgR16Analyzer {
     }
 
     /** The strap's own artifact flags for one second: lost contact, an amplifier recovery sample, or a high lead-off impedance. */
+    /** The strap's quality byte (0-3) for the second that holds sample p of a run. */
+    static int strapQ(List<byte[]> use, int p) {
+        return use.get(Math.max(0, Math.min(use.size() - 1, p / FS)))[21] & 0xff;
+    }
+
+    /** Record sequence number of the second that holds sample p of a run. */
+    static long seqOf(List<byte[]> use, int p) {
+        return u32(use.get(Math.max(0, Math.min(use.size() - 1, p / FS))), 11) & 0xffffffffL;
+    }
+
     static boolean tagFlag(byte[] f) {
         if (f.length != 1584) return false;
         int contact = 0;
@@ -427,10 +460,24 @@ public final class EcgR16Analyzer {
 
     // --------------------------------------------------------------- analyse
 
-    /** @param records stored R16 frames (1584 bytes each), any order */
+    /**
+     * @param records stored R16 frames (1584 bytes each), any order
+     * 0.5.5: two passes. The first finds quality 1-2 seconds holding a misshapen beat; the second
+     * analyses again without them. Quality-3 seconds are treated exactly as before.
+     */
     public static Result analyse(List<byte[]> records) {
-        Result r = new Result();
+        java.util.Set<Long> suspect = new java.util.HashSet<>();
+        Result r = analyse0(records, java.util.Collections.<Long>emptySet(), suspect);
+        if (!suspect.isEmpty()) {
+            r = analyse0(records, suspect, new java.util.HashSet<>());
+            r.ownGateDroppedS = suspect.size();
+        }
         lastResult = r;
+        return r;
+    }
+
+    private static Result analyse0(List<byte[]> records, java.util.Set<Long> drop, java.util.Set<Long> suspect) {
+        Result r = new Result();
         r.recordsIn = records.size();
         List<byte[]> recs = new ArrayList<>(records);
         recs.sort((a, b) -> Long.compare(u32(a, 11) & 0xffffffffL, u32(b, 11) & 0xffffffffL));
@@ -473,7 +520,8 @@ public final class EcgR16Analyzer {
         List<List<byte[]>> runs = new ArrayList<>();
         List<byte[]> cur = new ArrayList<>();
         for (byte[] f : recs) {
-            boolean ok = usable(f) && !guard.contains(u32(f, 11) & 0xffffffffL);
+            long fq = u32(f, 11) & 0xffffffffL;
+            boolean ok = usable(f) && !guard.contains(fq) && !drop.contains(fq);
             if (ok && !cur.isEmpty() && (u32(f, 11) & 0xffffffffL) == (u32(cur.get(cur.size() - 1), 11) & 0xffffffffL) + 1) {
                 cur.add(f);
             } else {
@@ -493,6 +541,7 @@ public final class EcgR16Analyzer {
             if (run.size() - SETTLE_S < MIN_RUN_S) continue;
             List<byte[]> use = run.subList(SETTLE_S, run.size());
             r.usableSeconds += use.size();
+            for (byte[] uf : use) if ((uf[21] & 0xff) < 3) r.lowQSeconds++;
             final double runOffsetS = (u32(use.get(0), 11) & 0xffffffffL) - firstSeq;
             for (byte[] uf : use) {
                 int si = (int) ((u32(uf, 11) & 0xffffffffL) - firstSeq);
@@ -526,18 +575,29 @@ public final class EcgR16Analyzer {
             }
             r.beatsChecked += ok.size();
             r.beatsBadShape += bad.size();
-            EcgAtrial.collect(x, pk, bad, inv, atrialSegs, atrialAbs);
+            // 0.5.5 own-validity gate: a quality 1-2 second holding a misshapen beat is dropped in the second pass
+            for (int p : bad) if (strapQ(use, p) < 3) suspect.add(seqOf(use, p));
+            // morphology only from quality-3 seconds at least SETTLE_S into an unbroken quality-3 stretch
+            boolean[] morphOk = new boolean[use.size()];
+            int streak = 0;
+            for (int si = 0; si < use.size(); si++) {
+                streak = (use.get(si)[21] & 0xff) >= 3 ? streak + 1 : 0;
+                morphOk[si] = streak > SETTLE_S;
+            }
+            java.util.Set<Integer> badM = new java.util.HashSet<>(bad);
+            for (int p : pk) if (!morphOk[Math.max(0, Math.min(use.size() - 1, p / FS))]) badM.add(p);
+            EcgAtrial.collect(x, pk, badM, inv, atrialSegs, atrialAbs);
             {   // beat windows (uV) for the averaged-beat QT measurement
                 double[] uvRun = new double[x.length];
                 for (int i = 0; i < uvRun.length; i++) uvRun[i] = x[i] * EcgWhoopSpec.R16_UV_PER_COUNT;
-                qtWins.addAll(EcgIntervals.windows(uvRun, pk, bad, inv, qtRrs, qtWide));
+                qtWins.addAll(EcgIntervals.windows(uvRun, pk, badM, inv, qtRrs, qtWide));
             }
-            if (measureAmplitude(x, pk, bad, inv, ampAll, noiseAll)) {
+            if (measureAmplitude(x, pk, badM, inv, ampAll, noiseAll)) {
                 runsMeasured++;
                 if (inv) invRuns++;
             }
             for (int p : pk) {   // 0.3.2: R-S height of every accepted beat, for the breathing estimate
-                if (bad.contains(p) || p < 20 || p + 30 >= n) continue;
+                if (bad.contains(p) || strapQ(use, p) < 3 || p < 20 || p + 30 >= n) continue;   // R height: quality 3 only
                 double mx = -1e18, mn = 1e18;
                 for (int q = p - 10; q <= p + 10; q++) mx = Math.max(mx, y[q]);
                 for (int q = p + 5; q <= p + 30; q++) mn = Math.min(mn, y[q]);
