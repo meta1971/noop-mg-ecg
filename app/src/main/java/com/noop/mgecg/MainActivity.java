@@ -69,7 +69,7 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.5.3-daylog-button";
+    private static final String BUILD_TAG = "0.5.4-reconnect-scan";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -556,6 +556,12 @@ public class MainActivity extends NewLookActivity {
     private void logRaw(String s) {
 
         if (rawLogFile == null) {
+            return;
+        }
+
+        if (dayLogQuiet && s != null && (s.startsWith("R18_DECODE") || s.startsWith("HIST_BURST")
+                || s.startsWith("RX_GENERIC") || s.startsWith("PUFFIN_METADATA") || s.startsWith("WAVEFORM88")
+                || s.startsWith("STATUS31") || s.startsWith("CURSOR_CAPTURED") || s.startsWith("HISTORY_END"))) {
             return;
         }
 
@@ -6335,6 +6341,10 @@ public class MainActivity extends NewLookActivity {
             logRaw("HISTORY_DRAINED_BY_COMPLETE frames=" +
                     historicalFragments.size() + " bytes=" +
                     historicalTotalBytes + " endsAcked=" + historyEndsAcked);
+            if (dayLogQuiet) {
+                dayLogQuiet = false;
+                logRaw("DAYLOG_PULL_DONE frames=" + historicalFragments.size() + " bytes=" + historicalTotalBytes);
+            }
             recordPullOutcomeAndSummarize();
             saveReconstructedWaveform();
             saveReconstructedWaveform188();
@@ -10134,6 +10144,9 @@ public class MainActivity extends NewLookActivity {
     private long dayLogLastReconnectMs = 0L;
     private long dayLogBackoffMs = 60000L;
     private int dayLogTickCount = 0;
+    private long dayLogStuckSinceMs = 0L;
+    /** True while a logger-started pull runs: the per-record log lines (about 1 MB per hour of data) are skipped. */
+    private volatile boolean dayLogQuiet = false;
 
     private final Runnable dayLogTick = new Runnable() {
         @Override public void run() {
@@ -10152,17 +10165,27 @@ public class MainActivity extends NewLookActivity {
         dayLogTickCount++;
         long now = System.currentTimeMillis();
         boolean connected = gatt != null && cmdWrite != null;
+        // a link that exists but never became ready (no command channel) for 3 minutes is dropped so the retry can run
+        if (gatt != null && cmdWrite == null) {
+            if (dayLogStuckSinceMs == 0L) dayLogStuckSinceMs = now;
+            else if (now - dayLogStuckSinceMs > 180000L) {
+                logRaw("DAYLOG_WATCHDOG dropping a link that never became ready");
+                try { gatt.disconnect(); } catch (Throwable ignored) { }
+                dayLogStuckSinceMs = 0L;
+            }
+        } else dayLogStuckSinceMs = 0L;
+        if (dayLogQuiet && !pullAckActive) dayLogQuiet = false;
         if (!connected) {
             if (gatt == null && now - dayLogLastReconnectMs >= dayLogBackoffMs) {
                 String addr = DayLog.lastAddr(this);
                 if (addr != null && adapter != null && adapter.isEnabled()) {
                     dayLogLastReconnectMs = now;
-                    dayLogBackoffMs = Math.min(dayLogBackoffMs * 2, 600000L);
-                    logRaw("DAYLOG_RECONNECT addr=" + addr + " next_backoff_ms=" + dayLogBackoffMs);
+                    dayLogBackoffMs = Math.min(dayLogBackoffMs * 2, 300000L);
+                    // v0.5.4: a blind connectGatt to a strap that has only just dropped failed with status 133 in the field;
+                    // the same 10 s scan the manual connect uses finds it first, then connects.
+                    logRaw("DAYLOG_RECONNECT_SCAN addr=" + addr + " next_backoff_ms=" + dayLogBackoffMs);
                     try {
-                        BluetoothDevice d = adapter.getRemoteDevice(addr);
-                        updateStatus("● RECONNECTING (day logger)");
-                        gatt = d.connectGatt(MainActivity.this, false, cb, BluetoothDevice.TRANSPORT_LE);
+                        if (scanner == null) scan();
                     } catch (Throwable t) {
                         logRaw("DAYLOG_RECONNECT_FAILED " + t);
                     }
@@ -10182,6 +10205,7 @@ public class MainActivity extends NewLookActivity {
         if (pullAckActive || ecgSessionRunning || pendingEcgStoredAnalysis) return;
         DayLog.setLastPullMs(this, System.currentTimeMillis());
         logRaw("DAYLOG_PULL");
+        dayLogQuiet = true;
         startRealHistoricalPull();
     }
 
