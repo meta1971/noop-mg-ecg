@@ -43,7 +43,6 @@ public class DayLogActivity extends Activity {
         col.setPadding(pad, pad, pad, pad);
         sv.addView(col);
 
-        col.addView(text("MG DAY LOGGER", 20, true));
         status = text("", 13, false);
         col.addView(status);
 
@@ -124,7 +123,44 @@ public class DayLogActivity extends Activity {
         col.addView(r3);
         out = text("", 12, false);
         col.addView(out);
-        setContentView(sv);
+
+        // 0.5.8: a bottom way home too, since the page is long
+        Button homeBottom = btn("\u2190 HOME", new View.OnClickListener() { @Override public void onClick(View v) { goHome(); } });
+        LinearLayout.LayoutParams hbp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hbp.topMargin = dp(16);
+        col.addView(homeBottom, hbp);
+
+        // 0.5.8: a bar that stays on screen while the page scrolls, so the way home is always one tap away
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(BG);
+        LinearLayout bar = row();
+        bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(8), dp(6), dp(8), dp(6));
+        bar.setBackgroundColor(Color.parseColor("#131A26"));
+        Button homeTop = btn("\u2190 HOME", new View.OnClickListener() { @Override public void onClick(View v) { goHome(); } });
+        bar.addView(homeTop, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView barTitle = text("MG DAY LOGGER", 16, true);
+        barTitle.setPadding(dp(14), 0, 0, 0);
+        bar.addView(barTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        root.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(sv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        setContentView(root);
+    }
+
+    /** Back to the app's Home screen. From the main app this just closes this page; from the notification or the
+     *  second launcher icon the main app is started (or brought forward) first. */
+    private void goHome() {
+        if (isTaskRoot() || MainActivity.instance == null) {
+            Intent i = new Intent(this, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            startActivity(i);
+        }
+        finish();
+    }
+
+    @Override public void onBackPressed() {
+        if (isTaskRoot() || MainActivity.instance == null) goHome(); else super.onBackPressed();
     }
 
     @Override protected void onResume() { super.onResume(); h.post(tick); }
@@ -136,10 +172,14 @@ public class DayLogActivity extends Activity {
         if (on) {
             if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 31);
             DayLogService.start(this);
-            Intent i = new Intent(this, MainActivity.class);
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-            startActivity(i);
-            toast("Logger on. The main app opens so it can connect to the strap. Connect once there if it never has been.");
+            if (MainActivity.instance == null) {
+                Intent i = new Intent(this, MainActivity.class);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                startActivity(i);
+                toast("Logger on. The main app opens so it can connect to the strap.");
+            } else {
+                toast("Logger on. The main app is already running and will connect to the strap.");
+            }
         } else {
             DayLogService.stop(this);
             toast("Logger off");
