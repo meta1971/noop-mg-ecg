@@ -69,7 +69,7 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.5.7-bt-on";
+    private static final String BUILD_TAG = "0.5.9-ble-only";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -785,13 +785,19 @@ public class MainActivity extends NewLookActivity {
                 logRaw("GATT_DISCONNECTED");
                 updateStatus("○ DISCONNECTED");
 
+                boolean directEasyFailed = easyConnectPending && !passiveConnectPending;
                 if (easyConnectPending) {
                     easyConnectFails++;
                     logRaw("EASY_CONNECT_FAILED status=" + status + " mode=" + (passiveConnectPending ? "passive" : "direct") +
-                            " fails=" + easyConnectFails + (easyConnectFails >= 2 ? " (the next SCAN / CONNECT tap scans instead)" : ""));
+                            " fails=" + easyConnectFails);
                 }
                 easyConnectPending = false;
                 passiveConnectPending = false;
+                if (directEasyFailed) {
+                    // 0.5.8: a direct connect right after a drop can fail (status 133); NOOP then lets Android connect
+                    // when the strap answers (autoConnect=true). Do the same once, with no scan and no Location.
+                    mainH.postDelayed(() -> { if (gatt == null) connectBondedResearchStrap("auto_after_fail", true); }, 1500);
+                }
 
                 rssiMonitoringActive = false;
                 alreadyHandledThisConnection = false;
@@ -952,6 +958,7 @@ public class MainActivity extends NewLookActivity {
                 BluetoothGatt g,
                 int rssi,
                 int status) {
+            if (status == BluetoothGatt.GATT_SUCCESS) lastRssiOkMs = System.currentTimeMillis();   // 0.5.9
 
             /*
              * Continuous RSSI monitoring - a physically distinct
@@ -3567,6 +3574,21 @@ public class MainActivity extends NewLookActivity {
      * Bluetooth off closes the link properly, and switching it back on reconnects by itself.
      */
     private static final int REQ_ENABLE_BT = 43;
+    private volatile long lastRssiOkMs = 0L;
+
+    /*
+     * 0.5.9 BLE-ONLY MODE. With Android's "Bluetooth scanning" on, switching Bluetooth off leaves the BLE stack running
+     * (Android reports the radio as OFF to apps but keeps GATT available), which is why NOOP with "Keep connected in the
+     * background" keeps streaming with Bluetooth off. So: do not drop the link when the switch goes off, try the
+     * saved-address connect before asking to turn Bluetooth on, and only ask if connectGatt finds no stack at all.
+     */
+    private boolean bleOnlyAvailable() {
+        try {
+            return android.provider.Settings.Global.getInt(getContentResolver(), "ble_scan_always_enabled", 0) == 1;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
     private boolean connectAfterBtOn = false;     // a tap asked for Bluetooth: connect when it comes on
     private boolean reconnectAfterBtOn = false;   // we were connected when the radio went off
     private boolean btPromptedForLogger = false;  // the logger asks at most once per app start
@@ -3634,10 +3656,35 @@ public class MainActivity extends NewLookActivity {
             if (!BluetoothAdapter.ACTION_STATE_CHANGED.equals(i.getAction())) return;
             int st = i.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1);
             if (st == BluetoothAdapter.STATE_TURNING_OFF || st == BluetoothAdapter.STATE_OFF) {
-                logRaw("BT_STATE " + (st == BluetoothAdapter.STATE_OFF ? "OFF" : "TURNING_OFF"));
-                stopScanning();
-                teardownLinkForRadioOff();
-                updateStatus("○ BLUETOOTH OFF");
+                if (st == BluetoothAdapter.STATE_TURNING_OFF) {
+                    logRaw("BT_STATE TURNING_OFF bleOnly=" + bleOnlyAvailable());
+                } else {
+                    boolean linkUp = gatt != null && cmdWrite != null;
+                    logRaw("BT_STATE OFF bleOnly=" + bleOnlyAvailable() + " linkUp=" + linkUp);
+                    if (!linkUp) {
+                        stopScanning();
+                        teardownLinkForRadioOff();
+                        updateStatus("○ BLUETOOTH OFF");
+                    } else {
+                        // 0.5.9: do not drop a working link on the switch alone. Ask the strap for an RSSI reading;
+                        // an answer proves the BLE stack is still serving this link (BLE-only mode). No answer in
+                        // 3 s means the link is orphaned (NOOP #314) and is torn down as before.
+                        final long probeAt = System.currentTimeMillis();
+                        try { gatt.readRemoteRssi(); } catch (Throwable ignored) { }
+                        mainH.postDelayed(() -> {
+                            if (adapter != null && adapter.isEnabled()) return;
+                            boolean alive = gatt != null && cmdWrite != null && lastRssiOkMs >= probeAt;
+                            logRaw("BT_OFF_LINK_CHECK alive=" + alive + " bleOnly=" + bleOnlyAvailable());
+                            if (alive) {
+                                line("Bluetooth switch is off but the strap link is still up (BLE-only mode) - keeping it");
+                            } else {
+                                stopScanning();
+                                teardownLinkForRadioOff();
+                                updateStatus("○ BLUETOOTH OFF");
+                            }
+                        }, 3000);
+                    }
+                }
             } else if (st == BluetoothAdapter.STATE_ON) {
                 boolean logger = DayLog.enabled(MainActivity.this);
                 logRaw("BT_STATE ON connectAfterTap=" + connectAfterBtOn + " wasConnected=" + reconnectAfterBtOn + " logger=" + logger);
@@ -3673,7 +3720,8 @@ public class MainActivity extends NewLookActivity {
      */
     private boolean connectBondedResearchStrap(String why, boolean passive) {
         if (gatt != null || pendingDevice != null) return true;
-        if (adapter == null || !adapter.isEnabled()) return false;
+        if (adapter == null) return false;
+        if (!adapter.isEnabled()) logRaw("EASY_CONNECT_SWITCH_OFF why=" + why + " bleOnly=" + bleOnlyAvailable() + " (trying the BLE-only stack)");
         if (Build.VERSION.SDK_INT >= 31 &&
                 checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
                         != PackageManager.PERMISSION_GRANTED) {
@@ -3701,8 +3749,15 @@ public class MainActivity extends NewLookActivity {
             } catch (Throwable ignored) { }
         }
         if (d == null) {
-            logRaw("EASY_CONNECT_UNAVAILABLE why=" + why + " (research MG not bonded to this phone; scanning instead)");
-            return false;
+            // 0.5.8: NOOP's own route (WhoopBleClient.reconnectToAddress): the strap's saved address, no bond and no scan.
+            // NOOP notes the 5.0/MG never bonds with Android, so a bonded-only route (0.5.6) had nothing to use.
+            try {
+                d = adapter.getRemoteDevice(KNOWN_STRAP_ADDR);
+                route = "saved_address";
+            } catch (Throwable t) {
+                logRaw("EASY_CONNECT_UNAVAILABLE why=" + why + " getRemoteDevice failed: " + t);
+                return false;
+            }
         }
         stopScanning();
         String nm = null;
@@ -3710,7 +3765,7 @@ public class MainActivity extends NewLookActivity {
         line("EASY-CONNECT: attaching directly to " + nm + " " + d.getAddress() + " (no scan, Location not needed)" +
                 (passive ? " - waiting until the strap is in range" : ""));
         logRaw("EASY_CONNECT route=" + route + " addr=" + d.getAddress() + " mode=" + (passive ? "passive" : "direct") + " why=" + why);
-        updateStatus(passive ? "● WAITING FOR STRAP " + nm : "● CONNECTING " + nm);
+        updateStatus(passive ? "● CONNECTING - waiting for the strap " + nm : "● CONNECTING " + nm);
         easyConnectPending = true;
         passiveConnectPending = passive;
         try {
@@ -3720,6 +3775,7 @@ public class MainActivity extends NewLookActivity {
             gatt = null;
         }
         if (gatt == null) {
+            logRaw("EASY_CONNECT_NO_GATT why=" + why + " switchOn=" + adapter.isEnabled() + " (no Bluetooth stack available)");
             easyConnectPending = false;
             passiveConnectPending = false;
             return false;
@@ -10368,15 +10424,16 @@ public class MainActivity extends NewLookActivity {
             }
         } else dayLogStuckSinceMs = 0L;
         if (dayLogQuiet && !pullAckActive) dayLogQuiet = false;
-        if (!connected && adapter != null && !adapter.isEnabled() && !btPromptedForLogger && !connectAfterBtOn
-                && hasWindowFocus()) {
+        if (!connected && adapter != null && !adapter.isEnabled() && !bleOnlyAvailable() && !btPromptedForLogger
+                && !connectAfterBtOn && hasWindowFocus()) {
             btPromptedForLogger = true;   // 0.5.7: logger on, Bluetooth off, app on screen: ask once
             requestBluetoothOn("daylog");
         }
         if (!connected) {
             if (gatt == null && now - dayLogLastReconnectMs >= dayLogBackoffMs) {
                 String addr = DayLog.lastAddr(this);
-                if (adapter != null && adapter.isEnabled()) {
+                if (adapter != null) {
+                    final boolean switchOn = adapter.isEnabled();
                     dayLogLastReconnectMs = now;
                     dayLogBackoffMs = Math.min(dayLogBackoffMs * 2, 300000L);
                     // 0.5.6: NOOP's route. Reconnect to the bonded MG with no scan (no Location needed, works with the
@@ -10388,7 +10445,7 @@ public class MainActivity extends NewLookActivity {
                     logRaw("DAYLOG_RECONNECT attempt=" + dayLogReconnectAttempts + " mode=" + (passive ? "passive" : "direct") +
                             " addr=" + addr + " next_backoff_ms=" + dayLogBackoffMs);
                     try {
-                        if (!connectBondedResearchStrap("daylog", passive) && scanner == null) scan();
+                        if (!connectBondedResearchStrap("daylog", passive) && scanner == null && switchOn) scan();
                     } catch (Throwable t) {
                         logRaw("DAYLOG_RECONNECT_FAILED " + t);
                     }
@@ -12981,8 +13038,11 @@ public class MainActivity extends NewLookActivity {
             return;
         }
 
-        if (adapter != null && !adapter.isEnabled()) {   // 0.5.7: nothing can connect with the radio off
-            requestBluetoothOn("button");
+        if (adapter != null && !adapter.isEnabled()) {
+            // 0.5.9: with the switch off Android can still run the BLE-only stack; try the saved-address connect first
+            logRaw("BT_SWITCH_OFF_BUTTON bleOnly=" + bleOnlyAvailable());
+            if (connectBondedResearchStrap("button_switch_off", false)) return;
+            requestBluetoothOn("button");   // no stack at all: ask Android to turn Bluetooth on
             return;
         }
 
@@ -12999,11 +13059,7 @@ public class MainActivity extends NewLookActivity {
             return;
         }
         // 0.5.6: no scan when the phone is already bonded with the research MG (Location not needed)
-        if (easyConnectFails < 2 && connectBondedResearchStrap("button", false)) return;
-        if (easyConnectFails >= 2) {
-            logRaw("SCAN_AFTER_EASY_CONNECT_FAILS fails=" + easyConnectFails);
-            easyConnectFails = 0;   // the next tap tries the direct route again
-        }
+        if (connectBondedResearchStrap("button", false)) return;
         if (Build.VERSION.SDK_INT <= 30) {
             boolean locOn = true;
             try {
