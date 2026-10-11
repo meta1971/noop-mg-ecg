@@ -69,7 +69,7 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.5.6-easy-connect";
+    private static final String BUILD_TAG = "0.5.7-bt-on";
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -3559,6 +3559,103 @@ public class MainActivity extends NewLookActivity {
     private boolean passiveConnectPending = false;   // connectGatt(autoConnect=true): the OS connects when the strap is in range
     private int easyConnectFails = 0;                 // easy-connects that ended before GATT_CONNECTED; 2 in a row -> the button scans
     private int dayLogReconnectAttempts = 0;
+
+    /*
+     * 0.5.7 BLUETOOTH OFF (NOOP's "Turn on Bluetooth" step, ConnectionHelp.kt, plus its radio-off/radio-on handling,
+     * WhoopBleClient.onBluetoothRadioOff/On). Nothing can reach the strap with the radio off, so SCAN / CONNECT and
+     * Take an ECG now ask Android to turn Bluetooth on (one Allow tap) and connect as soon as it is on. Switching
+     * Bluetooth off closes the link properly, and switching it back on reconnects by itself.
+     */
+    private static final int REQ_ENABLE_BT = 43;
+    private boolean connectAfterBtOn = false;     // a tap asked for Bluetooth: connect when it comes on
+    private boolean reconnectAfterBtOn = false;   // we were connected when the radio went off
+    private boolean btPromptedForLogger = false;  // the logger asks at most once per app start
+
+    private void requestBluetoothOn(String why) {
+        connectAfterBtOn = true;
+        logRaw("BT_OFF_REQUEST_ENABLE why=" + why);
+        line("BLUETOOTH IS OFF - asking Android to turn it on (tap Allow). The strap connects as soon as it is on.");
+        updateStatus("○ BLUETOOTH OFF");
+        try {
+            startActivityForResult(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), REQ_ENABLE_BT);
+        } catch (SecurityException se) {
+            logRaw("BT_REQUEST_ENABLE_SECURITY_EXCEPTION msg=" + se.getMessage());
+            connectAfterBtOn = false;
+            requestPerms();
+        } catch (Throwable t) {
+            logRaw("BT_REQUEST_ENABLE_FAILED " + t);
+            connectAfterBtOn = false;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_ENABLE_BT) return;
+        boolean ok = resultCode == RESULT_OK;
+        logRaw("BT_REQUEST_ENABLE_RESULT " + (ok ? "allowed" : "declined"));
+        if (!ok) {
+            connectAfterBtOn = false;
+            line("Bluetooth left off - not connecting");
+            updateStatus("○ BLUETOOTH OFF");
+        }
+    }
+
+    /** Bluetooth was switched off: Android may never report the disconnect, which would leave a dead link that looks
+     *  connected (NOOP #314), so it is cleared here the same way the GATT disconnect clears it. */
+    private void teardownLinkForRadioOff() {
+        pendingDevice = null;
+        if (gatt == null) return;
+        reconnectAfterBtOn = cmdWrite != null || passiveConnectPending || easyConnectPending;
+        logRaw("BT_RADIO_OFF_TEARDOWN reconnectWhenOn=" + reconnectAfterBtOn);
+        line("Bluetooth turned off - link closed");
+        easyConnectPending = false;
+        passiveConnectPending = false;
+        rssiMonitoringActive = false;
+        alreadyHandledThisConnection = false;
+        try { gatt.close(); } catch (Exception ignored) { }
+        if (timeoutRunnable != null) {
+            mainH.removeCallbacks(timeoutRunnable);
+            timeoutRunnable = null;
+        }
+        gatt = null;
+        cmdWrite = null;
+        opQueue.clear();
+        opInFlight = false;
+        labradorActive = false;
+        recordingComplete = false;
+        experimentActive = false;
+        ecgEverRunThisConnection = false;
+    }
+
+    private final BroadcastReceiver btStateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context ctx, Intent i) {
+            if (!BluetoothAdapter.ACTION_STATE_CHANGED.equals(i.getAction())) return;
+            int st = i.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1);
+            if (st == BluetoothAdapter.STATE_TURNING_OFF || st == BluetoothAdapter.STATE_OFF) {
+                logRaw("BT_STATE " + (st == BluetoothAdapter.STATE_OFF ? "OFF" : "TURNING_OFF"));
+                stopScanning();
+                teardownLinkForRadioOff();
+                updateStatus("○ BLUETOOTH OFF");
+            } else if (st == BluetoothAdapter.STATE_ON) {
+                boolean logger = DayLog.enabled(MainActivity.this);
+                logRaw("BT_STATE ON connectAfterTap=" + connectAfterBtOn + " wasConnected=" + reconnectAfterBtOn + " logger=" + logger);
+                updateStatus("○ DISCONNECTED");
+                if (connectAfterBtOn) {
+                    connectAfterBtOn = false;
+                    reconnectAfterBtOn = false;
+                    mainH.postDelayed(() -> scan(), 1500);   // the tap that asked: connect directly
+                } else if (reconnectAfterBtOn || logger) {
+                    reconnectAfterBtOn = false;
+                    dayLogReconnectAttempts = 0;
+                    dayLogBackoffMs = 60000L;
+                    // NOOP reconnects with autoConnect=true here: the OS completes it as soon as the strap answers
+                    mainH.postDelayed(() -> { if (gatt == null) connectBondedResearchStrap("bt_on", true); }, 1500);
+                }
+            }
+        }
+    };
 
     /** True only for the dedicated research MG, from a BluetoothDevice the OS already knows. */
     private boolean isResearchDevice(BluetoothDevice d) {
@@ -9901,6 +9998,7 @@ public class MainActivity extends NewLookActivity {
                 new IntentFilter(
                         BluetoothDevice
                                 .ACTION_BOND_STATE_CHANGED));
+        registerReceiver(btStateReceiver, new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));   // 0.5.7
     }
 
     /*
@@ -10270,6 +10368,11 @@ public class MainActivity extends NewLookActivity {
             }
         } else dayLogStuckSinceMs = 0L;
         if (dayLogQuiet && !pullAckActive) dayLogQuiet = false;
+        if (!connected && adapter != null && !adapter.isEnabled() && !btPromptedForLogger && !connectAfterBtOn
+                && hasWindowFocus()) {
+            btPromptedForLogger = true;   // 0.5.7: logger on, Bluetooth off, app on screen: ask once
+            requestBluetoothOn("daylog");
+        }
         if (!connected) {
             if (gatt == null && now - dayLogLastReconnectMs >= dayLogBackoffMs) {
                 String addr = DayLog.lastAddr(this);
@@ -12878,6 +12981,11 @@ public class MainActivity extends NewLookActivity {
             return;
         }
 
+        if (adapter != null && !adapter.isEnabled()) {   // 0.5.7: nothing can connect with the radio off
+            requestBluetoothOn("button");
+            return;
+        }
+
         if (gatt != null && passiveConnectPending && cmdWrite == null) {
             // the logger's passive wait can be slow to complete; a tap means the strap is at hand, so connect directly now
             logRaw("EASY_CONNECT_PASSIVE_CANCELLED_FOR_BUTTON");
@@ -13354,6 +13462,7 @@ public class MainActivity extends NewLookActivity {
                     bondReceiver);
         } catch (Exception ignored) {
         }
+        try { unregisterReceiver(btStateReceiver); } catch (Exception ignored) { }   // 0.5.7
 
         try {
             if (gatt != null) {
