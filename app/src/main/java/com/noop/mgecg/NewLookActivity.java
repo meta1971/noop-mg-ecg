@@ -70,6 +70,7 @@ public class NewLookActivity extends Activity {
 
     View legacy;                       // the old UI, kept underneath
     int state = ST_HOME;
+    private TextView dayLogStatus;   // 0.5.8: the all-day logger, one tap from Home
 
     private FrameLayout homeLayer, reportsLayer, reportLayer;
     private LinearLayout reportsList, homeLatestCard;
@@ -641,6 +642,18 @@ public class NewLookActivity extends Activity {
         rp.topMargin = dp(12);
         col.addView(reports, rp);
 
+        Button dayLog = pillButton("Day logger", CARD, TEXT);
+        dayLog.setOnClickListener(v -> openDayLog());
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(-1, dp(56));
+        dlp.topMargin = dp(12);
+        col.addView(dayLog, dlp);
+        dayLogStatus = tv("", 12, MUTED, false);
+        dayLogStatus.setGravity(Gravity.CENTER);
+        dayLogStatus.setOnClickListener(v -> openDayLog());
+        LinearLayout.LayoutParams dsp = new LinearLayout.LayoutParams(-1, -2);
+        dsp.topMargin = dp(6);
+        col.addView(dayLogStatus, dsp);
+
         Button connect = pillButton("Connect to band", BG, MUTED);
         connect.setOnClickListener(v -> connectOnly());
         LinearLayout.LayoutParams kp = new LinearLayout.LayoutParams(-1, dp(48));
@@ -659,7 +672,21 @@ public class NewLookActivity extends Activity {
         return layer;
     }
 
+    private void openDayLog() {
+        startActivity(new android.content.Intent(this, DayLogActivity.class));
+    }
+
+    private void refreshDayLogLine() {
+        if (dayLogStatus == null) return;
+        try {
+            dayLogStatus.setText((DayLog.enabled(this) ? "Logger ON  \u00b7  " : "Logger OFF  \u00b7  ") + DayLog.statusLine(this));
+        } catch (Throwable t) {
+            dayLogStatus.setText("");
+        }
+    }
+
     private void refreshHome() {
+        refreshDayLogLine();
         List<Rep> reps = loadReports();
         if (reps.isEmpty()) {
             latestFile = null;
