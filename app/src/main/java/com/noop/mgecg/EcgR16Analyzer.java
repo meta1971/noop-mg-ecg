@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.5.5 (10 Oct): own-validity gate (strap quality 1-2 seconds admitted on our own shape check); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
+// FILE VERSION 0.5.10 (11 Oct): own-validity gate v2 (a short noisy reading is no longer erased by the second pass); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -132,7 +132,7 @@ public final class EcgR16Analyzer {
                     "R16_ANALYSIS records=%d usableS=%d intervals=%d excluded=%d rhythmOut=%d " +
                             "badShape=%d/%d early=%d hr=%.1f rmssd=%.1f inconclusive=%b " +
                             "screenRun=%b afLike=%b rAmpUv=%.0f noiseUv=%.0f inverted=%b " +
-                            "fastRecoveryS=%d leadOffS=%d lowQS=%d ownDropS=%d%s",
+                            "fastRecoveryS=%d leadOffS=%d lowQS=%d ownDropS=%d gate=2%s",
                     recordsIn, usableSeconds, intervals, excluded, rhythmOut,
                     beatsBadShape, beatsChecked, early, hr, rmssd,
                     inconclusive, screenRun, afLike, rAmpUv, noiseUv, inverted,
@@ -467,16 +467,29 @@ public final class EcgR16Analyzer {
      */
     public static Result analyse(List<byte[]> records) {
         java.util.Set<Long> suspect = new java.util.HashSet<>();
-        Result r = analyse0(records, java.util.Collections.<Long>emptySet(), suspect);
+        Result r = analyse0(records, java.util.Collections.<Long>emptySet(), suspect, true);
         if (!suspect.isEmpty()) {
-            r = analyse0(records, suspect, new java.util.HashSet<>());
+            // v1 (0.5.5): remove the suspect seconds. Right for a long recording, but each removal splits the run and costs
+            // the settling guard on both sides, which erased a readable 46 s reading on 11 Oct (every piece under 10 s).
+            Result dropped = analyse0(records, suspect, new java.util.HashSet<>(), true);
+            if (dropped.intervals >= MIN_INTERVALS_AFTER_DROP) {
+                r = dropped;
+            } else {
+                // v2 (0.5.10): keep the run whole and exclude only the beats in the suspect seconds (and the intervals
+                // touching them). The reading is then usually "inconclusive" (too many excluded beats) but still reports
+                // its heart rate and RMSSD instead of nothing.
+                r = analyse0(records, suspect, new java.util.HashSet<>(), false);
+            }
             r.ownGateDroppedS = suspect.size();
         }
         lastResult = r;
         return r;
     }
 
-    private static Result analyse0(List<byte[]> records, java.util.Set<Long> drop, java.util.Set<Long> suspect) {
+    /** Own-validity gate v2: fewer intervals than this after removing the suspect seconds means the removal erased the reading. */
+    static final int MIN_INTERVALS_AFTER_DROP = 20;
+
+    private static Result analyse0(List<byte[]> records, java.util.Set<Long> drop, java.util.Set<Long> suspect, boolean splitOnDrop) {
         Result r = new Result();
         r.recordsIn = records.size();
         List<byte[]> recs = new ArrayList<>(records);
@@ -521,7 +534,7 @@ public final class EcgR16Analyzer {
         List<byte[]> cur = new ArrayList<>();
         for (byte[] f : recs) {
             long fq = u32(f, 11) & 0xffffffffL;
-            boolean ok = usable(f) && !guard.contains(fq) && !drop.contains(fq);
+            boolean ok = usable(f) && !guard.contains(fq) && !(splitOnDrop && drop.contains(fq));
             if (ok && !cur.isEmpty() && (u32(f, 11) & 0xffffffffL) == (u32(cur.get(cur.size() - 1), 11) & 0xffffffffL) + 1) {
                 cur.add(f);
             } else {
@@ -573,6 +586,8 @@ public final class EcgR16Analyzer {
                 }
                 for (int p : ok) if (pearson(y, p - h, T) < 0.8) bad.add(p);
             }
+            // v2: keep-in-run pass: every beat in a suspect quality 1-2 second is excluded, the run is not split
+            if (!splitOnDrop && !drop.isEmpty()) for (int p : pk) if (drop.contains(seqOf(use, p))) bad.add(p);
             r.beatsChecked += ok.size();
             r.beatsBadShape += bad.size();
             // 0.5.5 own-validity gate: a quality 1-2 second holding a misshapen beat is dropped in the second pass
