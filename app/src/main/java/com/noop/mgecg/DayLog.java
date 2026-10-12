@@ -291,6 +291,10 @@ final class DayLog {
             q.close();
             long[] st = new long[tl.size()];
             for (int i = 0; i < st.length; i++) st[i] = tl.get(i);
+            long logFirst = 0L, logLast = 0L;
+            Cursor lq = d.rawQuery("SELECT MIN(ts), MAX(ts) FROM r18", null);
+            if (lq.moveToFirst()) { logFirst = lq.getLong(0); logLast = lq.getLong(1); }
+            lq.close();
             List<long[]> cl = SleepNight.clusters(st);
             if (cl.isEmpty()) return "No complete night in the log yet (it needs about 3 hours of SLEEP state). Pull the strap's history in the morning.\n";
             SimpleDateFormat day = new SimpleDateFormat("EEE d MMM HH:mm", Locale.getDefault());
@@ -302,24 +306,11 @@ final class DayLog {
                 List<byte[]> recs = new ArrayList<>();
                 while (r.moveToNext()) recs.add(r.getBlob(0));
                 r.close();
-                SleepNight.Night n = SleepNight.analyse(recs);
+                SleepNight.Night n = SleepNight.analyse(recs, logFirst, logLast);
                 if (n == null) continue;
-                s.append(day.format(new Date(n.bedTs * 1000L))).append(" to ").append(hm.format(new Date(n.endTs * 1000L))).append('\n');
-                s.append(String.format(Locale.US, "  in bed %.1f h, asleep %.1f h (%.0f%%), settled in %.0f min\n", n.tibH, n.tstH, n.effPct, n.settleMin));
-                s.append("  restless: ");
-                if (n.restless.isEmpty()) s.append("none");
-                for (long[] x : n.restless) s.append(hm.format(new Date(x[0] * 1000L))).append(' ').append(x[1] / 60).append(" min  ");
-                s.append('\n');
-                s.append("  heart rate: mean ").append(f0(n.hrMean)).append(", lowest 5 min ").append(f0(n.hrLow5));
-                if (n.hrLow5Ts > 0) s.append(" at ").append(hm.format(new Date(n.hrLow5Ts * 1000L)));
-                s.append(", first 30 min ").append(f0(n.hrFirst30)).append(", last 30 min ").append(f0(n.hrLast30)).append('\n');
-                s.append("  RMSSD ").append(f1(n.rmssd)).append(" ms; by hour");
-                for (double v : n.rmssdByHour) s.append(' ').append(f0(v));
-                s.append('\n');
-                s.append("  skin ").append(String.format(Locale.US, "%.2f", n.skinMedian)).append(" C after warm-up (").append(f1(n.skinMin)).append("-").append(f1(n.skinMax)).append(")\n");
-                s.append("  byte 82: ").append(n.windows).append(" windows, ").append(n.validN).append(" valid values, median ").append(n.b82Median).append(", lowest ").append(n.b82Min).append("\n\n");
+                s.append(SleepNight.describe(n, day, hm));
             }
-            s.append("Sleep window and restless spells come from the band's own state. Restless means arm movement while lying down, not getting up. No sleep stages are shown: none has been validated. Research only.\n");
+            s.append("Sleep window and restless spells come from the band's own state. Restless means arm movement while lying down, not getting up. Breathing is estimated from the beat-to-beat timing in clear 5-minute windows; it matched a WHOOP 5 at 9.4 per minute on the one 3.5 h stretch checked. RMSSD is the wrist strap's own figure and read lower than a WHOOP 5's on the same hours, so compare it with your own nights, not with other devices. No sleep stages are shown: none has been validated. Research only.\n");
         } catch (Throwable t) { s.append("sleep report error: ").append(t); }
         return s.toString();
     }
