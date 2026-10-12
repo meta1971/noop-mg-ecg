@@ -7,9 +7,12 @@ import java.util.List;
 /**
  * Night summary from the strap's per-second records (R18). Pure Java so it can be tested off the phone.
  * Only what was validated against a second strap is reported: the sleep window and sleep time from the band's own
- * state, restless spells, heart rate, overnight RMSSD from the strap's R-R words, skin temperature, and the byte-82
- * measurement windows. NO sleep stages: state UP means arm movement while lying down (heart rate and posture stay
- * as in sleep), not standing, and no staging method has been validated here. RESEARCH ONLY.
+ * state, restless spells, heart rate (overall and by hour), overnight RMSSD from the strap's R-R words, breathing rate
+ * from the R-R tachogram (matched a WHOOP 5 at 9.4 per minute over one 3.5 h stretch), skin temperature, and the
+ * byte-82 measurement windows. A night is flagged PARTIAL when the log starts or ends while the band is still in
+ * sleep, because the totals then cover only the logged part. NO sleep stages: state UP means arm movement while
+ * lying down (heart rate and posture stay as in sleep), not standing, and no staging method has been validated
+ * here. RESEARCH ONLY.
  */
 final class SleepNight {
     private SleepNight() {}
@@ -24,6 +27,13 @@ final class SleepNight {
         double[] rmssdByHour = new double[0];
         double skinMedian = Double.NaN, skinMin = Double.NaN, skinMax = Double.NaN;
         int windows, validN, b82Median, b82Min;
+        boolean partialStart, partialEnd;                     // log begins / ends while the band is still in sleep
+        double coveragePct = 100.0;                           // records present over the seconds between bed and end
+        double minStill, minWake, minUp;                      // minutes between bed and end in each non-SLEEP band state
+        double[] hrByHour = new double[0];
+        double brMedian = Double.NaN;                         // breaths per minute, median of the clear 5-minute windows
+        int brWindows;
+        double[] brByHour = new double[0];
     }
 
     /** Clusters of sleep: {startTs, endTs, sleepSeconds}. Input: timestamps of every record whose band state is SLEEP, sorted. */
@@ -56,7 +66,10 @@ final class SleepNight {
     }
 
     /** Records must be sorted by time and cover the night with a little margin either side. */
-    static Night analyse(List<byte[]> recs) {
+    static Night analyse(List<byte[]> recs) { return analyse(recs, 0L, 0L); }
+
+    /** logStartTs / logEndTs: first and last record time in the whole log (0 = unknown, no partial-night check). */
+    static Night analyse(List<byte[]> recs, long logStartTs, long logEndTs) {
         int n = recs.size();
         if (n < 3600) return null;
         long[] ts = new long[n];
@@ -86,6 +99,12 @@ final class SleepNight {
         nt.tstH = asleep / 3600.0;
         nt.effPct = 100.0 * nt.tstH / nt.tibH;
         nt.settleMin = (ts[first] - ts[bed]) / 60.0;
+        nt.partialStart = logStartTs > 0 && bed == 0 && ts[0] <= logStartTs + 120 && (st[0] == 1 || st[0] == 2);
+        nt.partialEnd = logEndTs > 0 && end == n - 1 && ts[n - 1] >= logEndTs - 120;
+        nt.coveragePct = Math.min(100.0, 100.0 * len / (double) (ts[end] - ts[bed] + 1));
+        int cStill = 0, cWake = 0, cUp = 0;
+        for (int q = bed; q <= end; q++) { if (st[q] == 1) cStill++; else if (st[q] == 0) cWake++; else if (st[q] == 3) cUp++; }
+        nt.minStill = cStill / 60.0; nt.minWake = cWake / 60.0; nt.minUp = cUp / 60.0;
         // restless spells: 2 minutes or more outside SLEEP that include WAKE or UP
         int k = bed;
         while (k <= end) {
@@ -110,6 +129,16 @@ final class SleepNight {
             nt.hrLow5 = best; nt.hrLow5Ts = ht.get(bi);
             nt.hrFirst30 = median(h, 0, 1800); nt.hrLast30 = median(h, h.length - 1800, h.length);
         }
+        // heart rate by hour (median per clock hour counted from bed)
+        int hrHours = (int) nt.tibH + 1;
+        nt.hrByHour = new double[hrHours];
+        for (int hh = 0; hh < hrHours; hh++) {
+            long a = ts[bed] + hh * 3600L, b = a + 3600;
+            List<Double> in = new ArrayList<>();
+            for (int q = 0; q < ht.size(); q++) { long t = ht.get(q); if (t >= a && t < b) in.add(hv.get(q)); }
+            if (in.size() > 600) { double[] w = new double[in.size()]; for (int q = 0; q < w.length; q++) w[q] = in.get(q); nt.hrByHour[hh] = median(w, 0, w.length); }
+            else nt.hrByHour[hh] = Double.NaN;
+        }
         // R-R words -> RMSSD overall and by hour
         List<double[]> rr = new ArrayList<>();
         for (int q = bed; q <= end; q++) {
@@ -125,6 +154,22 @@ final class SleepNight {
             int lo = -1, hi = -1;
             for (int q = 0; q < rr.size(); q++) { double t = rr.get(q)[0]; if (t >= a && t < b) { if (lo < 0) lo = q; hi = q + 1; } }
             nt.rmssdByHour[hh] = (lo >= 0 && hi - lo > 200) ? rmssd(rr, lo, hi, 100) : Double.NaN;
+        }
+        // breathing rate from the R-R tachogram
+        List<double[]> clear = breathing(rr, ts[bed], ts[end] + 1);
+        nt.brWindows = clear.size();
+        if (clear.size() >= 3) {
+            double[] bv = new double[clear.size()];
+            for (int q = 0; q < bv.length; q++) bv[q] = clear.get(q)[1];
+            nt.brMedian = median(bv, 0, bv.length);
+        }
+        nt.brByHour = new double[hours];
+        for (int hh = 0; hh < hours; hh++) {
+            long a = ts[bed] + hh * 3600L, b = a + 3600;
+            List<Double> in = new ArrayList<>();
+            for (double[] w : clear) if (w[0] >= a && w[0] < b) in.add(w[1]);
+            if (in.size() >= 2) { double[] w = new double[in.size()]; for (int q = 0; q < w.length; q++) w[q] = in.get(q); nt.brByHour[hh] = median(w, 0, w.length); }
+            else nt.brByHour[hh] = Double.NaN;
         }
         // skin temperature after the first 45 minutes
         if (len > 2800) {
@@ -150,6 +195,118 @@ final class SleepNight {
             nt.b82Median = (int) Math.round(median(v, 0, v.length)); nt.b82Min = mn;
         }
         return nt;
+    }
+
+    /**
+     * Breathing rate from the R-R tachogram. Walks 5-minute windows from t0 to t1; a window needs at least 144 beats and no
+     * gap over 8 s. The R-R series is resampled to 4 Hz, de-trended, and a Welch spectrum (512-sample Hann segments, half
+     * overlap) is searched between 0.12 and 0.40 Hz. A window counts only when its peak is more than 4 times the median of
+     * that band. Returns {windowStartTs, breathsPerMinute, peakRatio} for the clear windows.
+     */
+    static List<double[]> breathing(List<double[]> rr, long t0, long t1) {
+        List<double[]> out = new ArrayList<>();
+        final int win = 300, fs = 4, seg = 512, kLo = 16, kHi = 51;
+        final double[] cosT = new double[seg], sinT = new double[seg];
+        for (int k = 0; k < seg; k++) { cosT[k] = Math.cos(2 * Math.PI * k / seg); sinT[k] = Math.sin(2 * Math.PI * k / seg); }
+        int lo = 0;
+        for (long s = t0; s + win <= t1; s += win) {
+            while (lo < rr.size() && rr.get(lo)[0] < s) lo++;
+            int hi = lo;
+            while (hi < rr.size() && rr.get(hi)[0] < s + win) hi++;
+            int cnt = hi - lo;
+            if (cnt < 144) continue;
+            double maxGap = 0;
+            for (int q = lo + 1; q < hi; q++) maxGap = Math.max(maxGap, rr.get(q)[0] - rr.get(q - 1)[0]);
+            if (maxGap > 8.0) continue;
+            int m = win * fs;
+            double[] y = new double[m];
+            int p = lo;
+            for (int k = 0; k < m; k++) {
+                double tt = s + k / (double) fs;
+                while (p + 1 < hi && rr.get(p + 1)[0] <= tt) p++;
+                double v;
+                if (tt <= rr.get(lo)[0]) v = rr.get(lo)[1];
+                else if (tt >= rr.get(hi - 1)[0]) v = rr.get(hi - 1)[1];
+                else {
+                    double[] a = rr.get(p), b = rr.get(p + 1);
+                    v = a[1] + (b[1] - a[1]) * (tt - a[0]) / (b[0] - a[0]);
+                }
+                y[k] = v;
+            }
+            // linear de-trend
+            double sx = 0, sy = 0, sxx = 0, sxy = 0;
+            for (int k = 0; k < m; k++) { sx += k; sy += y[k]; sxx += (double) k * k; sxy += k * y[k]; }
+            double den = m * sxx - sx * sx, slope = (m * sxy - sx * sy) / den, icpt = (sy - slope * sx) / m;
+            for (int k = 0; k < m; k++) y[k] -= icpt + slope * k;
+            int nseg = (m - seg) / 256 + 1;
+            double[] pw = new double[kHi - kLo + 1];
+            for (int g = 0; g < nseg; g++) {
+                int off = g * 256;
+                double mean = 0;
+                for (int k = 0; k < seg; k++) mean += y[off + k];
+                mean /= seg;
+                double[] z = new double[seg];
+                for (int k = 0; k < seg; k++) z[k] = (y[off + k] - mean) * (0.5 - 0.5 * Math.cos(2 * Math.PI * k / seg));
+                for (int bin = kLo; bin <= kHi; bin++) {
+                    double re = 0, im = 0;
+                    for (int k = 0; k < seg; k++) { int ph = (bin * k) % seg; re += z[k] * cosT[ph]; im -= z[k] * sinT[ph]; }
+                    pw[bin - kLo] += (re * re + im * im) / nseg;
+                }
+            }
+            int best = 0;
+            for (int q = 1; q < pw.length; q++) if (pw[q] > pw[best]) best = q;
+            double med = median(pw, 0, pw.length);
+            double ratio = pw[best] / med;
+            if (ratio > 4.0) out.add(new double[] {s, (kLo + best) * (double) fs / seg * 60.0, ratio});
+        }
+        return out;
+    }
+
+    private static String f0(double v) { return Double.isNaN(v) ? "n/a" : String.format(java.util.Locale.US, "%.0f", v); }
+    private static String f1(double v) { return Double.isNaN(v) ? "n/a" : String.format(java.util.Locale.US, "%.1f", v); }
+
+    /** Values by hour, without a trailing part-hour that had too little data to report. */
+    private static int shown(double[] v) {
+        int k = v.length;
+        while (k > 0 && Double.isNaN(v[k - 1])) k--;
+        return k;
+    }
+
+    /** The text block for one night, exactly as the SLEEP REPORT screen shows it. */
+    static String describe(Night n, java.text.SimpleDateFormat day, java.text.SimpleDateFormat hm) {
+        StringBuilder s = new StringBuilder();
+        s.append(day.format(new java.util.Date(n.bedTs * 1000L))).append(" to ").append(hm.format(new java.util.Date(n.endTs * 1000L))).append('\n');
+        if (n.partialStart)
+            s.append("  PARTIAL NIGHT: the log starts at ").append(hm.format(new java.util.Date(n.bedTs * 1000L)))
+                    .append(" with the band already asleep, so the earlier part of this night is not in the log. The figures below cover only the logged part.\n");
+        if (n.partialEnd)
+            s.append("  PARTIAL NIGHT: the log ends at ").append(hm.format(new java.util.Date(n.endTs * 1000L)))
+                    .append(" with the band still asleep. Pull the strap's history again to complete it.\n");
+        if (n.coveragePct < 98.0)
+            s.append(String.format(java.util.Locale.US, "  records present: %.0f%% of the seconds (the log has gaps)\n", n.coveragePct));
+        s.append(String.format(java.util.Locale.US, "  %s %.1f h, asleep %.1f h (%.0f%%), %s\n",
+                n.partialStart ? "logged" : "in bed", n.tibH, n.tstH, n.effPct,
+                n.partialStart ? "settle-in not known" : String.format(java.util.Locale.US, "settled in %.0f min", n.settleMin)));
+        s.append(String.format(java.util.Locale.US, "  not asleep while in bed: still %.0f min, awake %.0f min, arm movement %.0f min\n", n.minStill, n.minWake, n.minUp));
+        s.append("  restless: ");
+        if (n.restless.isEmpty()) s.append("none");
+        for (long[] x : n.restless) s.append(hm.format(new java.util.Date(x[0] * 1000L))).append(' ').append(x[1] / 60).append(" min  ");
+        s.append('\n');
+        s.append("  heart rate: mean ").append(f0(n.hrMean)).append(", lowest 5 min ").append(f0(n.hrLow5));
+        if (n.hrLow5Ts > 0) s.append(" at ").append(hm.format(new java.util.Date(n.hrLow5Ts * 1000L)));
+        s.append(", first 30 min ").append(f0(n.hrFirst30)).append(", last 30 min ").append(f0(n.hrLast30)).append('\n');
+        s.append("  heart rate by hour");
+        for (int q = 0; q < shown(n.hrByHour); q++) s.append(' ').append(f0(n.hrByHour[q]));
+        s.append('\n');
+        s.append("  breathing ").append(f1(n.brMedian)).append(" per min (").append(n.brWindows).append(" clear 5-min windows); by hour");
+        for (int q = 0; q < shown(n.brByHour); q++) s.append(' ').append(f0(n.brByHour[q]));
+        s.append('\n');
+        s.append("  RMSSD ").append(f1(n.rmssd)).append(" ms; by hour");
+        for (int q = 0; q < shown(n.rmssdByHour); q++) s.append(' ').append(f0(n.rmssdByHour[q]));
+        s.append('\n');
+        s.append("  skin ").append(String.format(java.util.Locale.US, "%.2f", n.skinMedian)).append(" C after warm-up (").append(f1(n.skinMin)).append("-").append(f1(n.skinMax)).append(")\n");
+        s.append("  byte 82: ").append(n.windows).append(" windows, ").append(n.validN).append(" valid values, median ").append(n.b82Median).append(", lowest ").append(n.b82Min).append("\n\n");
+        return s.toString();
     }
 
     /** RMSSD over rr[from..to): successive differences kept when under 20% of the interval and under 2.5 s apart. */
