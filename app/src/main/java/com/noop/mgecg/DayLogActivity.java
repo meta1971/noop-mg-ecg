@@ -26,6 +26,9 @@ public class DayLogActivity extends Activity {
     private TextView status, out;
     private long lastSummaryMs = 0L;
     private boolean showSleep = false;
+    private SleepChartView chart;
+    private LinearLayout chartNav;
+    private int chartBack = 0;
     private Button toggle;
     private EditText sys, dia, pulse, note;
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -108,6 +111,7 @@ public class DayLogActivity extends Activity {
         r3.addView(weight(btn("SLEEP REPORT", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 showSleep = true;
+                hideChart();
                 out.setText("working...");
                 new Thread(new Runnable() {
                     @Override public void run() {
@@ -118,11 +122,26 @@ public class DayLogActivity extends Activity {
             }
         })));
         r3.addView(weight(btn("24 H SUMMARY", new View.OnClickListener() {
-            @Override public void onClick(View v) { showSleep = false; lastSummaryMs = 0L; refresh(); }
+            @Override public void onClick(View v) { showSleep = false; lastSummaryMs = 0L; hideChart(); refresh(); }
         })));
         col.addView(r3);
+        col.addView(btn("SLEEP CHART", new View.OnClickListener() {
+            @Override public void onClick(View v) { showSleep = true; chartBack = 0; showChart(); }
+        }));
         out = text("", 12, false);
         col.addView(out);
+        chartNav = row();
+        chartNav.addView(weight(btn("\u25C0 OLDER NIGHT", new View.OnClickListener() {
+            @Override public void onClick(View v) { chartBack++; showChart(); }
+        })));
+        chartNav.addView(weight(btn("NEWER NIGHT \u25B6", new View.OnClickListener() {
+            @Override public void onClick(View v) { if (chartBack > 0) chartBack--; showChart(); }
+        })));
+        chartNav.setVisibility(View.GONE);
+        col.addView(chartNav);
+        chart = new SleepChartView(this);
+        chart.setVisibility(View.GONE);
+        col.addView(chart, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // 0.5.8: a bottom way home too, since the page is long
         Button homeBottom = btn("\u2190 HOME", new View.OnClickListener() { @Override public void onClick(View v) { goHome(); } });
@@ -204,6 +223,36 @@ public class DayLogActivity extends Activity {
         status.setText(DayLog.statusLine(this) + "\npull interval " + DayLog.intervalMin(this) + " min");
         long now = System.currentTimeMillis();
         if (!showSleep && now - lastSummaryMs > 60000L) { lastSummaryMs = now; out.setText(DayLog.summary(this)); }   // the summary reads a day of records, so not every 5 s
+    }
+
+    private void hideChart() { chart.setVisibility(View.GONE); chartNav.setVisibility(View.GONE); }
+
+    /** Loads the chosen night off the main thread and shows its chart, with that night's report text above it. */
+    private void showChart() {
+        if (chart.getVisibility() != View.VISIBLE) out.setText("working...");
+        final int back = chartBack;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final SleepNight.Series s = DayLog.sleepSeries(DayLogActivity.this, back);
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (s == null) {
+                            if (back > 0) { chartBack = back - 1; toast("No older night in the log"); }
+                            else {
+                                chart.setVisibility(View.GONE);
+                                chartNav.setVisibility(View.GONE);
+                                out.setText("No complete night in the log yet (it needs about 3 hours of SLEEP state). Pull the strap's history in the morning.");
+                            }
+                            return;
+                        }
+                        chartNav.setVisibility(View.VISIBLE);
+                        out.setText("Night " + (s.index + 1) + " of " + s.count + " (touch the chart to read a minute)\n" + s.report);
+                        chart.setData(s);
+                        chart.setVisibility(View.VISIBLE);
+                    }
+                });
+            }
+        }).start();
     }
 
     // ------------------------------------------------------------------ small view helpers
