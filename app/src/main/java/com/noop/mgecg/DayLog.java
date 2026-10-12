@@ -315,6 +315,42 @@ final class DayLog {
         return s.toString();
     }
 
+    /** One night as chart series. back = 0 for the latest night, 1 for the one before, and so on. Null when there is no such night. */
+    static SleepNight.Series sleepSeries(Context c, int back) {
+        try {
+            SQLiteDatabase d = db(c);
+            Cursor q = d.rawQuery("SELECT ts FROM r18 WHERE state = 2 ORDER BY ts", null);
+            List<Long> tl = new ArrayList<>();
+            while (q.moveToNext()) tl.add(q.getLong(0));
+            q.close();
+            long[] st = new long[tl.size()];
+            for (int i = 0; i < st.length; i++) st[i] = tl.get(i);
+            long logFirst = 0L, logLast = 0L;
+            Cursor lq = d.rawQuery("SELECT MIN(ts), MAX(ts) FROM r18", null);
+            if (lq.moveToFirst()) { logFirst = lq.getLong(0); logLast = lq.getLong(1); }
+            lq.close();
+            List<long[]> cl = SleepNight.clusters(st);
+            int k = cl.size() - 1 - back;
+            if (k < 0) return null;
+            long[] cc = cl.get(k);
+            Cursor r = d.rawQuery("SELECT rec FROM r18 WHERE ts BETWEEN ? AND ? ORDER BY ts", new String[] {String.valueOf(cc[0] - 7200L), String.valueOf(cc[1] + 1800L)});
+            List<byte[]> recs = new ArrayList<>();
+            while (r.moveToNext()) recs.add(r.getBlob(0));
+            r.close();
+            SleepNight.Night n = SleepNight.analyse(recs, logFirst, logLast);
+            if (n == null) return null;
+            SleepNight.Series s = SleepNight.series(recs, n);
+            if (s == null) return null;
+            SimpleDateFormat day = new SimpleDateFormat("EEE d MMM HH:mm", Locale.getDefault());
+            SimpleDateFormat hm = new SimpleDateFormat("HH:mm", Locale.getDefault());
+            s.index = k; s.count = cl.size();
+            s.title = day.format(new Date(n.bedTs * 1000L)) + " to " + hm.format(new Date(n.endTs * 1000L))
+                    + (n.partialStart || n.partialEnd ? "  (partial night)" : "");
+            s.report = SleepNight.describe(n, day, hm);
+            return s;
+        } catch (Throwable t) { return null; }
+    }
+
     // ------------------------------------------------------------------ export
     static String exportCsv(Context c) {
         try {
