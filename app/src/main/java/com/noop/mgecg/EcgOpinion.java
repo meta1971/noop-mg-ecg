@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.7 (3 Oct): research-only reading; heart-rate trend and banded QT
+// FILE VERSION 0.5.11 (12 Oct): rhythm-timing sentence prints the AF screen's own three measures against its own limits (was sample entropy against the Shannon limit); 0.2.7 (3 Oct): research-only reading; heart-rate trend and banded QT
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -96,8 +96,15 @@ public final class EcgOpinion {
             sum.append(sum.length() > 0 ? ", " : "").append("uneven beat timing that needs repeating");
             o.ask.add("An uneven result that repeats on different days is worth showing to a doctor, together with the saved strip image.");
         } else if (regular) {
-            String d = r.rhythm != null && r.rhythm.features != null
-                    ? String.format(Locale.US, " (successive-difference ratio %.3f, entropy %.2f; the published AF-like pattern needs above 0.10 and above 0.70)", r.rhythm.features[0], r.rhythm.features[4]) : "";
+            String d = "";
+            if (r.af != null && r.af.dash != null && r.af.window > 0) {
+                // the AF screen's own three measures on its verdict window (AfScreen.dash), against its own limits
+                double[] x = r.af.dash;
+                double lo = x[3] - 1.96 * x[4], hi = x[3] + 1.96 * x[4];
+                int met = (x[0] > 0.1 ? 1 : 0) + (x[1] > 0.7 ? 1 : 0) + (x[5] > 0.5 ? 1 : 0);
+                d = String.format(Locale.US, " (last %d clean beats: beat-to-beat change %.1f%% of the beat interval, AF-like is above 10%%; spread of interval lengths %.2f, AF-like is above 0.70; turning points %d, AF-like is %.0f to %.0f. The published screen needs all three, and this reading meets %d of 3)",
+                        r.af.window, x[0] * 100.0, x[1], (int) Math.round(x[2]), lo, hi, met);
+            }
             o.items.add(new Item("Rhythm timing", "steady", OK,
                     "The beat-to-beat timing was steady" + d + ". That is the pattern of a normal sinus rhythm, but timing alone cannot confirm it: it says nothing about the shape of the beats, and a short recording can miss a rhythm that comes and goes."));
             sum.append(sum.length() > 0 ? ", " : "").append("steady beat timing");
