@@ -10032,6 +10032,8 @@ public class MainActivity extends NewLookActivity {
 
         super.onCreate(b);
 
+        final MainActivity kept = headless;    // 0.5.12: a screen closed by a swipe-away may still hold the strap link
+        if (kept != null && kept != this) { headless = null; kept.retireHeadless("a new screen opened"); }
         instance = this;
         mainH.postDelayed(dayLogTick, 20000L);
 
@@ -10390,6 +10392,8 @@ public class MainActivity extends NewLookActivity {
     // decodes any finished capture file into the day-log database, and samples the phone's light and pressure.
 
     static MainActivity instance;
+    /** 0.5.12: the closed screen that is still running the logger and holding the strap link (see onDestroy), or null. */
+    static MainActivity headless;
     private long dayLogLastReconnectMs = 0L;
     private long dayLogBackoffMs = 60000L;
     private int dayLogTickCount = 0;
@@ -10399,13 +10403,29 @@ public class MainActivity extends NewLookActivity {
 
     private final Runnable dayLogTick = new Runnable() {
         @Override public void run() {
+            if (headless == MainActivity.this && !DayLog.enabled(MainActivity.this)) {   // 0.5.12: logger switched off while the screen is closed
+                headless = null;
+                retireHeadless("logger turned off");
+                return;
+            }
             try { dayLogTickBody(); } catch (Throwable t) { logRaw("DAYLOG_TICK_ERROR " + t); }
             mainH.postDelayed(this, 60000L);
         }
     };
 
+    /** 0.5.12: ends the logger loop and strap link of a closed screen that was kept running. */
+    private void retireHeadless(String why) {
+        logRaw("HEADLESS_RETIRE " + why);
+        mainH.removeCallbacks(dayLogTick);
+        try { unregisterReceiver(bondReceiver); } catch (Exception ignored) { }
+        try { unregisterReceiver(btStateReceiver); } catch (Exception ignored) { }
+        try { if (gatt != null) gatt.close(); } catch (Exception ignored) { }
+        gatt = null;
+        cmdWrite = null;
+    }
+
     static void requestPull() {
-        final MainActivity m = instance;
+        final MainActivity m = instance != null ? instance : headless;
         if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNow(); } });
     }
 
@@ -13510,7 +13530,19 @@ public class MainActivity extends NewLookActivity {
     @Override
     protected void onDestroy() {
 
+        // 0.5.12: with the logger on and a strap link open, closing the screen (swipe-away or Back) no longer ends the
+        // link. The foreground service keeps the process alive; this closed screen keeps running the logger loop and the
+        // Bluetooth link without a window, and the next screen that opens retires it before reconnecting.
+        if (!isChangingConfigurations() && gatt != null && DayLog.enabled(this)) {
+            if (instance == this) instance = null;
+            headless = this;
+            logRaw("HEADLESS_KEEP the screen was closed; logger on, strap link kept");
+            super.onDestroy();
+            return;
+        }
+
         if (instance == this) instance = null;
+        if (headless == this) headless = null;
         mainH.removeCallbacks(dayLogTick);
 
         try {
