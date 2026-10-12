@@ -309,6 +309,75 @@ final class SleepNight {
         return s.toString();
     }
 
+    /** One night as per-minute series for the chart, from bed minus 20 minutes to the end plus 20 minutes. */
+    static final class Series {
+        long t0;                       // epoch seconds of minute 0
+        int n;                         // number of minutes
+        float[] hr, rmssd, br, skin;   // NaN where there is no value (rmssd and br hold the 5-minute window value in each of its minutes)
+        byte[] state;                  // -1 no data, else 0 WAKE, 1 STILL, 2 SLEEP, 3 UP (arm movement)
+        Night night;
+        int index, count;              // this night's place among all nights found (0 = oldest)
+        String title = "", report = "";
+    }
+
+    /** Builds the chart series for a night analysed from the same records. Returns null when there is nothing to draw. */
+    static Series series(List<byte[]> recs, Night nt) {
+        if (recs == null || recs.isEmpty() || nt == null) return null;
+        long t0 = (nt.bedTs - 1200L) / 60L * 60L, t1 = nt.endTs + 1200L;
+        int n = (int) ((t1 - t0) / 60L) + 1;
+        if (n < 30 || n > 1800) return null;
+        Series se = new Series();
+        se.t0 = t0; se.n = n; se.night = nt;
+        se.hr = new float[n]; se.rmssd = new float[n]; se.br = new float[n]; se.skin = new float[n]; se.state = new byte[n];
+        float[][] hv = new float[n][60], kv = new float[n][60];
+        int[] hc = new int[n], kc = new int[n];
+        int[][] sc = new int[n][4];
+        List<double[]> rr = new ArrayList<>();
+        for (byte[] f : recs) {
+            long t = R18Codec.ts(f);
+            if (t < t0 || t > t1) continue;
+            int m = (int) ((t - t0) / 60L);
+            if (m < 0 || m >= n) continue;
+            int h = R18Codec.hr(f);
+            if (h > 30 && hc[m] < 60) hv[m][hc[m]++] = h;
+            double k = R18Codec.skinC(f);
+            if (k > 20 && k < 45 && kc[m] < 60) kv[m][kc[m]++] = (float) k;
+            sc[m][R18Codec.state(f)]++;
+            int c = Math.min(R18Codec.u8(f, 23), 4);
+            for (int w = 0; w < c; w++) { double v = R18Codec.rr(f, w); if (v > 300 && v < 2000) rr.add(new double[] {t + w * 0.01, v}); }
+        }
+        for (int m = 0; m < n; m++) {
+            se.hr[m] = hc[m] >= 20 ? medianF(hv[m], hc[m]) : Float.NaN;
+            se.skin[m] = kc[m] >= 20 ? medianF(kv[m], kc[m]) : Float.NaN;
+            int best = -1, bc = 0;
+            for (int q = 0; q < 4; q++) if (sc[m][q] > bc) { bc = sc[m][q]; best = q; }
+            se.state[m] = (byte) (bc >= 20 ? best : -1);
+            se.rmssd[m] = Float.NaN; se.br[m] = Float.NaN;
+        }
+        // RMSSD in 5-minute windows
+        int lo = 0;
+        for (int b = 0; b + 5 <= n; b += 5) {
+            long a = t0 + b * 60L, e = a + 300L;
+            while (lo < rr.size() && rr.get(lo)[0] < a) lo++;
+            int hi = lo;
+            while (hi < rr.size() && rr.get(hi)[0] < e) hi++;
+            double v = hi - lo > 100 ? rmssd(rr, lo, hi, 100) : Double.NaN;
+            if (!Double.isNaN(v)) for (int q = b; q < b + 5; q++) se.rmssd[q] = (float) v;
+        }
+        // breathing rate in the clear 5-minute windows (the same estimator as the report)
+        for (double[] w : breathing(rr, t0, t1)) {
+            int b = (int) ((((long) w[0]) - t0) / 60L);
+            for (int q = b; q < b + 5 && q < n; q++) if (q >= 0) se.br[q] = (float) w[1];
+        }
+        return se;
+    }
+
+    private static float medianF(float[] v, int c) {
+        float[] t = java.util.Arrays.copyOf(v, c);
+        java.util.Arrays.sort(t);
+        return c % 2 == 1 ? t[c / 2] : 0.5f * (t[c / 2 - 1] + t[c / 2]);
+    }
+
     /** RMSSD over rr[from..to): successive differences kept when under 20% of the interval and under 2.5 s apart. */
     static double rmssd(List<double[]> rr, int from, int to, int minDiffs) {
         double s = 0; int c = 0;
