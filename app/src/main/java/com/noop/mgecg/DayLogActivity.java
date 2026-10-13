@@ -19,7 +19,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -57,6 +60,9 @@ public class DayLogActivity extends Activity {
     private Button toggle;
     private TextView h10Status;
     private Button h10Toggle;
+    private Button h10Preview;
+    private H10TraceView h10Trace;
+    private boolean pendingPreview = false;
     private EditText sys, dia, pulse, note;
     private final Handler h = new Handler(Looper.getMainLooper());
     private final Runnable tick = new Runnable() {
@@ -80,6 +86,10 @@ public class DayLogActivity extends Activity {
         col.addView(toggle);
 
         col.addView(label("POLAR H10 CHEST STRAP (raw ECG, same phone clock as the MG)"));
+        h10Preview = btn("", new View.OnClickListener() { @Override public void onClick(View v) { togglePreview(); } });
+        col.addView(h10Preview);
+        h10Trace = new H10TraceView(this);
+        col.addView(h10Trace, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(190)));
         h10Toggle = btn("", new View.OnClickListener() { @Override public void onClick(View v) { toggleH10(); } });
         col.addView(h10Toggle);
         h10Status = text("", 12, false);
@@ -92,7 +102,7 @@ public class DayLogActivity extends Activity {
             for (int hj = hi; hj < hi + 2 && hj < h10m.length; hj++) {
                 final String hname = h10m[hj][0], hkind = h10m[hj][1];
                 hr.addView(weight(btn(hname, new View.OnClickListener() {
-                    @Override public void onClick(View v) { toast(PolarH10.wanted ? PolarH10.mark(hkind) : "Start the H10 recording first"); }
+                    @Override public void onClick(View v) { toast(PolarH10.wanted && PolarH10.recordToFile ? PolarH10.mark(hkind) : "Start the H10 recording first"); }
                 })));
             }
             col.addView(hr);
@@ -253,10 +263,20 @@ public class DayLogActivity extends Activity {
     }
 
     private void toggleH10() {
+        if (PolarH10.wanted && !PolarH10.recordToFile) { PolarH10.beginRecording(); toast("Recording started"); refresh(); return; }
         if (PolarH10.wanted) { PolarH10.stop(); toast("H10 recording stopped. The files are saved."); refresh(); return; }
         String[] miss = PolarH10.missingPermissions(this);
-        if (miss.length > 0) { requestPermissions(miss, 51); return; }
+        if (miss.length > 0) { pendingPreview = false; requestPermissions(miss, 51); return; }
         PolarH10.start(this);
+        refresh();
+    }
+
+    private void togglePreview() {
+        if (PolarH10.wanted && PolarH10.recordToFile) { toast("Already recording. Stop it first."); return; }
+        if (PolarH10.wanted) { PolarH10.stop(); toast("Preview stopped. Nothing was saved."); refresh(); return; }
+        String[] miss = PolarH10.missingPermissions(this);
+        if (miss.length > 0) { pendingPreview = true; requestPermissions(miss, 51); return; }
+        PolarH10.startPreview(this);
         refresh();
     }
 
@@ -265,7 +285,7 @@ public class DayLogActivity extends Activity {
         if (code != 51) return;
         boolean essential = true;
         for (int i = 0; i < perms.length; i++) if (res[i] != android.content.pm.PackageManager.PERMISSION_GRANTED && !perms[i].equals("android.permission.POST_NOTIFICATIONS")) essential = false;
-        if (essential) { PolarH10.start(this); refresh(); }
+        if (essential) { if (pendingPreview) PolarH10.startPreview(this); else PolarH10.start(this); refresh(); }
         else toast("Bluetooth permission is needed to find the H10");
     }
 
@@ -284,7 +304,10 @@ public class DayLogActivity extends Activity {
     private void refresh() {
         toggle.setText(DayLog.enabled(this) ? "LOGGER IS ON (tap to turn off)" : "LOGGER IS OFF (tap to turn on)");
         status.setText(DayLog.statusLine(this) + "\npull interval " + DayLog.intervalMin(this) + " min");
-        h10Toggle.setText(PolarH10.wanted ? "H10 IS RECORDING (tap to stop)" : "START H10 RECORDING");
+        boolean prev = PolarH10.wanted && !PolarH10.recordToFile;
+        h10Toggle.setText(PolarH10.wanted ? (prev ? "START RECORDING (preview is on)" : "H10 IS RECORDING (tap to stop)") : "START H10 RECORDING");
+        h10Preview.setText(prev ? "STOP PREVIEW" : (PolarH10.wanted ? "(recording)" : "H10 LIVE PREVIEW (nothing is saved)"));
+        h10Preview.setEnabled(!(PolarH10.wanted && PolarH10.recordToFile));
         String hs = PolarH10.status();
         h10Status.setText(hs + (PolarH10.wanted || hs.startsWith("STOPPED") ? "\n" + PolarH10.logTail(6) : ""));
         long now = System.currentTimeMillis();
@@ -470,6 +493,10 @@ final class PolarH10 {
     private static final ArrayDeque<String> tail = new ArrayDeque<String>();
 
     static volatile boolean wanted = false;          // START pressed and STOP not yet pressed
+    static volatile boolean recordToFile = true;     // false = live preview only: the trace is shown, nothing is written
+    private static final int RING = 130 * 12;        // the last 12 s of ECG, for the live trace
+    private static final int[] ring = new int[RING];
+    private static long ringCount = 0L;
     private static String state = "idle";
     private static Context app;
     private static BluetoothGatt gatt;
@@ -498,15 +525,37 @@ final class PolarH10 {
         return need.toArray(new String[0]);
     }
 
-    public static synchronized void start(Context c) {
+    public static synchronized void start(Context c) { start(c, true); }
+
+    /** Streams the ECG and shows the live trace, but saves nothing: to check the strap's contact before a recording. */
+    public static synchronized void startPreview(Context c) { start(c, false); }
+
+    /** Turns a running preview into a recording: files open at the next data frame. */
+    public static synchronized void beginRecording() {
+        recordToFile = true; log("preview -> recording");
+        if (recording) set("RECORDING ECG");
+    }
+
+    /** The newest samples (microvolts), oldest first; returns how many were copied. */
+    public static synchronized int recent(int[] out) {
+        int n = (int) Math.min(Math.min(ringCount, (long) RING), (long) out.length);
+        long first = ringCount - n;
+        for (int i = 0; i < n; i++) out[i] = ring[(int) ((first + i) % RING)];
+        return n;
+    }
+
+    public static int hrNow() { return lastHr; }
+
+    public static synchronized void start(Context c, boolean record) {
         if (wanted) return;
         app = c.getApplicationContext();
+        recordToFile = record; ringCount = 0L;
         wanted = true; everConnected = false; attempts = 0; samples = 0L; frames = 0L; lastHr = 0; lastP2p = 0; unknownLogged = 0; recording = false;
         sessionStamp = System.currentTimeMillis() / 1000L;
         tail.clear();
         addr = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("addr", null);
         openLog();
-        log("START pressed, Android " + Build.VERSION.SDK_INT + ", saved address " + addr);
+        log("START pressed (" + (recordToFile ? "recording" : "preview only") + "), Android " + Build.VERSION.SDK_INT + ", saved address " + addr);
         DayLogService.start(app);
         H.postDelayed(notifyTick, 15000L);
         set("starting: looking for your H10 (strap on skin, electrodes wet)");
@@ -548,11 +597,12 @@ final class PolarH10 {
         StringBuilder sb = new StringBuilder();
         sb.append(state);
         if (recording) {
-            sb.append(String.format(Locale.UK, "\nrecorded %d s (%d samples) in this file", samples / 130L, samples));
+            if (recordToFile) sb.append(String.format(Locale.UK, "\nrecorded %d s (%d samples) in this file", samples / 130L, samples));
+            else sb.append("\npreview only: nothing is being saved");
             sb.append(lastFrameMs > 0 ? String.format(Locale.UK, "\nlast data %.1f s ago", (now - lastFrameMs) / 1000.0) : "\nwaiting for the first data");
             if (lastHr > 0) sb.append("\nstrap heart rate ").append(lastHr).append(" bpm");
             if (lastP2p > 0) sb.append(lastP2p < 300 ? "\nsignal weak (" + lastP2p + " uV): wet the electrodes / tighten the strap" : "\nsignal size " + lastP2p + " uV");
-            sb.append("\nfile ").append(ecgPath);
+            if (recordToFile) sb.append("\nfile ").append(ecgPath);
         }
         return sb.toString();
     }
@@ -776,7 +826,7 @@ final class PolarH10 {
         int[] r = PolarPmd.parseCp(v);
         if (r == null) return;
         if (r[0] == 2 && r[1] == 0) {
-            if (r[2] == 0) { recording = true; attempts = 0; everConnected = true; set("RECORDING ECG"); }
+            if (r[2] == 0) { recording = true; attempts = 0; everConnected = true; set(recordToFile ? "RECORDING ECG" : "PREVIEW (live trace only, nothing saved)"); }
             else failStop("ECG start refused, code " + r[2] + ": " + PolarPmd.statusText(r[2]));
         }
     }
@@ -804,7 +854,16 @@ final class PolarH10 {
             return;
         }
         long now = System.currentTimeMillis();
-        if (!recording) { recording = true; attempts = 0; everConnected = true; set("RECORDING ECG"); }
+        if (!recording) { recording = true; attempts = 0; everConnected = true; set(recordToFile ? "RECORDING ECG" : "PREVIEW (live trace only, nothing saved)"); }
+        int n = e.uv.length, lo = Integer.MAX_VALUE, hi = Integer.MIN_VALUE;
+        for (int i = 0; i < n; i++) {
+            ring[(int) (ringCount % RING)] = e.uv[i]; ringCount++;
+            if (e.uv[i] < lo) lo = e.uv[i];
+            if (e.uv[i] > hi) hi = e.uv[i];
+        }
+        frames++; lastFrameMs = now; lastP2p = hi - lo;
+        if (frames == 1) log("first ECG frame: " + n + " samples, sensor time " + e.tsNs + " ns, first values " + e.uv[0] + " " + (n > 1 ? e.uv[1] : 0) + " " + (n > 2 ? e.uv[2] : 0));
+        if (!recordToFile) return;
         try {
             if (ecgW == null) {
                 File f = new File(app.getExternalFilesDir(null), "h10_ecg_" + (now / 1000L) + ".csv");
@@ -814,16 +873,10 @@ final class PolarH10 {
                 samples = 0L; segStartMs = now;
                 log("ECG file " + f.getAbsolutePath());
             }
-            int n = e.uv.length, lo = Integer.MAX_VALUE, hi = Integer.MIN_VALUE;
             StringBuilder sb = new StringBuilder(n * 28);
-            for (int i = 0; i < n; i++) {
-                sb.append(now).append(',').append(PolarPmd.sampleNs(e.tsNs, n, i)).append(',').append(e.uv[i]).append('\n');
-                if (e.uv[i] < lo) lo = e.uv[i];
-                if (e.uv[i] > hi) hi = e.uv[i];
-            }
+            for (int i = 0; i < n; i++) sb.append(now).append(',').append(PolarPmd.sampleNs(e.tsNs, n, i)).append(',').append(e.uv[i]).append('\n');
             ecgW.write(sb.toString()); ecgW.flush();
-            samples += n; frames++; lastFrameMs = now; lastP2p = hi - lo;
-            if (frames == 1) log("first ECG frame: " + n + " samples, sensor time " + e.tsNs + " ns, first values " + e.uv[0] + " " + (n > 1 ? e.uv[1] : 0) + " " + (n > 2 ? e.uv[2] : 0));
+            samples += n;
         } catch (Throwable t) { failStop("could not write the ECG file: " + t); }
     }
 
@@ -884,5 +937,104 @@ final class PolarH10 {
         String line = String.format(Locale.UK, "%tT.%<tL ", System.currentTimeMillis()) + s;
         tail.addLast(line); while (tail.size() > 60) tail.removeFirst();
         try { if (logW != null) { logW.write(System.currentTimeMillis() + "\t" + s + "\n"); logW.flush(); } } catch (Throwable ignored) { }
+    }
+}
+
+
+/** Signal-quality maths for the live H10 trace. Pure Java so it can be tested off the phone. */
+final class TraceMath {
+    private TraceMath() { }
+    static final int WAIT = 0, WEAK = 1, NOISY = 2, OK = 3, GOOD = 4;
+
+    /** x minus a centred 1-second moving average (removes baseline wander for display and measurement). */
+    static float[] detrend(int[] x, int n) {
+        float[] out = new float[n];
+        if (n == 0) return out;
+        long[] ps = new long[n + 1];
+        for (int i = 0; i < n; i++) ps[i + 1] = ps[i] + x[i];
+        int h = 65;
+        for (int i = 0; i < n; i++) {
+            int a = Math.max(0, i - h), b = Math.min(n, i + h + 1);
+            out[i] = x[i] - (float) (ps[b] - ps[a]) / (b - a);
+        }
+        return out;
+    }
+
+    private static float pct(float[] sorted, double p) { return sorted[Math.min(sorted.length - 1, Math.max(0, (int) Math.round(p * (sorted.length - 1))))]; }
+
+    /** Returns {amplitude uV (99th minus 1st percentile of the detrended signal), noise ratio (median successive step / amplitude), quality code}. */
+    static float[] quality(int[] x, int n) {
+        if (n < 260) return new float[] {0f, 0f, WAIT};
+        float[] d = detrend(x, n);
+        float[] s = d.clone(); java.util.Arrays.sort(s);
+        float amp = pct(s, 0.99) - pct(s, 0.01);
+        float[] st = new float[n - 1];
+        for (int i = 1; i < n; i++) st[i - 1] = Math.abs(d[i] - d[i - 1]);
+        java.util.Arrays.sort(st);
+        float noise = st[st.length / 2] / Math.max(amp, 1f);
+        float q;
+        if (amp < 300f) q = WEAK;
+        else if (noise >= 0.12f) q = NOISY;           // provisional cut-offs: to be tuned on real H10 recordings
+        else if (amp >= 600f && noise < 0.075f) q = GOOD;
+        else q = OK;
+        return new float[] {amp, noise, q};
+    }
+}
+
+/** A live, scrolling ECG strip for the Polar H10 (last 6 s) with a plain-words signal-quality line. */
+class H10TraceView extends View {
+    private static final int SHOW = 130 * 6;
+    private final Paint bg = new Paint(), minor = new Paint(), major = new Paint(), trace = new Paint(), txt = new Paint();
+    private final Path path = new Path();
+    private final int[] buf = new int[SHOW];
+    private final Runnable tick = new Runnable() {
+        @Override public void run() { invalidate(); if (isAttachedToWindow()) postDelayed(this, 200L); }
+    };
+
+    H10TraceView(Context c) {
+        super(c);
+        bg.setColor(Color.parseColor("#06101C"));
+        minor.setColor(Color.parseColor("#15283C")); minor.setStrokeWidth(1f);
+        major.setColor(Color.parseColor("#22405C")); major.setStrokeWidth(1.5f);
+        trace.setColor(Color.parseColor("#22E6D6")); trace.setStyle(Paint.Style.STROKE); trace.setStrokeWidth(3f); trace.setAntiAlias(true);
+        txt.setAntiAlias(true); txt.setTextSize(34f);
+    }
+
+    @Override protected void onAttachedToWindow() { super.onAttachedToWindow(); post(tick); }
+    @Override protected void onDetachedFromWindow() { removeCallbacks(tick); super.onDetachedFromWindow(); }
+
+    private void msg(Canvas c, String s) { txt.setColor(Color.parseColor("#9FB3C8")); c.drawText(s, 24f, getHeight() / 2f, txt); }
+
+    @Override protected void onDraw(Canvas c) {
+        int w = getWidth(), h = getHeight();
+        c.drawRect(0, 0, w, h, bg);
+        if (!PolarH10.wanted) { msg(c, "Live H10 trace: tap PREVIEW"); return; }
+        int n = PolarH10.recent(buf);
+        if (n < 130) { msg(c, "waiting for ECG data ..."); return; }
+        float[] d = TraceMath.detrend(buf, n);
+        float[] q = TraceMath.quality(buf, n);
+        float span = Math.max(1600f, q[0] * 1.7f);            // microvolts shown top to bottom
+        float top = 8f, bottom = h - 46f, pxPerUv = (bottom - top) / span, mid = (top + bottom) / 2f;
+        float dx = w / (float) SHOW;
+        for (int i = 0; i <= 6 * 5; i++) { float x = i * (130f / 5f) * dx; c.drawLine(x, top, x, bottom, i % 5 == 0 ? major : minor); }
+        for (float uv = -span / 2f; uv <= span / 2f; uv += 250f) { float y = mid - uv * pxPerUv; c.drawLine(0, y, w, y, Math.round(uv) % 500 == 0 ? major : minor); }
+        path.reset();
+        float x0 = (SHOW - n) * dx;
+        for (int i = 0; i < n; i++) {
+            float x = x0 + i * dx, y = Math.max(top, Math.min(bottom, mid - d[i] * pxPerUv));
+            if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+        }
+        c.drawPath(path, trace);
+        String lab; int col;
+        switch ((int) q[2]) {
+            case TraceMath.GOOD: lab = "GOOD signal"; col = Color.parseColor("#30D158"); break;
+            case TraceMath.OK: lab = "OK signal"; col = Color.parseColor("#C8E64A"); break;
+            case TraceMath.NOISY: lab = "NOISY: stay still, press the strap on"; col = Color.parseColor("#FFB020"); break;
+            case TraceMath.WEAK: lab = "WEAK: wet the electrodes, tighten the strap"; col = Color.parseColor("#FF5A5F"); break;
+            default: lab = "..."; col = Color.WHITE;
+        }
+        txt.setColor(col);
+        int hr = PolarH10.hrNow();
+        c.drawText(lab + "  " + Math.round(q[0]) + " uV" + (hr > 0 ? "  HR " + hr : ""), 16f, h - 12f, txt);
     }
 }
