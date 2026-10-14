@@ -8,7 +8,8 @@ import java.util.zip.CRC32;
  * for the history capture files. Fields follow NOOP's documented R18 layout plus what this project verified on its own
  * data: byte 10 bit 7 clears while raw ECG/optical collection runs, bytes 19-20 are the sub-second part of the strap
  * time, byte 35 bits 5-6 repeat the band state, byte 40 is an optical quality score (255 clean), byte 113 is a log
- * activity index, and bytes 78-80 = 11,114,7 mark the sleep-only byte-82 measurement window.
+ * activity index, and bytes 78-80 = 11,114,7 (or 11,98,6) mark the sleep-only byte-82 measurement window, bytes 38-39 are extra HR estimates that went to zero after 26 Sep 2026,
+ * and 37 of the 40 bytes not named here never change in 141 h of data.
  * Pure Java on purpose, so it can be tested off the phone. RESEARCH ONLY.
  */
 final class R18Codec {
@@ -16,7 +17,7 @@ final class R18Codec {
 
     static final String HEADER = "ts,sub_s,rec_idx,raw_active,hr,rr_n,rr1_ms,rr2_ms,rr3_ms,rr4_ms,alt_hr,b33,b36,"
             + "dyn_g,grav_x,grav_y,grav_z,steps,cadence,activity,therm1_c,therm2_c,skin_c,w75,onwrist,wake_q,state,"
-            + "b81_hi,b82,spo2_window,b35_state,b34,b40,b105,opt106,opt107,opt108,opt109,f113";
+            + "b81_hi,b82,spo2_window,b35_state,b34,b40,b105,opt106,opt107,opt108,opt109,f113,b32,hr38,hr39";
 
     interface Visitor { void frame(byte[] f); }
 
@@ -36,6 +37,14 @@ final class R18Codec {
     static boolean spo2Window(byte[] f) { return u8(f, 78) == 11 && u8(f, 79) == 114 && u8(f, 80) == 7; }
     static boolean rawActive(byte[] f) { return (u8(f, 10) & 0x80) == 0; }
     static int steps(byte[] f) { return u16(f, 57); }
+    /** Extra heart-rate estimates (0 = none). On the 141 h of records examined they were present in most seconds until 26 Sep 2026 07:25 UTC and are zero in
+     *  every record since (about 330,000), so this is NOT a per-second validity signal. Whenever present they were within about 1 bpm of the main HR (byte 22).
+     *  They stopped around the time the 16-flag batch copied from the official app (hr_ch_switching, ir_hw_switching, make_hrfm_visible ...) was written
+     *  to the strap on 26 Sep 09:28 UTC; the records from that window are missing, so which flag did it is not yet known. */
+    static int hrAlt2(byte[] f) { return u8(f, 38); }
+    static int hrAlt3(byte[] f) { return u8(f, 39); }
+    /** Byte 32: bits 6-7 are a 2-bit code of unknown meaning (values 1-3 in all four band states); other bits mostly 0. Exported raw. */
+    static int b32(byte[] f) { return u8(f, 32); }
 
     /** The R-R words of one record in milliseconds (0 where absent). */
     static double rr(byte[] f, int k) {
@@ -63,7 +72,8 @@ final class R18Codec {
                 .append(',').append((u8(f, 81) >> 6) & 3).append(',').append(u8(f, 82)).append(',').append(spo2Window(f) ? 1 : 0)
                 .append(',').append((u8(f, 35) >> 5) & 3).append(',').append(u8(f, 34)).append(',').append(u8(f, 40)).append(',').append(u8(f, 105))
                 .append(',').append(u8(f, 106)).append(',').append(u8(f, 107)).append(',').append(u8(f, 108)).append(',').append(u8(f, 109))
-                .append(',').append(String.format(L, "%.4f", f32(f, 113)));
+                .append(',').append(String.format(L, "%.4f", f32(f, 113)))
+                .append(',').append(u8(f, 32)).append(',').append(u8(f, 38)).append(',').append(u8(f, 39));
         return b.toString();
     }
 
