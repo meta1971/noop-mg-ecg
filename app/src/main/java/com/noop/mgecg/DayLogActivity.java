@@ -20,6 +20,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
+import android.net.Uri;
+import android.provider.Settings;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
@@ -92,6 +94,10 @@ public class DayLogActivity extends Activity {
         col.addView(h10Trace, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(190)));
         h10Toggle = btn("", new View.OnClickListener() { @Override public void onClick(View v) { toggleH10(); } });
         col.addView(h10Toggle);
+        col.addView(btn("OVERNIGHT: BATTERY SETTINGS", new View.OnClickListener() { @Override public void onClick(View v) {
+            toast("Tap Battery, then choose Unrestricted");
+            try { startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))); } catch (Throwable t) { toast("Open Settings > Apps > this app > Battery"); }
+        } }));
         h10Status = text("", 12, false);
         col.addView(h10Status);
         String[][] h10m = {{"REST START", "rest_start"}, {"REST END", "rest_end"}, {"SQUATS START", "squats_start"}, {"SQUATS DONE", "squats_done"},
@@ -507,6 +513,8 @@ final class PolarH10 {
     private static String addr;
     private static long sessionStamp = 0L, samples = 0L, frames = 0L, segStartMs = 0L, lastFrameMs = 0L;
     private static int lastHr = 0, lastP2p = 0, unknownLogged = 0;
+    private static long cpOkMs = 0L, lastKickMs = 0L;   // watchdog: when the ECG stream last started, and when it was last restarted
+    private static boolean kickPending = false;          // a watchdog restart is in flight: ignore its reply instead of treating a refusal as fatal
     private static String ecgPath = "";
     private static BufferedWriter ecgW, rrW, evW, logW;
 
@@ -551,13 +559,14 @@ final class PolarH10 {
         app = c.getApplicationContext();
         recordToFile = record; ringCount = 0L;
         wanted = true; everConnected = false; attempts = 0; samples = 0L; frames = 0L; lastHr = 0; lastP2p = 0; unknownLogged = 0; recording = false;
-        sessionStamp = System.currentTimeMillis() / 1000L;
+        sessionStamp = System.currentTimeMillis() / 1000L; cpOkMs = 0L; lastKickMs = 0L; kickPending = false;
         tail.clear();
         addr = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("addr", null);
         openLog();
         log("START pressed (" + (recordToFile ? "recording" : "preview only") + "), Android " + Build.VERSION.SDK_INT + ", saved address " + addr);
         DayLogService.start(app);
         H.postDelayed(notifyTick, 15000L);
+        H.postDelayed(watchdog, 2000L);
         set("starting: looking for your H10 (strap on skin, electrodes wet)");
         scan();
     }
@@ -566,7 +575,7 @@ final class PolarH10 {
         if (!wanted && !scanning && gatt == null) { return; }
         log("STOP pressed");
         wanted = false;
-        H.removeCallbacks(notifyTick); H.removeCallbacks(scanTimeout); H.removeCallbacks(reconnect);
+        H.removeCallbacks(notifyTick); H.removeCallbacks(scanTimeout); H.removeCallbacks(reconnect); H.removeCallbacks(watchdog);
         stopScan();
         if (gatt != null && cpChar != null && recording) {
             try { writeCp(PolarPmd.STOP_ECG); log("TX stop ECG"); } catch (Throwable t) { log("stop write failed " + t); }
@@ -601,7 +610,18 @@ final class PolarH10 {
             else sb.append("\npreview only: nothing is being saved");
             sb.append(lastFrameMs > 0 ? String.format(Locale.UK, "\nlast data %.1f s ago", (now - lastFrameMs) / 1000.0) : "\nwaiting for the first data");
             if (lastHr > 0) sb.append("\nstrap heart rate ").append(lastHr).append(" bpm");
-            if (lastP2p > 0) sb.append(lastP2p < 300 ? "\nsignal weak (" + lastP2p + " uV): wet the electrodes / tighten the strap" : "\nsignal size " + lastP2p + " uV");
+            long age = lastDataAgeMs();
+            if (age > 4000L) sb.append("\nNO DATA for ").append(age / 1000L).append(" s: the app will restart the stream, then reconnect");
+            else {
+                int[] qb = new int[130 * 6]; int qn = recent(qb); float[] qq = TraceMath.quality(qb, qn);
+                switch ((int) qq[2]) {
+                    case TraceMath.GOOD: sb.append("\nsignal GOOD (").append(Math.round(qq[0])).append(" uV)"); break;
+                    case TraceMath.OK: sb.append("\nsignal OK (").append(Math.round(qq[0])).append(" uV)"); break;
+                    case TraceMath.NOISY: sb.append("\nsignal NOISY: stay still, press the strap on"); break;
+                    case TraceMath.WEAK: sb.append("\nsignal WEAK (").append(Math.round(qq[0])).append(" uV): wet the electrodes, tighten the strap"); break;
+                    default: sb.append("\nchecking the signal ...");
+                }
+            }
             if (recordToFile) sb.append("\nfile ").append(ecgPath);
         }
         return sb.toString();
@@ -650,6 +670,48 @@ final class PolarH10 {
             H.postDelayed(this, 15000L);
         }
     };
+
+    /** Every 2 s: if the stream has gone quiet, first restart it, then drop and reconnect. Never ends the recording by itself. */
+    private static final Runnable watchdog = new Runnable() {
+        @Override public void run() {
+            synchronized (PolarH10.class) {
+                if (!wanted) return;
+                try {
+                    if (recording && gatt != null && cpChar != null) {
+                        long now = System.currentTimeMillis();
+                        long ref = Math.max(lastFrameMs, cpOkMs);
+                        long silence = ref > 0 ? now - ref : 0L;
+                        int act = H10Watchdog.decide(silence, lastKickMs == 0L ? -1L : now - lastKickMs);
+                        if (act == H10Watchdog.KICK) {
+                            lastKickMs = now; kickPending = true;
+                            log("WATCHDOG no data for " + (silence / 1000) + " s: restarting the ECG stream");
+                            set("no data for " + (silence / 1000) + " s, restarting the stream");
+                            writeCp(PolarPmd.START_ECG);
+                        } else if (act == H10Watchdog.RECONNECT) {
+                            lastKickMs = 0L; kickPending = false;
+                            log("WATCHDOG still no data after " + (silence / 1000) + " s: reconnecting");
+                            onLost(-1);
+                        }
+                    }
+                } catch (Throwable t) { log("watchdog error " + t); }
+                H.postDelayed(this, 2000L);
+            }
+        }
+    };
+
+    /** Seconds since the last ECG data (or -1 when nothing is flowing). */
+    public static synchronized long lastDataAgeMs() { return (recording && lastFrameMs > 0) ? System.currentTimeMillis() - lastFrameMs : -1L; }
+
+    /** One short line for the notification. */
+    public static synchronized String shortStatus() {
+        if (!wanted) return "off";
+        if (!recording) return state;
+        long age = lastDataAgeMs();
+        String t = recordToFile ? ("recording " + (samples / 130L) + " s") : "preview";
+        if (age > 5000L) t = "NO DATA " + (age / 1000L) + " s";
+        if (lastHr > 0) t += ", HR " + lastHr;
+        return t;
+    }
 
     private static void scan() {
         BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
@@ -826,7 +888,12 @@ final class PolarH10 {
         int[] r = PolarPmd.parseCp(v);
         if (r == null) return;
         if (r[0] == 2 && r[1] == 0) {
-            if (r[2] == 0) { recording = true; attempts = 0; everConnected = true; set(recordToFile ? "RECORDING ECG" : "PREVIEW (live trace only, nothing saved)"); }
+            if (kickPending) {                                   // reply to the watchdog's restart: log it, never stop the recording over it
+                kickPending = false; log("watchdog restart reply: code " + r[2] + (r[2] == 0 ? " (stream restarted)" : " (" + PolarPmd.statusText(r[2]) + ")"));
+                if (r[2] == 0) cpOkMs = System.currentTimeMillis();
+                return;
+            }
+            if (r[2] == 0) { recording = true; attempts = 0; everConnected = true; cpOkMs = System.currentTimeMillis(); set(recordToFile ? "RECORDING ECG" : "PREVIEW (live trace only, nothing saved)"); }
             else failStop("ECG start refused, code " + r[2] + ": " + PolarPmd.statusText(r[2]));
         }
     }
@@ -861,10 +928,11 @@ final class PolarH10 {
             if (e.uv[i] < lo) lo = e.uv[i];
             if (e.uv[i] > hi) hi = e.uv[i];
         }
-        frames++; lastFrameMs = now; lastP2p = hi - lo;
+        frames++; lastFrameMs = now; lastP2p = hi - lo; lastKickMs = 0L; kickPending = false;
         if (frames == 1) log("first ECG frame: " + n + " samples, sensor time " + e.tsNs + " ns, first values " + e.uv[0] + " " + (n > 1 ? e.uv[1] : 0) + " " + (n > 2 ? e.uv[2] : 0));
         if (!recordToFile) return;
         try {
+            if (ecgW != null && now - segStartMs > 30L * 60L * 1000L) { log("rolling to a new ECG file (30 min)"); closeEcgFile(); }
             if (ecgW == null) {
                 File f = new File(app.getExternalFilesDir(null), "h10_ecg_" + (now / 1000L) + ".csv");
                 ecgPath = f.getName();
@@ -887,7 +955,7 @@ final class PolarH10 {
         closeEcgFile();
         recording = false;
         if (!wanted) return;
-        if (!everConnected && attempts >= 2) { failStop("could not connect to the H10 (status " + status + "). Close Polar Flow / other apps using it and try again."); return; }
+        if (!everConnected && attempts >= 2) { failStop("could not connect to the H10 (status " + status + "). If Android said it could not pair (incorrect PIN), forget the H10: Settings > Connected devices > Bluetooth > Polar H10 > Forget, then try again. Otherwise close Polar Flow / other apps using it."); return; }
         set("connection lost (status " + status + "), reconnecting");
         log("LOST status " + status);
         H.removeCallbacks(reconnect);
@@ -897,7 +965,7 @@ final class PolarH10 {
     private static void failStop(String msg) {
         log("FAIL " + msg);
         wanted = false;
-        H.removeCallbacks(notifyTick); H.removeCallbacks(scanTimeout); H.removeCallbacks(reconnect);
+        H.removeCallbacks(notifyTick); H.removeCallbacks(scanTimeout); H.removeCallbacks(reconnect); H.removeCallbacks(watchdog);
         stopScan();
         finishStop();
         set("STOPPED: " + msg);
@@ -1011,6 +1079,7 @@ class H10TraceView extends View {
         if (!PolarH10.wanted) { msg(c, "Live H10 trace: tap PREVIEW"); return; }
         int n = PolarH10.recent(buf);
         if (n < 130) { msg(c, "waiting for ECG data ..."); return; }
+        long age = PolarH10.lastDataAgeMs();
         float[] d = TraceMath.detrend(buf, n);
         float[] q = TraceMath.quality(buf, n);
         float span = Math.max(1600f, q[0] * 1.7f);            // microvolts shown top to bottom
@@ -1036,5 +1105,20 @@ class H10TraceView extends View {
         txt.setColor(col);
         int hr = PolarH10.hrNow();
         c.drawText(lab + "  " + Math.round(q[0]) + " uV" + (hr > 0 ? "  HR " + hr : ""), 16f, h - 12f, txt);
+        if (age > 3000L) { txt.setColor(Color.parseColor("#FF5A5F")); txt.setTextSize(46f); c.drawText("NO DATA " + (age / 1000L) + " s", 24f, 70f, txt); txt.setTextSize(34f); }
+    }
+}
+
+
+/** The watchdog's decision, kept pure so it can be tested off the phone. */
+final class H10Watchdog {
+    private H10Watchdog() { }
+    static final int NONE = 0, KICK = 1, RECONNECT = 2;
+    /** silenceMs: time since the last ECG data (or since the stream started). sinceKickMs: time since the last restart attempt, or -1 if none. */
+    static int decide(long silenceMs, long sinceKickMs) {
+        if (silenceMs < 8000L) return NONE;
+        if (sinceKickMs < 0L || sinceKickMs > 30000L) return KICK;                 // first stall: try restarting the stream
+        if (sinceKickMs >= 9000L && silenceMs >= 17000L) return RECONNECT;         // the restart did not help: drop the link and reconnect
+        return NONE;
     }
 }
