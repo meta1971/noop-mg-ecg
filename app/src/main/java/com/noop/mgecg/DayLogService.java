@@ -45,8 +45,8 @@ public class DayLogService extends Service {
         PendingIntent pp = PendingIntent.getBroadcast(c, 3, pull, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification.Builder b = new Notification.Builder(c, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
-                .setContentTitle("MG day logger")
-                .setContentText(DayLog.statusLine(c))
+                .setContentTitle(DayLog.enabled(c) ? "MG day logger" : "Polar H10")
+                .setContentText(textFor(c))
                 .setOngoing(true)
                 .setContentIntent(open)
                 .addAction(new Notification.Action.Builder(Icon.createWithResource(c, android.R.drawable.ic_menu_mylocation), "Mark now", pm).build())
@@ -56,9 +56,16 @@ public class DayLogService extends Service {
         return b.build();
     }
 
+    static String textFor(Context c) {
+        boolean log = DayLog.enabled(c), h10 = PolarH10.wanted;
+        if (log && h10) return DayLog.statusLine(c) + " | H10: " + PolarH10.shortStatus();
+        if (h10) return "H10: " + PolarH10.shortStatus();
+        return DayLog.statusLine(c);
+    }
+
     static void refresh(Context c) {
         try {
-            if (!DayLog.enabled(c)) return;
+            if (!DayLog.enabled(c) && !PolarH10.wanted) return;
             NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm != null) nm.notify(ID, build(c));
         } catch (Throwable ignored) { }
