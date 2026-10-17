@@ -5,11 +5,14 @@ import java.util.zip.CRC32;
 
 /**
  * Decoder for the strap's per-second summary record (history record type 47, layout 18, 124 bytes) and a scanner
- * for the history capture files. Fields follow NOOP's documented R18 layout plus what this project verified on its own
- * data: byte 10 bit 7 clears while raw ECG/optical collection runs, bytes 19-20 are the sub-second part of the strap
- * time, byte 35 bits 5-6 repeat the band state, byte 40 is an optical quality score (255 clean), byte 113 is a log
- * activity index, and bytes 78-80 = 11,114,7 (or 11,98,6) mark the sleep-only byte-82 measurement window, bytes 38-39 are extra HR estimates that went to zero after 26 Sep 2026,
- * and 37 of the 40 bytes not named here never change in 141 h of data.
+ * for the history capture files. Fields follow the public OpenStrap gen5 map and NOOP's R18 layout, re-checked on this project's own data (Oct 2026):
+ * byte 10 = flags (bit 7 SET = optical front end at 25 Hz, clear = 50 Hz, which is why it clears while an ECG runs); bytes 19-20 = sub-second (1/32768 s);
+ * bytes 24-31 = four R-R slots (u16, 1024 = 1 s; byte 31 is the high byte of slot 4); byte 63 = activity class (0 none, 1 walk, 2 run);
+ * bytes 69-70 = cell temperature and 71-72 = ambient temperature (i16, tenths of a degree C; bytes 70 and 72 are their high bytes, 1 once the value reaches 25.6 C);
+ * bytes 73-74 = skin temperature (i16, hundredths of a degree C; -5000 = unavailable); bytes 75/77/79 = packed per-channel AGC state words;
+ * byte 81 bits 4-5 = strap sleep state, byte 82 = SpO2 estimate/status; byte 40 = optical quality score (255 clean); bytes 113-116 = a per-second signal-quality float32
+ * (byte 116 is only its top byte, so its 192 to 191 changes mean nothing by themselves); bytes 78-80 = 11,114,7 (or 11,98,6) mark the sleep-only byte-82 window;
+ * bytes 38-39 are extra HR estimates that went to zero after 26 Sep 2026; the other 49 bytes seen so far never change.
  * Pure Java on purpose, so it can be tested off the phone. RESEARCH ONLY.
  */
 final class R18Codec {
@@ -17,7 +20,8 @@ final class R18Codec {
 
     static final String HEADER = "ts,sub_s,rec_idx,raw_active,hr,rr_n,rr1_ms,rr2_ms,rr3_ms,rr4_ms,alt_hr,b33,b36,"
             + "dyn_g,grav_x,grav_y,grav_z,steps,cadence,activity,therm1_c,therm2_c,skin_c,w75,onwrist,wake_q,state,"
-            + "b81_hi,b82,spo2_window,b35_state,b34,b40,b105,opt106,opt107,opt108,opt109,f113,b32,hr38,hr39";
+            + "b81_hi,b82,spo2_window,b35_state,b34,b40,b105,opt106,opt107,opt108,opt109,f113,b32,hr38,hr39,"
+            + "flags10,optical_hz,w77,w79,activity_name,skin_ok";
 
     interface Visitor { void frame(byte[] f); }
 
@@ -33,7 +37,10 @@ final class R18Codec {
     static long ts(byte[] f) { return u32(f, 15); }
     static int hr(byte[] f) { return u8(f, 22); }
     static int state(byte[] f) { return (u8(f, 81) >> 4) & 3; }
-    static double skinC(byte[] f) { return u16(f, 73) / 100.0; }
+    /** Skin temperature in degrees C, read as a SIGNED 16-bit value (the older unsigned reading turned the 'unavailable' code -5000 into 605 C). Unavailable gives -50.0; test with skinOk(). */
+    static double skinC(byte[] f) { return i16(f, 73) / 100.0; }
+    static boolean skinOk(byte[] f) { return i16(f, 73) != -5000; }
+    static String activityName(int code) { return code == 0 ? "none" : code == 1 ? "walk" : code == 2 ? "run" : "code" + code; }
     static boolean spo2Window(byte[] f) { return u8(f, 78) == 11 && u8(f, 79) == 114 && u8(f, 80) == 7; }
     static boolean rawActive(byte[] f) { return (u8(f, 10) & 0x80) == 0; }
     static int steps(byte[] f) { return u16(f, 57); }
@@ -66,14 +73,16 @@ final class R18Codec {
                 .append(',').append(u16(f, 57)).append(',').append(u16(f, 59)).append(',').append(u8(f, 63))
                 .append(',').append(String.format(L, "%.1f", i16(f, 69) / 10.0))
                 .append(',').append(String.format(L, "%.1f", i16(f, 71) / 10.0))
-                .append(',').append(String.format(L, "%.2f", skinC(f)))
+                .append(',').append(skinOk(f) ? String.format(L, "%.2f", skinC(f)) : "")
                 .append(',').append(u16(f, 75))
                 .append(',').append(u8(f, 81) & 3).append(',').append((u8(f, 81) >> 2) & 3).append(',').append(state(f))
                 .append(',').append((u8(f, 81) >> 6) & 3).append(',').append(u8(f, 82)).append(',').append(spo2Window(f) ? 1 : 0)
                 .append(',').append((u8(f, 35) >> 5) & 3).append(',').append(u8(f, 34)).append(',').append(u8(f, 40)).append(',').append(u8(f, 105))
                 .append(',').append(u8(f, 106)).append(',').append(u8(f, 107)).append(',').append(u8(f, 108)).append(',').append(u8(f, 109))
                 .append(',').append(String.format(L, "%.4f", f32(f, 113)))
-                .append(',').append(u8(f, 32)).append(',').append(u8(f, 38)).append(',').append(u8(f, 39));
+                .append(',').append(u8(f, 32)).append(',').append(u8(f, 38)).append(',').append(u8(f, 39))
+                .append(',').append(u8(f, 10)).append(',').append((u8(f, 10) & 0x80) != 0 ? 25 : 50).append(',').append(u16(f, 77)).append(',').append(u16(f, 79))
+                .append(',').append(activityName(u8(f, 63))).append(',').append(skinOk(f) ? 1 : 0);
         return b.toString();
     }
 
