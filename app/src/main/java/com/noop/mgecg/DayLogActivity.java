@@ -729,11 +729,16 @@ final class PolarH10 {
     private static void scan() {
         BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
         if (ad == null) { failStop("Bluetooth is not available on this phone"); return; }
-        if (!ad.isEnabled()) {
+        // 0.5.18: with Android's "Bluetooth scanning" on, switching Bluetooth OFF leaves the BLE stack running (isEnabled() is false but scanning and GATT still work).
+        // The MG side already relies on that. Treat it as usable instead of "switched off" (this stopped the H10 recorder at START and after every dropped link).
+        boolean bleOnly = false;
+        try { bleOnly = android.provider.Settings.Global.getInt(app.getContentResolver(), "ble_scan_always_enabled", 0) == 1; } catch (Throwable ignored) { }
+        if (!ad.isEnabled() && bleOnly) log("BLE-ONLY mode: the Bluetooth switch is off but Android keeps the BLE stack running; scanning anyway");
+        if (!ad.isEnabled() && !bleOnly) {
             // 0.5.14: Android's Bluetooth stack can switch itself off after a dropped H10 link (seen 4 times overnight on 18-19 Oct 2026). Do not end the
             // recording: wait and look again every 5 s, and carry on in a new file when Bluetooth is back. A START pressed with Bluetooth already off still stops with the message.
             if (wanted && everConnected) { set("Bluetooth is switched off, waiting for it to come back"); log("BT_OFF waiting"); H.removeCallbacks(reconnect); H.postDelayed(reconnect, 5000L); return; }
-            failStop("Bluetooth is switched off"); return;
+            failStop("Bluetooth is switched off. Turn it on (or switch on Bluetooth scanning in the phone's Location settings), then tap START again"); return;
         }
         BluetoothLeScanner sc = ad.getBluetoothLeScanner();
         if (sc == null) { if (retryLater("Bluetooth scanner not ready")) return; failStop("Bluetooth scanner not available"); return; }
