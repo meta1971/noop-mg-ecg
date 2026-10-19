@@ -206,7 +206,7 @@ public final class EcgReport {
                 b.append(row("Q to S span", String.format(Locale.US, "%.0f ms between the dips either side of R", r.qt.qsSpanMs)));
             }
             if (r.inverted) b.append(row("Orientation", "Recording came in upside down; flipped for display and measurement"));
-            b.append(row("QT method", "Start = where the QRS begins (slope), end = 15 ms after the tangent on the T wave meets the baseline, after undoing the strap's apparent 1.5 Hz high-pass (provisional); 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
+            b.append(row("QT method", "Start = where the QRS begins (slope), end = 15 ms after the tangent on the T wave meets the baseline, measured on the beat as recorded (the strap's stored ECG shows no high-pass, so nothing is undone); 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
         }
         if (r.rhythm != null && r.rhythm.features != null) {
             b.append(row("Rhythm screen", String.format(Locale.US, "%d intervals, nRMSSD %.3f, sample entropy %.2f", r.rhythm.intervals, r.rhythm.features[0], r.rhythm.features[4])));
@@ -367,7 +367,7 @@ public final class EcgReport {
                 "A beat that arrives clearly sooner than the pattern predicts, followed by a longer pause. Occasional early beats happen in most healthy people. This count comes from timing alone, so it cannot say where in the heart they start."));
         b.append(why("QT interval and corrected QT",
                 "QT is the time from the start of the QRS (the main spike) to the end of the T wave, which is the heart's electrical recharging after each beat. It shortens as the heart speeds up, so it is corrected for rate. This report uses Fridericia's formula, QT divided by the cube root of the beat-to-beat gap in seconds, which holds up better than Bazett's at faster and slower rates.",
-                "The start is found where the QRS begins (slope method). The end is found with the tangent method: a line along the steepest downslope of the T wave is extended to the baseline, and the end is taken 15 ms after that crossing, as published tangent methods do. Before that, the averaged beat has a first-order 1.5 Hz high-pass undone, because the strap's trace looks like it passed through one (the T wave comes out about half as tall and the QT about 30-40 ms short). That correction is provisional: it comes from one person compared with one reference device, and on 95 annotated public ECGs (QT Database) the average QT bias went from 33 ms short to within 4 ms, with a typical error of 27-33 ms. The range shown comes from 200 resamplings of the averaged beats.",
+                "The start is found where the QRS begins (slope method). The end is found with the tangent method: a line along the steepest downslope of the T wave is extended to the baseline, and the end is taken 15 ms after that crossing, as published tangent methods do. The averaged beat is measured as recorded: battery step tests and a power-spectrum check on 18 Oct 2026 showed that the strap's stored ECG has no measurable high-pass, so no correction is applied. Earlier versions of this report undid an assumed 1.5 Hz high-pass, which made the QT read about 30-40 ms longer; that assumption has been withdrawn, so QT values from this version are not comparable with older reports. The range shown comes from 200 resamplings of the averaged beats.",
                 "It needs about 40 clean beats, a T wave at least 8 times the noise, and a rate between 40 and 110 beats a minute, and it is withheld when the rhythm is uneven. It is experimental and has not been checked against a 12-lead ECG."));
         b.append(why("The average heartbeat, R wave height and T wave vs noise",
                 "Every clean beat is laid on top of the others and averaged, which cancels random noise and leaves the typical beat. <b>P</b> is the top chambers contracting, <b>Q R S</b> the main pump, <b>T</b> the pump resetting.",
@@ -491,7 +491,7 @@ public final class EcgReport {
     /** The QT as recorded, before the strap's apparent high-pass is undone, so the correction is never hidden. */
     static String asRecordedSentence(EcgIntervals.Result q) {
         if (EcgIntervals.STRAP_HP_FC_HZ <= 0 || Double.isNaN(q.qtAsRecordedMs)) return "";
-        return String.format(Locale.US, "As recorded, without undoing the strap&rsquo;s apparent 1.5 Hz high-pass (a provisional correction from one comparison), it reads <b>%.0f ms</b>.", q.qtAsRecordedMs);
+        return String.format(Locale.US, "As recorded, without undoing an assumed strap high-pass (withdrawn 18 Oct 2026), it reads <b>%.0f ms</b>.", q.qtAsRecordedMs);
     }
 
     static String qtCard(EcgIntervals.Result q, List<EcgIntervals.Band> bands) {
