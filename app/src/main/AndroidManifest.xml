@@ -30,6 +30,12 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_CONNECT" />
 
+    <!-- 0.5.15: ask Termux to run the ALADIN second opinion (Termux RUN_COMMAND) -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+    <queries>
+        <package android:name="com.termux" />
+    </queries>
+
     <!-- All-day logger: keep running in the background and show its status -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
@@ -70,6 +76,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".AladinActivity"
+            android:label="ALADIN second opinion"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <receiver
+            android:name=".AladinResultReceiver"
+            android:exported="false" />
 
         <service
             android:name=".DayLogService"
