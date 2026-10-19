@@ -68,6 +68,14 @@ public final class EcgWhoopSpec {
      * about 1.3% above this constant. The constant is left as it was because
      * the difference moves every uV figure by only ~1% and it is not yet known
      * whether the scale differs from day to day.
+     *
+     * 18 Oct 2026: six windows (three ladder, three step-pulse) fitted with the same
+     * model (R17 = 0.51 Hz 2nd-order high-pass of R16 x 0.0621, 260 ms delay) gave gain
+     * 1.000 +/- 0.008 (SE), i.e. 0.0621 +/- 0.0005; battery step pulses of 1.626 mV read
+     * 1.62 +/- 0.06 mV (absolute, about +/-4%). All measurements so far lie within
+     * 0.0621-0.0632 (+/-1%), well inside the absolute uncertainty, so the constant stays.
+     * R16 itself has NO measurable high-pass (corner below 0.05 Hz, probably below
+     * 0.003 Hz): treat it as DC-coupled. The 0.5 Hz corner below belongs to R17 only.
      */
     public static final double R16_UV_PER_COUNT = 0.0621;
     public static final int R16_RAIL = 126976;
@@ -118,6 +126,9 @@ public final class EcgWhoopSpec {
      * Q ~-21. Fingers off: I ~420-440, Q ~280-290.
      */
     public static final int F_LEADOFF_IQ = F_SAMPLES + 3 * 500;   // 1534
+    // 18 Oct 2026 resistor ladder (finger on foil in series with an indent): magnitude 79 (0 ohm), 86 (1 k), 120 (10 k), 195-217 (100 k and up, Q flips
+    // from -20 to +55); the strap's contact bit drops at magnitude about 207 / I about 200, which is this threshold. Open circuit reads 320-470 depending on parasitics.
+    // The reading is a saturating contact-quality indicator, not an ohmmeter.
     public static final double LEAD_OFF_I_THRESHOLD = 200;
     /** Mean |I+jQ| of the lead-off trailer: about 80-90 with good contact, about 450 for the seconds after a finger lift. */
     public static final double LEAD_OFF_MAG_THRESHOLD = 250;
