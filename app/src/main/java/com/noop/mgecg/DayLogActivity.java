@@ -510,6 +510,7 @@ final class PolarH10 {
     private static ScanCallback scanCb;
     private static boolean scanning = false, recording = false, everConnected = false;
     private static int attempts = 0;
+    private static boolean linkUp = false;      // 0.5.14: true from the moment the phone's Bluetooth reports the H10 link up until the link is closed
     private static String addr;
     private static long sessionStamp = 0L, samples = 0L, frames = 0L, segStartMs = 0L, lastFrameMs = 0L;
     private static int lastHr = 0, lastP2p = 0, unknownLogged = 0;
@@ -715,7 +716,13 @@ final class PolarH10 {
 
     private static void scan() {
         BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
-        if (ad == null || !ad.isEnabled()) { failStop("Bluetooth is switched off"); return; }
+        if (ad == null) { failStop("Bluetooth is not available on this phone"); return; }
+        if (!ad.isEnabled()) {
+            // 0.5.14: Android's Bluetooth stack can switch itself off after a dropped H10 link (seen 4 times overnight on 18-19 Oct 2026). Do not end the
+            // recording: wait and look again every 5 s, and carry on in a new file when Bluetooth is back. A START pressed with Bluetooth already off still stops with the message.
+            if (wanted && everConnected) { set("Bluetooth is switched off, waiting for it to come back"); log("BT_OFF waiting"); H.removeCallbacks(reconnect); H.postDelayed(reconnect, 5000L); return; }
+            failStop("Bluetooth is switched off"); return;
+        }
         BluetoothLeScanner sc = ad.getBluetoothLeScanner();
         if (sc == null) { failStop("Bluetooth scanner not available"); return; }
         stopScan();
@@ -761,10 +768,25 @@ final class PolarH10 {
         log("CONNECT " + addr);
         try { gatt = d.connectGatt(app, false, CB, BluetoothDevice.TRANSPORT_LE); }
         catch (Throwable t) { failStop("connect failed: " + t); }
+        H.removeCallbacks(connectTimeout);
+        H.postDelayed(connectTimeout, 30000L);
     }
 
+    /** 0.5.14: a connect that never gets any answer (seen 00:24-00:44 UTC on 19 Oct 2026, 20 minutes stuck on "found H10, connecting") is dropped after 30 s and retried. */
+    private static final Runnable connectTimeout = new Runnable() {
+        @Override public void run() {
+            synchronized (PolarH10.class) {
+                if (!wanted || gatt == null || linkUp) return;
+                log("CONNECT timeout: no answer from the phone's Bluetooth after 30 s");
+                closeGatt();
+                H.removeCallbacks(reconnect);
+                H.postDelayed(reconnect, 5000L);
+            }
+        }
+    };
+
     private static void closeGatt() {
-        steps.clear(); cpChar = null;
+        steps.clear(); cpChar = null; linkUp = false;
         if (gatt != null) { try { gatt.disconnect(); } catch (Throwable ignored) { } try { gatt.close(); } catch (Throwable ignored) { } gatt = null; }
     }
 
@@ -776,6 +798,7 @@ final class PolarH10 {
                 log("STATE status=" + status + " newState=" + newState);
                 if (g != gatt) return;
                 if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
+                    linkUp = true;
                     set("connected, setting up");
                     H.postDelayed(new Runnable() { @Override public void run() {
                         synchronized (PolarH10.class) {
@@ -959,7 +982,8 @@ final class PolarH10 {
         set("connection lost (status " + status + "), reconnecting");
         log("LOST status " + status);
         H.removeCallbacks(reconnect);
-        H.postDelayed(reconnect, 3000L);
+        // 0.5.14: after status 133 (generic GATT error) wait a little longer each time, up to 30 s, instead of hammering the Bluetooth stack every 3 s
+        H.postDelayed(reconnect, status == 133 ? Math.min(30000L, 3000L + 4000L * attempts) : 3000L);
     }
 
     private static void failStop(String msg) {
