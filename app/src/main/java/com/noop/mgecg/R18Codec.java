@@ -12,7 +12,11 @@ import java.util.zip.CRC32;
  * bytes 73-74 = skin temperature (i16, hundredths of a degree C; -5000 = unavailable); bytes 75/77/79 = packed per-channel AGC state words;
  * byte 81 bits 4-5 = strap sleep state, byte 82 = SpO2 estimate/status; byte 40 = optical quality score (255 clean); bytes 113-116 = a per-second signal-quality float32
  * (byte 116 is only its top byte, so its 192 to 191 changes mean nothing by themselves); bytes 78-80 = 11,114,7 (or 11,98,6) mark the sleep-only byte-82 window;
- * bytes 38-39 are extra HR estimates that went to zero after 26 Sep 2026; the other 49 bytes seen so far never change.
+ * bytes 38-39 are extra HR estimates that went to zero after 26 Sep 2026.
+ * Census of 48,745 records (18 Oct 2026): byte 35 bits 6:5 repeat the sleep state of byte 81 (100%), its bits 3:0 look random (0-15, not a counter), bit 4 never set;
+ * byte 34 is a fixed 5.02 s cycle (0.1991 Hz on two runs two days apart; not physiological, not locked to the 1 s record clock); byte 105 is non-zero
+ * almost only while pulse SNR (byte 108 as int8) sits at its floor of -128, i.e. pulse lock lost; AGC word 1 (75-76) is the only live one, words 2 and 3
+ * (77-78, 79-80) are 3073 and 3074 except in the sleep-only window (78-80 = 11,114,7); constant bytes: 0-9, 14, 18, 21, 38, 39, 60-62, 64-68, 77, 83-104, 110-112, 117-119.
  * Pure Java on purpose, so it can be tested off the phone. RESEARCH ONLY.
  */
 final class R18Codec {
@@ -50,7 +54,7 @@ final class R18Codec {
      *  to the strap on 26 Sep 09:28 UTC; the records from that window are missing, so which flag did it is not yet known. */
     static int hrAlt2(byte[] f) { return u8(f, 38); }
     static int hrAlt3(byte[] f) { return u8(f, 39); }
-    /** Byte 32: bits 6-7 are a 2-bit code of unknown meaning (values 1-3 in all four band states); other bits mostly 0. Exported raw. */
+    /** Byte 32: 0 in 95.5% of seconds, 128 (bit 7) in 4.4%, only while the wrist is stationary (never with activity class above 0; median max accel delta 0.009 vs 0.036 g): a stillness flag candidate. Rare low values 1, 2, 4, 6, 16, 24 (59 records). Exported raw. */
     static int b32(byte[] f) { return u8(f, 32); }
 
     /** The R-R words of one record in milliseconds (0 where absent). */
