@@ -15,6 +15,7 @@ import java.util.TreeMap;
  *               sessions on 29-30 Sep 2026, against 0.0621 in the code, so it is worth tracking)
  *   unexplained the share of R17's variance the fixed filter does not reproduce (0.43%, 0.26%, 0.10%)
  *   lag         the shift in R17 samples that matched best (0 on all three)
+ * 18 Oct 2026, same model, six windows incl. battery step pulses: gain 1.000 +/- 0.008 vs the code's 0.0621, correlation 0.965-0.995.
  * Only "good" seconds count: R17 present with quality 3 and contact, and the three seconds before it too, so
  * the filter has settled. Pure Java; research use only.
  */
