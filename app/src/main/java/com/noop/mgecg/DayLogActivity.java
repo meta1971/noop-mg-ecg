@@ -571,7 +571,7 @@ final class PolarH10 {
         H.postDelayed(notifyTick, 15000L);
         H.postDelayed(watchdog, 2000L);
         set("starting: looking for your H10 (strap on skin, electrodes wet)");
-        scan();
+        if (addr != null) connectAuto(); else scan();
     }
 
     public static synchronized void stop() {
@@ -655,6 +655,7 @@ final class PolarH10 {
                 if (!scanning) return;
                 stopScan();
                 log("SCAN timeout");
+                if (addr != null && wanted) { log("SCAN timeout, trying the saved address"); connectAuto(); return; }
                 if (everConnected && wanted) { set("H10 not in range, still looking"); H.postDelayed(reconnect, 4000L); return; }
                 failStop("H10 not found. Put the strap on with wet electrodes, close Polar Flow and any other app using it, and switch Location ON in the phone settings (Android needs it for Bluetooth scanning).");
             }
@@ -780,6 +781,7 @@ final class PolarH10 {
 
     private static void connect(BluetoothDevice d) {
         addr = d.getAddress();
+        try { app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("addr", addr).apply(); } catch (Throwable ignored) { }   // 0.5.19: remembered, so START and reconnects need no scan
         closeGatt();
         set("found H10, connecting");
         log("CONNECT " + addr);
@@ -803,6 +805,32 @@ final class PolarH10 {
                 closeGatt();
                 H.removeCallbacks(reconnect);
                 H.postDelayed(reconnect, 5000L);
+            }
+        }
+    };
+
+    /** 0.5.19: connect to the saved H10 address with autoConnect, so Android connects as soon as the strap answers. Needs no scan, so it also works in BLE-only mode. */
+    private static void connectAuto() {
+        BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
+        if (ad == null || addr == null) { scan(); return; }
+        try {
+            closeGatt();
+            set("waiting for your H10 (put the strap on with wet electrodes)");
+            log("CONNECT_AUTO " + addr);
+            gatt = ad.getRemoteDevice(addr).connectGatt(app, true, CB, BluetoothDevice.TRANSPORT_LE);
+        } catch (Throwable t) { log("CONNECT_AUTO failed " + t); gatt = null; }
+        H.removeCallbacks(autoTimeout);
+        H.postDelayed(autoTimeout, 60000L);
+    }
+
+    private static final Runnable autoTimeout = new Runnable() {
+        @Override public void run() {
+            synchronized (PolarH10.class) {
+                if (!wanted || linkUp) return;
+                log("CONNECT_AUTO timeout after 60 s");
+                closeGatt();
+                H.removeCallbacks(reconnect);
+                H.postDelayed(reconnect, 3000L);
             }
         }
     };
