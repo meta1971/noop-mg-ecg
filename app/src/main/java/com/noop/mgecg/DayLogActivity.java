@@ -639,6 +639,16 @@ final class PolarH10 {
 
     // ------------------------------------------------------------------ scanning and connecting
 
+    /** 0.5.17: once the H10 has been recording, never end it because Bluetooth went away or is still starting: wait 5 s and try again. */
+    private static boolean retryLater(String why) {
+        if (!(wanted && everConnected)) return false;
+        log("RETRY " + why);
+        set(why + ", trying again");
+        H.removeCallbacks(reconnect);
+        H.postDelayed(reconnect, 5000L);
+        return true;
+    }
+
     private static final Runnable scanTimeout = new Runnable() {
         @Override public void run() {
             synchronized (PolarH10.class) {
@@ -726,7 +736,7 @@ final class PolarH10 {
             failStop("Bluetooth is switched off"); return;
         }
         BluetoothLeScanner sc = ad.getBluetoothLeScanner();
-        if (sc == null) { failStop("Bluetooth scanner not available"); return; }
+        if (sc == null) { if (retryLater("Bluetooth scanner not ready")) return; failStop("Bluetooth scanner not available"); return; }
         stopScan();
         scanCb = new ScanCallback() {
             @Override public void onScanResult(int type, ScanResult r) {
@@ -743,14 +753,14 @@ final class PolarH10 {
                 }
             }
             @Override public void onScanFailed(int code) {
-                synchronized (PolarH10.class) { log("SCAN failed " + code); failStop("Scan failed (code " + code + "). Is Location switched ON?"); }
+                synchronized (PolarH10.class) { log("SCAN failed " + code); scanning = false; if (retryLater("Scan failed (code " + code + ")")) return; failStop("Scan failed (code " + code + "). Is Location switched ON?"); }
             }
         };
         try {
             sc.startScan(null, new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCb);
             scanning = true; log("SCAN started");
             H.postDelayed(scanTimeout, 25000L);
-        } catch (Throwable t) { failStop("Could not start scanning: " + t); }
+        } catch (Throwable t) { if (retryLater("Could not start scanning")) return; failStop("Could not start scanning: " + t); }
     }
 
     private static void stopScan() {
@@ -769,7 +779,12 @@ final class PolarH10 {
         set("found H10, connecting");
         log("CONNECT " + addr);
         try { gatt = d.connectGatt(app, false, CB, BluetoothDevice.TRANSPORT_LE); }
-        catch (Throwable t) { failStop("connect failed: " + t); }
+        catch (Throwable t) { if (retryLater("connect failed: " + t)) return; failStop("connect failed: " + t); return; }
+        if (gatt == null) {   // 0.5.17: Android returns nothing when Bluetooth is off or restarting
+            log("CONNECT returned nothing (Bluetooth off or restarting)");
+            if (retryLater("Bluetooth not ready")) return;
+            failStop("connect failed: Bluetooth gave no connection"); return;
+        }
         H.removeCallbacks(connectTimeout);
         H.postDelayed(connectTimeout, 30000L);
     }
