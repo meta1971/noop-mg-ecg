@@ -19,6 +19,16 @@ public class AladinResultReceiver extends BroadcastReceiver {
 
     @Override public void onReceive(Context c, Intent in) {
         String folder = in.getStringExtra("folder");
+        String sent = in.getStringExtra("text");
+        if (sent != null) {
+            // 0.5.16: the report text posted by our own Termux script (am broadcast); ignore anything without the right token
+            String tok = in.getStringExtra("token");
+            if (tok == null || !tok.equals(TermuxBridge.token(c))) return;
+            String body = "ALADIN run on " + folder + " finished (sent by Termux)\n\n" + cleanProgress(sent);
+            TermuxBridge.saveResult(c, body);
+            notify(c, true, body);
+            return;
+        }
         Bundle r = in.getBundleExtra("result");
         StringBuilder sb = new StringBuilder();
         boolean ok = false;

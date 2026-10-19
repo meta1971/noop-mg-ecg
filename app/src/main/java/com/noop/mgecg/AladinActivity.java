@@ -1,6 +1,8 @@
 package com.noop.mgecg;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -65,7 +67,8 @@ public class AladinActivity extends Activity {
     private void refresh() {
         StringBuilder s = new StringBuilder();
         s.append("Termux installed: ").append(TermuxBridge.termuxInstalled(this) ? "yes" : "NO (install the F-Droid build)").append('\n');
-        s.append("Permission to run commands in Termux: ").append(TermuxBridge.permissionGranted(this) ? "granted" : "not yet (asked when you tap 2)").append('\n');
+        if (!TermuxBridge.runCommandAvailable(this)) s.append("Mode: you paste one command in Termux (this Termux build has no run-command permission)\n");
+        else s.append("Permission to run commands in Termux: ").append(TermuxBridge.permissionGranted(this) ? "granted" : "not yet (asked when you tap 2)").append('\n');
         List<File> p = TermuxBridge.pending(this);
         s.append("Files ready to export: ").append(p.size());
         if (!p.isEmpty()) s.append(" (newest ").append(p.get(p.size() - 1).getName()).append(')');
@@ -78,6 +81,10 @@ public class AladinActivity extends Activity {
     }
 
     private void prepare() {
+        if (!TermuxBridge.runCommandAvailable(this)) {
+            out.setText("Not needed in this mode. Just tap 2.");
+            return;
+        }
         try {
             TermuxBridge.writeSetupScript(this);
             out.setText("Setup file saved to Download/ecg/" + TermuxBridge.SETUP_NAME + "\n\n"
@@ -95,6 +102,7 @@ public class AladinActivity extends Activity {
     private void exportAndRun(boolean run) {
         if (run) {
             if (!TermuxBridge.termuxInstalled(this)) { out.setText("Termux is not installed (or is not visible to this app)."); return; }
+            if (!TermuxBridge.runCommandAvailable(this)) { manualRun(); return; }
             if (!TermuxBridge.permissionGranted(this)) {
                 out.setText("Android will now ask to let this app run commands in Termux. Tap Allow, then tap 2 again.");
                 requestPermissions(new String[]{TermuxBridge.PERM}, REQ_PERM);
@@ -111,6 +119,26 @@ public class AladinActivity extends Activity {
                 s.append("\nSent to Termux. It runs in the background; a notification appears when the report is ready.\n")
                  .append("If nothing happens after 2 minutes: in Termux the setup line allow-external-apps=true must be in place and Termux restarted (tap 1 for the steps).");
             }
+            out.setText(s.toString());
+        } catch (Throwable t) { out.setText("Failed: " + t); }
+        refresh();
+    }
+
+    /** This Termux build has no run-command permission: export, put the one command on the clipboard, the user pastes it in Termux. */
+    private void manualRun() {
+        try {
+            List<File> files = TermuxBridge.pending(this);
+            String folder = TermuxBridge.export(this, files);
+            TermuxBridge.writeRunLatest(this);
+            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText("ALADIN command", TermuxBridge.RUN_LATEST_CMD));
+            StringBuilder s = new StringBuilder("Copied " + files.size() + " file(s) to Download/ecg/" + folder + ":\n");
+            for (File f : files) s.append("  ").append(f.getName()).append('\n');
+            s.append("\nThe command is on your clipboard:\n  ").append(TermuxBridge.RUN_LATEST_CMD).append("\n\n")
+             .append("1. Tap OPEN TERMUX below.\n")
+             .append("2. Press and hold on the Termux screen, tap PASTE, then press Enter.\n")
+             .append("3. Wait (about 1-5 min per 3 min of ECG). The report prints in Termux and a notification appears here when it is sent back.\n")
+             .append("Next time: in Termux press the up arrow, then Enter.");
             out.setText(s.toString());
         } catch (Throwable t) { out.setText("Failed: " + t); }
         refresh();

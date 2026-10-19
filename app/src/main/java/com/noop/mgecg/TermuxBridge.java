@@ -60,6 +60,44 @@ public final class TermuxBridge {
       + "termux-reload-settings 2>/dev/null\n"
       + "echo \"Termux is ready for the app. Swipe Termux away once, then open it again.\"\n";
 
+    public static final String RUN_LATEST_NAME = "run_latest.sh";
+    /** Typed or pasted in Termux when its build has no run-command permission (0.5.16). */
+    public static final String RUN_LATEST_CMD = "bash ~/storage/downloads/ecg/run_latest.sh";
+
+    /** Runs ALADIN on the newest pull_ folder and sends the report text back to the app with a broadcast (Termux's am command). */
+    static String runLatestScript(String token) {
+        return "#!/data/data/com.termux/files/usr/bin/bash\n"
+      + "D=$(ls -1d ~/storage/downloads/ecg/pull_* 2>/dev/null | sort | tail -1)\n"
+      + "[ -n \"$D\" ] || { echo \"No pull_ folder in ~/storage/downloads/ecg. Tap 2 in the app first.\"; exit 3; }\n"
+      + "ls \"$D\"/historical_bin_*.bin >/dev/null 2>&1 || { echo \"No historical_bin files in $D\"; exit 3; }\n"
+      + "cd ~/storage/downloads/aladin || { echo \"ALADIN folder missing: ~/storage/downloads/aladin\"; exit 2; }\n"
+      + "termux-wake-lock 2>/dev/null\n"
+      + "python aladin_phone.py \"$D\"/historical_bin_*.bin 2>&1 | tee \"$D/aladin_report.txt\"\n"
+      + "T=$(tail -c 60000 \"$D/aladin_report.txt\" | tr '\\r' '\\n')\n"
+      + "am broadcast -n com.noop.mgecg/.AladinResultReceiver --es folder \"$(basename \"$D\")\" --es token \"" + token + "\" --es text \"$T\" >/dev/null 2>&1 && echo \"Report sent to the app.\" || echo \"Could not send the report to the app; it is saved in $D/aladin_report.txt\"\n";
+    }
+
+    /** A random string only our own script knows, so other apps cannot post fake results. */
+    public static String token(Context c) {
+        SharedPreferences p = prefs(c);
+        String t = p.getString("token", null);
+        if (t == null) {
+            java.security.SecureRandom r = new java.security.SecureRandom();
+            t = Long.toHexString(r.nextLong()) + Long.toHexString(r.nextLong());
+            p.edit().putString("token", t).apply();
+        }
+        return t;
+    }
+
+    /** False when this Termux build does not define the run-command permission (the Google Play build). */
+    public static boolean runCommandAvailable(Context c) {
+        try { c.getPackageManager().getPermissionInfo(PERM, 0); return true; } catch (Throwable t) { return false; }
+    }
+
+    public static void writeRunLatest(Context c) throws Exception {
+        copyToDownloads(c, "ecg", RUN_LATEST_NAME, "application/x-sh", new java.io.ByteArrayInputStream(runLatestScript(token(c)).getBytes(StandardCharsets.UTF_8)));
+    }
+
     public static boolean termuxInstalled(Context c) {
         try { c.getPackageManager().getPackageInfo(PKG, 0); return true; } catch (Throwable t) { return false; }
     }
