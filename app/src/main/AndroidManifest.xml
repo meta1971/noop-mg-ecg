@@ -85,7 +85,7 @@
 
         <receiver
             android:name=".AladinResultReceiver"
-            android:exported="false" />
+            android:exported="true" />
 
         <service
             android:name=".DayLogService"
