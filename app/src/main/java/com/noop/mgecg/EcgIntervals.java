@@ -59,9 +59,12 @@ public final class EcgIntervals {
     public static volatile double AREA_FRAC = 0.95;
     /** Fraction of the T amplitude the smoothed down-slope must fall to for the threshold method. */
     public static volatile double THR_FRAC = 0.10;
-    /** The strap's stored ECG looks like it passed a first-order high-pass near 1.5 Hz (T wave about halved, deeper dip after
-     *  the QRS). PROVISIONAL: one person, one reference device, cause open (issue #891). 0 = leave the beat as recorded. */
-    public static volatile double STRAP_HP_FC_HZ = 1.5;
+    /** Corner of a first-order high-pass to undo on the averaged beat before measuring. 0 = measure the beat as recorded (default from 18 Oct 2026).
+     *  Earlier builds undid an assumed 1.5 Hz high-pass (T wave about halved, QT 30-40 ms short against one reference device, issue #891). WITHDRAWN:
+     *  battery step pulses (plateaus hold for 11 s, fall = rise within 0.96 +/- 0.07) and the power spectrum (still rising down to 0.05 Hz in four
+     *  separate stretches) show the stored ECG has no measurable high-pass (corner below 0.05 Hz, probably below 0.003 Hz). The 0.51 Hz filter belongs to the
+     *  strap's live stream (R17) only. Set to 1.5 to restore the old behaviour. */
+    public static volatile double STRAP_HP_FC_HZ = 0;
 
     public enum Status { OK, TOO_FEW_BEATS, NO_CLEAR_T_WAVE, UNCERTAIN, RATE_OUT_OF_RANGE, FAILED }
 
