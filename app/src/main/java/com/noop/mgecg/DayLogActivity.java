@@ -149,6 +149,8 @@ public class DayLogActivity extends Activity {
             col.addView(r);
         }
 
+        col.addView(btn("SECOND OPINION: ALADIN IN TERMUX", new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(DayLogActivity.this, AladinActivity.class)); } }));
+
         col.addView(label("CUFF READING"));
         LinearLayout bp = row();
         sys = num("sys"); dia = num("dia"); pulse = num("pulse");
