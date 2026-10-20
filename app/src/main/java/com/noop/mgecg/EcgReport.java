@@ -149,6 +149,7 @@ public final class EcgReport {
                         .append(String.format(Locale.US, "%.0f&times;", r.qt.tAmpUv / Math.max(1e-9, r.qt.noiseUv))).append("</b></div></div></section>");
                 b.append(detailCard(r.qt));
                 b.append(segmentsCard(r.qt));
+                b.append(parameterTable(r));
             }
             if (r.rrMs.length >= 8) {
                 double[] ax = tachAxis(r);
@@ -634,6 +635,107 @@ public final class EcgReport {
         return text(x, y + dy, lab, "wave", "middle");
     }
 
+
+
+    // ------------------------------------------------------------------ complete parameter table (0.7.1)
+
+    private static String f0(double v) { return Double.isNaN(v) ? "n/a" : String.format(Locale.US, "%.0f", v); }
+    private static String sgn(double v) { return Double.isNaN(v) ? "n/a" : String.format(Locale.US, "%+.0f", v); }
+
+    private static String prow(String name, String value, String basis) {
+        return row(name, value + (basis.isEmpty() ? "" : "<br><small>" + basis + "</small>"));
+    }
+
+    /** {mean RR ms, SDNN ms, pNN50 %, lowest HR, highest HR, count} from the cleaned R-R series, or null. */
+    static double[] rrStats(EcgR16Analyzer.Result r) {
+        if (r == null || r.rrMs == null) return null;
+        java.util.ArrayList<Double> v = new java.util.ArrayList<>();
+        java.util.ArrayList<Boolean> consecutive = new java.util.ArrayList<>();
+        boolean prevGood = false;
+        for (int i = 0; i < r.rrMs.length; i++) {
+            boolean good = !(r.rrBad != null && i < r.rrBad.length && r.rrBad[i]) && r.rrMs[i] > 300 && r.rrMs[i] < 2000;
+            if (good) { v.add(r.rrMs[i]); consecutive.add(prevGood); }
+            prevGood = good;
+        }
+        if (v.size() < 20) return null;
+        double m = 0, lo = 1e9, hi = 0;
+        for (double x : v) { m += x; lo = Math.min(lo, x); hi = Math.max(hi, x); }
+        m /= v.size();
+        double sq = 0;
+        for (double x : v) sq += (x - m) * (x - m);
+        int pairs = 0, over = 0;
+        for (int i = 1; i < v.size(); i++) if (consecutive.get(i)) { pairs++; if (Math.abs(v.get(i) - v.get(i - 1)) > 50) over++; }
+        return new double[]{m, Math.sqrt(sq / (v.size() - 1)), pairs == 0 ? Double.NaN : 100.0 * over / pairs, 60000.0 / hi, 60000.0 / lo, v.size()};
+    }
+
+    static String parameterTable(EcgR16Analyzer.Result res) {
+        if (res == null || res.qt == null || res.qt.seg == null || !res.qt.seg.valid || res.qt.beatsUsed < 25) return "";
+        EcgSegments.Result s = res.qt.seg;
+        String no = "not reliable on this recording";
+        String qtBasis = "checked against 104 annotated ECGs: typical error 12 ms";
+        StringBuilder b = new StringBuilder("<section class=\"card\"><h2>Complete ECG parameter table</h2><p class=\"hint\">Every standard single-lead parameter, what this reading gave, and how far it can be trusted. "
+                + "&ldquo;Not checked&rdquo; means measured but never compared with a reference. Research only.</p>");
+        b.append("<p class=\"hint\"><b>Waves</b></p>");
+        b.append(prow("P wave", s.pPresent ? String.format(Locale.US, "%s &micro;V (%s)", sgn(s.pAmpUv), s.pAmpUv >= 0 ? "upright" : "inverted") : "not clear",
+                "presence and height only; start and end are approximate, duration is not reported (error 26 ms)"));
+        b.append(prow("Q wave depth", f0(Math.abs(s.qUv)) + " &micro;V", "not checked"));
+        b.append(prow("R wave height", f0(s.rUv) + " &micro;V", "not checked; depends on the lead and on contact"));
+        b.append(prow("S wave depth", f0(Math.abs(s.sUv)) + " &micro;V", "not checked"));
+        b.append(prow("T wave", Double.isNaN(s.tAmpUv) ? no : String.format(Locale.US, "%s &micro;V (%s), %.0f%% of R", sgn(s.tAmpUv), s.tAmpUv >= 0 ? "upright" : "inverted", 100.0 * Math.abs(s.tOverR)),
+                "height not checked; peak time checked: typical error 8 ms"));
+        b.append(prow("U wave", s.uPresent ? String.format(Locale.US, "seen, %.0f &micro;V, %.0f ms after the T wave ends", s.uAmpUv, s.uAfterTEndMs) : "not seen",
+                "found in about half of the cases a cardiologist marks one, 17 of 32 below 70 bpm; timing within 40 ms in 95% of those"));
+        b.append("<p class=\"hint\"><b>QRS complex</b></p>");
+        b.append(prow("QRS duration", s.qrsOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.qrsMs, s.qrsHwMs) : no, "checked against 104 annotated ECGs: typical error 8 ms"));
+        b.append(prow("QRS start to R peak", f0(s.rPeakTimeMs) + " ms", "not checked"));
+        b.append(prow("R / S ratio", Double.isNaN(s.rsRatio) ? "no clear S wave" : String.format(Locale.US, "%.1f", s.rsRatio), "not checked"));
+        b.append(prow("QRS area (net)", f0(s.qrsAreaUvMs) + " &micro;V&middot;ms", "not checked"));
+        b.append("<p class=\"hint\"><b>Intervals</b></p>");
+        double[] rr = rrStats(res);
+        b.append(prow("RR interval", String.format(Locale.US, "%.0f ms (%.0f per minute)", s.rrMs, s.hrBpm), "in one 79 s check every beat matched a chest-strap beat within 6 ms (79 of 79)"));
+        b.append(prow("PP interval", "not measured", "a single beat's P wave (about 50-65 &micro;V) is too small to time beat by beat; in a regular sinus rhythm PP equals RR"));
+        b.append(prow("PR interval", s.prOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.prMs, s.prHwMs) : no, "typical error 10 ms, but about one in four values is off by more than 20 ms"));
+        b.append(prow("QT interval", s.qtOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.qtMs, s.qtHwMs) : no, qtBasis));
+        if (s.qtOk) {
+            b.append(prow("QTc Fridericia", f0(s.qtcFMs) + " ms (&plusmn;" + f0(s.qtcFHwMs) + ")", "the most reliable across heart rates in a study of 22,000 healthy people"));
+            b.append(prow("QTc Bazett", f0(s.qtcBMs) + " ms", "over-corrects at higher heart rates"));
+            b.append(prow("QTc Framingham", f0(s.qtcFraminghamMs) + " ms", "QT + 154 x (1 - RR in s)"));
+            b.append(prow("QTc Hodges", f0(s.qtcHodgesMs) + " ms", "QT + 1.75 x (heart rate - 60)"));
+            b.append(prow("QTc Rautaharju", f0(s.qtcRautaharjuMs) + " ms", "QT x (120 + heart rate) / 180"));
+            b.append(prow("QT start to T peak (QTp)", f0(s.qtpMs) + " ms", "peak time checked: typical error 8 ms"));
+            b.append(prow("T peak to T end (Tp-Te)", f0(s.tpeMs) + " ms", "checked: typical error 11 ms; median about 66 ms in a study of 1,485 healthy people (chest leads)"));
+            b.append(prow("Tp-Te / QT", String.format(Locale.US, "%.2f", s.tpeOverQt), "median about 0.18 in a study of 1,485 healthy people (chest leads)"));
+            b.append(prow("QT / RR", String.format(Locale.US, "%.2f", s.qtOverRr), "not checked"));
+        } else {
+            b.append(prow("QTc (5 formulas), QTp, Tp-Te, Tp-Te/QT", no, "they need a QT that passes the &plusmn;10 ms range"));
+        }
+        b.append("<p class=\"hint\"><b>Segments</b></p>");
+        b.append(prow("PR segment", s.prOk ? f0(s.prSegMs) + " ms" : no, "not checked"));
+        b.append(prow("ST at the J point / 60 ms / 80 ms (against the PR baseline)", String.format(Locale.US, "%s / %s / %s &micro;V", sgn(s.stJUv), sgn(s.st60Uv), sgn(s.st80Uv)),
+                "measurement only; between readings on the same person the 60 ms value varied with an SD of about 16 &micro;V"));
+        b.append(prow("ST against the TP baseline", Double.isNaN(s.st60TpUv) ? "n/a" : String.format(Locale.US, "%s / %s &micro;V at 60 / 80 ms", sgn(s.st60TpUv), sgn(s.st80TpUv)),
+                "the standard reference is the TP segment (the PR segment when TP is not clear); on our recordings the two differed by about 9 &micro;V on average"));
+        b.append(prow("ST slope and shape", String.format(Locale.US, "%+.2f &micro;V per ms (%s)", Math.abs(s.stSlopeUvPerMs) < 0.005 ? 0.0 : s.stSlopeUvPerMs, s.stShape), "slope between 20 and 80 ms after J; measurement only"));
+        b.append(prow("ST area (J to J + 80 ms)", f0(s.stAreaUvMs) + " &micro;V&middot;ms", "not checked"));
+        b.append(prow("TP segment level (against the PR baseline)", Double.isNaN(s.tpLevelUv) ? "n/a (needs a longer pause between beats)" : sgn(s.tpLevelUv) + " &micro;V (flatness &plusmn;" + String.format(Locale.US, "%.1f", s.tpFlatSdUv) + ")",
+                "flattest 40 ms between the T or U wave and the next P wave; not checked"));
+        b.append(prow("TP segment duration", s.prOk && !Double.isNaN(s.tpDurMs) ? f0(s.tpDurMs) + " ms" : "n/a", "needs a clear P wave to find the next beat's start"));
+        b.append("<p class=\"hint\"><b>Rate and variability</b></p>");
+        b.append(prow("Heart rate", String.format(Locale.US, "%.0f per minute", Double.isNaN(res.hr) ? s.hrBpm : res.hr), rr == null ? "" : String.format(Locale.US, "lowest %.0f, highest %.0f over %d beats", rr[3], rr[4], (int) rr[5])));
+        b.append(prow("HRV: RMSSD", Double.isNaN(res.rmssd) ? "n/a" : f0(res.rmssd) + " ms", "agreed with the strap's own value in 13 of 13 readable readings (earlier check)"));
+        if (rr != null) {
+            b.append(prow("HRV: SDNN", f0(rr[1]) + " ms", "over the whole reading, so it reflects slow changes as well"));
+            b.append(prow("HRV: pNN50", Double.isNaN(rr[2]) ? "n/a" : String.format(Locale.US, "%.1f%%", rr[2]), "share of beat-to-beat changes above 50 ms"));
+        }
+        b.append("<p class=\"hint\"><b>Not possible with one lead</b></p>");
+        b.append(prow("Electrical axis (QRS, P, T)", "not measured", "needs at least two leads at different angles"));
+        b.append(prow("Voltage criteria for enlarged chambers", "not measured", "Sokolow-Lyon and Cornell need chest leads"));
+        b.append(prow("QT dispersion, ST in other leads, ischaemia location", "not measured", "need many leads"));
+        b.append(prow("Bundle branch block and other conduction patterns", "not measured", "the pattern needs leads V1 and V6"));
+        b.append(prow("T-wave alternans", "not measured", "needs a special microvolt analysis of many beats"));
+        b.append("</section>");
+        return b.toString();
+    }
 
     // ------------------------------------------------------------------ segments (0.6.0)
 

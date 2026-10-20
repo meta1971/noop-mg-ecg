@@ -287,6 +287,10 @@ public final class EcgR16Analyzer {
                     Double.isNaN(g.st60Uv) ? no : String.format(Locale.UK, "%+.0f &micro;V", g.st60Uv),
                     Double.isNaN(g.tAmpUv) ? no : String.format(Locale.UK, "%.0f &micro;V (%.0f%% of R)", Math.abs(g.tAmpUv), 100.0 * Math.abs(g.tOverR))));
             s.append("QT <b>").append(g.qtOk ? String.format(Locale.UK, "%.0f ms</b> (&plusmn;%.0f) &middot; QTc F <b>%.0f</b> / B <b>%.0f", g.qtMs, g.qtHwMs, g.qtcFMs, g.qtcBMs) : no).append("</b><br>");
+            if (!Double.isNaN(g.tpLevelUv) || !Double.isNaN(g.tpeMs)) {
+                s.append("TP segment <b>").append(Double.isNaN(g.tpLevelUv) ? "n/a" : String.format(Locale.UK, "%+.0f &micro;V", g.tpLevelUv))
+                        .append("</b> &middot; Tp-Te <b>").append(g.qtOk && !Double.isNaN(g.tpeMs) ? String.format(Locale.UK, "%.0f ms", g.tpeMs) : "n/a").append("</b><br>");
+            }
             s.append("U wave <b>").append(g.uPresent ? String.format(Locale.UK, "seen, %.0f &micro;V, %.0f ms after the T wave ends", g.uAmpUv, g.uAfterTEndMs) : "not seen").append("</b>");
             if (!g.uPresent) s.append(" <small>(found in about half of cases where a cardiologist marks one, less often above 70 bpm; not seeing it does not mean it is absent)</small>");
             s.append("<br><small>Research only. Tested against 104 annotated ECGs: typical error 8 ms for QRS, 10 for PR, 12 for QT; ST is a measurement only.</small>");

@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.7.0 (20 Oct): every wave and segment of the averaged beat, with 95% ranges and accuracy gates; U wave added
+// FILE VERSION 0.7.1 (20 Oct): every wave and segment of the averaged beat, with 95% ranges and accuracy gates; U wave (0.7.0); TP segment, ST vs TP, ST shape and area, Tp-Te, QTp and more QTc formulas (0.7.1)
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -48,6 +48,14 @@ public final class EcgSegments {
         /** U wave: a small same-polarity bump after the T wave. uPresent only when it passes the peak, size and split-half checks. */
         public boolean uPresent;
         public double uAmpUv = Double.NaN, uPeakMs = Double.NaN, uAfterTEndMs = Double.NaN, uPromUv = Double.NaN;
+        // 0.7.1: TP segment (level against the PR baseline, flatness, window, duration when the P wave is clear), ST against the TP baseline, ST shape and area,
+        // QRS shape numbers, Tp-Te / QTp, more QTc formulas. None of these except Tp-Te and the T peak has been validated against annotations.
+        public double tpLevelUv = Double.NaN, tpFlatSdUv = Double.NaN, tpStartMs = Double.NaN, tpEndMs = Double.NaN, tpDurMs = Double.NaN;
+        public double st60TpUv = Double.NaN, st80TpUv = Double.NaN, stAreaUvMs = Double.NaN;
+        public String stShape = "";
+        public double qrsAreaUvMs = Double.NaN, rPeakTimeMs = Double.NaN, rsRatio = Double.NaN;
+        public double qtpMs = Double.NaN, tpeMs = Double.NaN, tpeOverQt = Double.NaN, qtOverRr = Double.NaN;
+        public double qtcFraminghamMs = Double.NaN, qtcHodgesMs = Double.NaN, qtcRautaharjuMs = Double.NaN;
         public double[] avg;            // mean beat in uV
         public int rIdx;                // index of the R peak in avg
         public String note = "";
@@ -171,8 +179,8 @@ public final class EcgSegments {
             f.pEdge = (l == 0 || rr == len - 1);
         }
         // T wave
-        int lo = (int) Math.round((f.qrsOff + 40) / DT) + i0;
-        int hi = Math.min((int) Math.round(Math.min(f.qrsOff + 420, 0.62 * rrMs) / DT) + i0, n - 5);
+        int lo = (int) Math.rint((f.qrsOff + 40) / DT) + i0;
+        int hi = Math.min((int) Math.rint(Math.min(f.qrsOff + 420, 0.62 * rrMs) / DT) + i0, n - 5);
         if (hi - lo > 20) {
             double[] y = smooth(b, 5);
             for (int i = 0; i < n; i++) y[i] -= f.base;
@@ -194,7 +202,7 @@ public final class EcgSegments {
     }
 
     static double at(double[] b, double base, int i0, double ms) {
-        int k = (int) Math.round(ms / DT) + i0;
+        int k = (int) Math.rint(ms / DT) + i0;
         return k >= 0 && k < b.length ? b[k] - base : Double.NaN;
     }
 
@@ -235,6 +243,7 @@ public final class EcgSegments {
             r.tToNoise = noiseUv > 0 ? Math.abs(f.tAmp) / noiseUv : Double.NaN;
         }
         try { uWave(r, beats, f, r.rrMs, noiseUv, ri); } catch (RuntimeException e) { r.uPresent = false; }
+        try { extras(r, f, r.rrMs, noiseUv, ri); } catch (RuntimeException e) { /* extras stay NaN */ }
         // bootstrap
         Random rng = new Random(12345L);
         double[] qrs = new double[BOOTSTRAPS], pr = new double[BOOTSTRAPS], qt = new double[BOOTSTRAPS], qtc = new double[BOOTSTRAPS], st = new double[BOOTSTRAPS];
@@ -259,6 +268,65 @@ public final class EcgSegments {
         r.prOk = r.pPresent && np >= 0.9 * BOOTSTRAPS && r.prHwMs <= MAX_HALF_WIDTH_MS;
         r.qtOk = f.hasT && !Double.isNaN(r.qtMs) && nt >= 0.9 * BOOTSTRAPS && r.qtHwMs <= MAX_HALF_WIDTH_MS && r.tToNoise >= MIN_T_TO_NOISE;
         return r;
+    }
+
+    // ---------------------------------------------------------------- 0.7.1 extras
+
+    static String stShape(double slope) {                 // slope in uV per ms (= mV per s)
+        if (slope > 1.0) return "upsloping";
+        if (slope >= 0.2) return "slowly upsloping";
+        if (slope >= -0.2) return "flat";
+        return "downsloping";
+    }
+
+    static void extras(Result r, Fid f, double rrMs, double noise, int i0) {
+        double[] y = smooth(r.avg, 5);
+        for (int i = 0; i < y.length; i++) y[i] -= f.base;
+        // TP segment: the flattest 40 ms between the T wave tail (and the U wave) and the next P wave
+        if (f.hasT && !Double.isNaN(f.tEnd)) {
+            double start = f.tEnd + 60.0;
+            if (r.uPresent && !Double.isNaN(r.uPeakMs)) start = Math.max(start, r.uPeakMs + 50.0);
+            boolean pOk = f.hasP && !f.pEdge;
+            double end = Math.min(pOk ? rrMs + f.pOn - 25.0 : rrMs - 260.0, 700.0);
+            if (end - start >= 60) {
+                int ia = (int) Math.rint(start / DT) + i0, ib = (int) Math.rint(end / DT) + i0;
+                double bestSd = Double.NaN, bestMed = Double.NaN;
+                for (int i = ia; i < ib - 20; i++) {
+                    double m = 0;
+                    for (int k = 0; k < 20; k++) m += y[i + k];
+                    m /= 20;
+                    double v = 0;
+                    for (int k = 0; k < 20; k++) v += (y[i + k] - m) * (y[i + k] - m);
+                    double sd = Math.sqrt(v / 20);
+                    if (Double.isNaN(bestSd) || sd < bestSd) { bestSd = sd; bestMed = median(y, i, i + 20); }
+                }
+                if (!Double.isNaN(bestSd)) {
+                    r.tpLevelUv = bestMed; r.tpFlatSdUv = bestSd; r.tpStartMs = start; r.tpEndMs = end;
+                    r.tpDurMs = pOk ? rrMs + f.pOn - f.tEnd : Double.NaN;
+                    r.st60TpUv = f.st60 - bestMed; r.st80TpUv = f.st80 - bestMed;
+                }
+            }
+        }
+        r.stShape = stShape(f.stSlope);
+        int jk = (int) Math.rint(f.qrsOff / DT) + i0, ok = (int) Math.rint(f.qrsOn / DT) + i0;
+        double sa = 0;
+        for (int k = jk; k < jk + 41 && k < r.avg.length; k++) sa += r.avg[k] - f.base;
+        r.stAreaUvMs = sa * DT;
+        double qa = 0;
+        for (int k = ok; k <= jk && k < r.avg.length; k++) qa += r.avg[k] - f.base;
+        r.qrsAreaUvMs = qa * DT;
+        r.rPeakTimeMs = -f.qrsOn;
+        r.rsRatio = Math.abs(f.s) >= 10.0 ? f.r / Math.abs(f.s) : Double.NaN;
+        if (f.hasT && !Double.isNaN(f.tEnd)) {
+            double hr = 60000.0 / rrMs;
+            r.qtpMs = f.tPeak - f.qrsOn;
+            r.tpeMs = f.tEnd - f.tPeak;
+            r.tpeOverQt = r.tpeMs / f.qt;
+            r.qtOverRr = f.qt / rrMs;
+            r.qtcFraminghamMs = f.qt + 154.0 * (1.0 - rrMs / 1000.0);
+            r.qtcHodgesMs = f.qt + 1.75 * (hr - 60.0);
+            r.qtcRautaharjuMs = f.qt * (120.0 + hr) / 180.0;
+        }
     }
 
     // ---------------------------------------------------------------- U wave
@@ -294,7 +362,7 @@ public final class EcgSegments {
         double tp = f.tAmp < 0 ? -1 : 1;
         double aMs = f.tEnd + 15.0, bMs = Math.min(Math.min(f.tEnd + 280.0, rrMs - 300.0), 650.0);
         if (bMs - aMs < 80) return null;
-        int ia = (int) Math.round(aMs / DT) + i0, ib = (int) Math.round(bMs / DT) + i0;
+        int ia = (int) Math.rint(aMs / DT) + i0, ib = (int) Math.rint(bMs / DT) + i0;
         if (ib >= beat.length - 2 || ia - 10 < 0) return null;
         double[] y = smooth(beat, 5);
         for (int i = 0; i < y.length; i++) y[i] = (y[i] - f.base) * tp;
