@@ -148,6 +148,7 @@ public final class EcgReport {
                         .append(String.format(Locale.US, "%.2f mV", r.qt.rAmpUv / 1000.0)).append("</b></div><div class=\"mini\"><span>T wave vs noise</span><b>")
                         .append(String.format(Locale.US, "%.0f&times;", r.qt.tAmpUv / Math.max(1e-9, r.qt.noiseUv))).append("</b></div></div></section>");
                 b.append(detailCard(r.qt));
+                b.append(segmentsCard(r.qt));
             }
             if (r.rrMs.length >= 8) {
                 double[] ax = tachAxis(r);
@@ -206,7 +207,7 @@ public final class EcgReport {
                 b.append(row("Q to S span", String.format(Locale.US, "%.0f ms between the dips either side of R", r.qt.qsSpanMs)));
             }
             if (r.inverted) b.append(row("Orientation", "Recording came in upside down; flipped for display and measurement"));
-            b.append(row("QT method", "Start = where the QRS begins (slope), end = 15 ms after the tangent on the T wave meets the baseline, measured on the beat as recorded (the strap's stored ECG shows no high-pass, so nothing is undone); 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
+            b.append(row("QT method", "Start = where the QRS begins (slope), end = 15 ms after the tangent on the T wave meets the baseline, measured on the beat as recorded (no high-pass is undone; whether the strap's stored ECG has its own high-pass is not settled); 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
         }
         if (r.rhythm != null && r.rhythm.features != null) {
             b.append(row("Rhythm screen", String.format(Locale.US, "%d intervals, nRMSSD %.3f, sample entropy %.2f", r.rhythm.intervals, r.rhythm.features[0], r.rhythm.features[4])));
@@ -631,6 +632,67 @@ public final class EcgReport {
         double ms = (k - EcgIntervals.PRE) * 1000.0 / EcgIntervals.FS;
         double x = (ms - t0) / (t1 - t0) * W, y = bottom - (a[k] - lo) / (hi - lo) * (bottom - top);
         return text(x, y + dy, lab, "wave", "middle");
+    }
+
+
+    // ------------------------------------------------------------------ segments (0.6.0)
+
+    static String segmentsCard(EcgIntervals.Result q) {
+        if (q == null || q.seg == null || !q.seg.valid || q.beatsUsed < 25) return "";
+        EcgSegments.Result s = q.seg;
+        String no = "not reliable on this recording";
+        StringBuilder b = new StringBuilder("<section class=\"card\"><h2>Every part of the heartbeat</h2><p class=\"hint\">");
+        b.append(s.beats).append(" clean beats averaged. A number is shown only when its 95% range is within &plusmn;10 ms.</p>");
+        b.append(segmentChart(s));
+        b.append(row("Heart rate", String.format(Locale.US, "%.0f per minute (%.0f ms between beats)", s.hrBpm, s.rrMs)));
+        b.append(row("QRS duration", s.qrsOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.qrsMs, s.qrsHwMs) : no));
+        b.append(row("P wave", s.pPresent ? String.format(Locale.US, "seen, %.0f &micro;V high", Math.abs(s.pAmpUv)) : "not clearly seen on this recording"));
+        b.append(row("PR interval", s.prOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.prMs, s.prHwMs) : no));
+        b.append(row("PR segment", s.prOk ? String.format(Locale.US, "%.0f ms", s.prSegMs) : no));
+        b.append(row("ST level, 60 ms after J", Double.isNaN(s.st60Uv) ? no : String.format(Locale.US, "%+.0f &micro;V (spread &plusmn;%.0f), measurement only", s.st60Uv, Double.isNaN(s.st60SdUv) ? 0.0 : s.st60SdUv)));
+        b.append(row("T wave", Double.isNaN(s.tAmpUv) ? no : String.format(Locale.US, "%.0f &micro;V, %.0f%% of the R wave", Math.abs(s.tAmpUv), 100.0 * Math.abs(s.tOverR))));
+        b.append(row("QT interval", s.qtOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.qtMs, s.qtHwMs) : no));
+        b.append(row("QT corrected", s.qtOk ? String.format(Locale.US, "Fridericia %.0f ms (&plusmn;%.0f), Bazett %.0f ms", s.qtcFMs, s.qtcFHwMs, s.qtcBMs) : no));
+        b.append("<p class=\"cap\"><b>P</b> top chambers firing, <b>QRS</b> main pump firing, <b>ST</b> the quiet stretch after it, <b>T</b> the reset. ")
+                .append("Tested against 104 ECG records annotated by a cardiologist, the typical error was 8 ms for QRS, 10 ms for PR and 12 ms for QT, ")
+                .append("but about one PR or QT value in four can be off by more than 20 ms. This test does not cover this strap's own lead. ")
+                .append("ST is a measurement only: a wrist-to-finger lead is not a standard lead, so it is not interpreted.</p></section>");
+        return b.toString();
+    }
+
+    static String segmentChart(EcgSegments.Result s) {
+        double[] a = s.avg;
+        final int H = 230, n = a.length;
+        double t0 = -EcgIntervals.PRE * 1000.0 / EcgIntervals.FS, t1 = EcgIntervals.POST * 1000.0 / EcgIntervals.FS;
+        double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
+        for (double v : a) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+        lo -= 40; hi += 60;
+        final double top = 28, bottom = H - 40;
+        StringBuilder b = new StringBuilder(svgOpen(H, "The average heartbeat with the P wave, QRS, ST segment and T wave shaded"));
+        if (s.pPresent) b.append(band(s.pOnMs, s.pOffMs, t0, t1, top, bottom, "rgba(46,160,67,0.22)", "P"));
+        b.append(band(s.qrsOnMs, s.qrsOffMs, t0, t1, top, bottom, "rgba(220,60,60,0.22)", "QRS"));
+        b.append(band(s.qrsOffMs, s.qrsOffMs + 80, t0, t1, top, bottom, "rgba(240,160,40,0.25)", "ST"));
+        if (!Double.isNaN(s.tPeakMs) && !Double.isNaN(s.tEndMs)) b.append(band(s.tPeakMs - 60, s.tEndMs, t0, t1, top, bottom, "rgba(60,120,220,0.20)", "T"));
+        for (int ms = -400; ms <= 600; ms += 200) {
+            double x = (ms - t0) / (t1 - t0) * W;
+            b.append(line(x, top, x, bottom, "gl")).append(text(Math.min(Math.max(x, 10), W - 10), H - 24, String.valueOf(ms), "axis", "middle"));
+        }
+        b.append(text(W / 2.0, H - 8, "milliseconds from the R peak", "axis", "middle"));
+        StringBuilder pts = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            double ms = (i - EcgIntervals.PRE) * 1000.0 / EcgIntervals.FS;
+            double x = (ms - t0) / (t1 - t0) * W;
+            double y = bottom - (a[i] - lo) / (hi - lo) * (bottom - top);
+            pts.append(f(x)).append(',').append(f(y)).append(' ');
+        }
+        b.append("<polyline points=\"").append(pts).append("\" class=\"trace thick\"></polyline>");
+        return b.append("</svg>").toString();
+    }
+
+    static String band(double fromMs, double toMs, double t0, double t1, double top, double bottom, String fill, String label) {
+        double x0 = (fromMs - t0) / (t1 - t0) * W, x1 = (toMs - t0) / (t1 - t0) * W;
+        return "<rect x=\"" + f(x0) + "\" y=\"" + f(top) + "\" width=\"" + f(Math.max(1, x1 - x0)) + "\" height=\"" + f(bottom - top)
+                + "\" style=\"fill:" + fill + "\"></rect>" + text((x0 + x1) / 2, top - 6, label, "wave", "middle");
     }
 
     // ---- beat-to-beat charts

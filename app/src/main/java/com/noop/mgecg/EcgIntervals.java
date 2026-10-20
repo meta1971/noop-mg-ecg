@@ -1,6 +1,7 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.8 (3 Oct): slope-based QRS onset, shape gate 0.60, QT per heart-rate band, wide-band detail beat
+// FILE VERSION 0.6.0 (20 Oct): segments (EcgSegments) computed on the same kept beats; step-test claim about the strap high-pass withdrawn
+// (0.2.8, 3 Oct: slope-based QRS onset, shape gate 0.60, QT per heart-rate band, wide-band detail beat)
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -60,10 +61,11 @@ public final class EcgIntervals {
     /** Fraction of the T amplitude the smoothed down-slope must fall to for the threshold method. */
     public static volatile double THR_FRAC = 0.10;
     /** Corner of a first-order high-pass to undo on the averaged beat before measuring. 0 = measure the beat as recorded (default from 18 Oct 2026).
-     *  Earlier builds undid an assumed 1.5 Hz high-pass (T wave about halved, QT 30-40 ms short against one reference device, issue #891). WITHDRAWN:
-     *  battery step pulses (plateaus hold for 11 s, fall = rise within 0.96 +/- 0.07) and the power spectrum (still rising down to 0.05 Hz in four
-     *  separate stretches) show the stored ECG has no measurable high-pass (corner below 0.05 Hz, probably below 0.003 Hz). The 0.51 Hz filter belongs to the
-     *  strap's live stream (R17) only. Set to 1.5 to restore the old behaviour. */
+     *  Earlier builds undid an assumed 1.5 Hz high-pass (T wave about halved, QT 30-40 ms short against one reference device, issue #891).
+     *  Not undoing it is kept because the one device comparison on record (Polar H10, one 197 s window: QT 345 ms against 363 ms as recorded and
+     *  407 ms with the undo) favours it. The 18 Oct battery step test was WITHDRAWN on 19 Oct (late): on a re-run its amplitudes were mostly
+     *  selection bias and its fall/rise ratio cannot show DC coupling, so whether the stored ECG has a high-pass of its own is NOT settled.
+     *  The 0.51 Hz second-order filter belongs to the strap's live stream (R17) relative to R16. Set to 1.5 to restore the old behaviour. */
     public static volatile double STRAP_HP_FC_HZ = 0;
 
     public enum Status { OK, TOO_FEW_BEATS, NO_CLEAR_T_WAVE, UNCERTAIN, RATE_OUT_OF_RANGE, FAILED }
@@ -81,6 +83,8 @@ public final class EcgIntervals {
         public double qrsOffMs = Double.NaN, qrsDurMs = Double.NaN, rHalfWidthMs = Double.NaN, qsSpanMs = Double.NaN,
                 qDepthUv = Double.NaN, sDepthUv = Double.NaN;
         public double stUv = Double.NaN, stSdUv = Double.NaN;
+        /** Every wave and segment of the averaged beat (EcgSegments). Null if not computed. */
+        public EcgSegments.Result seg;
         public int validBootstraps;
         /** Averaged beat in uV, PRE samples before R (for drawing). Null if not computed. */
         public double[] avg;
@@ -278,6 +282,7 @@ public final class EcgIntervals {
         double[] diff = new double[len];
         for (int j = 0; j < len; j++) diff[j] = a1[j] / n1 - a2[j] / n2;
         r.noiseUv = sd(diff) / 2.0;
+        try { r.seg = EcgSegments.measure(kept, rrMedianS, r.noiseUv, PRE); } catch (Throwable t) { r.seg = null; }
 
         double[] m = measure(avg, rrMedianS);
         if (m == null) {

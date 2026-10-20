@@ -71,11 +71,11 @@ public final class EcgWhoopSpec {
      *
      * 18 Oct 2026: six windows (three ladder, three step-pulse) fitted with the same
      * model (R17 = 0.51 Hz 2nd-order high-pass of R16 x 0.0621, 260 ms delay) gave gain
-     * 1.000 +/- 0.008 (SE), i.e. 0.0621 +/- 0.0005; battery step pulses of 1.626 mV read
-     * 1.62 +/- 0.06 mV (absolute, about +/-4%). All measurements so far lie within
-     * 0.0621-0.0632 (+/-1%), well inside the absolute uncertainty, so the constant stays.
-     * R16 itself has NO measurable high-pass (corner below 0.05 Hz, probably below
-     * 0.003 Hz): treat it as DC-coupled. The 0.5 Hz corner below belongs to R17 only.
+     * 1.000 +/- 0.008 (SE): R16 and R17 agree to about 1% (a relative statement). ABSOLUTE scale and R16's own high-pass: the 18 Oct battery step test
+     * was WITHDRAWN on 19 Oct (late). On a re-run the same method returned 0.5 mV on random times with no step (selection bias), a fixed-window
+     * measurement gave 0.69 +/- 0.18 mV against 1.626 expected, and the fall/rise ratio cannot show DC coupling (any high-pass gives equal jumps).
+     * So the constant stays at the design value with NO established error bound (an Apple Watch comparison by another contributor read R16 x 0.0621
+     * about 6% low), and whether R16 has a high-pass of its own is OPEN. The 0.5 Hz corner below belongs to R17 relative to R16.
      */
     public static final double R16_UV_PER_COUNT = 0.0621;
     public static final int R16_RAIL = 126976;
