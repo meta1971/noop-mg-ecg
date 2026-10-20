@@ -53,12 +53,60 @@ public final class TermuxBridge {
       + "cd ~/storage/downloads/aladin || { echo \"ALADIN folder missing: ~/storage/downloads/aladin\"; exit 2; }\n"
       + "D=~/storage/downloads/ecg/\"$1\"\n"
       + "ls \"$D\"/historical_bin_*.bin >/dev/null 2>&1 || { echo \"No historical_bin files in $D\"; exit 3; }\n"
-      + "python aladin_phone.py \"$D\"/historical_bin_*.bin\n"
+      + "python aladin_phone.py \"$D\"\n"
       + "EOF\n"
       + "chmod +x ~/bin/run_aladin.sh\n"
       + "grep -q '^allow-external-apps' ~/.termux/termux.properties 2>/dev/null || echo 'allow-external-apps=true' >> ~/.termux/termux.properties\n"
       + "termux-reload-settings 2>/dev/null\n"
       + "echo \"Termux is ready for the app. Swipe Termux away once, then open it again.\"\n";
+
+    // ---- 0.6.1: watcher mode. A small script, started once in Termux, waits for req_*.txt files written by this app, runs ALADIN
+    // on that folder and sends the report back with am broadcast (token-checked). No pasting per run.
+    public static final String WATCH_NAME = "start_watch.sh";
+    public static final String WATCH_CMD = "bash ~/storage/downloads/ecg/start_watch.sh";
+    static final String START_WATCH_TEMPLATE =
+        "#!/data/data/com.termux/files/usr/bin/bash\n"
+      + "mkdir -p ~/bin\n"
+      + "cat > ~/bin/aladin_watch.sh <<'WATCHEOF'\n"
+      + "#!/data/data/com.termux/files/usr/bin/bash\n"
+      + "# ALADIN watcher: waits for req_*.txt files written by the app, runs ALADIN on that folder, sends the report back to the app.\n"
+      + "TOKEN=\"__TOKEN__\"\n"
+      + "ECG=\"$HOME/storage/downloads/ecg\"\n"
+      + "ALA=\"$HOME/storage/downloads/aladin\"\n"
+      + "APP=\"com.noop.mgecg/.AladinResultReceiver\"\n"
+      + "say() {\n"
+      + "  am broadcast -n \"$APP\" --es token \"$TOKEN\" --es status \"$1\" --es folder \"${2:- }\" --es text \"${3:- }\" >/dev/null 2>&1\n"
+      + "}\n"
+      + "say watching \" \" \"watcher running\"\n"
+      + "while true; do\n"
+      + "  for R in \"$ECG\"/req_*.txt; do\n"
+      + "    [ -e \"$R\" ] || continue\n"
+      + "    N=$(basename \"$R\" .txt)\n"
+      + "    [ -e \"$ECG/.done_$N\" ] && continue\n"
+      + "    : > \"$ECG/.done_$N\"\n"
+      + "    F=$(tr -d '\\r\\n ' < \"$R\")\n"
+      + "    D=\"$ECG/$F\"\n"
+      + "    say started \"$F\" \"ALADIN started on $F\"\n"
+      + "    if [ -z \"$F\" ] || [ ! -d \"$D\" ]; then say error \"$F\" \"Folder not found: $D\"; continue; fi\n"
+      + "    if [ ! -f \"$ALA/aladin_phone.py\" ]; then say error \"$F\" \"Missing $ALA/aladin_phone.py\"; continue; fi\n"
+      + "    if [ ! -f \"$ALA/aladin_fp16.npz\" ]; then say error \"$F\" \"Missing $ALA/aladin_fp16.npz\"; continue; fi\n"
+      + "    termux-wake-lock 2>/dev/null\n"
+      + "    ( cd \"$ALA\" && timeout 1200 python aladin_phone.py \"$D\" ) > \"$D/aladin_report.txt\" 2>&1\n"
+      + "    RC=$?\n"
+      + "    termux-wake-unlock 2>/dev/null\n"
+      + "    T=$(tail -c 50000 \"$D/aladin_report.txt\" | tr '\\r' '\\n')\n"
+      + "    [ -n \"$T\" ] || T=\"(no output, exit code $RC)\"\n"
+      + "    if [ \"$RC\" -eq 0 ]; then say done \"$F\" \"$T\"; else say error \"$F\" \"ALADIN exited with code $RC\"$'\\n'\"$T\"; fi\n"
+      + "  done\n"
+      + "  sleep 3\n"
+      + "done\n"
+      + "WATCHEOF\n"
+      + "chmod +x ~/bin/aladin_watch.sh\n"
+      + "grep -q 'aladin_watch' ~/.bashrc 2>/dev/null || echo 'pgrep -f aladin_watch.sh >/dev/null 2>&1 || (nohup ~/bin/aladin_watch.sh </dev/null >/dev/null 2>&1 &)' >> ~/.bashrc\n"
+      + "pkill -f 'bin/aladin_watch.sh' 2>/dev/null\n"
+      + "sleep 1\n"
+      + "nohup ~/bin/aladin_watch.sh </dev/null >/dev/null 2>&1 &\n"
+      + "echo \"ALADIN watcher started. Leave Termux open in the background (do not swipe it away), then tap 2 in the app.\"\n";
 
     public static final String RUN_LATEST_NAME = "run_latest.sh";
     /** Typed or pasted in Termux when its build has no run-command permission (0.5.16). */
@@ -72,7 +120,7 @@ public final class TermuxBridge {
       + "ls \"$D\"/historical_bin_*.bin >/dev/null 2>&1 || { echo \"No historical_bin files in $D\"; exit 3; }\n"
       + "cd ~/storage/downloads/aladin || { echo \"ALADIN folder missing: ~/storage/downloads/aladin\"; exit 2; }\n"
       + "termux-wake-lock 2>/dev/null\n"
-      + "python aladin_phone.py \"$D\"/historical_bin_*.bin 2>&1 | tee \"$D/aladin_report.txt\"\n"
+      + "python aladin_phone.py \"$D\" 2>&1 | tee \"$D/aladin_report.txt\"\n"
       + "T=$(tail -c 60000 \"$D/aladin_report.txt\" | tr '\\r' '\\n')\n"
       + "am broadcast -n com.noop.mgecg/.AladinResultReceiver --es folder \"$(basename \"$D\")\" --es token \"" + token + "\" --es text \"$T\" >/dev/null 2>&1 && echo \"Report sent to the app.\" || echo \"Could not send the report to the app; it is saved in $D/aladin_report.txt\"\n";
     }
@@ -96,6 +144,27 @@ public final class TermuxBridge {
 
     public static void writeRunLatest(Context c) throws Exception {
         copyToDownloads(c, "ecg", RUN_LATEST_NAME, "application/x-sh", new java.io.ByteArrayInputStream(runLatestScript(token(c)).getBytes(StandardCharsets.UTF_8)));
+    }
+
+    public static void writeStartWatch(Context c) throws Exception {
+        String sh = START_WATCH_TEMPLATE.replace("__TOKEN__", token(c));
+        copyToDownloads(c, "ecg", WATCH_NAME, "application/x-sh", new java.io.ByteArrayInputStream(sh.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /** Asks the Termux watcher to run ALADIN on Download/ecg/<folder>. The watcher marks each request done itself, so a request is never run twice. */
+    public static void requestRun(Context c, String folder) throws Exception {
+        prefs(c).edit().putLong("run_started_ms", System.currentTimeMillis()).putLong("run_ack_ms", 0L).putString("run_folder", folder).apply();
+        copyToDownloads(c, "ecg", "req_" + folder + ".txt", "text/plain", new java.io.ByteArrayInputStream(folder.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    public static long ackTime(Context c) { return prefs(c).getLong("run_ack_ms", 0L); }
+    public static long watchSeen(Context c) { return prefs(c).getLong("watch_seen_ms", 0L); }
+
+    static void markSeen(Context c, boolean started) {
+        long now = System.currentTimeMillis();
+        SharedPreferences.Editor e = prefs(c).edit().putLong("watch_seen_ms", now);
+        if (started) e.putLong("run_ack_ms", now);
+        e.apply();
     }
 
     public static boolean termuxInstalled(Context c) {

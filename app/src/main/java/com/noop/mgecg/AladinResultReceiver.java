@@ -21,12 +21,17 @@ public class AladinResultReceiver extends BroadcastReceiver {
         String folder = in.getStringExtra("folder");
         String sent = in.getStringExtra("text");
         if (sent != null) {
-            // 0.5.16: the report text posted by our own Termux script (am broadcast); ignore anything without the right token
             String tok = in.getStringExtra("token");
             if (tok == null || !tok.equals(TermuxBridge.token(c))) return;
-            String body = "ALADIN run on " + folder + " finished (sent by Termux)\n\n" + cleanProgress(sent);
+            String status = in.getStringExtra("status");
+            if ("watching".equals(status)) { TermuxBridge.markSeen(c, false); return; }       // watcher heartbeat on start
+            if ("started".equals(status)) { TermuxBridge.markSeen(c, true); return; }         // watcher picked the request up
+            boolean err = "error".equals(status);
+            String fol = folder == null ? "" : folder.trim();
+            String body = (err ? "ALADIN could not finish on " + fol + "\n\n" : "ALADIN run on " + fol + " finished (sent by Termux)\n\n") + cleanProgress(sent);
+            TermuxBridge.markSeen(c, true);
             TermuxBridge.saveResult(c, body);
-            notify(c, true, body);
+            notify(c, !err, body);
             return;
         }
         Bundle r = in.getBundleExtra("result");
