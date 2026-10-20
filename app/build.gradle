@@ -1,5 +1,5 @@
 plugins { id 'com.android.application' }
 
 android { namespace 'com.noop.mgecg'; compileSdk 34
-    defaultConfig { applicationId 'com.noop.mgecg'; minSdk 26; targetSdk 34; versionCode 44; versionName '0.6.1-termux-watch' }
+    defaultConfig { applicationId 'com.noop.mgecg'; minSdk 26; targetSdk 34; versionCode 45; versionName '0.7.0-segments-u' }
 }
