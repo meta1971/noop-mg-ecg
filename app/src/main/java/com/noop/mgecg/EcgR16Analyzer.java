@@ -269,6 +269,27 @@ public final class EcgR16Analyzer {
                 s.append("not measured (").append(qt.reason.isEmpty() ? "not enough clean data" : qt.reason)
                         .append("). It needs about 40 clean beats and a clear T wave.</small>");
             }
+            return s.toString() + segmentsHtml();
+        }
+
+        /** 0.7.0: every wave and segment of the averaged beat, shown right on the ECG screen. A value appears only when its 95% range is within +-10 ms. */
+        private String segmentsHtml() {
+            if (qt == null || qt.seg == null || !qt.seg.valid || qt.beatsUsed < 25) return "";
+            EcgSegments.Result g = qt.seg;
+            String no = "n/a";
+            StringBuilder s = new StringBuilder("<br><br><b>Heartbeat segments</b> <small>(" + g.beats
+                    + " beats averaged; a number shows only when its range is within &plusmn;10 ms)</small><br>");
+            s.append(String.format(Locale.UK, "Heart rate <b>%.0f</b> &middot; QRS <b>%s</b><br>", g.hrBpm,
+                    g.qrsOk ? String.format(Locale.UK, "%.0f ms</b> (&plusmn;%.0f)<b>", g.qrsMs, g.qrsHwMs) : no));
+            s.append("P wave <b>").append(g.pPresent ? String.format(Locale.UK, "%.0f &micro;V", Math.abs(g.pAmpUv)) : "not clear").append("</b> &middot; PR <b>")
+                    .append(g.prOk ? String.format(Locale.UK, "%.0f ms</b> (&plusmn;%.0f), segment %.0f ms<b>", g.prMs, g.prHwMs, g.prSegMs) : no).append("</b><br>");
+            s.append(String.format(Locale.UK, "ST 60 ms after J <b>%s</b> &middot; T wave <b>%s</b><br>",
+                    Double.isNaN(g.st60Uv) ? no : String.format(Locale.UK, "%+.0f &micro;V", g.st60Uv),
+                    Double.isNaN(g.tAmpUv) ? no : String.format(Locale.UK, "%.0f &micro;V (%.0f%% of R)", Math.abs(g.tAmpUv), 100.0 * Math.abs(g.tOverR))));
+            s.append("QT <b>").append(g.qtOk ? String.format(Locale.UK, "%.0f ms</b> (&plusmn;%.0f) &middot; QTc F <b>%.0f</b> / B <b>%.0f", g.qtMs, g.qtHwMs, g.qtcFMs, g.qtcBMs) : no).append("</b><br>");
+            s.append("U wave <b>").append(g.uPresent ? String.format(Locale.UK, "seen, %.0f &micro;V, %.0f ms after the T wave ends", g.uAmpUv, g.uAfterTEndMs) : "not seen").append("</b>");
+            if (!g.uPresent) s.append(" <small>(found in about half of cases where a cardiologist marks one, less often above 70 bpm; not seeing it does not mean it is absent)</small>");
+            s.append("<br><small>Research only. Tested against 104 annotated ECGs: typical error 8 ms for QRS, 10 for PR, 12 for QT; ST is a measurement only.</small>");
             return s.toString();
         }
 

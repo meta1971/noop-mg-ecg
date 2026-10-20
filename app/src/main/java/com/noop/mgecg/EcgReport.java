@@ -651,9 +651,25 @@ public final class EcgReport {
         b.append(row("PR segment", s.prOk ? String.format(Locale.US, "%.0f ms", s.prSegMs) : no));
         b.append(row("ST level, 60 ms after J", Double.isNaN(s.st60Uv) ? no : String.format(Locale.US, "%+.0f &micro;V (spread &plusmn;%.0f), measurement only", s.st60Uv, Double.isNaN(s.st60SdUv) ? 0.0 : s.st60SdUv)));
         b.append(row("T wave", Double.isNaN(s.tAmpUv) ? no : String.format(Locale.US, "%.0f &micro;V, %.0f%% of the R wave", Math.abs(s.tAmpUv), 100.0 * Math.abs(s.tOverR))));
+        b.append(row("U wave", s.uPresent ? String.format(Locale.US, "seen, %.0f &micro;V, %.0f ms after the T wave ends", s.uAmpUv, s.uAfterTEndMs)
+                : "not seen on this recording (picked up in about half of the cases where a cardiologist marks one, less often above 70 bpm)"));
         b.append(row("QT interval", s.qtOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.qtMs, s.qtHwMs) : no));
         b.append(row("QT corrected", s.qtOk ? String.format(Locale.US, "Fridericia %.0f ms (&plusmn;%.0f), Bazett %.0f ms", s.qtcFMs, s.qtcFHwMs, s.qtcBMs) : no));
-        b.append("<p class=\"cap\"><b>P</b> top chambers firing, <b>QRS</b> main pump firing, <b>ST</b> the quiet stretch after it, <b>T</b> the reset. ")
+        // 0.7.0: every measured value, for anyone who wants the detail (times are in ms from the R peak; heights in microvolts above the PR-segment baseline)
+        b.append("<details><summary>All measurements</summary>");
+        b.append(row("R wave height", String.format(Locale.US, "%.0f &micro;V", s.rUv)));
+        b.append(row("Q wave depth", String.format(Locale.US, "%.0f &micro;V", Math.abs(s.qUv))));
+        b.append(row("S wave depth", String.format(Locale.US, "%.0f &micro;V", Math.abs(s.sUv))));
+        b.append(row("QRS start / end (J point)", String.format(Locale.US, "%.0f / %.0f ms from the R peak", s.qrsOnMs, s.qrsOffMs)));
+        if (s.pPresent) b.append(row("P wave start / peak / end", String.format(Locale.US, "%.0f / %.0f / %.0f ms (start and end are approximate)", s.pOnMs, s.pPeakMs, s.pOffMs)));
+        b.append(row("ST at J / 60 ms / 80 ms", String.format(Locale.US, "%+.0f / %+.0f / %+.0f &micro;V, slope %+.2f &micro;V per ms", s.stJUv, s.st60Uv, s.st80Uv, s.stSlopeUvPerMs)));
+        if (!Double.isNaN(s.tPeakMs)) b.append(row("T wave peak", String.format(Locale.US, "%.0f ms after the R peak", s.tPeakMs)));
+        if (!Double.isNaN(s.tEndMs)) b.append(row("T wave end", String.format(Locale.US, "%.0f ms after the R peak", s.tEndMs)));
+        if (!Double.isNaN(s.tEndMs) && !Double.isNaN(s.tPeakMs)) b.append(row("T peak to T end", String.format(Locale.US, "%.0f ms", s.tEndMs - s.tPeakMs)));
+        if (s.uPresent) b.append(row("U wave peak", String.format(Locale.US, "%.0f ms after the R peak, %.0f &micro;V", s.uPeakMs, s.uAmpUv)));
+        b.append(row("Beat-to-beat noise of the average", String.format(Locale.US, "%.1f &micro;V", s.noiseUv)));
+        b.append("</details>");
+        b.append("<p class=\"cap\"><b>P</b> top chambers firing, <b>QRS</b> main pump firing, <b>ST</b> the quiet stretch after it, <b>T</b> the reset, <b>U</b> a small bump after it that is not always there. ")
                 .append("Tested against 104 ECG records annotated by a cardiologist, the typical error was 8 ms for QRS, 10 ms for PR and 12 ms for QT, ")
                 .append("but about one PR or QT value in four can be off by more than 20 ms. This test does not cover this strap's own lead. ")
                 .append("ST is a measurement only: a wrist-to-finger lead is not a standard lead, so it is not interpreted.</p></section>");
@@ -672,6 +688,7 @@ public final class EcgReport {
         if (s.pPresent) b.append(band(s.pOnMs, s.pOffMs, t0, t1, top, bottom, "rgba(46,160,67,0.22)", "P"));
         b.append(band(s.qrsOnMs, s.qrsOffMs, t0, t1, top, bottom, "rgba(220,60,60,0.22)", "QRS"));
         b.append(band(s.qrsOffMs, s.qrsOffMs + 80, t0, t1, top, bottom, "rgba(240,160,40,0.25)", "ST"));
+        if (s.uPresent) b.append(band(s.uPeakMs - 35, s.uPeakMs + 35, t0, t1, top, bottom, "rgba(150,80,200,0.28)", "U"));
         if (!Double.isNaN(s.tPeakMs) && !Double.isNaN(s.tEndMs)) b.append(band(s.tPeakMs - 60, s.tEndMs, t0, t1, top, bottom, "rgba(60,120,220,0.20)", "T"));
         for (int ms = -400; ms <= 600; ms += 200) {
             double x = (ms - t0) / (t1 - t0) * W;

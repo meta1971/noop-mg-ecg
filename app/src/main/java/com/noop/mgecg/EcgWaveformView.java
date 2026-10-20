@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.4 (3 Oct): smooth playout, curve through every sample, scroll or sweep (tap = scale, hold = style)
+// FILE VERSION 0.7.0 (20 Oct): start-up guard (no off-screen spike at the start of a reading); 0.2.4 (3 Oct): smooth playout, curve through every sample, scroll or sweep (tap = scale, hold = style)
 
 import android.animation.ValueAnimator;
 import android.content.Context;
@@ -205,6 +205,7 @@ public class EcgWaveformView extends View {
             idleSweepAnimator = null;
         }
         liveMode = true;
+        value = EcgStartupGuard.filter(totalSamplesReceived, value);       // the strap's start-up spike and zero block
         totalSamplesReceived++;
         playout.push(value);
         postInvalidateOnAnimation();

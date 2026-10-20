@@ -15,6 +15,7 @@ public final class EcgAutoScale {
 
     public static final float DEFAULT_MIN = -1000f, DEFAULT_MAX = 2000f;   // WHOOP's own window, uV
     public static final float MIN_RANGE = 1000f, MAX_RANGE = 3000f;
+    static final float OUTLIER_UV = 3000f;
     static final int MIN_SAMPLES = 200;                                   // 2 s at 100 Hz before the window moves
     static final float ABOVE = 1.6f, BELOW = 0.65f;                       // window = peak x (1.6 above, 0.65 below baseline)
 
@@ -28,8 +29,16 @@ public final class EcgAutoScale {
     /** vals[0..n) are the samples currently on screen (any order), in microvolts. */
     public void update(float[] vals, int n) {
         if (n < MIN_SAMPLES) return;
-        float[] s = Arrays.copyOf(vals, n);
-        Arrays.sort(s);
+        float[] s0 = Arrays.copyOf(vals, n);
+        Arrays.sort(s0);
+        float med0 = s0[n / 2];
+        // 0.7.0: samples more than 3 mV from the median are start-up or contact artefacts; they must not stretch the window
+        int m = 0;
+        float[] s = new float[n];
+        for (int i = 0; i < n; i++) if (Math.abs(s0[i] - med0) <= OUTLIER_UV) s[m++] = s0[i];
+        if (m < MIN_SAMPLES) return;
+        n = m;
+        s = Arrays.copyOf(s, n);
         float med = s[n / 2];
         // robust peak: the 99th percentile away from the baseline (a 6 s window holds about 7 R waves, so p99 lands on them
         // while a single spike of movement does not)

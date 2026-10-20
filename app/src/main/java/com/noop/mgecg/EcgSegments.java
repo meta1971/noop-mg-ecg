@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.6.0 (20 Oct): every wave and segment of the averaged beat, with 95% ranges and accuracy gates
+// FILE VERSION 0.7.0 (20 Oct): every wave and segment of the averaged beat, with 95% ranges and accuracy gates; U wave added
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -45,6 +45,9 @@ public final class EcgSegments {
         public double qtMs = Double.NaN, qtHwMs = Double.NaN, qtcFMs = Double.NaN, qtcFHwMs = Double.NaN, qtcBMs = Double.NaN;
         public double noiseUv = Double.NaN, tToNoise = Double.NaN;
         public boolean qrsOk, prOk, qtOk;
+        /** U wave: a small same-polarity bump after the T wave. uPresent only when it passes the peak, size and split-half checks. */
+        public boolean uPresent;
+        public double uAmpUv = Double.NaN, uPeakMs = Double.NaN, uAfterTEndMs = Double.NaN, uPromUv = Double.NaN;
         public double[] avg;            // mean beat in uV
         public int rIdx;                // index of the R peak in avg
         public String note = "";
@@ -231,6 +234,7 @@ public final class EcgSegments {
             r.qtcFMs = f.qt / Math.cbrt(rrS); r.qtcBMs = f.qt / Math.sqrt(rrS);
             r.tToNoise = noiseUv > 0 ? Math.abs(f.tAmp) / noiseUv : Double.NaN;
         }
+        try { uWave(r, beats, f, r.rrMs, noiseUv, ri); } catch (RuntimeException e) { r.uPresent = false; }
         // bootstrap
         Random rng = new Random(12345L);
         double[] qrs = new double[BOOTSTRAPS], pr = new double[BOOTSTRAPS], qt = new double[BOOTSTRAPS], qtc = new double[BOOTSTRAPS], st = new double[BOOTSTRAPS];
@@ -255,6 +259,67 @@ public final class EcgSegments {
         r.prOk = r.pPresent && np >= 0.9 * BOOTSTRAPS && r.prHwMs <= MAX_HALF_WIDTH_MS;
         r.qtOk = f.hasT && !Double.isNaN(r.qtMs) && nt >= 0.9 * BOOTSTRAPS && r.qtHwMs <= MAX_HALF_WIDTH_MS && r.tToNoise >= MIN_T_TO_NOISE;
         return r;
+    }
+
+    // ---------------------------------------------------------------- U wave
+
+    public static final double U_PROM_K = 3.0, U_HALF_K = 2.0, U_MAX_REL_T = 0.6, U_MIN_PROM_UV = 5.0;
+
+    /** scipy.signal.find_peaks(prominence=) on a whole array: local maxima (flat tops take the middle) with prominence >= minProm. Returns {index, prominence} pairs. */
+    static java.util.List<double[]> peaksWithProminence(double[] x, double minProm) {
+        java.util.List<double[]> out = new ArrayList<>();
+        int i = 1, iMax = x.length - 1;
+        while (i < iMax) {
+            if (x[i - 1] < x[i]) {
+                int ahead = i + 1;
+                while (ahead < iMax && x[ahead] == x[i]) ahead++;
+                if (x[ahead] < x[i]) {
+                    int peak = (i + (ahead - 1)) / 2;
+                    double leftMin = x[peak], rightMin = x[peak];
+                    for (int k = peak; k >= 0 && x[k] <= x[peak]; k--) if (x[k] < leftMin) leftMin = x[k];
+                    for (int k = peak; k <= iMax && x[k] <= x[peak]; k++) if (x[k] < rightMin) rightMin = x[k];
+                    double prom = x[peak] - Math.max(leftMin, rightMin);
+                    if (prom >= minProm) out.add(new double[]{peak, prom});
+                    i = ahead;
+                }
+            }
+            i++;
+        }
+        return out;
+    }
+
+    /** {amp, ms from R, prominence} of the most prominent peak in the U window of one (half-)average, or null. */
+    static double[] uOne(double[] beat, Fid f, double rrMs, double promMin, int i0) {
+        if (!f.hasT || Double.isNaN(f.tEnd)) return null;
+        double tp = f.tAmp < 0 ? -1 : 1;
+        double aMs = f.tEnd + 15.0, bMs = Math.min(Math.min(f.tEnd + 280.0, rrMs - 300.0), 650.0);
+        if (bMs - aMs < 80) return null;
+        int ia = (int) Math.round(aMs / DT) + i0, ib = (int) Math.round(bMs / DT) + i0;
+        if (ib >= beat.length - 2 || ia - 10 < 0) return null;
+        double[] y = smooth(beat, 5);
+        for (int i = 0; i < y.length; i++) y[i] = (y[i] - f.base) * tp;
+        double[] sub = Arrays.copyOfRange(y, ia - 10, ib + 1);
+        double[] best = null;
+        for (double[] pk : peaksWithProminence(sub, promMin)) {
+            int p = (int) pk[0] + ia - 10;
+            if (p >= ia && p <= ib - 2 && y[p] > 0 && (best == null || pk[1] > best[2])) best = new double[]{y[p], (p - i0) * DT, pk[1]};
+        }
+        return best;
+    }
+
+    static void uWave(Result r, List<double[]> beats, Fid f, double rrMs, double noise, int i0) {
+        double promMin = Math.max(U_PROM_K * noise, U_MIN_PROM_UV);
+        double[] u = uOne(r.avg, f, rrMs, promMin, i0);
+        if (u == null) return;
+        r.uAmpUv = u[0]; r.uPeakMs = u[1]; r.uPromUv = u[2];
+        r.uAfterTEndMs = u[1] - f.tEnd;
+        if (u[0] > U_MAX_REL_T * Math.abs(f.tAmp)) return;
+        int n = beats.size();
+        int[] odd = new int[(n + 1) / 2], even = new int[n / 2];
+        for (int i = 0; i < n; i++) { if (i % 2 == 0) odd[i / 2] = i; else even[i / 2] = i; }
+        double[] u1 = uOne(meanOf(beats, odd), f, rrMs, U_HALF_K * noise, i0);
+        double[] u2 = uOne(meanOf(beats, even), f, rrMs, U_HALF_K * noise, i0);
+        r.uPresent = u1 != null && u2 != null && Math.abs(u1[1] - u[1]) <= 40 && Math.abs(u2[1] - u[1]) <= 40;
     }
 
     static double halfWidth(double[] v, int n) {
