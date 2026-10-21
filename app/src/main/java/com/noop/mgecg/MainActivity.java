@@ -69,7 +69,13 @@ public class MainActivity extends NewLookActivity {
     // 0.3.0: on-screen battery readout and a one-shot battery command pair per connection
     private TextView batteryText;
     private boolean batteryCmdsSent = false;
-    private static final String BUILD_TAG = "0.5.9-ble-only";
+    /** 0.7.4: the build string is read from the installed package at run time (was a hard-coded "0.5.9-ble-only"). */
+    private String buildTag() {
+        try {
+            String v = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            return v != null ? v : "unknown";
+        } catch (Throwable t) { return "unknown"; }
+    }
     private int ecgSampleCounter = 0;
     private final Handler ecgUiHandler = new Handler(Looper.getMainLooper());
     private Runnable ecgElapsedTicker;
@@ -840,7 +846,7 @@ public class MainActivity extends NewLookActivity {
 
             rssiMonitoringActive = true;
             g.readRemoteRssi();
-            logRaw("BUILD " + BUILD_TAG);
+            logRaw("BUILD " + buildTag());
             batteryCmdsSent = false;
             schedulePeriodicBatteryRead(g);
             // 0.3.0: ask the strap itself for battery level and extended battery info once per
