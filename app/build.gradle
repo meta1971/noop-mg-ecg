@@ -1,5 +1,5 @@
 plugins { id 'com.android.application' }
 
 android { namespace 'com.noop.mgecg'; compileSdk 34
-    defaultConfig { applicationId 'com.noop.mgecg'; minSdk 26; targetSdk 34; versionCode 46; versionName '0.7.1-all-parameters' }
+    defaultConfig { applicationId 'com.noop.mgecg'; minSdk 26; targetSdk 34; versionCode 48; versionName '0.7.3-bt-watchdog' }
 }
