@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.7.1 (20 Oct): every wave and segment of the averaged beat, with 95% ranges and accuracy gates; U wave (0.7.0); TP segment, ST vs TP, ST shape and area, Tp-Te, QTp and more QTc formulas (0.7.1)
+// FILE VERSION 0.7.2 (20 Oct): P wave in 10-beat blocks and PR drift (the PP question); 0.7.1 (20 Oct): every wave and segment of the averaged beat, with 95% ranges and accuracy gates; U wave (0.7.0); TP segment, ST vs TP, ST shape and area, Tp-Te, QTp and more QTc formulas (0.7.1)
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -56,6 +56,9 @@ public final class EcgSegments {
         public double qrsAreaUvMs = Double.NaN, rPeakTimeMs = Double.NaN, rsRatio = Double.NaN;
         public double qtpMs = Double.NaN, tpeMs = Double.NaN, tpeOverQt = Double.NaN, qtOverRr = Double.NaN;
         public double qtcFraminghamMs = Double.NaN, qtcHodgesMs = Double.NaN, qtcRautaharjuMs = Double.NaN;
+        // 0.7.2: the P wave cannot be timed beat by beat (single-beat noise is as large as the P wave), but it can be checked in averages of 10 beats.
+        public int pBlocksTotal, pBlocksFound;                       // 0 total = the check could not run (heart rate too fast, or too few beats)
+        public double pBlockLagSdMs = Double.NaN, ppDiffMs = Double.NaN;   // spread of the P timing between blocks; typical PP-minus-RR difference
         public double[] avg;            // mean beat in uV
         public int rIdx;                // index of the R peak in avg
         public String note = "";
@@ -244,6 +247,7 @@ public final class EcgSegments {
         }
         try { uWave(r, beats, f, r.rrMs, noiseUv, ri); } catch (RuntimeException e) { r.uPresent = false; }
         try { extras(r, f, r.rrMs, noiseUv, ri); } catch (RuntimeException e) { /* extras stay NaN */ }
+        try { pBlocks(r, beats, r.rrMs, pre); } catch (RuntimeException e) { r.pBlocksTotal = 0; r.pBlocksFound = 0; }
         // bootstrap
         Random rng = new Random(12345L);
         double[] qrs = new double[BOOTSTRAPS], pr = new double[BOOTSTRAPS], qt = new double[BOOTSTRAPS], qtc = new double[BOOTSTRAPS], st = new double[BOOTSTRAPS];
@@ -326,6 +330,101 @@ public final class EcgSegments {
             r.qtcFraminghamMs = f.qt + 154.0 * (1.0 - rrMs / 1000.0);
             r.qtcHodgesMs = f.qt + 1.75 * (hr - 60.0);
             r.qtcRautaharjuMs = f.qt * (120.0 + hr) / 180.0;
+        }
+    }
+
+    // ---------------------------------------------------------------- 0.7.2: P wave in 10-beat blocks
+
+    static final int PB_A = 150, PB_B = 37, PB_TL = 70, PB_MAXLAG = 15, PB_WIN = 100, PB_NOISE = 220, PB_BLOCK = 10;
+
+    /** linear trend removed through the medians of the first and last 10 samples of b[from, to). */
+    static double[] pbDetrend(double[] b, int from, int to) {
+        int n = to - from;
+        double lo = median(b, from, from + 10), hi = median(b, to - 10, to);
+        double[] o = new double[n];
+        for (int i = 0; i < n; i++) o[i] = b[from + i] - (lo + (hi - lo) * i / (n - 1.0));
+        return o;
+    }
+
+    /** {best normalised correlation, lag in ms} of the template inside the 100-sample window, lag refined by a parabola through the peak. */
+    static double[] pbEstimate(double[] w, double[] tpl, double tn) {
+        int nl = 2 * PB_MAXLAG + 1;
+        double[] cc = new double[nl];
+        for (int k = 0; k < nl; k++) {
+            int off = PB_MAXLAG + (k - PB_MAXLAG);
+            double m = 0;
+            for (int i = 0; i < PB_TL; i++) m += w[off + i];
+            m /= PB_TL;
+            double dot = 0, nn = 0;
+            for (int i = 0; i < PB_TL; i++) { double v = w[off + i] - m; dot += v * tpl[i]; nn += v * v; }
+            cc[k] = dot / (Math.sqrt(nn) * tn + 1e-9);
+        }
+        int kb = 0;
+        for (int k = 1; k < nl; k++) if (cc[k] > cc[kb]) kb = k;
+        double kk = kb;
+        if (kb > 0 && kb < nl - 1) {
+            double a = cc[kb - 1], b = cc[kb], d = cc[kb + 1], den = a - 2 * b + d;
+            if (den != 0) kk = kb + 0.5 * (a - d) / den;
+        }
+        return new double[]{cc[kb], (kk - PB_MAXLAG) * DT};
+    }
+
+    static double percentile(double[] v, double pct) {
+        double[] s = v.clone();
+        Arrays.sort(s);
+        double idx = pct / 100.0 * (s.length - 1);
+        int lo = (int) Math.floor(idx), hi = (int) Math.ceil(idx);
+        return s[lo] + (s[hi] - s[lo]) * (idx - lo);
+    }
+
+    /** Needs RR >= 860 ms (room for a quiet noise window between the T/U wave and the next P wave), at least 4 blocks of 10 beats and 40 noise windows. */
+    static void pBlocks(Result r, List<double[]> beats, double rrMs, int i0) {
+        int n = beats.size(), nb = n / PB_BLOCK;
+        if (nb < 4 || rrMs < 860 || n < 40) return;
+        int plen = PB_A - PB_B;
+        double[][] pw = new double[n][], nw = new double[n][];
+        for (int i = 0; i < n; i++) {
+            double[] b = beats.get(i);
+            pw[i] = pbDetrend(b, i0 - PB_A, i0 - PB_B);
+            nw[i] = pbDetrend(b, i0 + PB_NOISE, i0 + PB_NOISE + PB_WIN);
+        }
+        double[] mean = new double[plen];
+        for (double[] w : pw) for (int j = 0; j < plen; j++) mean[j] += w[j] / n;
+        double[] tl = pbDetrend(mean, 0, plen);
+        int c0 = (plen - PB_TL) / 2;
+        double[] tpl = Arrays.copyOfRange(tl, c0, c0 + PB_TL);
+        double tm = 0;
+        for (double v : tpl) tm += v;
+        tm /= PB_TL;
+        double tn = 0;
+        for (int i = 0; i < PB_TL; i++) { tpl[i] -= tm; tn += tpl[i] * tpl[i]; }
+        tn = Math.sqrt(tn);
+        double[] scores = new double[nb], lags = new double[nb];
+        for (int k = 0; k < nb; k++) {
+            double[] blk = new double[plen];
+            for (int i = 0; i < PB_BLOCK; i++) for (int j = 0; j < plen; j++) blk[j] += pw[k * PB_BLOCK + i][j] / PB_BLOCK;
+            int c0w = (plen - PB_WIN) / 2;
+            double[] e = pbEstimate(Arrays.copyOfRange(blk, c0w, c0w + PB_WIN), tpl, tn);
+            scores[k] = e[0]; lags[k] = e[1];
+        }
+        int nbn = n / PB_BLOCK;
+        double[] nullb = new double[nbn];
+        for (int k = 0; k < nbn; k++) {
+            double[] blk = new double[PB_WIN];
+            for (int i = 0; i < PB_BLOCK; i++) for (int j = 0; j < PB_WIN; j++) blk[j] += nw[k * PB_BLOCK + i][j] / PB_BLOCK;
+            nullb[k] = pbEstimate(blk, tpl, tn)[0];
+        }
+        double thr;
+        if (nbn >= 8) thr = percentile(nullb, 95);
+        else { thr = nullb[0]; for (double v : nullb) thr = Math.max(thr, v); }
+        int found = 0;
+        double sum = 0, sq = 0;
+        for (int k = 0; k < nb; k++) if (scores[k] > thr) { found++; sum += lags[k]; sq += lags[k] * lags[k]; }
+        r.pBlocksTotal = nb; r.pBlocksFound = found;
+        if (found > 3) {
+            double m = sum / found;
+            r.pBlockLagSdMs = Math.sqrt(Math.max(0, sq / found - m * m));
+            r.ppDiffMs = 1.414 * r.pBlockLagSdMs;
         }
     }
 

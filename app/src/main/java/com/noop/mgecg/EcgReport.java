@@ -693,7 +693,14 @@ public final class EcgReport {
         b.append("<p class=\"hint\"><b>Intervals</b></p>");
         double[] rr = rrStats(res);
         b.append(prow("RR interval", String.format(Locale.US, "%.0f ms (%.0f per minute)", s.rrMs, s.hrBpm), "in one 79 s check every beat matched a chest-strap beat within 6 ms (79 of 79)"));
-        b.append(prow("PP interval", "not measured", "a single beat's P wave (about 50-65 &micro;V) is too small to time beat by beat; in a regular sinus rhythm PP equals RR"));
+        b.append(prow("PP interval", s.pBlocksTotal > 0 && !Double.isNaN(s.ppDiffMs)
+                        ? String.format(Locale.US, "estimated: same as RR, mean %.0f ms, expected to differ from RR by about &plusmn;%.0f ms", s.rrMs, Math.max(1.0, s.ppDiffMs))
+                        : String.format(Locale.US, "estimated: same as RR, mean %.0f ms", s.rrMs),
+                "an estimate, not a measurement: a single beat's P wave (30-67 &micro;V) is buried in noise of 23-70 &micro;V, and a matched filter found it in about a third of beats in a simulation on our recordings"));
+        b.append(prow("P wave found in 10-beat averages", s.pBlocksTotal > 0 ? String.format(Locale.US, "%d of %d blocks", s.pBlocksFound, s.pBlocksTotal) : "n/a (needs a heart rate below about 70 and at least 40 beats)",
+                "a screen for missing atrial activity; research only; tested on our own recordings only: found in 92% of blocks (median; range 27-100%) over 12 usable readings; it cannot run above about 70 bpm"));
+        b.append(prow("PR drift between blocks", Double.isNaN(s.pBlockLagSdMs) ? "n/a" : String.format(Locale.US, "&plusmn;%.1f ms", s.pBlockLagSdMs),
+                "spread of the P timing between 10-beat averages; includes measurement noise (median about 4 ms on our recordings)"));
         b.append(prow("PR interval", s.prOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.prMs, s.prHwMs) : no, "typical error 10 ms, but about one in four values is off by more than 20 ms"));
         b.append(prow("QT interval", s.qtOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.qtMs, s.qtHwMs) : no, qtBasis));
         if (s.qtOk) {

@@ -287,6 +287,8 @@ public final class EcgR16Analyzer {
                     Double.isNaN(g.st60Uv) ? no : String.format(Locale.UK, "%+.0f &micro;V", g.st60Uv),
                     Double.isNaN(g.tAmpUv) ? no : String.format(Locale.UK, "%.0f &micro;V (%.0f%% of R)", Math.abs(g.tAmpUv), 100.0 * Math.abs(g.tOverR))));
             s.append("QT <b>").append(g.qtOk ? String.format(Locale.UK, "%.0f ms</b> (&plusmn;%.0f) &middot; QTc F <b>%.0f</b> / B <b>%.0f", g.qtMs, g.qtHwMs, g.qtcFMs, g.qtcBMs) : no).append("</b><br>");
+            if (g.pBlocksTotal > 0) s.append("P wave in 10-beat averages <b>").append(g.pBlocksFound).append(" of ").append(g.pBlocksTotal).append("</b>")
+                    .append(Double.isNaN(g.pBlockLagSdMs) ? "" : String.format(Locale.UK, " &middot; PR drift &plusmn;%.1f ms", g.pBlockLagSdMs)).append("<br>");
             if (!Double.isNaN(g.tpLevelUv) || !Double.isNaN(g.tpeMs)) {
                 s.append("TP segment <b>").append(Double.isNaN(g.tpLevelUv) ? "n/a" : String.format(Locale.UK, "%+.0f &micro;V", g.tpLevelUv))
                         .append("</b> &middot; Tp-Te <b>").append(g.qtOk && !Double.isNaN(g.tpeMs) ? String.format(Locale.UK, "%.0f ms", g.tpeMs) : "n/a").append("</b><br>");

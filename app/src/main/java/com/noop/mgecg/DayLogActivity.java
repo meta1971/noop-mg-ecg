@@ -742,7 +742,12 @@ final class PolarH10 {
             failStop("Bluetooth is switched off. Turn it on (or switch on Bluetooth scanning in the phone's Location settings), then tap START again"); return;
         }
         BluetoothLeScanner sc = ad.getBluetoothLeScanner();
-        if (sc == null) { if (retryLater("Bluetooth scanner not ready")) return; failStop("Bluetooth scanner not available"); return; }
+        if (sc == null) {
+            BtRecovery.bad(app, "h10", new BtRecovery.Sink() { @Override public void log(String m) { PolarH10.log(m); } });   // 0.7.3: switches Bluetooth on after 30 s
+            if (retryLater("Bluetooth scanner not ready")) return;
+            failStop("Bluetooth scanner not available"); return;
+        }
+        BtRecovery.ok("h10");
         stopScan();
         scanCb = new ScanCallback() {
             @Override public void onScanResult(int type, ScanResult r) {
@@ -789,6 +794,7 @@ final class PolarH10 {
         catch (Throwable t) { if (retryLater("connect failed: " + t)) return; failStop("connect failed: " + t); return; }
         if (gatt == null) {   // 0.5.17: Android returns nothing when Bluetooth is off or restarting
             log("CONNECT returned nothing (Bluetooth off or restarting)");
+            BtRecovery.bad(app, "h10", new BtRecovery.Sink() { @Override public void log(String m) { PolarH10.log(m); } });   // 0.7.3
             if (retryLater("Bluetooth not ready")) return;
             failStop("connect failed: Bluetooth gave no connection"); return;
         }
@@ -849,6 +855,7 @@ final class PolarH10 {
                 if (g != gatt) return;
                 if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                     linkUp = true;
+                    BtRecovery.ok("h10");
                     set("connected, setting up");
                     H.postDelayed(new Runnable() { @Override public void run() {
                         synchronized (PolarH10.class) {

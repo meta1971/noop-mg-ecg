@@ -768,6 +768,8 @@ public class MainActivity extends NewLookActivity {
 
                 line("GATT CONNECTED");
                 logRaw("GATT_CONNECTED");
+                lastStrapRxMs = System.currentTimeMillis();   // 0.7.3: link watchdog
+                BtRecovery.ok("strap");
                 updateStatus("● CONNECTED");
                 try { DayLog.setLastAddr(MainActivity.this, g.getDevice().getAddress()); } catch (Throwable ignored) { }
                 dayLogBackoffMs = 60000L;
@@ -1205,6 +1207,7 @@ public class MainActivity extends NewLookActivity {
         if (value == null) {
             return;
         }
+        lastStrapRxMs = System.currentTimeMillis();   // 0.7.3: link watchdog
         if (battLevelChar.equals(c.getUuid()) && value.length > 0) {
             noteBattery(value[0] & 0xff, "notify");
         }
@@ -3577,6 +3580,39 @@ public class MainActivity extends NewLookActivity {
     private volatile long lastRssiOkMs = 0L;
 
     /*
+     * 0.7.3 LINK WATCHDOG. On the night of 20-21 Oct 2026 the phone's Bluetooth stack failed at about 23:10 and the strap link went dead without any
+     * callback: the logger kept sending commands for 6.5 hours and got no reply (14 pulls), while the periodic service listing printed "6 services"
+     * from a cached copy. A working link delivers something at least every 10 minutes (the strap's own timer message about every 600 s, plus the
+     * battery read). 15 minutes of nothing means the link is dead: close it and reconnect. If the stack itself is unusable, the connect fails
+     * (EASY_CONNECT_NO_GATT) and BtRecovery switches Bluetooth on after 30 s.
+     */
+    private static final long STRAP_SILENT_MS = 15L * 60000L;
+    private volatile long lastStrapRxMs = 0L;
+    private int linkWatchdogRecoveries = 0;
+
+    private void teardownDeadLink(String why) {
+        pendingDevice = null;
+        logRaw("LINK_WATCHDOG_TEARDOWN why=" + why);
+        easyConnectPending = false;
+        passiveConnectPending = false;
+        rssiMonitoringActive = false;
+        alreadyHandledThisConnection = false;
+        try { if (gatt != null) gatt.close(); } catch (Exception ignored) { }
+        if (timeoutRunnable != null) {
+            mainH.removeCallbacks(timeoutRunnable);
+            timeoutRunnable = null;
+        }
+        gatt = null;
+        cmdWrite = null;
+        opQueue.clear();
+        opInFlight = false;
+        labradorActive = false;
+        recordingComplete = false;
+        experimentActive = false;
+        ecgEverRunThisConnection = false;
+    }
+
+    /*
      * 0.5.9 BLE-ONLY MODE. With Android's "Bluetooth scanning" on, switching Bluetooth off leaves the BLE stack running
      * (Android reports the radio as OFF to apps but keeps GATT available), which is why NOOP with "Keep connected in the
      * background" keeps streaming with Bluetooth off. So: do not drop the link when the switch goes off, try the
@@ -3778,6 +3814,7 @@ public class MainActivity extends NewLookActivity {
             logRaw("EASY_CONNECT_NO_GATT why=" + why + " switchOn=" + adapter.isEnabled() + " (no Bluetooth stack available)");
             easyConnectPending = false;
             passiveConnectPending = false;
+            BtRecovery.bad(MainActivity.this, "strap", new BtRecovery.Sink() { @Override public void log(String m) { logRaw(m); } });   // 0.7.3: switches Bluetooth on after 30 s
             return false;
         }
         return true;
@@ -9920,6 +9957,8 @@ public class MainActivity extends NewLookActivity {
             byte[] value,
             int status) {
 
+        if (status == BluetoothGatt.GATT_SUCCESS) lastStrapRxMs = System.currentTimeMillis();   // 0.7.3: link watchdog
+
         if (battLevelChar.equals(c.getUuid()) && status == BluetoothGatt.GATT_SUCCESS
                 && value != null && value.length > 0) {
             noteBattery(value[0] & 0xff, "read");
@@ -10434,6 +10473,19 @@ public class MainActivity extends NewLookActivity {
         dayLogTickCount++;
         long now = System.currentTimeMillis();
         boolean connected = gatt != null && cmdWrite != null;
+        // 0.7.3: a link that looks up but has delivered nothing for 15 minutes is dead (see STRAP_SILENT_MS): close it and reconnect
+        if (connected && !passiveConnectPending && lastStrapRxMs > 0L && now - lastStrapRxMs > STRAP_SILENT_MS) {
+            linkWatchdogRecoveries++;
+            logRaw("LINK_WATCHDOG silent_s=" + ((now - lastStrapRxMs) / 1000L) + " recoveries=" + linkWatchdogRecoveries + " (closing the link and reconnecting)");
+            line("No data from the strap for " + ((now - lastStrapRxMs) / 60000L) + " min - link closed, reconnecting");
+            teardownDeadLink("silent");
+            lastStrapRxMs = 0L;
+            connected = false;
+            dayLogLastReconnectMs = 0L;
+            dayLogBackoffMs = 60000L;
+            dayLogReconnectAttempts = 0;
+            mainH.postDelayed(() -> { if (gatt == null) connectBondedResearchStrap("link_watchdog", false); }, 1500L);
+        }
         // a link that exists but never became ready (no command channel) for 3 minutes is dropped so the retry can run
         if (gatt != null && cmdWrite == null && !passiveConnectPending) {   // 0.5.6: a passive wait is not stuck
             if (dayLogStuckSinceMs == 0L) dayLogStuckSinceMs = now;
