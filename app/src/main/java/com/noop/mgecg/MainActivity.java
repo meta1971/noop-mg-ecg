@@ -2737,20 +2737,45 @@ public class MainActivity extends NewLookActivity {
      * their structure genuinely changes. Piggybacks on the same
      * rssiMonitoringActive lifetime as the other periodic checks.
      */
-    private void schedulePeriodicGattReEnum(BluetoothGatt g) {
+    /*
+     * 22 Oct: dumpAllServices only READS the services Android already holds (BluetoothGatt.getServices()), so this never
+     * cost radio time. What it cost was log space: every connect started another 30 s chain without ending the old one, so
+     * a night with 5 reconnects logged the whole tree about every 16 s (2,135 times, 64,200 lines). Now there is one chain
+     * (a generation number retires the old ones) and the tree is written only when it differs from the last one written.
+     */
+    private int gattReEnumGen = 0;
+    private int lastGattEnumSignature = Integer.MIN_VALUE;
 
-        if (!rssiMonitoringActive) {
+    private void schedulePeriodicGattReEnum(BluetoothGatt g) {
+        gattReEnumGen++;
+        lastGattEnumSignature = Integer.MIN_VALUE;          // a new connection: write the tree once
+        schedulePeriodicGattReEnum(g, gattReEnumGen);
+    }
+
+    private void schedulePeriodicGattReEnum(BluetoothGatt g, final int gen) {
+
+        if (!rssiMonitoringActive || gen != gattReEnumGen) {
             return;
         }
 
-        line("--- periodic GATT re-enumeration (30s interval) ---");
-        logRaw("PERIODIC_GATT_REENUM_BEGIN");
-        dumpAllServices(g);
-        logRaw("PERIODIC_GATT_REENUM_END");
+        int sig = 17;
+        try {
+            for (BluetoothGattService sv : g.getServices()) {
+                sig = sig * 31 + sv.getUuid().hashCode();
+                sig = sig * 31 + sv.getCharacteristics().size();
+            }
+        } catch (RuntimeException ignored) { }
+        if (sig != lastGattEnumSignature) {
+            lastGattEnumSignature = sig;
+            line("--- GATT enumeration (first on this connection, or the service tree changed) ---");
+            logRaw("PERIODIC_GATT_REENUM_BEGIN");
+            dumpAllServices(g);
+            logRaw("PERIODIC_GATT_REENUM_END");
+        }
 
         mainH.postDelayed(() -> {
-            if (gatt != null && rssiMonitoringActive) {
-                schedulePeriodicGattReEnum(gatt);
+            if (gatt != null && rssiMonitoringActive && gen == gattReEnumGen) {
+                schedulePeriodicGattReEnum(gatt, gen);
             }
         }, 30000);
     }
@@ -6435,6 +6460,7 @@ public class MainActivity extends NewLookActivity {
     private int historyEndsAcked = 0;
     private int historyStartsSeen = 0;
     private int historyAutoContinues = 0;
+    private int knownAuxR20ThisPull = 0, knownAuxR21ThisPull = 0;      // v20 / v21 records seen this pull (known types)
     private int endsAckedSinceKick = 0;
     // NOOP BACKFILL_IDLE_TIMEOUT_MS = 60 s; loop ticks every 350 ms
     private static final int HISTORY_IDLE_REKICK_CYCLES = 172;
@@ -6442,6 +6468,8 @@ public class MainActivity extends NewLookActivity {
     private String lastAckedEndHex = "";
     private long lastAckedEndMs = 0L;
     private static final int MAX_HISTORY_AUTO_CONTINUES = 30;
+    /** Normal pulls stop re-requesting after 30 continuations; while an ECG reading runs in near-live mode there is no cap. */
+    private int maxAutoContinues() { return ecgTailActive() ? Integer.MAX_VALUE : MAX_HISTORY_AUTO_CONTINUES; }
     private static final long BLIND_ACK_FALLBACK_AFTER_MS = 15000L;
     private final java.util.Map<Integer, Integer> histTypeCensus =
             new java.util.TreeMap<>();
@@ -6608,7 +6636,7 @@ public class MainActivity extends NewLookActivity {
             boolean progressed = endsAckedSinceKick > 0 &&
                     lastAckedTrim != 0xFFFFFFFFL;
             if (progressed &&
-                    historyAutoContinues < MAX_HISTORY_AUTO_CONTINUES) {
+                    historyAutoContinues < maxAutoContinues()) {
                 historyAutoContinues++;
                 endsAckedSinceKick = 0;
                 line("Auto-continuing offload (" + historyAutoContinues +
@@ -6619,6 +6647,19 @@ public class MainActivity extends NewLookActivity {
                         sendZeroArg(0x16, "SEND_HISTORICAL_DATA (auto-continue)");
                     }
                 }, 800);
+                return;
+            }
+
+            if (ecgTailActive()) {
+                // Nothing new this instant but the reading is still running: keep the pull open and ask again.
+                endsAckedSinceKick = 0;
+                logRaw("ECG_TAIL_REKICK (HISTORY_COMPLETE with nothing new while the reading runs)");
+                mainH.postDelayed(() -> {
+                    // also after the reading has stopped: one more request lets the normal logic drain and finish the pull
+                    if (pullAckActive) {
+                        sendZeroArg(0x16, "SEND_HISTORICAL_DATA (tail)");
+                    }
+                }, 1200);
                 return;
             }
 
@@ -6915,6 +6956,17 @@ public class MainActivity extends NewLookActivity {
              */
             int unknownHistVersion = value.length > 9 ?
                     (value[9] & 0xff) : -1;
+
+            /*
+             * v20 (2140 B optical) and v21 (1244 B motion) are KNOWN records: EcgAux decodes them for the ECG strip and
+             * AuxSummary keeps per-second numbers in the all-day database; the raw frame is saved to the history file
+             * either way. This branch was a tripwire for never-seen types, and logging the full hex of every one of them
+             * (about 6.8 KB a second of ECG) only buried the genuinely unknown ones. Count them and move on.
+             */
+            if ((unknownHistVersion == 20 && value.length == 2140) || (unknownHistVersion == 21 && value.length == 1244)) {
+                if (unknownHistVersion == 20) knownAuxR20ThisPull++; else knownAuxR21ThisPull++;
+                return;
+            }
 
             Integer priorCount =
                     unknownRecordHistVersionTally.get(unknownHistVersion);
@@ -7708,6 +7760,11 @@ public class MainActivity extends NewLookActivity {
                     " lastTrim=" + lastAckedTrim);
         }
 
+        if (knownAuxR20ThisPull > 0 || knownAuxR21ThisPull > 0) {
+            logRaw("KNOWN_AUX_RECORDS_THIS_PULL v20=" + knownAuxR20ThisPull + " v21=" + knownAuxR21ThisPull
+                    + " (optical and motion banked beside the stored ECG; saved in the history file, not dumped here)");
+        }
+
         if (!unknownRecordHistVersionTally.isEmpty()) {
 
             StringBuilder tallyStr = new StringBuilder();
@@ -7774,7 +7831,11 @@ public class MainActivity extends NewLookActivity {
                 " all_with_ecg=" + withEcgSaw + "/" + withEcgTotal);
     }
 
-    private void startRealHistoricalPull() {
+    private void startRealHistoricalPull() { startRealHistoricalPull(false); }
+
+    /** [skipClock] true = the near-live tail during an ECG reading: no SET_CLOCK (a clock step mid-reading coincided with a
+     *  jittery strap timeline on 21 Oct 20:31) and no GET_CLOCK. Everything else is the normal pull. */
+    private void startRealHistoricalPull(final boolean skipClock) {
 
         if (gatt == null || cmdWrite == null) {
             line("NOT CONNECTED - cannot pull");
@@ -7806,6 +7867,7 @@ public class MainActivity extends NewLookActivity {
         ecgRanBeforeCurrentPull = ecgEverRunThisConnection;
         waveform88SeenThisPull = 0;
         unknownRecordHistVersionTally.clear();
+        knownAuxR20ThisPull = 0; knownAuxR21ThisPull = 0;
 
         realEndAckMode = false;
         puffinMetadataSeenThisPull = false;
@@ -7837,8 +7899,10 @@ public class MainActivity extends NewLookActivity {
         runOnUiThread(() -> getWindow().addFlags(
                 android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
 
-        sendRealSetClock();
-        sendZeroArg(0x0B, "GET_CLOCK");
+        if (!skipClock) {
+            sendRealSetClock();
+            sendZeroArg(0x0B, "GET_CLOCK");
+        }
         sendZeroArg(0x22, "GET_DATA_RANGE");
         sendZeroArg(0x16, "SEND_HISTORICAL_DATA");
 
@@ -8034,7 +8098,7 @@ public class MainActivity extends NewLookActivity {
          */
         if (realEndAckMode && pullIdleCycles == HISTORY_IDLE_REKICK_CYCLES) {
             if (endsAckedSinceKick > 0 && lastAckedTrim != 0xFFFFFFFFL &&
-                    historyAutoContinues < MAX_HISTORY_AUTO_CONTINUES) {
+                    historyAutoContinues < maxAutoContinues()) {
                 historyAutoContinues++;
                 line("Strap quiet for 60 s after " + endsAckedSinceKick +
                         " acked chunk(s) - re-requesting history (" +
@@ -10653,6 +10717,10 @@ public class MainActivity extends NewLookActivity {
             int id = v[10] & 0xff;
             int end = v.length - 4;
             byte[] payload = end > 11 ? java.util.Arrays.copyOfRange(v, 11, end) : new byte[0];
+            if (id == 114 && payload.length >= 7) {
+                final long stopTs = Protocol.u32le(payload, 1);
+                mainH.post(() -> onStrapEcgSessionStopEvent(stopTs));
+            }
             StringBuilder sb = new StringBuilder("EVENT id=").append(id)
                     .append(" name=").append(eventName(id))
                     .append(" seq=").append(v[9] & 0xff)
@@ -10754,6 +10822,7 @@ public class MainActivity extends NewLookActivity {
         ecgStrapLiveHr = 0;
         ecgSessionStartUnix = System.currentTimeMillis() / 1000L;
         pendingEcgStoredAnalysis = false;
+        synchronized (pulledR16) { pulledR16.clear(); pulledAux.clear(); pulledSeq.clear(); }
         if (ecgStoredResultText != null) ecgStoredResultText.setText("");
         getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit()
                 .putBoolean("ecg_session_guard", true).apply();
@@ -10791,6 +10860,13 @@ public class MainActivity extends NewLookActivity {
 
         // exactly the confirmed-working sequence, unchanged
         runRealSequenceWithAbortHistorical();
+
+        SharedPreferences ecgCtl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
+        ecgTailMode = ecgCtl.getBoolean("ecg_tail", true);
+        ecgAutoRestart = ecgCtl.getBoolean("ecg_autorestart", true);
+        ecgSegmentNo = 1;
+        ecgLastAutoRestartMs = 0L;
+        if (ecgTailActive()) mainH.postDelayed(() -> startEcgTailPull(), 8000);
 
         /*
          * 10-minute auto-stop awareness - a real, confirmed strap
@@ -11540,6 +11616,77 @@ public class MainActivity extends NewLookActivity {
      */
     private boolean pendingEcgStoredAnalysis = false;
     private long ecgSessionStartUnix = 0, ecgSessionStopUnix = 0;
+
+    /*
+     * ------------------------------------------------------------------
+     * NEAR-LIVE 500 Hz AND AUTO-RESTART (0.8.1). On 20 Oct the history offload ran during a reading and delivered the stored
+     * 500 Hz seconds 3.0-4.6 s after they were recorded, until the app's own cap of 30 continuations ended it. In tail mode
+     * the same offload is started 8 s into a reading WITHOUT SET_CLOCK, has no continuation cap while the reading runs, and
+     * is asked again whenever the strap says it has nothing new. If it ends early nothing is lost: the stop starts the
+     * normal pull as before. The strap ends every session at about 601 s; with auto-restart the app sends the start again
+     * (a manual stop and start cost 3 seconds of stored ECG on 21 Oct) and each ~10-minute segment is analysed as its own
+     * reading, 15 s after it ends. Both are switchable (labrador_ecg_control: ecg_tail, ecg_autorestart, default on).
+     * ------------------------------------------------------------------
+     */
+    private boolean ecgTailMode = true, ecgAutoRestart = true;
+    private int ecgSegmentNo = 1;
+    private long ecgLastAutoRestartMs = 0L;
+    private final java.util.Set<Long> pulledSeq = new java.util.HashSet<>();   // stored-record index already kept, guarded by pulledR16
+
+    private boolean ecgTailActive() { return ecgTailMode && ecgSessionRunning && !ecgOfficialMode; }
+
+    private void startEcgTailPull() {
+        if (!ecgTailActive() || gatt == null || cmdWrite == null) return;
+        if (pullAckActive) {
+            logRaw("ECG_TAIL skipped: a pull is already running");
+            return;
+        }
+        synchronized (pulledR16) { pulledR16.clear(); pulledAux.clear(); pulledSeq.clear(); }
+        pendingEcgStoredAnalysis = true;
+        logRaw("ECG_TAIL_BEGIN startUnix=" + ecgSessionStartUnix);
+        line("*** Near-live 500 Hz: fetching the stored ECG while the reading runs (no SET_CLOCK) ***");
+        startRealHistoricalPull(true);
+    }
+
+    /** The strap announced the end of a session. Only the ~601 s cap is acted on, and only for the session this app started. */
+    private void onStrapEcgSessionStopEvent(long ts) {
+        if (!ecgSessionRunning || !ecgAutoRestart || ecgOfficialMode) return;
+        final long nowMs = System.currentTimeMillis();
+        if (ts < ecgSessionStartUnix - 5 || ts > nowMs / 1000L + 5) return;      // an old stop replayed from a history pull
+        long elapsedS = (nowMs - ecgSessionStartMs) / 1000L;
+        if (nowMs - ecgLastAutoRestartMs < 20000L) return;                       // the same event arrives live and in the tail
+        if (elapsedS < 560L) {
+            logRaw("ECG_STRAP_STOP_EARLY elapsedS=" + elapsedS + " (not the 10-minute cap: no auto-restart)");
+            return;
+        }
+        ecgLastAutoRestartMs = nowMs;
+        final long segStart = ecgSessionStartUnix, segStop = ts;
+        final java.util.List<byte[]> r17;
+        synchronized (ecgSessionR17Frames) { r17 = new java.util.ArrayList<>(ecgSessionR17Frames); ecgSessionR17Frames.clear(); }
+        ecgSegmentNo++;
+        ecgSessionStartUnix = ts + 1;
+        ecgSessionStartMs = nowMs;
+        logRaw("ECG_AUTO_RESTART segment=" + ecgSegmentNo + " elapsedS=" + elapsedS + " stopEventTs=" + ts);
+        line("*** The strap ended the reading at its cap - restarting automatically (segment " + ecgSegmentNo + ") ***");
+        if (ecgStatusText != null) ecgStatusText.setText("Auto-restarted at the 10-minute cap (segment " + ecgSegmentNo + "). Keep fingers on the clasp.");
+        // analyse the finished segment once its last stored seconds have arrived (about 4 s behind)
+        mainH.postDelayed(() -> runStoredEcgAnalysis(segStart, segStop, false, r17), 15000);
+        // restart: generation start first; if no live frame follows within 4.5 s, the full prepare sequence (no abort, so the tail keeps running)
+        mainH.postDelayed(() -> {
+            if (ecgSessionRunning) send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION (auto-restart)");
+        }, 300);
+        final long mark = nowMs;
+        mainH.postDelayed(() -> {
+            if (!ecgSessionRunning) return;
+            long last = ecgFrameArrivalLog.isEmpty() ? 0L : ecgFrameArrivalLog.get(ecgFrameArrivalLog.size() - 1)[0];
+            if (last > mark) { logRaw("ECG_AUTO_RESTART_OK frameAfterMs=" + (last - mark)); return; }
+            logRaw("ECG_AUTO_RESTART_FULL_SEQUENCE (no live frame after the short restart)");
+            send(0x7B, WRIST_ARG, "SELECT_WRIST (auto-restart)");
+            mainH.postDelayed(() -> send(0x8B, 1, "TOGGLE_LABRADOR_FILTERED_ON (auto-restart)"), 400);
+            mainH.postDelayed(() -> send(0x7D, 1, "TOGGLE_LABRADOR_RAW_SAVE_ON (auto-restart)"), 800);
+            mainH.postDelayed(() -> send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION (auto-restart)"), 1200);
+        }, 4500);
+    }
     private final java.util.List<byte[]> pulledR16 = new java.util.ArrayList<>();
     private final java.util.List<byte[]> pulledAux = new java.util.ArrayList<>();   // R20 + R21, guarded by pulledR16
     private TextView ecgStoredResultText;
@@ -11572,7 +11719,7 @@ public class MainActivity extends NewLookActivity {
         if (!pendingEcgStoredAnalysis || value.length < 12) return;
         int ver = value[9] & 0xff;
         if (value.length == 1584 && ver == 16) {
-            synchronized (pulledR16) { pulledR16.add(value.clone()); }
+            synchronized (pulledR16) { if (pulledSeq.add(u32leAt(value, 11))) pulledR16.add(value.clone()); }
         } else if ((value.length == 2140 && ver == 20) || (value.length == 1244 && ver == 21)) {
             // optical pulse (R20) and motion (R21), banked once a second beside the ECG
             synchronized (pulledR16) { pulledAux.add(value.clone()); }
@@ -11804,21 +11951,38 @@ public class MainActivity extends NewLookActivity {
 
     private void runStoredEcgAnalysisIfPending() {
         if (!pendingEcgStoredAnalysis) return;
+        if (ecgSessionRunning) return;      // a near-live pull that ended early: the stop starts a normal one and analysis follows
         pendingEcgStoredAnalysis = false;
+        runStoredEcgAnalysis(ecgSessionStartUnix, ecgSessionStopUnix, true, null);
+    }
+
+    /**
+     * Analyse the stored records dated [startUnix-15, stopUnix+30]. [clearAll] true = the final analysis of a reading (empties the
+     * buffers); false = one auto-restart segment (removes only its own records). [r17] is that segment's live frames, or null for
+     * the current buffer.
+     */
+    private void runStoredEcgAnalysis(final long startUnix, final long stopUnix, final boolean clearAll, final java.util.List<byte[]> r17) {
         final java.util.List<byte[]> mine = new java.util.ArrayList<>();
         final java.util.List<byte[]> mineAux = new java.util.ArrayList<>();
         synchronized (pulledR16) {
             for (byte[] f : pulledR16) {
                 long t = u32leAt(f, 15);
-                if (t >= ecgSessionStartUnix - 15 && t <= ecgSessionStopUnix + 30) mine.add(f);
+                if (t >= startUnix - 15 && t <= stopUnix + 30) mine.add(f);
             }
             for (byte[] f : pulledAux) {
                 long t = u32leAt(f, 15);
-                if (t >= ecgSessionStartUnix - 15 && t <= ecgSessionStopUnix + 30) mineAux.add(f);
+                if (t >= startUnix - 15 && t <= stopUnix + 30) mineAux.add(f);
             }
-            pulledR16.clear();
-            pulledAux.clear();
+            if (clearAll) {
+                pulledR16.clear();
+                pulledAux.clear();
+                pulledSeq.clear();
+            } else {
+                pulledR16.removeAll(mine);
+                pulledAux.removeAll(mineAux);
+            }
         }
+        logRaw("STORED_ECG_ANALYSIS start=" + startUnix + " stop=" + stopUnix + " records=" + mine.size() + " aux=" + mineAux.size() + (clearAll ? " final" : " segment"));
         new Thread(() -> {
             EcgR16Analyzer.Result r = EcgR16Analyzer.analyse(mine);
             saveEcgHistoryEntry(r);
@@ -11836,7 +12000,8 @@ public class MainActivity extends NewLookActivity {
                             EcgAux.PULSE_OFFS[ci], st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]));
                 }
                 java.util.List<byte[]> r17copy;
-                synchronized (ecgSessionR17Frames) { r17copy = new java.util.ArrayList<>(ecgSessionR17Frames); }
+                if (r17 != null) r17copy = r17;
+                else synchronized (ecgSessionR17Frames) { r17copy = new java.util.ArrayList<>(ecgSessionR17Frames); }
                 logRaw(EcgR17Fit.fit(mine, r17copy).toLog());
                 logRaw("R20_CONFIG " + EcgAux.configWords(mineAux));
                 saveEcgStripPng(strip, r, timing);

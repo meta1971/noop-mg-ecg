@@ -385,6 +385,48 @@ public final class EcgReport {
         b.append(why("How the numbers were produced",
                 "The stored 500-per-second ECG is filtered between 0.67 and 40 Hz with no phase shift (zero-phase filtering, within the limit the AHA allows for linear digital filters) and a 50 Hz notch. Beats are found with a band-pass peak detector and checked for shape against the median beat. Beat gaps are cleaned before the rhythm screen and the variability numbers.",
                 "Everything is computed on the phone from the band's stored recording. Nothing is sent anywhere."));
+        return b.append("</section>").append(lifestyleCard(r)).toString();
+    }
+
+    /** Research-only card: what published studies say moves each number (habits, lifestyle, medicines, reading conditions), with sources. */
+    static String lifestyleCard(EcgR16Analyzer.Result r) {
+        double hr = reportHr(r);
+        String hrLead;
+        if (Double.isNaN(hr)) hrLead = "No reliable heart rate came out of this recording, so the notes below are general.";
+        else if (hr < 60) hrLead = "Yours (" + Math.round(hr) + " bpm) is below the usual 60 to 100 range. That is common in people who train regularly and in people who are very relaxed.";
+        else if (hr > 100) hrLead = "Yours (" + Math.round(hr) + " bpm) is above the usual 60 to 100 range. Recent activity, caffeine, stress, a recent meal, heat, fever or dehydration are the common reasons.";
+        else hrLead = "Yours (" + Math.round(hr) + " bpm) is inside the usual 60 to 100 range.";
+        StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><h2>How habits and lifestyle can move these numbers</h2><span class=\"pill\">Research only</span></div>");
+        b.append("<p class=\"hint\">Tap a heading to open it.</p>");
+        b.append("<p>These are effects reported in published studies of groups of people. They show what tends to move each number, not why yours is what it is, and they are not advice to change anything. One reading is a snapshot: compare readings taken the same way, at the same time of day, seated, and a similar number of hours after eating. If a number worries you, or you take medicines, ask a clinician or pharmacist. This is not a diagnosis.</p>");
+        b.append(why("Heart rate: what pushes it down or up",
+                hrLead,
+                "<b>Tends to lower it:</b> regular aerobic training, which raises the vagus nerve's calming influence on the heart (meta-analysis of 16 randomised trials, 623 adults), and being rested and relaxed.",
+                "<b>Tends to raise it:</b> a recent meal (about 12 beats a minute for roughly 3 hours in one study), a short night (a 5-hour night raised heart rate during sleep in a randomised crossover study), alcohol (heavier drinking goes with a higher heart rate), caffeine, stress, heat, fever and dehydration."));
+        b.append(why("HRV (RMSSD): what pushes it down or up",
+                "RMSSD from one short reading moves a lot from day to day, so your own trend taken under the same conditions says more than a single value.",
+                "<b>Tends to lower it:</b> alcohol (acute drinking lowers resting HRV in healthy people, and heavy long-term drinking goes with lower HRV; part of the link may simply be the faster heart rate), a short night (sleep deprivation lowered RMSSD in a meta-analysis of randomised trials), illness, stress and age.",
+                "<b>Tends to raise it:</b> regular exercise training (RMSSD and other vagal measures improved in healthy adults in 16 randomised trials), and slow, relaxed breathing during the reading."));
+        b.append(why("Rhythm timing: what is linked to irregular rhythms",
+                "This screen only looks at the spacing of beats, and a short recording can miss a rhythm that comes and goes, so a steady result does not rule anything out.",
+                "Published reviews of atrial fibrillation list these modifiable factors: obesity, physical inactivity, high blood pressure, sleep apnoea, diabetes, alcohol, smoking and, in some people, caffeine. In a survey of people with atrial fibrillation the triggers they reported most often were alcohol (35%), caffeine (28%), exercise (23%) and lack of sleep (21%). The 2023 US guideline found no general benefit from giving up caffeine, though it may help people who notice it sets off symptoms.",
+                "Palpitations, dizziness, fainting or chest pain need medical advice whatever this report says."));
+        b.append(why("QT and corrected QT: what moves them",
+                "<b>Time of day and sleep:</b> in 24-hour recordings of healthy people the QT interval is longer during sleep, so compare readings from the same time of day.",
+                "<b>Meals:</b> in a fed-versus-fasting study of healthy volunteers the corrected QT (Fridericia) was up to 8.2 ms shorter about 2 hours after breakfast while heart rate rose. Another study of 61 healthy people found no significant change at 2 hours, so the effect is small and not consistent. Compare readings at a similar time after eating.",
+                "<b>Body chemistry:</b> low potassium, magnesium or calcium lengthen repolarisation and add to the effect of QT-prolonging medicines; diuretics are a listed risk factor.",
+                "<b>Medicines:</b> many prescription and some over-the-counter medicines lengthen QT; crediblemeds.org keeps the reference list. Ask a pharmacist, and do not stop a prescribed medicine because of this report.",
+                "<b>Method:</b> the heart-rate correction formula changes the corrected value, most of all at rates far from 60. Compare corrected QT only between readings that use the same formula."));
+        b.append(why("QRS, PR and ST: what moves them",
+                "Everyday habits do not move QRS width or PR interval by more than this device's own measurement error (typical errors found against a reference database: about 8 ms for QRS and 10 ms for PR). Age, body size, training and some medicines matter more.",
+                "ST is a measurement only. In this app's own tests posture and arm position changed the beat height by up to 25% and ST by tens of microvolts, so compare ST only between readings taken in the same posture."));
+        b.append(why("Getting a cleaner reading",
+                "Muscle tension is the biggest controllable source of noise between beats. In this app's tests clenching the fist raised the high-frequency noise from about 38 to 78-114 microvolts, and a raised arm gave top-quality signal in only about 20% of the seconds.",
+                "Sit, rest the forearm on a table, keep the hand and fingers relaxed, keep the arm down, and breathe normally. Talking and small movements of the legs left the noise unchanged in the same tests."));
+        b.append(why("Sources",
+                "Exercise training and HRV: meta-analysis of 16 randomised trials in 623 healthy adults, Cureus 2024. Sleep deprivation and HRV: Zhang et al., Frontiers in Neurology 2025. Sleep restriction, heart rate and HRV: Schlagintweit et al., Scientific Reports 2023. Alcohol and HRV: reviews in Pharmacology Biochemistry and Behavior 2019 and Alcohol Clinical and Experimental Research 2014; alcohol, heart rate and HRV in men, Heart.",
+                "QT and food: Taubel et al., Journal of Clinical Pharmacology 2019, and the fed-versus-fasting study summarised in Applied Clinical Trials; Sokmen et al., Open Access Macedonian Journal of Medical Sciences 2019. QT by time of day: circadian variation and waking-hour dynamics of the QT interval in 24-hour Holter recordings of healthy subjects. QT risk factors: Drew et al., AHA/ACCF scientific statement, Journal of the American College of Cardiology 2010; CredibleMeds list of QT-prolonging drugs.",
+                "Atrial fibrillation lifestyle factors: review, Lifestyle Changes in Atrial Fibrillation Management and Intervention, 2023; Groh et al., Heart Rhythm 2019 (patient-reported triggers); 2023 ACC/AHA/ACCP/HRS atrial fibrillation guideline. Reference ranges, formulas and limits used elsewhere in this report are named in their own sections."));
         return b.append("</section>").toString();
     }
 

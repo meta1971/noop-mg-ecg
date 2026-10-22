@@ -55,14 +55,20 @@ final class DayLog {
 
     // ------------------------------------------------------------------ database
     private static final class Helper extends SQLiteOpenHelper {
-        Helper(Context c) { super(c.getApplicationContext(), "daylog.db", null, 1); }
+        Helper(Context c) { super(c.getApplicationContext(), "daylog.db", null, 2); }
         @Override public void onCreate(SQLiteDatabase db) {
             db.execSQL("CREATE TABLE r18 (ts INTEGER PRIMARY KEY, hr INTEGER, state INTEGER, skin REAL, b82 INTEGER, steps INTEGER, act INTEGER, rec BLOB)");
             db.execSQL("CREATE TABLE other_rec (ts INTEGER, ver INTEGER, len INTEGER, PRIMARY KEY (ts, ver))");
             db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ms INTEGER, kind TEXT, text TEXT)");
             db.execSQL("CREATE INDEX events_ms ON events (ms)");
+            createV2(db);
         }
-        @Override public void onUpgrade(SQLiteDatabase db, int o, int n) { }
+        @Override public void onUpgrade(SQLiteDatabase db, int o, int n) { if (o < 2) createV2(db); }
+        /** v2: one row per second of the stored-ECG companions (R21 motion, R20 optical), and cached per-night numbers. */
+        private void createV2(SQLiteDatabase db) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS aux_sec (ts INTEGER PRIMARY KEY, acc_sd REAL, acc_mean REAL, gyro_dps REAL, green_ma REAL, green_dc REAL, green_sd REAL, amb_dc REAL)");
+            db.execSQL("CREATE TABLE IF NOT EXISTS night_stats (bed INTEGER PRIMARY KEY, tst_h REAL, hr_low5 REAL, rmssd REAL, skin REAL, br REAL, spo2 INTEGER)");
+        }
     }
 
     static synchronized SQLiteDatabase db(Context c) {
@@ -180,12 +186,115 @@ final class DayLog {
                         v.put("ver", R18Codec.u8(fr, 9));
                         v.put("len", fr.length);
                         if (db.insertWithOnConflict("other_rec", null, v, SQLiteDatabase.CONFLICT_IGNORE) != -1) cnt[1]++;
+                        upsertAux(db, ts, fr);
                     }
                 }
             });
             db.setTransactionSuccessful();
         } finally { db.endTransaction(); }
         return cnt;
+    }
+
+    /** Keeps a few numbers per second from the R21 motion and R20 optical records (the samples stay in the raw files). */
+    private static void upsertAux(SQLiteDatabase db, long ts, byte[] fr) {
+        try {
+            int ver = R18Codec.u8(fr, 9);
+            ContentValues v = new ContentValues();
+            if (ver == 21 && fr.length == AuxSummary.R21_LEN) {
+                AuxSummary.Motion m = AuxSummary.motion(fr);
+                v.put("acc_sd", m.accSdG); v.put("acc_mean", m.accMeanG); v.put("gyro_dps", m.gyroDps);
+            } else if (ver == 20 && fr.length == AuxSummary.R20_LEN) {
+                AuxSummary.Optical o = AuxSummary.optical(fr);
+                if (o.greenN < 50) return;                          // the first record of a run is partial
+                v.put("green_ma", o.greenMa); v.put("green_dc", o.greenDc); v.put("green_sd", o.greenSd); v.put("amb_dc", o.ambientDc);
+            } else return;
+            ContentValues k = new ContentValues();
+            k.put("ts", ts);
+            db.insertWithOnConflict("aux_sec", null, k, SQLiteDatabase.CONFLICT_IGNORE);
+            db.update("aux_sec", v, "ts = ?", new String[] {String.valueOf(ts)});
+        } catch (Throwable ignored) { }
+    }
+
+    // ------------------------------------------------------------------ nights and today
+    /** Stats of earlier complete nights (cached), for the recovery baseline. Skips the newest night. Slow the first time. */
+    static List<TodayModel.NightStat> nightStats(Context c) {
+        List<TodayModel.NightStat> out = new ArrayList<>();
+        try {
+            SQLiteDatabase d = db(c);
+            Cursor q = d.rawQuery("SELECT ts FROM r18 WHERE state = 2 ORDER BY ts", null);
+            List<Long> tl = new ArrayList<>();
+            while (q.moveToNext()) tl.add(q.getLong(0));
+            q.close();
+            long[] st = new long[tl.size()];
+            for (int i = 0; i < st.length; i++) st[i] = tl.get(i);
+            List<long[]> cl = SleepNight.clusters(st);
+            for (int k = 0; k < cl.size() - 1; k++) {            // the newest cluster is the night being scored
+                long[] cc = cl.get(k);
+                Cursor cs = d.rawQuery("SELECT tst_h, hr_low5, rmssd, skin, br, spo2 FROM night_stats WHERE bed = ?", new String[] {String.valueOf(cc[0])});
+                TodayModel.NightStat s = new TodayModel.NightStat();
+                s.bed = cc[0];
+                boolean have = false;
+                if (cs.moveToFirst()) {
+                    s.tstH = cs.isNull(0) ? Double.NaN : cs.getDouble(0);
+                    s.hrLow5 = cs.isNull(1) ? Double.NaN : cs.getDouble(1);
+                    s.rmssd = cs.isNull(2) ? Double.NaN : cs.getDouble(2);
+                    s.skin = cs.isNull(3) ? Double.NaN : cs.getDouble(3);
+                    s.br = cs.isNull(4) ? Double.NaN : cs.getDouble(4);
+                    s.spo2Median = cs.isNull(5) ? -1 : cs.getInt(5);
+                    have = true;
+                }
+                cs.close();
+                if (!have) {
+                    Cursor r = d.rawQuery("SELECT rec FROM r18 WHERE ts BETWEEN ? AND ? ORDER BY ts", new String[] {String.valueOf(cc[0] - 7200L), String.valueOf(cc[1] + 600L)});
+                    List<byte[]> recs = new ArrayList<>();
+                    while (r.moveToNext()) recs.add(r.getBlob(0));
+                    r.close();
+                    SleepNight.Night n = SleepNight.analyse(recs);
+                    if (n == null) continue;
+                    s = TodayModel.statOf(n, Spo2.summarize(Spo2.windows(recs)));
+                    s.bed = cc[0];
+                    ContentValues v = new ContentValues();
+                    v.put("bed", s.bed);
+                    if (!Double.isNaN(s.tstH)) v.put("tst_h", s.tstH);
+                    if (!Double.isNaN(s.hrLow5)) v.put("hr_low5", s.hrLow5);
+                    if (!Double.isNaN(s.rmssd)) v.put("rmssd", s.rmssd);
+                    if (!Double.isNaN(s.skin)) v.put("skin", s.skin);
+                    if (!Double.isNaN(s.br)) v.put("br", s.br);
+                    if (s.spo2Median >= 0) v.put("spo2", s.spo2Median);
+                    d.insertWithOnConflict("night_stats", null, v, SQLiteDatabase.CONFLICT_REPLACE);
+                }
+                out.add(s);
+            }
+        } catch (Throwable ignored) { }
+        return out;
+    }
+
+    /** Everything the Today screen needs. Runs queries: call off the main thread. */
+    static TodayModel.Day today(Context c, int maxHr, double sleepGoalH) {
+        try {
+            SQLiteDatabase d = db(c);
+            long newest = 0;
+            Cursor q = d.rawQuery("SELECT MAX(ts) FROM r18", null);
+            if (q.moveToFirst()) newest = q.getLong(0);
+            q.close();
+            if (newest <= 0) return new TodayModel.Day();
+            q = d.rawQuery("SELECT ts FROM r18 WHERE state = 2 AND ts >= ? ORDER BY ts", new String[] {String.valueOf(newest - 5 * 86400L)});
+            List<Long> tl = new ArrayList<>();
+            while (q.moveToNext()) tl.add(q.getLong(0));
+            q.close();
+            long[] st = new long[tl.size()];
+            for (int i = 0; i < st.length; i++) st[i] = tl.get(i);
+            List<long[]> cl = SleepNight.clusters(st);
+            long from = newest - 86400L;
+            if (!cl.isEmpty()) from = Math.min(from, cl.get(cl.size() - 1)[0] - 7200L);
+            q = d.rawQuery("SELECT rec FROM r18 WHERE ts >= ? ORDER BY ts", new String[] {String.valueOf(from)});
+            List<byte[]> recs = new ArrayList<>();
+            while (q.moveToNext()) recs.add(q.getBlob(0));
+            q.close();
+            return TodayModel.compute(recs, nightStats(c), newest, maxHr, sleepGoalH);
+        } catch (Throwable t) {
+            return new TodayModel.Day();
+        }
     }
 
     // ------------------------------------------------------------------ status and summary
@@ -261,6 +370,7 @@ final class DayLog {
                 s.append("sleep-only byte-82 measurement windows: ").append(bursts);
                 if (!inband.isEmpty()) { Integer[] a = inband.toArray(new Integer[0]); Arrays.sort(a); s.append(", median value ").append(a[a.length / 2]); }
                 s.append('\n');
+                s.append(Spo2.describe(Spo2.summarize(Spo2.windows(recs)))).append('\n');
                 s.append(String.format(Locale.US, "raw ECG/optical collection was active for %d s\n", raw));
             }
             Cursor e = d.rawQuery("SELECT kind, COUNT(*) FROM events WHERE ms >= ? GROUP BY kind", new String[] {String.valueOf(since * 1000L)});

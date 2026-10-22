@@ -629,11 +629,17 @@ public class NewLookActivity extends Activity {
         lp.topMargin = dp(28);
         col.addView(homeLatestCard, lp);
 
+        Button today = pillButton("Today  \u00b7  sleep, recovery, effort, SpO2", CARD, TEXT);
+        today.setOnClickListener(v -> startActivity(new android.content.Intent(this, TodayActivity.class)));
+        LinearLayout.LayoutParams tdp = new LinearLayout.LayoutParams(-1, dp(56));
+        tdp.topMargin = dp(24);
+        col.addView(today, tdp);
+
         Button take = pillButton("Take an ECG", GREEN, INK);
         take.setTextSize(20);
         take.setOnClickListener(v -> takeEcg());
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-1, dp(68));
-        tp.topMargin = dp(24);
+        tp.topMargin = dp(12);
         col.addView(take, tp);
 
         Button reports = pillButton("All reports", CARD, TEXT);

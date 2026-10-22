@@ -378,12 +378,17 @@ final class SleepNight {
         return c % 2 == 1 ? t[c / 2] : 0.5f * (t[c / 2 - 1] + t[c / 2]);
     }
 
-    /** RMSSD over rr[from..to): successive differences kept when under 20% of the interval and under 2.5 s apart. */
+    /** Successive differences kept when under this share of the interval. 0.12 (was 0.20): on the night of 21-22 Oct 2026, against an
+     *  H10 chest strap in 97 five-minute windows, the strap's optical intervals gave RMSSD +26.6 ms too high with 0.20 and +7.2 ms
+     *  with 0.12 (correlation 0.69 either way). The value is still an optical estimate that reads high; see TodayModel. */
+    static final double RMSSD_KEEP_SHARE = 0.12;
+
+    /** RMSSD over rr[from..to): successive differences kept when under [RMSSD_KEEP_SHARE] of the interval and under 2.5 s apart. */
     static double rmssd(List<double[]> rr, int from, int to, int minDiffs) {
         double s = 0; int c = 0;
         for (int q = from + 1; q < to; q++) {
             double d = rr.get(q)[1] - rr.get(q - 1)[1];
-            if (Math.abs(d) < 0.2 * rr.get(q)[1] && rr.get(q)[0] - rr.get(q - 1)[0] < 2.5) { s += d * d; c++; }
+            if (Math.abs(d) < RMSSD_KEEP_SHARE * rr.get(q)[1] && rr.get(q)[0] - rr.get(q - 1)[0] < 2.5) { s += d * d; c++; }
         }
         return c > minDiffs ? Math.sqrt(s / c) : Double.NaN;
     }
