@@ -63,6 +63,14 @@ public class HealthActivity extends Activity {
         });
         FrameLayout.LayoutParams np = new FrameLayout.LayoutParams(-1, Math.round(dp(this, 68)), Gravity.BOTTOM);
         np.setMargins(Math.round(dp(this, 14)), 0, Math.round(dp(this, 14)), Math.round(dp(this, 18)));
+        View scrim = new View(this) {
+            @Override protected void onDraw(Canvas cv) {
+                Paint p = new Paint();
+                p.setShader(new LinearGradient(0, 0, 0, getHeight(), 0x0007090C, 0xFF07090C, Shader.TileMode.CLAMP));
+                cv.drawRect(0, 0, getWidth(), getHeight(), p);
+            }
+        };
+        root.addView(scrim, new FrameLayout.LayoutParams(-1, Math.round(dp(this, 130)), Gravity.BOTTOM));
         root.addView(nav, np);
         setContentView(root);
         render();
@@ -197,6 +205,83 @@ public class HealthActivity extends Activity {
         return t;
     }
 
+    // ------------------------------------------------------------------ import a pull zip
+    private String importNote = "A reinstall empties the app. Import the zip you exported (history, ECG reports, strips) to bring those nights back.";
+    private static final int REQ_ZIP = 77;
+
+    private void pickZip() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        i.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"application/zip", "application/x-zip-compressed", "application/octet-stream"});
+        startActivityForResult(i, REQ_ZIP);
+    }
+
+    @Override protected void onActivityResult(int req, int res, final Intent data2) {
+        super.onActivityResult(req, res, data2);
+        if (req != REQ_ZIP || res != RESULT_OK || data2 == null || data2.getData() == null) return;
+        final android.net.Uri uri = data2.getData();
+        final Context app = getApplicationContext();
+        importNote = "Importing\u2026";
+        render();
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final String msg = importZip(app, uri);
+                ui.post(new Runnable() { @Override public void run() { importNote = msg; render(); } });
+                long[] waits = {3000L, 7000L, 12000L, 20000L, 30000L};          // the history is read in the background
+                for (long w : waits) {
+                    try { Thread.sleep(w); } catch (InterruptedException ignored) { }
+                    ui.post(new Runnable() { @Override public void run() { load(); } });
+                }
+            }
+        }, "health-import").start();
+    }
+
+    /** Copy the history files, ECG reports and strips out of a pull zip into the app's folder, then let the day logger read them. */
+    private static String importZip(Context app, android.net.Uri uri) {
+        java.io.File dir = app.getExternalFilesDir(null);
+        if (dir == null) return "No storage folder available.";
+        int bins = 0, reports = 0, other = 0, skipped = 0;
+        try {
+            java.io.InputStream raw = app.getContentResolver().openInputStream(uri);
+            if (raw == null) return "Could not open that file.";
+            java.util.zip.ZipInputStream zin = new java.util.zip.ZipInputStream(new java.io.BufferedInputStream(raw));
+            try {
+                java.util.zip.ZipEntry e;
+                byte[] buf = new byte[64 * 1024];
+                while ((e = zin.getNextEntry()) != null) {
+                    if (e.isDirectory()) continue;
+                    String n = e.getName();
+                    n = n.substring(n.lastIndexOf('/') + 1);
+                    boolean bin = n.startsWith("historical_bin_") && n.endsWith(".bin");
+                    boolean rep = n.startsWith("ecg_report_") && n.endsWith(".html");
+                    boolean oth = (n.startsWith("ecg_strip_") && n.endsWith(".png")) || (n.startsWith("labrador_analysis_") && n.endsWith(".txt")) || (n.startsWith("realtime_ecg_bin_") && n.endsWith(".bin"))
+                            || (n.startsWith("labrador_bin_") && n.endsWith(".bin")) || (n.startsWith("reconstructed_waveform_") && n.endsWith(".csv"));
+                    if (!bin && !rep && !oth) continue;
+                    java.io.File out = new java.io.File(dir, n);
+                    if (out.exists() && out.length() > 0) { skipped++; continue; }
+                    java.io.FileOutputStream fo = new java.io.FileOutputStream(out);
+                    try {
+                        int k;
+                        while ((k = zin.read(buf)) > 0) fo.write(buf, 0, k);
+                    } finally {
+                        fo.close();
+                    }
+                    // the day logger skips files touched in the last 90 s ("still being written"), so date these as old
+                    //noinspection ResultOfMethodCallIgnored
+                    out.setLastModified(System.currentTimeMillis() - 5L * 60L * 1000L);
+                    if (bin) bins++; else if (rep) reports++; else other++;
+                }
+            } finally {
+                zin.close();
+            }
+        } catch (Throwable t) {
+            return "Import stopped: " + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
+        }
+        DayLog.scanNewFiles(app);
+        return "Imported " + bins + " history files, " + reports + " ECG reports and " + other + " other files" + (skipped > 0 ? " (" + skipped + " were already here)" : "") + ". Reading the history now; the screens fill in over the next minute.";
+    }
+
     private void startEcg() { Intent i = new Intent(this, MainActivity.class); i.putExtra("start_ecg", true); startActivity(i); }
 
     private void openReport(java.io.File f) { Intent i = new Intent(this, MainActivity.class); i.putExtra("open_report", f.getAbsolutePath()); startActivity(i); }
@@ -275,6 +360,7 @@ public class HealthActivity extends Activity {
         String ecgTitle = "No ECG reading yet", ecgSub = "Start one from the ECG tab";
         if (!d.readings.isEmpty()) {
             HealthModel.Reading r = d.readings.get(0);
+            for (HealthModel.Reading q : d.readings) if (!"-".equals(q.hr)) { r = q; break; }
             ecgTitle = "Last ECG \u00b7 " + r.when;
             ecgSub = ("-".equals(r.hr) ? "" : "HR " + r.hr + " bpm") + ("-".equals(r.rhythm) ? "" : (("-".equals(r.hr) ? "" : " \u00b7 ") + r.rhythm));
             if (ecgSub.isEmpty()) ecgSub = "Open to see why";
@@ -289,7 +375,7 @@ public class HealthActivity extends Activity {
         LinearLayout h = hrow();
         h.addView(caps("THE LAST 24 HOURS"));
         h.addView(spacer());
-        h.addView(tv(ago(day.newestTs).replace(" ago", "") + " of data", 12, MUT, 400));
+        h.addView(tv("data to " + ago(day.newestTs), 12, MUT, 400));
         c.addView(h);
         c.addView(new HrChartView(this, day.hrT, day.hrV, n == null ? 0 : n.bedTs, n == null ? 0 : n.endTs, false), lp(-1, dpi(80), 8));
         col.addView(c, lp(-1, -2, 10));
@@ -440,7 +526,10 @@ public class HealthActivity extends Activity {
                 LinearLayout h = hrow();
                 h.addView(tv(r.when, 15, INK, 600));
                 h.addView(spacer());
-                if (!"-".equals(r.grade)) h.addView(chipSmall(r.grade.toUpperCase(Locale.UK), GREEN));
+                if (!"-".equals(r.grade)) {
+                    String gr = r.grade.toUpperCase(Locale.UK);
+                    h.addView(chipSmall("GRADE " + gr, gr.startsWith("A") || gr.startsWith("B") ? GREEN : (gr.startsWith("C") ? GOLD : MUT)));
+                }
                 c.addView(h);
                 StringBuilder sub = new StringBuilder();
                 if (!"-".equals(r.hr)) sub.append("HR ").append(r.hr).append(" bpm");
@@ -664,8 +753,12 @@ public class HealthActivity extends Activity {
         t.setLineSpacing(0, 1.2f);
         t.setPadding(0, dpi(6), 0, 0);
         dt.addView(t);
+        dt.addView(pillButton("Import a pull (zip)", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { pickZip(); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, MainActivity.class)); } }), lp(-1, dpi(44), 8));
+        TextView imp = tv(importNote, 11.5f, MUT, 400);
+        imp.setPadding(0, dpi(10), 0, 0);
+        dt.addView(imp);
         col.addView(dt, lp(-1, -2, 12));
         return wrap(col);
     }
