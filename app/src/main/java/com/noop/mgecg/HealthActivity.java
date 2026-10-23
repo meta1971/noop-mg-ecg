@@ -282,9 +282,14 @@ public class HealthActivity extends Activity {
         return "Imported " + bins + " history files, " + reports + " ECG reports and " + other + " other files" + (skipped > 0 ? " (" + skipped + " were already here)" : "") + ". Reading the history now; the screens fill in over the next minute.";
     }
 
-    private void startEcg() { Intent i = new Intent(this, MainActivity.class); i.putExtra("start_ecg", true); startActivity(i); }
+    /** Bring the already-running main screen forward (never a second copy: it owns the strap link). */
+    private Intent oldScreens() { Intent i = new Intent(this, MainActivity.class); i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT); i.putExtra("stay", true); return i; }
 
-    private void openReport(java.io.File f) { Intent i = new Intent(this, MainActivity.class); i.putExtra("open_report", f.getAbsolutePath()); startActivity(i); }
+    private void startEcg() { NewLookActivity.pendingEcg = true; Intent i = oldScreens(); i.putExtra("start_ecg", true); startActivity(i); }
+
+    private void openReport(java.io.File f) { NewLookActivity.pendingReport = f.getAbsolutePath(); Intent i = oldScreens(); i.putExtra("open_report", f.getAbsolutePath()); startActivity(i); }
+
+    @Override public void onBackPressed() { moveTaskToBack(true); }
 
     private void go(int t) { tab = t; nav.setActive(t); render(); }
 
@@ -755,7 +760,7 @@ public class HealthActivity extends Activity {
         dt.addView(t);
         dt.addView(pillButton("Import a pull (zip)", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { pickZip(); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
-        dt.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, MainActivity.class)); } }), lp(-1, dpi(44), 8));
+        dt.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(oldScreens()); } }), lp(-1, dpi(44), 8));
         TextView imp = tv(importNote, 11.5f, MUT, 400);
         imp.setPadding(0, dpi(10), 0, 0);
         dt.addView(imp);

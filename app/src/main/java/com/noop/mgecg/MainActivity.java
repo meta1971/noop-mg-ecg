@@ -10157,6 +10157,20 @@ public class MainActivity extends NewLookActivity {
 
         initRawLogFile();
 
+        /*
+         * 0.9.3: this class owns the strap connection and the day logger, so it must start first (it is the launcher again).
+         * On a fresh start it hands the screen to the new heart-first app at once and stays underneath, connected. The old
+         * screens are one tap away ("Older screens"), and a saved report or "Start an ECG reading" asks for them with extras.
+         */
+        {
+            android.content.Intent li = getIntent();
+            boolean wantsOld = li != null && (li.getBooleanExtra("stay", false) || li.getBooleanExtra("start_ecg", false) || li.getStringExtra("open_report") != null);
+            if (b == null && !wantsOld) {
+                startActivity(new android.content.Intent(this, HealthActivity.class));
+                overridePendingTransition(0, 0);
+            }
+        }
+
         line("Raw log file: " +
                 rawLogFile.getAbsolutePath());
 
@@ -11671,21 +11685,19 @@ public class MainActivity extends NewLookActivity {
         if (ecgStatusText != null) ecgStatusText.setText("Auto-restarted at the 10-minute cap (segment " + ecgSegmentNo + "). Keep fingers on the clasp.");
         // analyse the finished segment once its last stored seconds have arrived (about 4 s behind)
         mainH.postDelayed(() -> runStoredEcgAnalysis(segStart, segStop, false, r17), 15000);
-        // restart: generation start first; if no live frame follows within 4.5 s, the full prepare sequence (no abort, so the tail keeps running)
-        mainH.postDelayed(() -> {
-            if (ecgSessionRunning) send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION (auto-restart)");
-        }, 300);
+        // Restart with the FULL prepare sequence at once. On 22 Oct 21:49 the short restart (0x7C arg 2 alone) brought no live frame back and the
+        // fallback 4.5 s later cost 6 s of stored ECG in all; the sequence below is the confirmed-working start without the history abort,
+        // so the near-live pull keeps running.
         final long mark = nowMs;
+        mainH.postDelayed(() -> { if (ecgSessionRunning) send(0x7B, WRIST_ARG, "SELECT_WRIST (auto-restart)"); }, 200);
+        mainH.postDelayed(() -> { if (ecgSessionRunning) send(0x8B, 1, "TOGGLE_LABRADOR_FILTERED_ON (auto-restart)"); }, 600);
+        mainH.postDelayed(() -> { if (ecgSessionRunning) send(0x7D, 1, "TOGGLE_LABRADOR_RAW_SAVE_ON (auto-restart)"); }, 1000);
+        mainH.postDelayed(() -> { if (ecgSessionRunning) send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION (auto-restart)"); }, 1400);
         mainH.postDelayed(() -> {
             if (!ecgSessionRunning) return;
             long last = ecgFrameArrivalLog.isEmpty() ? 0L : ecgFrameArrivalLog.get(ecgFrameArrivalLog.size() - 1)[0];
-            if (last > mark) { logRaw("ECG_AUTO_RESTART_OK frameAfterMs=" + (last - mark)); return; }
-            logRaw("ECG_AUTO_RESTART_FULL_SEQUENCE (no live frame after the short restart)");
-            send(0x7B, WRIST_ARG, "SELECT_WRIST (auto-restart)");
-            mainH.postDelayed(() -> send(0x8B, 1, "TOGGLE_LABRADOR_FILTERED_ON (auto-restart)"), 400);
-            mainH.postDelayed(() -> send(0x7D, 1, "TOGGLE_LABRADOR_RAW_SAVE_ON (auto-restart)"), 800);
-            mainH.postDelayed(() -> send(0x7C, 2, "MAIN_CONTROL_ECG_DATA_GENERATION (auto-restart)"), 1200);
-        }, 4500);
+            logRaw(last > mark ? "ECG_AUTO_RESTART_OK frameAfterMs=" + (last - mark) : "ECG_AUTO_RESTART_NO_FRAME (no live frame 6 s after the restart)");
+        }, 6000);
     }
     private final java.util.List<byte[]> pulledR16 = new java.util.ArrayList<>();
     private final java.util.List<byte[]> pulledAux = new java.util.ArrayList<>();   // R20 + R21, guarded by pulledR16

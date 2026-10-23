@@ -155,6 +155,7 @@ public class NewLookActivity extends Activity {
     private void handleLaunchExtras(android.content.Intent in) {
         if (in == null) return;
         final String rp = in.getStringExtra("open_report");
+        if (rp != null || in.getBooleanExtra("start_ecg", false)) { pendingReport = null; pendingEcg = false; }   // one path handles it, not two
         if (rp != null) {
             in.removeExtra("open_report");
             ui.postDelayed(() -> openReport(new File(rp)), 700);
@@ -162,6 +163,27 @@ public class NewLookActivity extends Activity {
             in.removeExtra("start_ecg");
             ui.postDelayed(() -> takeEcg(), 900);
         }
+    }
+
+    /** Set by HealthActivity just before it brings this (already running) screen forward; read in onResume, which always runs. */
+    static volatile String pendingReport;
+    static volatile boolean pendingEcg;
+
+    private void consumePending() {
+        final String rp = pendingReport;
+        if (rp != null) {
+            pendingReport = null;
+            ui.postDelayed(() -> openReport(new File(rp)), 400);
+        } else if (pendingEcg) {
+            pendingEcg = false;
+            ui.postDelayed(() -> takeEcg(), 600);
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        consumePending();
     }
 
     @Override
