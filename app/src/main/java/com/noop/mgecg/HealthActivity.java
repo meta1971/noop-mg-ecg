@@ -237,6 +237,45 @@ public class HealthActivity extends Activity {
         }, "health-import").start();
     }
 
+    // ------------------------------------------------------------------ export summary (small CSV files, the raw files stay on the phone)
+    private volatile boolean exporting;
+
+    private void exportSummary(final int days) {
+        if (exporting) return;
+        exporting = true;
+        importNote = "Writing the summary files\u2026 (about a minute)";
+        render();
+        final Context app = getApplicationContext();
+        new Thread(new Runnable() {
+            @Override public void run() {
+                SummaryExport.Result r;
+                try {
+                    r = SummaryExport.run(app, days);
+                } catch (Throwable t) {
+                    r = new SummaryExport.Result();
+                    r.note = "Export stopped: " + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
+                }
+                final SummaryExport.Result res = r;
+                ui.post(new Runnable() {
+                    @Override public void run() {
+                        exporting = false;
+                        importNote = res.note;
+                        render();
+                        if (!res.uris.isEmpty()) {
+                            try {
+                                Intent i = new Intent(Intent.ACTION_SEND_MULTIPLE);
+                                i.setType("text/csv");
+                                i.putParcelableArrayListExtra(Intent.EXTRA_STREAM, res.uris);
+                                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                                startActivity(Intent.createChooser(i, "Send the summary files"));
+                            } catch (Throwable ignored) { }
+                        }
+                    }
+                });
+            }
+        }, "summary-export").start();
+    }
+
     /** Copy the history files, ECG reports and strips out of a pull zip into the app's folder, then let the day logger read them. */
     private static String importZip(Context app, android.net.Uri uri) {
         java.io.File dir = app.getExternalFilesDir(null);
@@ -759,6 +798,8 @@ public class HealthActivity extends Activity {
         t.setPadding(0, dpi(6), 0, 0);
         dt.addView(t);
         dt.addView(pillButton("Import a pull (zip)", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { pickZip(); } }), lp(-1, dpi(44), 12));
+        dt.addView(pillButton("Export summary (CSV, last 4 days)", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { exportSummary(4); } }), lp(-1, dpi(44), 12));
+        dt.addView(pillButton("Export summary, all days", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { exportSummary(0); } }), lp(-1, dpi(44), 8));
         dt.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(oldScreens()); } }), lp(-1, dpi(44), 8));
         TextView imp = tv(importNote, 11.5f, MUT, 400);
