@@ -45,8 +45,17 @@ final class HealthViews {
             try {
                 fonts[slot] = new Typeface.Builder(c.getAssets(), "fonts/Outfit.ttf").setFontVariationSettings("'wght' " + w[slot]).build();
             } catch (Throwable t) {
-                fonts[slot] = Typeface.create(slot < 2 ? "sans-serif-light" : slot == 2 ? "sans-serif" : "sans-serif-medium", Typeface.NORMAL);
+                fonts[slot] = null;
             }
+            if (fonts[slot] == null) {
+                try {
+                    java.io.File ff = OutfitData.file(c);
+                    if (ff != null) fonts[slot] = new Typeface.Builder(ff).setFontVariationSettings("'wght' " + w[slot]).build();
+                } catch (Throwable t) {
+                    fonts[slot] = null;
+                }
+            }
+            if (fonts[slot] == null) fonts[slot] = Typeface.create(slot < 2 ? "sans-serif-light" : slot == 2 ? "sans-serif" : "sans-serif-medium", Typeface.NORMAL);
             if (fonts[slot] == null) fonts[slot] = Typeface.DEFAULT;
         }
         return fonts[slot];
