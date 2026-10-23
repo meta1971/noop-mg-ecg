@@ -2,4 +2,17 @@ plugins { id 'com.android.application' }
 
 android { namespace 'com.noop.mgecg'; compileSdk 34
     defaultConfig { applicationId 'com.noop.mgecg'; minSdk 26; targetSdk 34; versionCode 52; versionName '0.8.1-tail' }
+    // One fixed signing key for every build, so each new APK installs OVER the old one and keeps its data.
+    // (Without it every CI run signs with a fresh random debug key and Android refuses the update.)
+    signingConfigs {
+        stable {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildTypes {
+        debug { signingConfig signingConfigs.stable }
+    }
 }
