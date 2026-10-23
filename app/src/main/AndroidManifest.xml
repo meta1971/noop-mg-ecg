@@ -54,15 +54,7 @@
             android:screenOrientation="portrait"
             android:exported="true">
 
-            <intent-filter>
-
-                <action
-                    android:name="android.intent.action.MAIN" />
-
-                <category
-                    android:name="android.intent.category.LAUNCHER" />
-
-            </intent-filter>
+            <!-- 0.9.1: no longer a launcher icon. Opened from MG Heart ("Older screens", "Start an ECG reading", saved reports). -->
 
         </activity>
 
@@ -70,12 +62,7 @@
             android:name=".DayLogActivity"
             android:label="MG Day Log"
             android:screenOrientation="portrait"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:exported="true" />
 
         <activity
             android:name=".HealthActivity"
