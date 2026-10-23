@@ -148,6 +148,27 @@ public class NewLookActivity extends Activity {
         showHome();
         ui.removeCallbacks(tick);
         ui.postDelayed(tick, 500);
+        handleLaunchExtras(getIntent());
+    }
+
+    /** HealthActivity can ask for a saved report to be opened or an ECG reading to be started. */
+    private void handleLaunchExtras(android.content.Intent in) {
+        if (in == null) return;
+        final String rp = in.getStringExtra("open_report");
+        if (rp != null) {
+            in.removeExtra("open_report");
+            ui.postDelayed(() -> openReport(new File(rp)), 700);
+        } else if (in.getBooleanExtra("start_ecg", false)) {
+            in.removeExtra("start_ecg");
+            ui.postDelayed(() -> takeEcg(), 900);
+        }
+    }
+
+    @Override
+    protected void onNewIntent(android.content.Intent in) {
+        super.onNewIntent(in);
+        setIntent(in);
+        handleLaunchExtras(in);
     }
 
     @Override
