@@ -111,6 +111,16 @@ final class EcgAux {
             s.pulseShow = best(s.pulseStats, 2);
         }
         if (anyM) s.motionMg = m;
+        // The HTML report is written inside EcgR16Analyzer.strip(), before this runs, so it never held the pulse or the movement. Write it
+        // again now that both are on the strip. Same file name (strap start time), so this replaces the first copy. Never throws.
+        if (anyP || anyM) {
+            try {
+                EcgR16Analyzer.Result r0 = EcgR16Analyzer.lastResult;
+                if (r0 != null) EcgReport.saveReportFile(r0, s);
+            } catch (Throwable ignored) {
+                // the report is optional
+            }
+        }
     }
 
     /** Up to n channels that are clearly heartbeat-locked (swing >= 1 and >= 2x the random control), best first. */

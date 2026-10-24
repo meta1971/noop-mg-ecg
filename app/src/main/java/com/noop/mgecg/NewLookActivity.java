@@ -71,6 +71,9 @@ public class NewLookActivity extends Activity {
     View legacy;                       // the old UI, kept underneath
     int state = ST_HOME;
     private TextView dayLogStatus;   // 0.5.8: the all-day logger, one tap from Home
+    private LinearLayout homeGlanceCard;     // 0.10.0: today on your feet, from the day log
+    private TextView homeGlanceBody, homeWarn;
+    private volatile boolean glanceLoading;
 
     private FrameLayout homeLayer, reportsLayer, reportLayer;
     private LinearLayout reportsList, homeLatestCard;
@@ -154,6 +157,11 @@ public class NewLookActivity extends Activity {
     /** HealthActivity can ask for a saved report to be opened or an ECG reading to be started. */
     private void handleLaunchExtras(android.content.Intent in) {
         if (in == null) return;
+        if (in.getBooleanExtra(KeepAlive.EXTRA_RESUME, false)) {      // tapped the "day logger paused / no strap data" alert
+            in.removeExtra(KeepAlive.EXTRA_RESUME);
+            KeepAlive.cancel(this);
+            ui.postDelayed(() -> connectOnly(), 1500);
+        }
         final String rp = in.getStringExtra("open_report");
         if (rp != null || in.getBooleanExtra("start_ecg", false)) { pendingReport = null; pendingEcg = false; }   // one path handles it, not two
         if (rp != null) {
@@ -672,11 +680,40 @@ public class NewLookActivity extends Activity {
         lp.topMargin = dp(28);
         col.addView(homeLatestCard, lp);
 
+        homeGlanceCard = new LinearLayout(this);
+        homeGlanceCard.setOrientation(LinearLayout.VERTICAL);
+        homeGlanceCard.setPadding(dp(18), dp(16), dp(18), dp(16));
+        homeGlanceCard.setBackground(round(CARD, 18));
+        homeGlanceCard.addView(tv("TODAY ON YOUR FEET  \u00b7  TAP FOR THE DAY", 11, MUTED, true), new LinearLayout.LayoutParams(-2, -2));
+        homeGlanceBody = tv("\u2014", 17, TEXT, true);
+        LinearLayout.LayoutParams gbp = new LinearLayout.LayoutParams(-2, -2);
+        gbp.topMargin = dp(6);
+        homeGlanceCard.addView(homeGlanceBody, gbp);
+        homeGlanceCard.setOnClickListener(v -> startActivity(new android.content.Intent(this, ActivityActivity.class)));
+        LinearLayout.LayoutParams gcp = new LinearLayout.LayoutParams(-1, -2);
+        gcp.topMargin = dp(12);
+        col.addView(homeGlanceCard, gcp);
+
+        homeWarn = tv("", 13, AMBER, true);
+        homeWarn.setPadding(dp(14), dp(10), dp(14), dp(10));
+        homeWarn.setBackground(round(CARD, 14));
+        homeWarn.setVisibility(View.GONE);
+        homeWarn.setOnClickListener(v -> connectOnly());
+        LinearLayout.LayoutParams hwp = new LinearLayout.LayoutParams(-1, -2);
+        hwp.topMargin = dp(8);
+        col.addView(homeWarn, hwp);
+
         Button today = pillButton("Today  \u00b7  sleep, recovery, effort, SpO2", CARD, TEXT);
         today.setOnClickListener(v -> startActivity(new android.content.Intent(this, TodayActivity.class)));
         LinearLayout.LayoutParams tdp = new LinearLayout.LayoutParams(-1, dp(56));
         tdp.topMargin = dp(24);
         col.addView(today, tdp);
+
+        Button activity = pillButton("Activity  \u00b7  work, effort, day by day", CARD, TEXT);
+        activity.setOnClickListener(v -> startActivity(new android.content.Intent(this, ActivityActivity.class)));
+        LinearLayout.LayoutParams acp = new LinearLayout.LayoutParams(-1, dp(56));
+        acp.topMargin = dp(12);
+        col.addView(activity, acp);
 
         Button take = pillButton("Take an ECG", GREEN, INK);
         take.setTextSize(20);
@@ -734,8 +771,45 @@ public class NewLookActivity extends Activity {
         }
     }
 
+    /** Today's active time from the day log, and a warning when the logger is on but no strap data has arrived for a while. Off the main thread. */
+    private void refreshGlance() {
+        if (glanceLoading || homeGlanceBody == null) return;
+        glanceLoading = true;
+        final android.content.Context app = getApplicationContext();
+        new Thread(() -> {
+            String body = null, warn = null;
+            try {
+                ActivityStore.DayData d = ActivityStore.glanceDay(app);
+                if (d != null && d.hasData && d.r != null) {
+                    body = "Active " + glanceHm(d.r.activeMin) + "  \u00b7  longest " + (d.r.longestBoutMin == 0 ? "\u2014" : glanceHm(d.r.longestBoutMin))
+                            + "  \u00b7  load " + Math.round(d.r.load);
+                } else body = "No logged data yet today";
+                if (DayLog.enabled(app)) {
+                    long m = ActivityStore.staleMinutes(app);
+                    if (m >= KeepAlive.STALE_MIN) warn = "No strap data for " + (m >= 120 ? (m / 60) + " h" : m + " min") + ". The logger may have stopped. Tap to reconnect.";
+                }
+            } catch (Throwable ignored) {
+                // the glance is optional
+            }
+            final String b = body, w = warn;
+            ui.post(() -> {
+                glanceLoading = false;
+                if (homeGlanceBody != null && b != null) homeGlanceBody.setText(b);
+                if (homeWarn != null) {
+                    homeWarn.setText(w == null ? "" : w);
+                    homeWarn.setVisibility(w == null ? View.GONE : View.VISIBLE);
+                }
+            });
+        }, "home-glance").start();
+    }
+
+    private static String glanceHm(int min) {
+        return min < 60 ? min + " m" : (min / 60) + ":" + String.format(Locale.UK, "%02d", min % 60);
+    }
+
     private void refreshHome() {
         refreshDayLogLine();
+        refreshGlance();
         List<Rep> reps = loadReports();
         if (reps.isEmpty()) {
             latestFile = null;

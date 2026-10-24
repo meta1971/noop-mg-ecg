@@ -24,12 +24,38 @@ public class DayLogService extends Service {
 
     @Override public IBinder onBind(Intent i) { return null; }
 
+    private final Handler watchdog = new Handler(Looper.getMainLooper());
+    private boolean watchdogOn;
+    private long serviceStart;
+
+    /** Every 5 minutes: if the logger is meant to be on and no strap second has arrived for a while, say so (KeepAlive). */
+    private final Runnable watchdogTick = new Runnable() {
+        @Override public void run() {
+            final Context c = getApplicationContext();
+            if (SystemClock.elapsedRealtime() - serviceStart > 10L * 60L * 1000L) {          // not while it is still connecting
+                new Thread(new Runnable() { @Override public void run() { KeepAlive.checkStale(c); } }, "daylog-watchdog").start();
+            }
+            watchdog.postDelayed(this, 5L * 60L * 1000L);
+        }
+    };
+
     @Override public int onStartCommand(Intent i, int flags, int startId) {
         ensureChannel(this);
         Notification n = build(this);
         if (Build.VERSION.SDK_INT >= 29) startForeground(ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
         else startForeground(ID, n);
+        if (!watchdogOn) {
+            watchdogOn = true;
+            serviceStart = SystemClock.elapsedRealtime();
+            watchdog.postDelayed(watchdogTick, 5L * 60L * 1000L);
+        }
         return START_STICKY;
+    }
+
+    @Override public void onDestroy() {
+        watchdog.removeCallbacks(watchdogTick);
+        watchdogOn = false;
+        super.onDestroy();
     }
 
     static void ensureChannel(Context c) {
