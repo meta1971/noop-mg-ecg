@@ -8,6 +8,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Canvas;
 import android.graphics.DashPathEffect;
+import android.graphics.LinearGradient;
+import android.graphics.Shader;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
@@ -23,6 +25,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -44,12 +47,16 @@ import java.util.Locale;
  */
 public class ActivityActivity extends Activity {
 
-    static final int BG = 0xFF000000, CARD = 0xFF121418, LINE = 0xFF23262D, TEXT = 0xFFF4F6F9, MUTED = 0xFF8B93A0, DIM = 0xFF565D69,
-            LIGHT = 0xFF2FA8FF, MODERATE = 0xFFFFC53D, HARD = 0xFFFF4D4F, STILL = 0xFF7F8CFF, GREEN = 0xFF1FE07A, HRC = 0xFFFF6B7A, EFFORT = 0xFF2FA8FF, AMBER = 0xFFFFC53D;
+    // The same palette, type and components as the opening screen (HealthActivity / HealthViews), so every screen looks like one app.
+    static final int BG = HealthViews.BG, CARD = HealthViews.CARD, LINE = 0x1AFFFFFF, TEXT = HealthViews.INK, MUTED = HealthViews.MUT, DIM = 0xFF6B7686,
+            LIGHT = HealthViews.BLUE, MODERATE = HealthViews.GOLD, HARD = HealthViews.ROSE, STILL = HealthViews.VIOLET, GREEN = HealthViews.GREEN,
+            HRC = HealthViews.ROSE, EFFORT = HealthViews.BLUE, AMBER = HealthViews.GOLD;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private LinearLayout content;
     private TextView subtitle, dateLabel, nextBtn;
+    private HealthViews.NavBar nav;
+    private FrameLayout shell;
     private long dayStart;
     private int generation;                         // newer loads win over older ones
     private ActivityStore.Settings settings;
@@ -67,66 +74,86 @@ public class ActivityActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(BG);
+        root.addView(new HealthActivity.GlowBg(this), new FrameLayout.LayoutParams(-1, -1));
+
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(BG);
         sv.setFillViewport(true);
+        sv.setVerticalScrollBarEnabled(false);
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(dp(18), dp(38), dp(18), dp(28));
+        col.setPadding(dp(18), dp(40), dp(18), dp(120));
 
+        // header: small grey line, big light title, Settings on the right (same pattern as the other tabs)
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView back = tv("\u2039", 26, TEXT, true);
-        back.setGravity(Gravity.CENTER);
-        back.setBackground(round(CARD, 22, LINE));
-        back.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { finish(); } });
-        top.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.VERTICAL);
-        head.setPadding(dp(12), 0, 0, 0);
-        TextView title = tv("ACTIVITY", 30, TEXT, true);
-        title.setLetterSpacing(0.06f);
-        head.addView(title);
-        subtitle = tv("loading", 12, MUTED, false);
+        subtitle = tv("Today on your feet", 13, MUTED, false);
         head.addView(subtitle);
+        TextView title = tvw("Activity", 28, TEXT, 400);
+        title.setPadding(0, dp(6), 0, 0);
+        head.addView(title);
         top.addView(head, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView gear = tv("Settings", 12, MUTED, true);
-        gear.setGravity(Gravity.CENTER);
-        gear.setPadding(dp(14), dp(10), dp(14), dp(10));
-        gear.setBackground(round(CARD, 16, LINE));
+        TextView gear = chipText("Settings");
         gear.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { showSettings(); } });
         top.addView(gear, new LinearLayout.LayoutParams(-2, -2));
         col.addView(top, new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout nav = new LinearLayout(this);
-        nav.setOrientation(LinearLayout.HORIZONTAL);
-        nav.setGravity(Gravity.CENTER_VERTICAL);
-        nav.setPadding(dp(6), dp(6), dp(6), dp(6));
-        nav.setBackground(round(CARD, 20, LINE));
-        TextView prev = tv("\u2039", 24, TEXT, true);
+        // date navigator
+        LinearLayout navRow = new LinearLayout(this);
+        navRow.setOrientation(LinearLayout.HORIZONTAL);
+        navRow.setGravity(Gravity.CENTER_VERTICAL);
+        navRow.setPadding(dp(6), dp(4), dp(6), dp(4));
+        navRow.setBackground(round(CARD, 22, LINE));
+        TextView prev = tvw("\u2039", 26, TEXT, 400);
         prev.setGravity(Gravity.CENTER);
         prev.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { go(ActivityStore.shiftDay(dayStart, -1)); } });
-        nav.addView(prev, new LinearLayout.LayoutParams(dp(52), dp(44)));
-        dateLabel = tv("", 15, TEXT, true);
+        navRow.addView(prev, new LinearLayout.LayoutParams(dp(52), dp(44)));
+        dateLabel = tvw("", 16, TEXT, 600);
         dateLabel.setGravity(Gravity.CENTER);
         dateLabel.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { go(todayStart()); } });
-        nav.addView(dateLabel, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        nextBtn = tv("\u203a", 24, TEXT, true);
+        navRow.addView(dateLabel, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        nextBtn = tvw("\u203a", 26, TEXT, 400);
         nextBtn.setGravity(Gravity.CENTER);
         nextBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
             long t = ActivityStore.shiftDay(dayStart, 1);
             if (t <= todayStart()) go(t);
         } });
-        nav.addView(nextBtn, new LinearLayout.LayoutParams(dp(52), dp(44)));
-        col.addView(nav, lp(-1, -2, 16));
+        navRow.addView(nextBtn, new LinearLayout.LayoutParams(dp(52), dp(44)));
+        col.addView(navRow, lp(-1, -2, 16));
 
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         col.addView(content, new LinearLayout.LayoutParams(-1, -2));
         sv.addView(col, new ViewGroup.LayoutParams(-1, -2));
-        setContentView(sv);
+        root.addView(sv, new FrameLayout.LayoutParams(-1, -1));
+
+        // the same bottom bar as the opening screen; Activity belongs to Today
+        View scrim = new View(this) {
+            @Override protected void onDraw(Canvas cv) {
+                Paint p = new Paint();
+                p.setShader(new LinearGradient(0, 0, 0, getHeight(), 0x0007090C, 0xFF07090C, Shader.TileMode.CLAMP));
+                cv.drawRect(0, 0, getWidth(), getHeight(), p);
+            }
+        };
+        root.addView(scrim, new FrameLayout.LayoutParams(-1, dp(130), Gravity.BOTTOM));
+        nav = new HealthViews.NavBar(this, 0, new HealthViews.NavBar.Listener() {
+            @Override public void onTab(int t) { openTab(t); }
+        });
+        FrameLayout.LayoutParams np = new FrameLayout.LayoutParams(-1, dp(68), Gravity.BOTTOM);
+        np.setMargins(dp(14), 0, dp(14), dp(18));
+        root.addView(nav, np);
+        shell = root;
+        setContentView(root);
         dayStart = todayStart();
+    }
+
+    /** Bottom bar: every tab lives in the opening screen, so go there with that tab selected. */
+    private void openTab(int t) {
+        startActivity(new Intent(this, HealthActivity.class).putExtra("tab", t).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+        finish();
     }
 
     @Override protected void onResume() {
@@ -228,18 +255,27 @@ public class ActivityActivity extends Activity {
         subtitle.setText(String.format(Locale.UK, "resting %.0f bpm%s  \u00b7  max %.0f bpm (from age %d)", r.restHr,
                 r.restEstimated ? " (estimated)" : "", r.hrMax, settings.age));
 
-        // ---- rings
+        // ---- the dial: active time today, in the same glowing style as BPM NOW
         double avgLoad = averageLoad();
-        LinearLayout rings = new LinearLayout(this);
-        rings.setOrientation(LinearLayout.HORIZONTAL);
-        rings.setWeightSum(3f);
-        rings.addView(ringCell(Math.min(1.0, r.activeMin / (double) Math.max(30, settings.activeGoalMin)), GREEN, hm(r.activeMin), "ACTIVE", "goal " + hm(settings.activeGoalMin)));
-        rings.addView(ringCell(Math.min(1.0, r.longestBoutMin / 120.0), MODERATE, r.longestBoutMin == 0 ? "\u2014" : hm(r.longestBoutMin), "LONGEST",
-                r.bouts.size() + (r.bouts.size() == 1 ? " period" : " periods")));
-        double loadFrac = avgLoad > 0 ? Math.min(1.0, r.load / (1.5 * avgLoad)) : Math.min(1.0, r.load / 150.0);
-        String loadCap = avgLoad > 0 ? String.format(Locale.UK, "%+.0f%% vs usual day", 100.0 * (r.load / avgLoad - 1.0)) : "estimate";
-        rings.addView(ringCell(loadFrac, EFFORT, String.valueOf(Math.round(r.load)), "LOAD", loadCap));
-        content.addView(rings, lp(-1, -2, 22));
+        float frac = (float) Math.min(1.0, r.activeMin / (double) Math.max(30, settings.activeGoalMin));
+        int ow = Math.min(getResources().getDisplayMetrics().widthPixels - dp(80), dp(300));
+        View orb = new HealthViews.OrbView(this, hm(r.activeMin), "ACTIVE", frac, HealthViews.BLUE, 0xFF8FD8FF, 0xFF1FA0EE, 0xFF0B6FD0);
+        LinearLayout.LayoutParams op = lp(ow, ow, 8);
+        op.gravity = Gravity.CENTER_HORIZONTAL;
+        content.addView(orb, op);
+        TextView goalLine = tv("goal " + hm(settings.activeGoalMin) + "  \u00b7  " + r.bouts.size() + (r.bouts.size() == 1 ? " period" : " periods"), 13, MUTED, false);
+        goalLine.setGravity(Gravity.CENTER);
+        content.addView(goalLine, lp(-1, -2, 4));
+
+        LinearLayout stats = new LinearLayout(this);
+        stats.setOrientation(LinearLayout.HORIZONTAL);
+        double loadFrac = avgLoad > 0 ? r.load / avgLoad : Double.NaN;
+        String loadCap = avgLoad > 0 ? String.format(Locale.UK, "%+.0f%% vs your usual day", 100.0 * (loadFrac - 1.0)) : "a relative number";
+        stats.addView(statCard("LONGEST", r.longestBoutMin == 0 ? "\u2014" : hm(r.longestBoutMin), "without a long break"), new LinearLayout.LayoutParams(0, -2, 1f));
+        LinearLayout.LayoutParams sp2 = new LinearLayout.LayoutParams(0, -2, 1f);
+        sp2.leftMargin = dp(12);
+        stats.addView(statCard("LOAD", String.valueOf(Math.round(r.load)), loadCap), sp2);
+        content.addView(stats, lp(-1, -2, 16));
 
         // ---- the day
         LinearLayout c = card("YOUR DAY");
@@ -280,8 +316,7 @@ public class ActivityActivity extends Activity {
             pc.addView(rs, lp(-1, -2, 14));
         }
         if (!r.shortEfforts.isEmpty()) {
-            TextView h = tv("SHORT EFFORTS", 10, MUTED, true);
-            h.setLetterSpacing(0.12f);
+            TextView h = caps("SHORT EFFORTS");
             pc.addView(h, lp(-2, -2, 18));
             for (int i = r.shortEfforts.size() - 1; i >= 0; i--) {
                 ActivityDetector.Bout b = r.shortEfforts.get(i);
@@ -340,7 +375,7 @@ public class ActivityActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(dp(14), dp(12), dp(14), dp(12));
-        row.setBackground(round(0xFF1B1E24, 16, LINE));
+        row.setBackground(round(0x0DFFFFFF, 18, LINE));
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.addView(tv(clock(b.start) + " \u2013 " + clock(b.end), 16, TEXT, true), new LinearLayout.LayoutParams(0, -2, 1f));
@@ -382,7 +417,7 @@ public class ActivityActivity extends Activity {
         TextView t = tv(s, 13, TEXT, true);
         t.setGravity(Gravity.CENTER);
         t.setPadding(dp(10), dp(11), dp(10), dp(11));
-        t.setBackground(round(0xFF23262D, 14, LINE));
+        t.setBackground(round(0x14FFFFFF, 14, LINE));
         return t;
     }
 
@@ -548,8 +583,7 @@ public class ActivityActivity extends Activity {
     }
 
     private void addExplanations(ActivityDetector.Result r) {
-        TextView h = tv("HOW THIS WORKS", 11, MUTED, true);
-        h.setLetterSpacing(0.12f);
+        TextView h = caps("HOW THIS WORKS");
         content.addView(h, lp(-2, -2, 22));
         String reserve = r == null ? "Your resting rate is learned from your quietest minutes over the last days, and your maximum is estimated from your age. The gap between them is your reserve."
                 : String.format(Locale.UK, "Your resting rate is about %.0f bpm and your maximum about %.0f (estimated from age %d), so your reserve is %.0f beats. 10%% of it is about %.0f bpm, 25%% about %.0f, 45%% about %.0f.",
@@ -654,8 +688,7 @@ public class ActivityActivity extends Activity {
         box.addView(rest);
         box.addView(goal);
 
-        TextView st = tv("STORAGE", 10, MUTED, true);
-        st.setLetterSpacing(0.12f);
+        TextView st = caps("STORAGE");
         box.addView(st, lp(-2, -2, 18));
         box.addView(tv("Day log " + ActivityStore.mb(ActivityStore.dbBytes(app)) + "  \u00b7  archive " + ActivityStore.mb(ActivityStore.archiveBytes(app)), 13, TEXT, false), lp(-1, -2, 4));
         final CheckBox auto = new CheckBox(this);
@@ -737,16 +770,39 @@ public class ActivityActivity extends Activity {
     private static String hm(int min) { return min < 60 ? min + " m" : (min / 60) + ":" + String.format(Locale.UK, "%02d", min % 60); }
     private static String dur(int min) { return min < 60 ? min + " m" : (min / 60) + " h " + String.format(Locale.UK, "%02d", min % 60) + " m"; }
 
-    // ------------------------------------------------------------------ layout helpers (same look as Today)
+    // ------------------------------------------------------------------ layout helpers (same look as the opening screen)
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
-    private TextView tv(String s, int sp, int color, boolean bold) {
+    /** Text in the app's own font (Outfit) at a weight: 200 for big numbers, 400 for text, 600 for emphasis. */
+    private TextView tvw(String s, float sp, int color, int weight) {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(sp);
         t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTypeface(HealthViews.font(this, weight));
+        t.setIncludeFontPadding(false);
+        return t;
+    }
+
+    private TextView tv(String s, int sp, int color, boolean bold) { return tvw(s, sp, color, bold ? 600 : 400); }
+
+    private TextView caps(String s) {
+        TextView t = tvw(s, 11, MUTED, 400);
+        t.setLetterSpacing(0.16f);
+        return t;
+    }
+
+    /** The small rounded label the other screens use for STRAP, Settings and the like. */
+    private TextView chipText(String s) {
+        TextView t = tvw(s, 12, TEXT, 400);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(13), dp(8), dp(13), dp(8));
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(0x0DFFFFFF);
+        g.setCornerRadius(dp(17));
+        g.setStroke(dp(1), 0x0FFFFFFF);
+        t.setBackground(g);
         return t;
     }
 
@@ -756,26 +812,37 @@ public class ActivityActivity extends Activity {
         return p;
     }
 
+    /** The "glass" card: dark fill, hairline edge. */
     private GradientDrawable round(int color, int rDp, int stroke) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(color);
         g.setCornerRadius(dp(rDp));
-        g.setStroke(dp(1), stroke);
+        g.setStroke(dp(1), color == CARD ? 0x0FFFFFFF : stroke);
         return g;
     }
 
     private LinearLayout card(String title) {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(18), dp(16), dp(18), dp(18));
-        c.setBackground(round(CARD, 20, LINE));
-        TextView t = tv(title, 11, MUTED, true);
-        t.setLetterSpacing(0.12f);
-        c.addView(t, new LinearLayout.LayoutParams(-2, -2));
+        c.setPadding(dp(16), dp(16), dp(16), dp(18));
+        c.setBackground(round(CARD, 22, LINE));
+        c.addView(caps(title), new LinearLayout.LayoutParams(-2, -2));
         return c;
     }
 
-    private void addCard(LinearLayout c) { content.addView(c, lp(-1, -2, 14)); }
+    private void addCard(LinearLayout c) { content.addView(c, lp(-1, -2, 12)); }
+
+    private LinearLayout statCard(String label, String value, String caption) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(16), dp(14), dp(16), dp(14));
+        c.setBackground(round(CARD, 22, LINE));
+        c.addView(caps(label));
+        c.addView(tvw(value, 36, TEXT, 200), lp(-2, -2, 6));
+        TextView cp = tvw(caption, 12, MUTED, 400);
+        c.addView(cp, lp(-2, -2, 2));
+        return c;
+    }
 
     private LinearLayout statRow(String[] labels, String[] values) {
         LinearLayout r = new LinearLayout(this);
@@ -784,28 +851,13 @@ public class ActivityActivity extends Activity {
         for (int i = 0; i < labels.length; i++) {
             LinearLayout cell = new LinearLayout(this);
             cell.setOrientation(LinearLayout.VERTICAL);
-            cell.addView(tv(values[i], 16, TEXT, true));
-            TextView l = tv(labels[i], 9, MUTED, true);
-            l.setLetterSpacing(0.1f);
-            cell.addView(l);
+            cell.addView(tvw(values[i], 20, TEXT, 300));
+            TextView l = tvw(labels[i], 9, MUTED, 400);
+            l.setLetterSpacing(0.14f);
+            cell.addView(l, lp(-2, -2, 3));
             r.addView(cell, new LinearLayout.LayoutParams(0, -2, 1f));
         }
         return r;
-    }
-
-    private View ringCell(double frac, int color, String big, String label, String caption) {
-        LinearLayout cell = new LinearLayout(this);
-        cell.setOrientation(LinearLayout.VERTICAL);
-        cell.setGravity(Gravity.CENTER_HORIZONTAL);
-        cell.addView(new TodayActivity.RingView(this, (float) frac, color, big), new LinearLayout.LayoutParams(dp(104), dp(104)));
-        TextView l = tv(label, 11, TEXT, true);
-        l.setLetterSpacing(0.14f);
-        cell.addView(l, lp(-2, -2, 8));
-        TextView c = tv(caption, 10, MUTED, false);
-        c.setGravity(Gravity.CENTER);
-        cell.addView(c);
-        cell.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
-        return cell;
     }
 
     // ------------------------------------------------------------------ canvas views
@@ -899,7 +951,7 @@ public class ActivityActivity extends Activity {
             float yMax = Math.max(rest + 40f, (float) Math.ceil((Math.max(maxSeen, rest) + 8f) / 10f) * 10f);
             Paint grid = stroke(LINE, 1f * dn);
             Paint lab = fill(DIM);
-            lab.setTextSize(10f * dn);
+            lab.setTypeface(HealthViews.font(getContext(), 400)); lab.setTextSize(10f * dn);
             for (float y = yMin; y <= yMax; y += 10f) {
                 float py = b - h * (y - yMin) / (yMax - yMin);
                 cv.drawLine(l, py, r, py, grid);
@@ -1000,13 +1052,13 @@ public class ActivityActivity extends Activity {
                 max = (int) Math.ceil(max / 60.0) * 60;
                 float slot = w / days.size(), bw = slot * 0.5f;
                 Paint lab = fill(DIM);
-                lab.setTextSize(10f * dn);
+                lab.setTypeface(HealthViews.font(getContext(), 400)); lab.setTextSize(10f * dn);
                 lab.setTextAlign(Paint.Align.CENTER);
                 SimpleDateFormat f = new SimpleDateFormat("EEE", Locale.UK);
                 for (int i = 0; i < days.size(); i++) {
                     ActivityStore.Summary s = days.get(i);
                     float cx = slot * i + slot / 2f;
-                    cv.drawRoundRect(new RectF(cx - bw / 2, top, cx + bw / 2, bot), 6f * dn, 6f * dn, fill(0xFF1B1E24));
+                    cv.drawRoundRect(new RectF(cx - bw / 2, top, cx + bw / 2, bot), 6f * dn, 6f * dn, fill(0x0DFFFFFF));
                     if (s.ok) {
                         int[] v = {s.lightMin, s.moderateMin, s.hardMin};
                         int[] col = {LIGHT, MODERATE, HARD};
@@ -1018,7 +1070,7 @@ public class ActivityActivity extends Activity {
                             y -= hh;
                         }
                         Paint tx = fill(i == days.size() - 1 ? TEXT : MUTED);
-                        tx.setTextSize(10f * dn);
+                        tx.setTypeface(HealthViews.font(getContext(), 400)); tx.setTextSize(10f * dn);
                         tx.setTextAlign(Paint.Align.CENTER);
                         cv.drawText(s.activeMin >= 60 ? (s.activeMin / 60) + "h" + String.format(Locale.UK, "%02d", s.activeMin % 60) : s.activeMin + "m", cx, y - 4f * dn, tx);
                     }
@@ -1064,7 +1116,7 @@ public class ActivityActivity extends Activity {
                     cv.drawRoundRect(new RectF(x - 3f * dn, barT - 5f * dn, x + 3f * dn, barB + 5f * dn), 3f * dn, 3f * dn, fill(col));
                 }
                 Paint lab = fill(DIM);
-                lab.setTextSize(10f * dn);
+                lab.setTypeface(HealthViews.font(getContext(), 400)); lab.setTextSize(10f * dn);
                 lab.setTextAlign(Paint.Align.CENTER);
                 cv.drawText("0.8\u00d7", w * 0.8f / max, barB + 18f * dn, lab);
                 cv.drawText("1.3\u00d7", w * 1.3f / max, barB + 18f * dn, lab);
@@ -1081,7 +1133,7 @@ public class ActivityActivity extends Activity {
         interface Click { void on(long dayStart); }
         private final ActivityTrends.Grid g;
         private final Click click;
-        private static final int[] RAMP = {0xFF1B1E24, 0xFF123D26, 0xFF1B7A4A, 0xFF1FB86A, 0xFF1FE07A};
+        private static final int[] RAMP = {0x14FFFFFF, 0xFF123A55, 0xFF1A6FA3, 0xFF2FA8F0, 0xFF8FD8FF};
         HeatView(Context c, ActivityTrends.Grid g, Click click) { super(c); this.g = g; this.click = click; }
 
         private float[] geo() {
@@ -1097,7 +1149,7 @@ public class ActivityActivity extends Activity {
                 float[] gm = geo();
                 float labelW = gm[0], gap = gm[1], cell = gm[2];
                 Paint lab = fill(DIM);
-                lab.setTextSize(9f * dn);
+                lab.setTypeface(HealthViews.font(getContext(), 400)); lab.setTextSize(9f * dn);
                 String[] wd = {"M", "", "W", "", "F", "", "S"};
                 for (int d = 0; d < 7; d++) if (!wd[d].isEmpty()) cv.drawText(wd[d], 0, 2f * dn + d * (cell + gap) + cell * 0.75f, lab);
                 for (int wk = 0; wk < g.weeks; wk++) for (int d = 0; d < 7; d++) {
@@ -1144,7 +1196,7 @@ public class ActivityActivity extends Activity {
                 double top = Math.max(usualTotal, cum[23]) * 1.1;
                 top = Math.max(60, Math.ceil(top / 60.0) * 60);
                 Paint grid = stroke(LINE, 1f * dn), lab = fill(DIM);
-                lab.setTextSize(10f * dn);
+                lab.setTypeface(HealthViews.font(getContext(), 400)); lab.setTextSize(10f * dn);
                 lab.setTextAlign(Paint.Align.RIGHT);
                 for (double v = 0; v <= top + 1; v += top / 4) {
                     float y = b - (float) (h * v / top);

@@ -46,6 +46,7 @@ public class HealthActivity extends Activity {
     private int tab = 0;
     private HealthModel.Data data;
     private volatile boolean loading;
+    private volatile String actLine = "";          // today's activity in one line, read off the main thread
     private final Runnable tick = new Runnable() {
         @Override public void run() { load(); ui.postDelayed(this, 60000L); }
     };
@@ -58,7 +59,8 @@ public class HealthActivity extends Activity {
         root.addView(new GlowBg(this), new FrameLayout.LayoutParams(-1, -1));
         content = new FrameLayout(this);
         root.addView(content, new FrameLayout.LayoutParams(-1, -1));
-        nav = new NavBar(this, 0, new NavBar.Listener() {
+        tab = Math.max(0, Math.min(4, getIntent().getIntExtra("tab", 0)));      // other screens open a given tab
+        nav = new NavBar(this, tab, new NavBar.Listener() {
             @Override public void onTab(int t) { tab = t; render(); }
         });
         FrameLayout.LayoutParams np = new FrameLayout.LayoutParams(-1, Math.round(dp(this, 68)), Gravity.BOTTOM);
@@ -73,6 +75,15 @@ public class HealthActivity extends Activity {
         root.addView(scrim, new FrameLayout.LayoutParams(-1, Math.round(dp(this, 130)), Gravity.BOTTOM));
         root.addView(nav, np);
         setContentView(root);
+        render();
+    }
+
+    /** Another screen's bottom bar asks for a tab while this screen is already open. */
+    @Override protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        setIntent(i);
+        tab = Math.max(0, Math.min(4, i.getIntExtra("tab", tab)));
+        if (nav != null) nav.setActive(tab);
         render();
     }
 
@@ -95,6 +106,12 @@ public class HealthActivity extends Activity {
             @Override public void run() {
                 HealthModel.Data d = null;
                 try { d = HealthModel.load(app, mh, g); } catch (Throwable ignored) { }
+                try {
+                    ActivityStore.DayData ad = ActivityStore.glanceDay(app);
+                    actLine = (ad != null && ad.hasData && ad.r != null)
+                            ? "Active " + HealthModel.hmShort(ad.r.activeMin * 60L) + (ad.r.longestBoutMin > 0 ? " \u00b7 longest " + HealthModel.hmShort(ad.r.longestBoutMin * 60L) : "") + " \u00b7 load " + Math.round(ad.r.load)
+                            : "No logged data yet today";
+                } catch (Throwable ignored) { }
                 final HealthModel.Data dd = d;
                 ui.post(new Runnable() { @Override public void run() { loading = false; if (!isFinishing()) { data = dd; render(); } } });
             }
@@ -415,6 +432,8 @@ public class HealthActivity extends Activity {
             col.addView(rowCard("Last night \u00b7 " + HealthModel.hm(n.tstH) + " asleep" + (day.spo2 != null && day.spo2.validWindows > 0 ? " \u00b7 SpO2 " + day.spo2.median + "%" : ""), sub.isEmpty() ? "Open Rest for the whole night" : sub,
                     new View.OnClickListener() { @Override public void onClick(View v) { go(3); } }), lp(-1, -2, 10));
         }
+        col.addView(rowCard("Activity \u00b7 today on your feet", actLine.isEmpty() ? "Tap for the day, the week and your usual" : actLine,
+                new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, ActivityActivity.class)); } }), lp(-1, -2, 10));
         LinearLayout c = card(16);
         LinearLayout h = hrow();
         h.addView(caps("THE LAST 24 HOURS"));
@@ -586,6 +605,7 @@ public class HealthActivity extends Activity {
                 col.addView(c, lp(-1, -2, 12));
             }
         }
+        col.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 16));
         col.addView(tv("Research only: not a diagnosis. Reports show how reliable each measurement was.", 11, MUT, 400), lp(-2, -2, 16));
         return wrap(col);
     }
@@ -801,6 +821,7 @@ public class HealthActivity extends Activity {
         dt.addView(pillButton("Export summary (CSV, last 4 days)", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { exportSummary(4); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Export summary, all days", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { exportSummary(0); } }), lp(-1, dpi(44), 8));
         dt.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
+        dt.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 8));
         dt.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(oldScreens()); } }), lp(-1, dpi(44), 8));
         TextView imp = tv(importNote, 11.5f, MUT, 400);
         imp.setPadding(0, dpi(10), 0, 0);

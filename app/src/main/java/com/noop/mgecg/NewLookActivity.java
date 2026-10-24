@@ -56,8 +56,10 @@ import java.util.regex.Pattern;
  */
 public class NewLookActivity extends Activity {
 
-    static final int BG = 0xFF0B0F14, CARD = 0xFF131A23, LINE = 0xFF243244, TEXT = 0xFFE8EEF5,
-            MUTED = 0xFFA3B2C5, GREEN = 0xFF3DDC97, AMBER = 0xFFFFB454, RED = 0xFFFF7A7A, INK = 0xFF06251A;
+    // The same palette and type as the opening screen (HealthViews), so the ECG pages look like the rest of the app.
+    // PRIMARY is the main action colour (blue, like the Start button there); GREEN is only for "all good" status.
+    static final int BG = HealthViews.BG, CARD = HealthViews.CARD, LINE = 0x1AFFFFFF, TEXT = HealthViews.INK,
+            MUTED = HealthViews.MUT, PRIMARY = HealthViews.BLUE, GREEN = HealthViews.GREEN, AMBER = HealthViews.GOLD, RED = HealthViews.ROSE, INK = 0xFF05131E;
 
     static final int ST_HOME = 0, ST_REPORTS = 1, ST_REPORT = 2, ST_ECG = 3, ST_DEV = 4;
 
@@ -74,6 +76,8 @@ public class NewLookActivity extends Activity {
     private LinearLayout homeGlanceCard;     // 0.10.0: today on your feet, from the day log
     private TextView homeGlanceBody, homeWarn;
     private volatile boolean glanceLoading;
+    private HealthViews.NavBar navBar;
+    private View navScrim;
 
     private FrameLayout homeLayer, reportsLayer, reportLayer;
     private LinearLayout reportsList, homeLatestCard;
@@ -138,7 +142,7 @@ public class NewLookActivity extends Activity {
         banner = tv("Your report is ready  \u00b7  View", 15, INK, true);
         banner.setGravity(Gravity.CENTER);
         banner.setPadding(dp(16), dp(14), dp(16), dp(14));
-        banner.setBackground(round(GREEN, 16));
+        banner.setBackground(round(PRIMARY, 16));
         banner.setVisibility(View.GONE);
         banner.setOnClickListener(v -> {
             if (bannerFile != null) openReport(bannerFile);
@@ -147,6 +151,22 @@ public class NewLookActivity extends Activity {
         bl.setMargins(dp(16), 0, dp(16), dp(16));
         root.addView(banner, bl);
 
+        // the same bottom bar as the opening screen, shown on Home and the reports list (hidden while recording or reading a report)
+        navScrim = new View(this) {
+            @Override protected void onDraw(android.graphics.Canvas cv) {
+                android.graphics.Paint p = new android.graphics.Paint();
+                p.setShader(new android.graphics.LinearGradient(0, 0, 0, getHeight(), 0x0007090C, 0xFF07090C, android.graphics.Shader.TileMode.CLAMP));
+                cv.drawRect(0, 0, getWidth(), getHeight(), p);
+            }
+        };
+        root.addView(navScrim, new FrameLayout.LayoutParams(-1, dp(130), Gravity.BOTTOM));
+        navBar = new HealthViews.NavBar(this, 2, t ->
+                startActivity(new android.content.Intent(this, HealthActivity.class).putExtra("tab", t)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)));
+        FrameLayout.LayoutParams nbp = new FrameLayout.LayoutParams(-1, dp(68), Gravity.BOTTOM);
+        nbp.setMargins(dp(14), 0, dp(14), dp(18));
+        root.addView(navBar, nbp);
+        updateNav();
         super.setContentView(root);
         showHome();
         ui.removeCallbacks(tick);
@@ -248,7 +268,15 @@ public class NewLookActivity extends Activity {
         }
     };
 
+    /** The bottom bar belongs on Home and the reports list only. */
+    private void updateNav() {
+        if (navBar == null) return;
+        int vis = (state == ST_HOME || state == ST_REPORTS) ? View.VISIBLE : View.GONE;
+        if (navBar.getVisibility() != vis) { navBar.setVisibility(vis); if (navScrim != null) navScrim.setVisibility(vis); }
+    }
+
     void onTick() {
+        updateNav();
         updateConnection();
         if (state == ST_ECG) {
             View c = ecgContainer();
@@ -512,7 +540,7 @@ public class NewLookActivity extends Activity {
         ecgStartBtn.setTextSize(20);
         ecgStartBtn.setMinHeight(dp(68));
         ecgStartBtn.setMinimumHeight(dp(68));
-        ecgStartBtn.setBackground(round(GREEN, 34));
+        ecgStartBtn.setBackground(round(PRIMARY, 34));
         lastRunningState = -1;
 
         // tips card above the button (idle only)
@@ -564,7 +592,7 @@ public class NewLookActivity extends Activity {
         int rs = running ? 1 : 0;
         if (rs != lastRunningState) {                       // the old code resets the colour whenever it flips the button
             lastRunningState = rs;
-            ecgStartBtn.setBackground(round(running ? RED : GREEN, 34));
+            ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
             if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
         }
         if (ecgPrep != null && ecgStoredView != null) {
@@ -646,7 +674,7 @@ public class NewLookActivity extends Activity {
         sv.setFillViewport(true);
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(dp(24), dp(44), dp(24), dp(24));
+        col.setPadding(dp(24), dp(44), dp(24), dp(120));
 
         TextView title = tv("ECG", 34, TEXT, true);
         title.setOnLongClickListener(v -> {
@@ -715,7 +743,7 @@ public class NewLookActivity extends Activity {
         acp.topMargin = dp(12);
         col.addView(activity, acp);
 
-        Button take = pillButton("Take an ECG", GREEN, INK);
+        Button take = pillButton("Take an ECG", PRIMARY, INK);
         take.setTextSize(20);
         take.setOnClickListener(v -> takeEcg());
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-1, dp(68));
@@ -733,6 +761,12 @@ public class NewLookActivity extends Activity {
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(-1, dp(56));
         dlp.topMargin = dp(12);
         col.addView(dayLog, dlp);
+
+        Button exportBtn = pillButton("Export ECG data for analysis", CARD, TEXT);
+        exportBtn.setOnClickListener(v -> askExport());
+        LinearLayout.LayoutParams exp = new LinearLayout.LayoutParams(-1, dp(56));
+        exp.topMargin = dp(12);
+        col.addView(exportBtn, exp);
         dayLogStatus = tv("", 12, MUTED, false);
         dayLogStatus.setGravity(Gravity.CENTER);
         dayLogStatus.setOnClickListener(v -> openDayLog());
@@ -769,6 +803,37 @@ public class NewLookActivity extends Activity {
         } catch (Throwable t) {
             dayLogStatus.setText("");
         }
+    }
+
+    private volatile boolean exporting;
+
+    /** One tap: everything, the last 30 days or the last 7 days. Writes zips of about 240 MB to Download/MGexport and says when it is done. */
+    private void askExport() {
+        if (exporting) {
+            android.widget.Toast.makeText(this, "An export is already running.", android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final String[] items = {"Everything", "Last 30 days", "Last 7 days"};
+        final int[] days = {0, 30, 7};
+        new android.app.AlertDialog.Builder(this).setTitle("Export ECG data for analysis")
+                .setItems(items, (d, w) -> runExport(days[w]))
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    private void runExport(final int days) {
+        exporting = true;
+        final android.content.Context app = getApplicationContext();
+        android.widget.Toast.makeText(this, "Exporting in the background. You can keep using the app.", android.widget.Toast.LENGTH_LONG).show();
+        new Thread(() -> {
+            final EcgExport.Result r = EcgExport.run(app, days, null);
+            ui.post(() -> {
+                exporting = false;
+                if (isFinishing()) return;
+                new android.app.AlertDialog.Builder(this).setTitle(r.ok ? "Export finished" : "Export problem")
+                        .setMessage(r.message + (r.ok ? "\n\nOpen your Files app, then Downloads, then MGexport. These zips hold your heart recordings: share them only with people you trust." : ""))
+                        .setPositiveButton("OK", null).show();
+            });
+        }, "ecg-export").start();
     }
 
     /** Today's active time from the day log, and a warning when the logger is on but no strap data has arrived for a while. Off the main thread. */
@@ -837,7 +902,7 @@ public class NewLookActivity extends Activity {
         ScrollView sv = new ScrollView(this);
         reportsList = new LinearLayout(this);
         reportsList.setOrientation(LinearLayout.VERTICAL);
-        reportsList.setPadding(dp(16), dp(4), dp(16), dp(24));
+        reportsList.setPadding(dp(16), dp(4), dp(16), dp(120));
         sv.addView(reportsList, new FrameLayout.LayoutParams(-1, -2));
         col.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
         layer.addView(col, new FrameLayout.LayoutParams(-1, -1));
@@ -1051,6 +1116,7 @@ public class NewLookActivity extends Activity {
         GradientDrawable g = new GradientDrawable();
         g.setColor(color);
         g.setCornerRadius(dp(radiusDp));
+        if (color == CARD) g.setStroke(Math.max(1, dp(1)), 0x0FFFFFFF);      // the hairline edge the other screens give their cards
         return g;
     }
 
@@ -1059,7 +1125,7 @@ public class NewLookActivity extends Activity {
         t.setText(s);
         t.setTextSize(sp);
         t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTypeface(HealthViews.font(this, bold ? 600 : 400));
         return t;
     }
 
@@ -1067,9 +1133,9 @@ public class NewLookActivity extends Activity {
         Button b = new Button(this);
         b.setText(s);
         b.setAllCaps(false);
-        b.setTextSize(17);
+        b.setTextSize(16);
         b.setTextColor(fg);
-        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTypeface(HealthViews.font(this, 600));
         b.setBackground(round(bg, 28));
         b.setMinHeight(dp(44));
         b.setMinimumHeight(dp(44));
