@@ -40,6 +40,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:icon="@mipmap/ic_launcher"
@@ -80,6 +82,12 @@
             android:exported="false" />
 
         <activity
+            android:name=".ActivityActivity"
+            android:label="MG Activity"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
+        <activity
             android:name=".AladinActivity"
             android:label="ALADIN second opinion"
             android:screenOrientation="portrait"
@@ -97,6 +105,17 @@
         <receiver
             android:name=".DayLogReceiver"
             android:exported="false" />
+
+        <!-- After a restart or an app update: one alert that reconnects the strap when tapped -->
+        <receiver
+            android:name=".DayLogBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 
