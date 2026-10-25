@@ -47,6 +47,18 @@ public class HealthActivity extends Activity {
     private HealthModel.Data data;
     private volatile boolean loading;
     private volatile String actLine = "";          // today's activity in one line, read off the main thread
+    private TextView liveNum, liveUnit;
+    private HealthModel.Data liveData;
+    private final Runnable liveTick = new Runnable() {
+        @Override public void run() {
+            if (tab == 1 && liveNum != null && liveUnit != null) {
+                int h = shownHr(liveData);
+                liveNum.setText(h > 0 ? String.valueOf(h) : "\u2014");
+                liveUnit.setText("  " + shownLabel(liveData));
+            }
+            ui.postDelayed(this, 2000L);
+        }
+    };
     private final Runnable tick = new Runnable() {
         @Override public void run() { load(); ui.postDelayed(this, 60000L); }
     };
@@ -87,9 +99,33 @@ public class HealthActivity extends Activity {
         render();
     }
 
-    @Override protected void onResume() { super.onResume(); ui.removeCallbacks(tick); ui.post(tick); }
+    @Override protected void onResume() { super.onResume(); ui.removeCallbacks(tick); ui.post(tick); ui.removeCallbacks(liveTick); ui.post(liveTick); }
 
-    @Override protected void onPause() { super.onPause(); ui.removeCallbacks(tick); }
+    @Override protected void onPause() { super.onPause(); ui.removeCallbacks(tick); ui.removeCallbacks(liveTick); }
+
+    /** The heart rate to show: a live notification from the last 90 seconds, otherwise the newest logged second. */
+    private int shownHr(HealthModel.Data d) {
+        LiveHr.Sample s = LiveHr.latest();
+        if (s != null && System.currentTimeMillis() - s.ms < 90000L) return s.hr;
+        return d == null ? 0 : d.nowHr;
+    }
+
+    private String shownLabel(HealthModel.Data d) {
+        LiveHr.Sample s = LiveHr.latest();
+        if (s != null && System.currentTimeMillis() - s.ms < 90000L) return "bpm, " + LiveHr.ageText(s);
+        if (d != null && d.nowHr > 0 && d.nowTs > 0) return "bpm, logged " + ago(d.nowTs);
+        return "bpm";
+    }
+
+    private long[] ecgSecs() {
+        List<HealthModel.Reading> rs = data == null ? null : data.readings;
+        if (rs == null) return new long[0];
+        long[] out = new long[rs.size()];
+        for (int i = 0; i < out.length; i++) out[i] = rs.get(i).timeMs / 1000L;
+        return out;
+    }
+
+    private void openGraph(int rangeIdx) { HeartGraph.show(this, rangeIdx, maxHr(), ecgSecs()); }
 
     private SharedPreferences sp() { return getSharedPreferences("today", MODE_PRIVATE); }
     private int maxHr() { return sp().getInt("maxhr", 167); }
@@ -458,10 +494,11 @@ public class HealthActivity extends Activity {
         col.addView(tv("Heart", 13, MUT, 400));
         LinearLayout big = hrow();
         big.setGravity(Gravity.BOTTOM);
-        TextView num = tv(d.nowHr > 0 ? String.valueOf(d.nowHr) : "\u2014", 64, INK, 200);
+        TextView num = tv(shownHr(d) > 0 ? String.valueOf(shownHr(d)) : "\u2014", 64, INK, 200);
         num.setTypeface(font(this, 200));
         big.addView(num);
-        TextView unit = tv("  bpm, live", 14, MUT, 400);
+        TextView unit = tv("  " + shownLabel(d), 14, MUT, 400);
+        liveNum = num; liveUnit = unit; liveData = d;
         unit.setPadding(0, 0, 0, dpi(8));
         big.addView(unit);
         big.addView(spacer());
@@ -475,15 +512,29 @@ public class HealthActivity extends Activity {
         rt.addView(tv(hrv, 24, INK, 300));
         big.addView(rt);
         col.addView(big, lp(-1, -2, 8));
-        col.addView(tv(d.nowHr > 0 && !Double.isNaN(day.restingHr) ? (d.nowHr > day.restingHr + 8 ? "Above your lowest 5-minute rate of " : "Close to your lowest 5-minute rate of ") + Math.round(day.restingHr) + ". " + hrvSrc + "." : hrvSrc + ".", 12, MUT, 400), lp(-2, -2, 6));
+        col.addView(tv(shownHr(d) > 0 && !Double.isNaN(day.restingHr) ? (shownHr(d) > day.restingHr + 8 ? "Above your lowest 5-minute rate of " : "Close to your lowest 5-minute rate of ") + Math.round(day.restingHr) + ". " + hrvSrc + "." : hrvSrc + ".", 12, MUT, 400), lp(-2, -2, 6));
 
         LinearLayout c = card(16);
         LinearLayout h = hrow();
-        h.addView(caps("LAST 24 HOURS"));
+        h.addView(caps("TODAY \u00b7 LAST 24 HOURS"));
         h.addView(spacer());
         h.addView(tv(d.hr24Max > 0 ? d.hr24Min + " low \u00b7 " + Math.round(d.hr24Mean) + " avg \u00b7 " + d.hr24Max + " high" : "", 12, MUT, 400));
         c.addView(h);
-        c.addView(new HrChartView(this, day.hrT, day.hrV, day.night == null ? 0 : day.night.bedTs, day.night == null ? 0 : day.night.endTs, true), lp(-1, dpi(130), 8));
+        View chartView = new HrChartView(this, day.hrT, day.hrV, day.night == null ? 0 : day.night.bedTs, day.night == null ? 0 : day.night.endTs, true);
+        chartView.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openGraph(2); } });
+        c.addView(chartView, lp(-1, dpi(170), 8));
+        LinearLayout chipsRow = hrow();
+        for (int ri = 0; ri < HeartGraph.RANGE_LABEL.length; ri++) {
+            final int rIdx = ri;
+            TextView chp = HeartGraph.pill(this, HeartGraph.RANGE_LABEL[ri], 0x1AFFFFFF, INK);
+            chp.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openGraph(rIdx); } });
+            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(-2, -2);
+            cl.rightMargin = dpi(8);
+            chipsRow.addView(chp, cl);
+        }
+        chipsRow.addView(spacer());
+        chipsRow.addView(tv("Full graph \u203a", 12, BLUE, 400));
+        c.addView(chipsRow, lp(-1, -2, 10));
         col.addView(c, lp(-1, -2, 14));
 
         LinearLayout z = card(16);
@@ -511,6 +562,33 @@ public class HealthActivity extends Activity {
         }
         col.addView(z, lp(-1, -2, 12));
 
+        LinearLayout bb = card(16);
+        LinearLayout bh = hrow();
+        bh.addView(caps("BEAT TO BEAT"));
+        bh.addView(spacer());
+        double lastOpt = Double.NaN;
+        for (TodayModel.NightStat ns : d.nights) if (!Double.isNaN(ns.rmssd)) lastOpt = ns.rmssd;
+        bh.addView(tv(Double.isNaN(lastOpt) ? "" : "last night " + Math.round(lastOpt) + " ms, optical", 12, MUT, 400));
+        bb.addView(bh);
+        LinearLayout two = hrow();
+        LinearLayout lcol = new LinearLayout(this);
+        lcol.setOrientation(LinearLayout.VERTICAL);
+        lcol.addView(caps("FROM THE ECG"));
+        lcol.addView(tv(hrv, 26, INK, 300));
+        lcol.addView(tv(hrvSrc, 11, MUT, 400));
+        two.addView(lcol, new LinearLayout.LayoutParams(0, -2, 1f));
+        LinearLayout rcol = new LinearLayout(this);
+        rcol.setOrientation(LinearLayout.VERTICAL);
+        rcol.addView(caps("FROM THE WRIST (OPTICAL)"));
+        rcol.addView(tv(Double.isNaN(lastOpt) ? "\u2014" : Math.round(lastOpt) + " ms", 26, INK, 300));
+        rcol.addView(tv("overnight RMSSD; runs about 1.8 times the chest strap's", 11, MUT, 400));
+        two.addView(rcol, new LinearLayout.LayoutParams(0, -2, 1f));
+        bb.addView(two, lp(-1, -2, 10));
+        int withRm = 0;
+        for (TodayModel.NightStat ns : d.nights) if (!Double.isNaN(ns.rmssd)) withRm++;
+        if (withRm >= 2) bb.addView(new NightsLineView(this, d.nights, true), lp(-1, dpi(90), 10));
+        col.addView(bb, lp(-1, -2, 12));
+
         LinearLayout rd = card(16);
         rd.addView(tv("A reading, now", 16, INK, 600));
         TextView t = tv("About three minutes with two fingers on the clasp. An ECG reading gives beat-to-beat figures you can set beside the overnight ones.", 12.5f, MUT, 400);
@@ -528,7 +606,7 @@ public class HealthActivity extends Activity {
         int nn = d.nights.size();
         oh.addView(tv(nn + (nn == 1 ? " night" : " nights") + " logged", 12, nn >= 14 ? MUT : GOLD, 400));
         ov.addView(oh);
-        if (nn >= 2) ov.addView(new NightsLineView(this, d.nights), lp(-1, dpi(110), 10));
+        if (nn >= 2) ov.addView(new NightsLineView(this, d.nights, false), lp(-1, dpi(110), 10));
         TextView note = tv(nn >= 2 ? "Lowest five-minute heart rate each night. Optical HRV is in the Rest tab." : "The line draws itself from the second night on. Last night's lowest five-minute heart rate was " + (Double.isNaN(day.restingHr) ? "\u2014" : String.valueOf(Math.round(day.restingHr))) + ".", 12, MUT, 400);
         note.setPadding(0, dpi(8), 0, 0);
         ov.addView(note);
@@ -539,20 +617,22 @@ public class HealthActivity extends Activity {
     /** Lowest five-minute heart rate per logged night, newest on the right. */
     static final class NightsLineView extends View {
         private final List<TodayModel.NightStat> nights;
-        NightsLineView(Context c, List<TodayModel.NightStat> nights) { super(c); this.nights = nights; }
+        private final boolean rm;
+        NightsLineView(Context c, List<TodayModel.NightStat> nights, boolean rmssd) { super(c); this.nights = nights; this.rm = rmssd; }
+        private double val(TodayModel.NightStat s) { return rm ? s.rmssd : s.hrLow5; }
         @Override protected void onDraw(Canvas cv) {
             Context c = getContext();
             List<TodayModel.NightStat> use = new ArrayList<>();
-            for (TodayModel.NightStat s : nights) if (!Double.isNaN(s.hrLow5)) use.add(s);
+            for (TodayModel.NightStat s : nights) if (!Double.isNaN(val(s))) use.add(s);
             if (use.size() > 14) use = use.subList(use.size() - 14, use.size());
             if (use.size() < 2) return;
             float w = getWidth(), h = getHeight() - dp(c, 14);
             double lo = 1e9, hi = -1e9;
-            for (TodayModel.NightStat s : use) { lo = Math.min(lo, s.hrLow5); hi = Math.max(hi, s.hrLow5); }
+            for (TodayModel.NightStat s : use) { lo = Math.min(lo, val(s)); hi = Math.max(hi, val(s)); }
             lo = Math.floor(lo - 2); hi = Math.ceil(hi + 2);
             if (hi - lo < 8) { hi = lo + 8; }
             List<float[]> pts = new ArrayList<>();
-            for (int i = 0; i < use.size(); i++) pts.add(new float[] {dp(c, 8) + (w - dp(c, 16)) * i / (use.size() - 1f), (float) (h * (1 - (use.get(i).hrLow5 - lo) / (hi - lo)))});
+            for (int i = 0; i < use.size(); i++) pts.add(new float[] {dp(c, 8) + (w - dp(c, 16)) * i / (use.size() - 1f), (float) (h * (1 - (val(use.get(i)) - lo) / (hi - lo)))});
             Paint g = new Paint(Paint.ANTI_ALIAS_FLAG);
             g.setColor(0x12FFFFFF); g.setStrokeWidth(dp(c, 1));
             for (int k = 0; k < 4; k++) cv.drawLine(0, h * k / 3f, w, h * k / 3f, g);

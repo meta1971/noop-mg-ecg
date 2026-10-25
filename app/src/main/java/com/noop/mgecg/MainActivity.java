@@ -10090,6 +10090,7 @@ public class MainActivity extends NewLookActivity {
 
         line("HEART RATE: " + hr + " bpm");
         logRaw("HEART_RATE bpm=" + hr + " raw=" + Protocol.hex(value));
+        LiveHr.onNotification(getApplicationContext(), value);   // 0.11.0: kept all day for the Heart tab and graph
     }
 
     /*

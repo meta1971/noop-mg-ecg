@@ -55,15 +55,20 @@ final class DayLog {
 
     // ------------------------------------------------------------------ database
     private static final class Helper extends SQLiteOpenHelper {
-        Helper(Context c) { super(c.getApplicationContext(), "daylog.db", null, 2); }
+        Helper(Context c) { super(c.getApplicationContext(), "daylog.db", null, 3); }
         @Override public void onCreate(SQLiteDatabase db) {
             db.execSQL("CREATE TABLE r18 (ts INTEGER PRIMARY KEY, hr INTEGER, state INTEGER, skin REAL, b82 INTEGER, steps INTEGER, act INTEGER, rec BLOB)");
             db.execSQL("CREATE TABLE other_rec (ts INTEGER, ver INTEGER, len INTEGER, PRIMARY KEY (ts, ver))");
             db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ms INTEGER, kind TEXT, text TEXT)");
             db.execSQL("CREATE INDEX events_ms ON events (ms)");
             createV2(db);
+            createV3(db);
         }
-        @Override public void onUpgrade(SQLiteDatabase db, int o, int n) { if (o < 2) createV2(db); }
+        @Override public void onUpgrade(SQLiteDatabase db, int o, int n) { if (o < 2) createV2(db); if (o < 3) createV3(db); }
+        /** v3 (0.11.0): every notification from the strap's standard Heart Rate service, beat-interval words kept raw. */
+        private void createV3(SQLiteDatabase db) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS live_hr (ms INTEGER PRIMARY KEY, hr INTEGER, flags INTEGER, rr TEXT)");
+        }
         /** v2: one row per second of the stored-ECG companions (R21 motion, R20 optical), and cached per-night numbers. */
         private void createV2(SQLiteDatabase db) {
             db.execSQL("CREATE TABLE IF NOT EXISTS aux_sec (ts INTEGER PRIMARY KEY, acc_sd REAL, acc_mean REAL, gyro_dps REAL, green_ma REAL, green_dc REAL, green_sd REAL, amb_dc REAL)");
