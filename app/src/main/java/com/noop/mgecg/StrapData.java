@@ -285,6 +285,9 @@ final class StrapData {
                     st.add(2, row("STATUS", "Swipe-away and reopen", dp.getInt("n_kept", 0) + " kept / " + dp.getInt("n_rebuilt", 0) + " rebuilt / " + dp.getInt("n_fresh", 0) + " fresh",
                             diagText(dp.getInt("n_kept", 0), dp.getInt("n_rebuilt", 0), dp.getInt("n_fresh", 0), dp.getInt("n_swipe_keep", 0), dp.getLong("last_ms", 0L), dp.getString("last_kind", ""))
                             + ". Fresh start after a swipe means Android killed the app process."));
+                    st.add(3, row("STATUS", "Link owner starts",
+                            dp.getInt("n_host", 0) + " invisible / " + dp.getInt("n_destroy", 0) + " screens ended / " + dp.getInt("n_svc_restart", 0) + " service restarts",
+                            "Invisible = started by the app with no screen. Screens ended counts every time the strap-link screen was destroyed, kept or not. Service restarts = Android brought the logger service back after ending it. Service starts " + dp.getInt("n_svc_start", 0) + "."));
                     rows.addAll(st);
                     if (!recs.isEmpty()) rows.addAll(nowRows(recs.get(recs.size() - 1)));
                     rows.addAll(liveRows());

@@ -400,6 +400,9 @@ final class SummaryExport {
             scanBins(app, db, since, now, files, info);
         } catch (Throwable t) { info.append("error_bins,").append(Rows.q(String.valueOf(t))).append('\n'); }
 
+        // ---- the link-related lines of the app log (0.15.0), so a connection question can be answered from the export
+        try { files.put("mg_app_log_key_lines.txt", logKeyLines(app, since)); } catch (Throwable t) { info.append("error_log_lines,").append(Rows.q(String.valueOf(t))).append('\n'); }
+
         // ---- strap events and 0x1D timer messages from the app log
         try {
             events(app, since, files, info);
@@ -414,6 +417,39 @@ final class SummaryExport {
         } catch (Throwable ignored) { }
         return ExportCatalog.commit(app, files, System.currentTimeMillis(), days, since, ver, Build.MANUFACTURER + " " + Build.MODEL + " android " + Build.VERSION.RELEASE, newest,
                 rawHistory ? rawBins(app, since) : null);
+    }
+
+    static final String[] LOG_TOKENS = {"HEADLESS", "LINK_WATCHDOG", "LINK_HOST", "MAIN_DESTROY", "DAYLOG_", "BT_WATCHDOG", "BT_STUCK", "EASY_CONNECT", "RECONNECT", "ERROR", "Exception", "REALTIME_HR", "PULL_"};
+
+    /** Pure: is this log line about the strap link? */
+    static boolean isLinkLine(String line) {
+        for (String t : LOG_TOKENS) if (line.indexOf(t) >= 0) return true;
+        return false;
+    }
+
+    /** The newest 3,000 link-related lines of the app's text logs in the period, oldest first. */
+    static String logKeyLines(Context app, long since) throws Exception {
+        File dir = app.getExternalFilesDir(null);
+        File[] fs = dir == null ? null : dir.listFiles();
+        List<File> logs = new ArrayList<>();
+        if (fs != null) for (File f : fs) {
+            String n = f.getName();
+            if (!n.startsWith("labrador_log_") || !n.endsWith(".txt")) continue;
+            if (since > 0 && f.lastModified() < since * 1000L) continue;
+            logs.add(f);
+        }
+        Collections.sort(logs, new Comparator<File>() { @Override public int compare(File a, File b) { return b.getName().compareTo(a.getName()); } });   // newest first
+        ArrayList<String> keep = new ArrayList<>();
+        for (File f : logs) {
+            ArrayList<String> mine = new ArrayList<>();
+            BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8), 1 << 16);
+            try { String line; while ((line = r.readLine()) != null) if (isLinkLine(line)) mine.add(line.length() > 400 ? line.substring(0, 400) : line); } finally { r.close(); }
+            for (int i = mine.size() - 1; i >= 0 && keep.size() < 3000; i--) keep.add(mine.get(i));
+            if (keep.size() >= 3000) break;
+        }
+        StringBuilder out = new StringBuilder("# link-related lines of the app log, oldest first (" + keep.size() + " lines)\n");
+        for (int i = keep.size() - 1; i >= 0; i--) out.append(keep.get(i)).append('\n');
+        return out.toString();
     }
 
     /** The raw history files (historical_bin_*.bin) in the app folder whose stamp falls in the period. */

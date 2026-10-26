@@ -108,7 +108,7 @@ public class HealthActivity extends Activity {
         render();
     }
 
-    @Override protected void onResume() { super.onResume(); ui.removeCallbacks(tick); ui.post(tick); ui.removeCallbacks(liveTick); ui.post(liveTick); }
+    @Override protected void onResume() { super.onResume(); ui.removeCallbacks(tick); ui.post(tick); ui.removeCallbacks(liveTick); ui.post(liveTick); if (DayLog.enabled(this)) MainActivity.startLinkHost(this); }
 
     @Override protected void onPause() { super.onPause(); ui.removeCallbacks(tick); ui.removeCallbacks(liveTick); }
 
@@ -488,11 +488,7 @@ public class HealthActivity extends Activity {
     private void turnOnLogger() {
         DayLog.setEnabled(this, true);
         DayLogService.start(this);
-        if (MainActivity.instance == null) {
-            Intent i = new Intent(this, MainActivity.class);
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-            startActivity(i);
-        }
+        MainActivity.startLinkHost(this);      // 0.15.0: invisible, no screen change
         android.widget.Toast.makeText(this, "Day logger on. It connects to the strap in the background.", android.widget.Toast.LENGTH_LONG).show();
         render();
     }
@@ -1075,6 +1071,16 @@ public class HealthActivity extends Activity {
         st.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Morning summary notification", sp(), "n_morning"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Strap battery alert (15% or less)", sp(), "n_battery"), lp(-1, dpi(52), 0));
+        final boolean ovl = android.os.Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(this);
+        st.addView(pillButton(ovl ? "Restart the strap link by itself: allowed" : "Allow the app to restart the strap link by itself", ovl ? 0x1AFFFFFF : BLUE, ovl ? INK : 0xFF05131E, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                try { startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + getPackageName()))); } catch (Throwable ignored) { }
+            }
+        }), lp(-1, dpi(44), 10));
+        TextView ovNote = tv("If Android ends the app, only a screen start can bring the strap link back, and Android allows that from the background only with \"Display over other apps\". Allow it and the logger restores the link by itself, invisibly. Nothing is drawn over other apps.", 11.5f, MUT, 400);
+        ovNote.setLineSpacing(0, 1.2f);
+        ovNote.setPadding(0, dpi(6), 0, 0);
+        st.addView(ovNote);
         final TextView goalV = tv(String.format(Locale.UK, "%.1f h", goal()), 14, INK, 600);
         st.addView(valueRow("Sleep goal", goalV, new View.OnClickListener() {
             @Override public void onClick(View v) { float g = goal() + 0.5f; if (g > 9.5f) g = 6.5f; sp().edit().putFloat("goal", g).apply(); goalV.setText(String.format(Locale.UK, "%.1f h", g)); load(); }

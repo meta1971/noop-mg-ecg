@@ -65,6 +65,7 @@ final class ExportCatalog {
             case "export_info.csv": return "Counts and settings of this export";
             case "r16_fixture.json": return "Real, unedited stored-ECG frames with every decoded field (for decoder tests)";
             case "r16_fixture_hex.txt": return "The same frames, one hex line each";
+            case "app_log_key_lines.txt": return "Link-related lines of the app log (connect, disconnect, screen destroyed, watchdogs, errors)";
             default: return "";
         }
     }

@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.drawable.Icon;
 import android.os.Build;
+import android.provider.Settings;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -39,7 +40,28 @@ public class DayLogService extends Service {
         }
     };
 
+    /** 0.15.0: counters kept in preferences, shown on Strap data (they survive the process being ended). */
+    static void bump(Context c, String key) {
+        try { android.content.SharedPreferences p = c.getSharedPreferences("linkdiag", Context.MODE_PRIVATE); p.edit().putInt("n_" + key, p.getInt("n_" + key, 0) + 1).apply(); } catch (Throwable ignored) { }
+    }
+
+    /** 0.15.0: if the logger is on and nothing holds the strap link, start the invisible link owner (works from the background only with "Display over other apps"). */
+    static void tryHost(Context c) {
+        try {
+            if (DayLog.enabled(c) && !MainActivity.linkRunning() && (Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(c))) MainActivity.startLinkHost(c);
+        } catch (Throwable ignored) { }
+    }
+
+    private final Runnable hostTick = new Runnable() {
+        @Override public void run() {
+            tryHost(getApplicationContext());
+            refresh(getApplicationContext());
+            watchdog.postDelayed(this, 60L * 1000L);
+        }
+    };
+
     @Override public int onStartCommand(Intent i, int flags, int startId) {
+        bump(this, i == null ? "svc_restart" : "svc_start");
         ensureChannel(this);
         Notification n = build(this);
         if (Build.VERSION.SDK_INT >= 29) startForeground(ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
@@ -48,12 +70,15 @@ public class DayLogService extends Service {
             watchdogOn = true;
             serviceStart = SystemClock.elapsedRealtime();
             watchdog.postDelayed(watchdogTick, 5L * 60L * 1000L);
+            watchdog.postDelayed(hostTick, 20L * 1000L);
         }
+        if (i == null) tryHost(this);          // the system restarted the service: bring the strap link back if allowed
         return START_STICKY;
     }
 
     @Override public void onDestroy() {
         watchdog.removeCallbacks(watchdogTick);
+        watchdog.removeCallbacks(hostTick);
         watchdogOn = false;
         super.onDestroy();
     }
@@ -84,6 +109,12 @@ public class DayLogService extends Service {
                 .addAction(new Notification.Action.Builder(Icon.createWithResource(c, android.R.drawable.ic_menu_mylocation), "Mark now", pm).build())
                 .addAction(new Notification.Action.Builder(Icon.createWithResource(c, android.R.drawable.ic_menu_rotate), "Pull now", pp).build())
                 .addAction(new Notification.Action.Builder(Icon.createWithResource(c, android.R.drawable.ic_menu_edit), "Cuff / notes", open).build());
+        if (DayLog.enabled(c) && !MainActivity.linkRunning()) {        // 0.15.0: one tap brings the strap link back, with no screen
+            Intent host = new Intent(c, LinkHostActivity.class).putExtra("host_only", true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+            b.setActions(new Notification.Action.Builder(Icon.createWithResource(c, android.R.drawable.ic_menu_mylocation), "Mark now", pm).build(),
+                    new Notification.Action.Builder(Icon.createWithResource(c, android.R.drawable.ic_menu_rotate), "Pull now", pp).build(),
+                    new Notification.Action.Builder(Icon.createWithResource(c, android.R.drawable.ic_popup_sync), "Reconnect", PendingIntent.getActivity(c, 4, host, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT)).build());
+        }
         if (Build.VERSION.SDK_INT >= 31) b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
         return b.build();
     }

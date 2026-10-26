@@ -10144,6 +10144,10 @@ public class MainActivity extends NewLookActivity {
 
         super.onCreate(b);
 
+        // 0.15.0: an invisible launch whose only job is to own the strap link (see LinkHostActivity)
+        final boolean hostOnly = getIntent() != null && getIntent().getBooleanExtra("host_only", false);
+        if (hostOnly && headless != null && headless != this) { passThrough = true; finish(); return; }     // a link is already held
+
         // 0.13.4: reopening the app after a swipe-away must NOT drop a strap link that the closed screen is still holding (that cost about
         // 20 s of OFFLINE every time). With the logger on and a held link, this launch only hands the screen to the heart app and ends; the
         // held link keeps running. Old screens (ECG start, saved report, "stay") still take over the link as before.
@@ -10186,10 +10190,20 @@ public class MainActivity extends NewLookActivity {
         {
             android.content.Intent li = getIntent();
             boolean wantsOld = li != null && (li.getBooleanExtra("stay", false) || li.getBooleanExtra("start_ecg", false) || li.getStringExtra("open_report") != null);
-            if (b == null && !wantsOld) {
+            if (b == null && !wantsOld && !hostOnly) {
                 startActivity(new android.content.Intent(this, HealthActivity.class));
                 overridePendingTransition(0, 0);
             }
+        }
+        if (hostOnly) {
+            noteLink("host", true);
+            logRaw("LINK_HOST started: invisible, owns the strap link, ends itself in 8 s");
+            try {
+                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
+                getWindow().getDecorView().setAlpha(0f);
+            } catch (Throwable ignored) { }
+            overridePendingTransition(0, 0);
+            mainH.postDelayed(new Runnable() { @Override public void run() { finish(); } }, 8000L);
         }
 
         line("Raw log file: " +
@@ -10586,6 +10600,22 @@ public class MainActivity extends NewLookActivity {
     /** 0.13.4: true for a launch that only handed the screen on and ended; it must not become the held link in onDestroy. */
     private boolean passThrough = false;
 
+    private static long lastHostStartMs = 0L;
+
+    /** 0.15.0: start the invisible link owner if nothing holds the link (at most once every 15 s). Needs a visible app or the overlay permission. */
+    static void startLinkHost(Context c) {
+        long now = System.currentTimeMillis();
+        synchronized (MainActivity.class) {
+            if (linkRunning() || now - lastHostStartMs < 15000L) return;
+            lastHostStartMs = now;
+        }
+        try {
+            Intent i = new Intent(c, LinkHostActivity.class).putExtra("host_only", true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+            c.startActivity(i);
+        } catch (Throwable ignored) { }
+    }
+
     /** 0.13.4: a MainActivity (open screen, or a closed one kept alive by the logger) owns the strap link. */
     static boolean linkRunning() { return instance != null || headless != null; }
 
@@ -10610,12 +10640,7 @@ public class MainActivity extends NewLookActivity {
     /** 0.13.3: "Reconnect now" from the link dialog. Starts the screen that owns the link if it is not running. */
     static void requestReconnect(Context c) {
         final MainActivity m = instance != null ? instance : headless;
-        if (m == null) {
-            Intent i = new Intent(c, MainActivity.class);
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-            c.startActivity(i);
-            return;
-        }
+        if (m == null) { startLinkHost(c); return; }
         m.mainH.post(new Runnable() {
             @Override public void run() {
                 try {
@@ -13856,6 +13881,8 @@ public class MainActivity extends NewLookActivity {
     @Override
     protected void onDestroy() {
 
+        noteLink("destroy", false);                           // 0.15.0: every destroy is counted, kept or not
+        try { logRaw("MAIN_DESTROY pass=" + passThrough + " changing=" + isChangingConfigurations() + " gatt=" + (gatt != null) + " logger=" + DayLog.enabled(this)); } catch (Throwable ignored) { }
         if (passThrough) { super.onDestroy(); return; }     // 0.13.4: a hand-over launch owns nothing
 
         // 0.5.12: with the logger on and a strap link open, closing the screen (swipe-away or Back) no longer ends the
