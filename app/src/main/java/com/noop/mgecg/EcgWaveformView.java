@@ -168,8 +168,8 @@ public class EcgWaveformView extends View {
 
         scaleLabelPaint.setColor(Color.parseColor("#8FA1BD"));
         scaleLabelPaint.setTextSize(24f);
-        scaleLabelPaint.setTypeface(
-                android.graphics.Typeface.MONOSPACE);
+        scaleLabelPaint.setTypeface(HealthViews.font(getContext(), 400));          // 0.15.3: the app font on the graph text
+        contactLostPaint.setTypeface(HealthViews.font(getContext(), 600));
 
         setOnClickListener(v -> setAutoScale(!autoScale));
         setOnLongClickListener(v -> {

@@ -473,7 +473,14 @@ public class NewLookActivity extends Activity {
             if (v instanceof TextView) {
                 TextView t = (TextView) v;
                 Typeface cur = t.getTypeface();
-                if (cur != Typeface.MONOSPACE) t.setTypeface(HealthViews.font(this, cur != null && cur.isBold() ? 600 : 400));
+                float sp = t.getTextSize() / getResources().getDisplayMetrics().scaledDensity;
+                if (cur != Typeface.MONOSPACE) t.setTypeface(HealthViews.font(this, sp >= 30f ? 300 : cur != null && cur.isBold() ? 600 : 400));   // big figures light, like Today
+                int col = t.getCurrentTextColor();
+                if (col == 0xFF39FF6A) t.setTextColor(GREEN);                                                       // the old neon green
+                else if (col == 0xFF8FA1BD || col == 0xFFB8C4D9 || col == 0xFF5A6B85) t.setTextColor(MUTED);
+                else if (col == 0xFFEAF2FF) t.setTextColor(TEXT);
+                else if (col == 0xFFFF5555 || col == 0xFFFF6B6B) t.setTextColor(RED);
+                else if (v instanceof Button && col == 0xFFFFFFFF) t.setTextColor(INK);                            // dark text on the bright pill, as everywhere else
             }
             if (v instanceof ViewGroup) { ViewGroup g = (ViewGroup) v; for (int i = 0; i < g.getChildCount(); i++) fontAll(g.getChildAt(i)); }
         } catch (Throwable ignored) { }
@@ -1067,9 +1074,22 @@ public class NewLookActivity extends Activity {
         if (all == null) return out;
         for (File f : all) {
             String n = f.getName();
-            if (n.startsWith("ecg_report_") && n.endsWith(".html")) out.add(f);
+            if (n.startsWith("ecg_report_") && n.endsWith(".html") && !isFragment(f)) out.add(f);
         }
         return out;
+    }
+
+    /** 0.15.3: the late tail of a reading ("0 of 3 seconds were clean enough") is not a reading; the Reports screen lists the files itself. */
+    static boolean isFragment(File f) {
+        try {
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            try {
+                byte[] b = new byte[9000];
+                int k = in.read(b);
+                int tot = HealthModel.fragmentSeconds(k <= 0 ? "" : new String(b, 0, k, "UTF-8"));
+                return tot >= 0 && tot < 20;
+            } finally { in.close(); }
+        } catch (Throwable t) { return false; }
     }
 
     Rep describe(File f) {
