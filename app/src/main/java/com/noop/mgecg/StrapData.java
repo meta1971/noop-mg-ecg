@@ -55,14 +55,18 @@ final class StrapData {
     }
 
     /** Is the all-day log running, and how fresh is the newest second? Pure. */
-    static List<String[]> statusRows(boolean loggerOn, long newestTs, long nowSec) {
+    static List<String[]> statusRows(boolean loggerOn, long newestTs, long nowSec) { return statusRows(loggerOn, newestTs, nowSec, false); }
+
+    static List<String[]> statusRows(boolean loggerOn, long newestTs, long nowSec, boolean linkGood) {
         List<String[]> r = new ArrayList<>();
         String G = "STATUS";
         r.add(row(G, "Day logger", loggerOn ? "on" : "OFF", loggerOn ? null : "nothing is recorded; switch it on from the Today screen"));
         if (newestTs <= 0) { r.add(row(G, "Newest record", "none", null)); return r; }
         long age = nowSec - newestTs;
         String note = null;
-        if (age > 600) note = loggerOn ? "no new data: strap off the wrist or on the charger, flat, or Bluetooth off" : "the logger was off, so the strap's history has not been pulled";
+        if (!loggerOn) { if (age > 600) note = "the logger was off, so the strap's history has not been pulled"; }
+        else if (linkGood) { if (age > 75 * 60) note = "connected, but no history pulled for over an hour"; else if (age > 600) note = "stored seconds arrive with each history pull, about every 30 minutes; the link itself is live"; }
+        else if (age > 600) note = "no new data: strap off the wrist or on the charger, flat, or Bluetooth off";
         r.add(row(G, "Newest record", ageText(age) + " ago", note));
         return r;
     }
@@ -278,14 +282,16 @@ final class StrapData {
                     long newest = 0L;
                     Cursor nq = DayLog.db(a).rawQuery("SELECT MAX(ts) FROM r18", null);
                     try { if (nq.moveToFirst()) newest = nq.getLong(0); } finally { nq.close(); }
-                    List<String[]> st = statusRows(DayLog.enabled(a), newest, now);
                     LinkState.Info li = MainActivity.linkState(a);
+                    List<String[]> st = statusRows(DayLog.enabled(a), newest, now, li.level == LinkState.GOOD);
                     st.add(1, row("STATUS", "Strap link", li.title, li.detail));
+                    st.add(2, row("STATUS", "Logger service", DayLogService.alive ? "running" : (DayLog.enabled(a) ? "NOT running" : "off"),
+                            "The foreground service (the \"MG day logger\" notification) is what stops Android ending the app when you swipe it away. After an app update or a restart it must be started again; the app now does that when it opens."));
                     android.content.SharedPreferences dp = a.getSharedPreferences("linkdiag", Context.MODE_PRIVATE);
-                    st.add(2, row("STATUS", "Swipe-away and reopen", dp.getInt("n_kept", 0) + " kept / " + dp.getInt("n_rebuilt", 0) + " rebuilt / " + dp.getInt("n_fresh", 0) + " fresh",
+                    st.add(3, row("STATUS", "Swipe-away and reopen", dp.getInt("n_kept", 0) + " kept / " + dp.getInt("n_rebuilt", 0) + " rebuilt / " + dp.getInt("n_fresh", 0) + " fresh",
                             diagText(dp.getInt("n_kept", 0), dp.getInt("n_rebuilt", 0), dp.getInt("n_fresh", 0), dp.getInt("n_swipe_keep", 0), dp.getLong("last_ms", 0L), dp.getString("last_kind", ""))
                             + ". Fresh start after a swipe means Android killed the app process."));
-                    st.add(3, row("STATUS", "Link owner starts",
+                    st.add(4, row("STATUS", "Link owner starts",
                             dp.getInt("n_host", 0) + " invisible / " + dp.getInt("n_destroy", 0) + " screens ended / " + dp.getInt("n_svc_restart", 0) + " service restarts",
                             "Invisible = started by the app with no screen. Screens ended counts every time the strap-link screen was destroyed, kept or not. Service restarts = Android brought the logger service back after ending it. Service starts " + dp.getInt("n_svc_start", 0) + "."));
                     rows.addAll(st);

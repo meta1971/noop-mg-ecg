@@ -108,7 +108,7 @@ public class HealthActivity extends Activity {
         render();
     }
 
-    @Override protected void onResume() { super.onResume(); ui.removeCallbacks(tick); ui.post(tick); ui.removeCallbacks(liveTick); ui.post(liveTick); if (DayLog.enabled(this)) MainActivity.startLinkHost(this); }
+    @Override protected void onResume() { super.onResume(); ui.removeCallbacks(tick); ui.post(tick); ui.removeCallbacks(liveTick); ui.post(liveTick); if (DayLog.enabled(this)) { DayLogService.ensure(this); MainActivity.startLinkHost(this); } }
 
     @Override protected void onPause() { super.onPause(); ui.removeCallbacks(tick); ui.removeCallbacks(liveTick); }
 

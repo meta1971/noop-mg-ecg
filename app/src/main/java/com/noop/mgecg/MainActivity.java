@@ -10147,6 +10147,7 @@ public class MainActivity extends NewLookActivity {
         // 0.15.0: an invisible launch whose only job is to own the strap link (see LinkHostActivity)
         final boolean hostOnly = getIntent() != null && getIntent().getBooleanExtra("host_only", false);
         if (hostOnly && headless != null && headless != this) { passThrough = true; finish(); return; }     // a link is already held
+        DayLogService.ensure(this);        // 0.15.1: the logger service must be running or Android ends the app on a swipe
 
         // 0.13.4: reopening the app after a swipe-away must NOT drop a strap link that the closed screen is still holding (that cost about
         // 20 s of OFFLINE every time). With the logger on and a held link, this launch only hands the screen to the heart app and ends; the

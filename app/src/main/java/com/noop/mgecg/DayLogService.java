@@ -40,6 +40,14 @@ public class DayLogService extends Service {
         }
     };
 
+    /** 0.15.1: true while this process has the logger service running (a foreground service is what keeps Android from ending the app on a swipe). */
+    static volatile boolean alive = false;
+
+    /** 0.15.1: start the foreground service if the logger is on and it is not running. An app update, a restart or Android ending the process stops it, and nothing else started it again. */
+    static void ensure(Context c) {
+        try { if (DayLog.enabled(c) && !alive) start(c); } catch (Throwable ignored) { }
+    }
+
     /** 0.15.0: counters kept in preferences, shown on Strap data (they survive the process being ended). */
     static void bump(Context c, String key) {
         try { android.content.SharedPreferences p = c.getSharedPreferences("linkdiag", Context.MODE_PRIVATE); p.edit().putInt("n_" + key, p.getInt("n_" + key, 0) + 1).apply(); } catch (Throwable ignored) { }
@@ -61,6 +69,7 @@ public class DayLogService extends Service {
     };
 
     @Override public int onStartCommand(Intent i, int flags, int startId) {
+        alive = true;
         bump(this, i == null ? "svc_restart" : "svc_start");
         ensureChannel(this);
         Notification n = build(this);
@@ -79,6 +88,7 @@ public class DayLogService extends Service {
     @Override public void onDestroy() {
         watchdog.removeCallbacks(watchdogTick);
         watchdog.removeCallbacks(hostTick);
+        alive = false;
         watchdogOn = false;
         super.onDestroy();
     }

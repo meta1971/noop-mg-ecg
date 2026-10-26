@@ -99,6 +99,8 @@ final class KeepAlive {
     }
 
     static void afterRestart(Context c) {
-        if (DayLog.enabled(c)) post(c, "Day logger paused", "The phone restarted (or the app was updated), which ends the strap connection. Tap to reconnect and carry on logging.");
+        if (!DayLog.enabled(c)) return;
+        DayLogService.ensure(c);          // 0.15.1: start the foreground service again; it is what keeps the app (and the link) alive
+        post(c, "Day logger paused", "The phone restarted (or the app was updated), which ends the strap connection. Tap to reconnect and carry on logging.");
     }
 }
