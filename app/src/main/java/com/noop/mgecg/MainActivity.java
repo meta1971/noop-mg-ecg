@@ -1005,6 +1005,7 @@ public class MainActivity extends NewLookActivity {
              * visibility; not expected to be touch-differential since
              * this normally negotiates once, early in the connection.
              */
+            lastMtu = mtu;
             line("MTU changed to " + mtu + " status=" + status);
             logRaw("MTU_CHANGED mtu=" + mtu + " status=" + status);
         }
@@ -1344,6 +1345,7 @@ public class MainActivity extends NewLookActivity {
 
             int envType = value[8] & 0xff;
             int envCmd = value[10] & 0xff;
+            censusNote(envType, value);                                                          // 0.16.0 TEST
 
             if (envType == 0x2F) {
                 /*
@@ -1741,6 +1743,10 @@ public class MainActivity extends NewLookActivity {
 
                 recordEcgCommandResponse(envCmd, resultCode);
 
+            } else if (envType == 0x24 && (envCmd == 126 || envCmd == 127)) {
+                int rc = value.length > 12 ? (value[12] & 0xff) : -1;                 // 0.16.0 TEST gates: raw live (126), filtered save (127)
+                logRaw("ECG_TEST_GATE_RESPONSE cmd=" + envCmd + " result=" + rc + " raw=" + Protocol.hex(value));
+                getSharedPreferences("liveraw", MODE_PRIVATE).edit().putInt("r" + envCmd, rc).putLong("r" + envCmd + "_ms", System.currentTimeMillis()).apply();
             } else if (envType == 0x24 && envCmd == 120) {
 
                 /*
@@ -1781,6 +1787,8 @@ public class MainActivity extends NewLookActivity {
                 if (envCmd == 145 && resultCode == 1) {
                     mainH.post(this::cleanupLeftoverEcgSessionIfGuarded);
                 }
+                if (envCmd == 34 && resultCode == 1 && value.length == 84) noteDataRange(value);          // 0.16.0: flash ring pointers
+                if (envCmd == 11 && resultCode == 1) noteClockCheck(value);                              // 0.16.0: how far the strap clock is from the phone after a set
 
             } else if (envType != 0x2F && envType != 0x32 &&
                     envType != 43 && envType != 0x31 &&
@@ -5594,6 +5602,21 @@ public class MainActivity extends NewLookActivity {
                         "TOGGLE_LABRADOR_RAW_SAVE_" + (ecgSeqVariant == 2 ? "OFF [TEST]" : "ON") + " (real sequence, " +
                                 "prepare)"), 1000);
 
+        final SharedPreferences testGates = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);          // 0.16.0 TEST gates, off unless switched on in You > Settings
+        liveRawN = 0;
+        lastLiveRawCtr = -1L;
+        liveRawGaps = 0; liveRawMissing = 0;
+        final int lrMode = testGates.getInt("ecg_liveraw_mode", 0);
+        if (lrMode != 0 || testGates.getBoolean("ecg_savefiltered", false) || testGates.getBoolean("ecg_tail", true)) {   // NOOP's working live IMU capture also asks for the high connection priority; the near-live pull moves about 5 KB a second
+            try { if (gatt != null && Build.VERSION.SDK_INT >= 21) { gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH); logRaw("CONN_PRIORITY high (live raw test)"); } } catch (Throwable ignored) { }
+        }          // 0 off, 1 on at start, 2 staged: on at +16 s, off at +41 s of this call
+        if (lrMode == 1) mainH.postDelayed(() -> send(0x7E, 1, "TOGGLE_RAW_ECG_LIVE_ON [TEST 126, at start]"), 1150);
+        if (lrMode == 2) {
+            mainH.postDelayed(() -> { if (ecgSessionRunning) { logCensus("before126"); logRaw("LIVE_RAW_STAGE on"); send(0x7E, 1, "TOGGLE_RAW_ECG_LIVE_ON [TEST 126, staged]"); } }, 16000);
+            mainH.postDelayed(() -> { if (ecgSessionRunning) { logCensus("with126"); logRaw("LIVE_RAW_STAGE off"); send(0x7E, 0, "TOGGLE_RAW_ECG_LIVE_OFF [TEST 126, staged]"); } }, 41000);
+        }
+        if (testGates.getBoolean("ecg_savefiltered", false)) mainH.postDelayed(() -> send(0x7F, 1, "TOGGLE_FILTERED_ECG_SAVE_ON [TEST 127]"), 1300);
+
         mainH.postDelayed(() -> {
 
             line("--- START: ABORT_HISTORICAL_TRANSMITS (opcode 20, " +
@@ -9066,6 +9089,7 @@ public class MainActivity extends NewLookActivity {
             String uuid,
             byte[] value) {
 
+        if (value.length >= 1584 && value.length > 9 && (value[9] & 0xff) == 16) { handleLiveRawR16(value); return; }     // 0.16.0 TEST: live raw 500 Hz (command 126)
         realtimeEcgFragments.add(value);
         realtimeEcgTotalBytes += value.length;
         saveRealtimeEcgFragment(value);
@@ -9080,6 +9104,86 @@ public class MainActivity extends NewLookActivity {
                 " totalBytes=" + realtimeEcgTotalBytes + " ***");
 
         decodeRealtimeEcg240(value);
+    }
+
+    /** 0.16.0: the GET_CLOCK reply after a SET_CLOCK: strap minus phone, including the one-way Bluetooth delay (some tens of milliseconds). */
+    private void noteClockCheck(byte[] v) {
+        try {
+            double d = ClockSet.strapMinusPhone(v, System.currentTimeMillis());
+            if (Double.isNaN(d) || Math.abs(d) > 3600) return;
+            getSharedPreferences("clockchk", MODE_PRIVATE).edit().putFloat("diff_s", (float) d).putLong("at_ms", System.currentTimeMillis()).apply();
+            logRaw(String.format(java.util.Locale.UK, "CLOCK_CHECK strapMinusPhoneS=%.3f", d));
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 0.16.0: GET_DATA_RANGE response (84 bytes on fw 50.40.1.0). From the vendor app's parser and our frames: u32 at 22 = write pointer in flash pages, 26 = read (trim)
+     * pointer, 34 = ring size in pages (131,072); pages behind = write - read, or (ring - read) + write when the write pointer has wrapped. u32 at 14 and 18 are the same
+     * two pointers a moment earlier (14 runs 3 to 30 pages ahead of 22; 18 equals 26 in all 22 logged responses).
+     */
+    private void noteDataRange(byte[] v) {
+        try {
+            long w = u32leAt(v, 22) & 0xFFFFFFFFL, r = u32leAt(v, 26) & 0xFFFFFFFFL, ring = u32leAt(v, 34) & 0xFFFFFFFFL;
+            if (ring < 1024 || ring > 4000000L) return;
+            long behind = w >= r ? w - r : (ring - r) + w;
+            getSharedPreferences("backlog", MODE_PRIVATE).edit().putLong("write", w).putLong("read", r).putLong("ring", ring).putLong("behind", behind).putLong("at_ms", System.currentTimeMillis()).apply();
+            logRaw("DATA_RANGE write=" + w + " read=" + r + " ring=" + ring + " behindPages=" + behind);
+        } catch (Throwable ignored) { }
+    }
+
+    private int liveRawN, liveRawGaps, liveRawMissing;
+    private long lastLiveRawCtr = -1L;
+    private volatile int lastMtu;
+    private final java.util.TreeMap<String, Integer> frameCensus = new java.util.TreeMap<String, Integer>();
+
+    /** 0.16.0 TEST: counts every frame shape seen while a reading runs (type, layout for 43 and 47, command for 36, length), so a stream we did not expect shows up. */
+    private void censusNote(int type, byte[] v) {
+        if (!ecgSessionRunning) return;
+        String k = "t" + type + ((type == 43 || type == 47) && v.length > 9 ? "/L" + (v[9] & 0xff) : "") + (type == 36 && v.length > 10 ? "/c" + (v[10] & 0xff) : "") + "/" + v.length;
+        synchronized (frameCensus) { Integer n = frameCensus.get(k); frameCensus.put(k, n == null ? 1 : n + 1); }
+    }
+
+    /** Writes the census to the log and keeps the last one for the Strap data page. */
+    private void logCensus(String tag) {
+        StringBuilder s = new StringBuilder();
+        synchronized (frameCensus) { for (java.util.Map.Entry<String, Integer> e : frameCensus.entrySet()) s.append(e.getKey()).append('=').append(e.getValue()).append(' '); }
+        long el = ecgSessionStartMs == 0 ? -1 : (System.currentTimeMillis() - ecgSessionStartMs) / 1000;
+        String btState = "?";
+        try { android.bluetooth.BluetoothAdapter ad = android.bluetooth.BluetoothAdapter.getDefaultAdapter(); if (ad != null) btState = ad.isEnabled() ? "ON" : (bleOnlyAvailable() ? "BLE-ONLY (switch off)" : "OFF"); } catch (Throwable ignored) { }
+        String bond = "?";
+        try { if (gatt != null) bond = gatt.getDevice().getBondState() == BluetoothDevice.BOND_BONDED ? "bonded" : "not bonded"; } catch (Throwable ignored) { }
+        logRaw("FRAME_CENSUS " + tag + " elapsedS=" + el + " bluetooth=" + btState + " link=" + bond + " mtu=" + lastMtu + " liveRaw=" + liveRawN + " gaps=" + liveRawGaps + " missing=" + liveRawMissing + " : " + s.toString().trim());
+        getSharedPreferences("liveraw", MODE_PRIVATE).edit().putString("census", tag + " (" + el + " s, phone Bluetooth " + btState + ", " + bond + "): " + s.toString().trim()).apply();
+    }
+
+    /**
+     * 0.16.0 TEST. A live raw 500 Hz record (type 43, layout 16, 1,584 bytes) that arrives when command 126 (send raw ECG live) is on.
+     * Counted, CRC-checked, timed against the phone clock (the lag includes the 0.5 to 1 s clock offset) and kept in the live-frame file;
+     * the first three are logged in full as a fixture. Nothing else is done with it yet.
+     */
+    private void handleLiveRawR16(byte[] v) {
+        saveRealtimeEcgFragment(v);
+        boolean crc = false;
+        try {
+            java.util.zip.CRC32 c = new java.util.zip.CRC32();
+            c.update(v, 8, v.length - 12);
+            crc = c.getValue() == (u32leAt(v, v.length - 4) & 0xFFFFFFFFL);
+        } catch (Throwable ignored) { }
+        long ctr = u32leAt(v, 11) & 0xFFFFFFFFL, ts = u32leAt(v, 15) & 0xFFFFFFFFL;
+        int n = (v[32] & 0xff) | ((v[33] & 0xff) << 8);
+        long nowMs = System.currentTimeMillis();
+        double lag = nowMs / 1000.0 - (ts + (((v[19] & 0xff) | ((v[20] & 0xff) << 8)) / 32768.0));
+        liveRawN++;
+        if (lastLiveRawCtr >= 0 && ctr != lastLiveRawCtr + 1) { liveRawGaps++; if (ctr > lastLiveRawCtr && ctr - lastLiveRawCtr < 1000) liveRawMissing += (int) (ctr - lastLiveRawCtr - 1); }
+        lastLiveRawCtr = ctr;
+        SharedPreferences lr = getSharedPreferences("liveraw", MODE_PRIVATE);
+        String k = crc ? "n_ok" : "n_bad";
+        lr.edit().putInt(k, lr.getInt(k, 0) + 1).putLong("last_ms", nowMs).putFloat("lag_s", (float) lag).putLong("last_ctr", ctr).putInt("last_n", n).putInt("gaps", liveRawGaps).putInt("missing", liveRawMissing).apply();
+        if (liveRawN <= 3 || liveRawN % 20 == 0) {
+            logRaw("LIVE_RAW_R16 #" + liveRawN + " len=" + v.length + " ctr=" + ctr + " ts=" + ts + " n=" + n + " q=" + (v[21] & 0xff)
+                    + " st=" + (v[24] & 0xff) + " prog=" + (v[25] & 0xff) + " crc=" + (crc ? "ok" : "BAD")
+                    + " lagS=" + String.format(java.util.Locale.UK, "%.2f", lag) + (liveRawN <= 3 ? " raw=" + Protocol.hex(v) : ""));
+        }
     }
 
     private void startRealEcg() {
@@ -9666,18 +9770,14 @@ public class MainActivity extends NewLookActivity {
         }
 
         final int thisSeq = seq++;
-        final long epochNow = System.currentTimeMillis() / 1000L;
+        final boolean subOn = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("clock_subsec", true);
 
         enqueue(() -> {
 
-            byte[] body = new byte[8];
-
-            body[0] = (byte) (epochNow & 0xFF);
-            body[1] = (byte) ((epochNow >> 8) & 0xFF);
-            body[2] = (byte) ((epochNow >> 16) & 0xFF);
-            body[3] = (byte) ((epochNow >> 24) & 0xFF);
-            /* body[4..7] = subseconds, left as 0 - we have no
-               sub-second-accurate clock source worth encoding here */
+            // 0.16.0: the time is read when the frame is built, and the sub-second part (1/32768 s, as the strap reports it) is sent like the official app does
+            final long nowMsSet = System.currentTimeMillis();
+            final long epochNow = nowMsSet / 1000L;
+            byte[] body = ClockSet.body(nowMsSet, subOn);
 
             /*
              * FIXED (26 Sep) - this used labradorBytes, which inserts the
@@ -9691,7 +9791,7 @@ public class MainActivity extends NewLookActivity {
              */
             byte[] f = Protocol.puffinFrame(0x23, 0x0A, body, thisSeq);
 
-            logRaw("TX SET_CLOCK (corrected 8-byte) epoch=" + epochNow +
+            logRaw("TX SET_CLOCK (corrected 8-byte) sub=" + (subOn ? "on" : "off") + " ms=" + (nowMsSet % 1000L) + " epoch=" + epochNow +
                     " seq=0x" + String.format("%02X", thisSeq & 0xff) +
                     " raw=" + Protocol.hex(f));
 
@@ -10946,6 +11046,7 @@ public class MainActivity extends NewLookActivity {
     private void startEcgScreenSession() {
 
         ecgSessionRunning = true;
+        synchronized (frameCensus) { frameCensus.clear(); }
         resetEcgSessionRules();
         ecgOfficialStopScheduled = false;
         ecgZeroFrameRun = 0;
@@ -11038,6 +11139,7 @@ public class MainActivity extends NewLookActivity {
     private void stopEcgScreenSession() {
 
         ecgSessionRunning = false;
+        logCensus("stop");
         logRaw("ECG_SESSION_BATTERY phase=stop pct=" + lastBatteryPct
                 + " ageS=" + (lastBatteryAtMs == 0 ? -1 : (System.currentTimeMillis() - lastBatteryAtMs) / 1000)
                 + " elapsedS=" + (System.currentTimeMillis() - ecgSessionStartMs) / 1000);
@@ -11054,6 +11156,12 @@ public class MainActivity extends NewLookActivity {
         mainH.postDelayed(() ->
                 send(0x7D, 0, "TOGGLE_LABRADOR_RAW_SAVE_OFF (ECG screen)"),
                 800);
+        {                                                                                  // 0.16.0: leave the test gates off, as the documentation asks
+            final SharedPreferences tg = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
+            if (tg.getInt("ecg_liveraw_mode", 0) != 0) mainH.postDelayed(() -> send(0x7E, 0, "TOGGLE_RAW_ECG_LIVE_OFF [TEST 126] (ECG screen)"), 1200);
+            if (tg.getInt("ecg_liveraw_mode", 0) != 0 || tg.getBoolean("ecg_savefiltered", false) || tg.getBoolean("ecg_tail", true)) mainH.postDelayed(() -> { try { if (gatt != null) { gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED); logRaw("CONN_PRIORITY balanced"); } } catch (Throwable ignored) { } }, 14000);
+            if (tg.getBoolean("ecg_savefiltered", false)) mainH.postDelayed(() -> send(0x7F, 0, "TOGGLE_FILTERED_ECG_SAVE_OFF [TEST 127] (ECG screen)"), 1600);
+        }
 
         ecgStartStopButton.setText("START ECG");
         ecgStartStopButton.setBackgroundColor(0xFF39FF6A);
