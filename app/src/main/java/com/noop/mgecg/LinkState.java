@@ -26,6 +26,14 @@ final class LinkState {
         return String.format(Locale.UK, "%.1f h", s / 3600.0);
     }
 
+    /**
+     * 0.13.4: should Today warn that no new data is arriving? Stored seconds only arrive with each history pull (about every 30 min), so a healthy
+     * link legitimately shows data 20 or 25 minutes old. Warn at 20 min only when the link itself is not good; with a good link only after 75 min.
+     */
+    static boolean staleBanner(int linkLevel, long ageSec) {
+        return linkLevel == GOOD ? ageSec > 75L * 60L : ageSec > 20L * 60L;
+    }
+
     private static Info info(String code, String chip, String title, String detail, int level, int action) {
         Info i = new Info();
         i.code = code; i.chip = chip; i.title = title; i.detail = detail; i.level = level; i.action = action;

@@ -67,7 +67,10 @@ public class DayLogService extends Service {
     }
 
     static Notification build(Context c) {
-        PendingIntent open = PendingIntent.getActivity(c, 1, new Intent(c, DayLogActivity.class), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        // 0.13.4: a tap opens the heart app. If nothing holds the strap link yet, go through the launcher (it starts the link); otherwise go straight
+        // to the heart app so the running link is not touched.
+        Intent openApp = new Intent(c, MainActivity.linkRunning() ? HealthActivity.class : MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent open = PendingIntent.getActivity(c, 1, openApp, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Intent mark = new Intent(c, DayLogReceiver.class).setAction(ACTION_MARK);
         Intent pull = new Intent(c, DayLogReceiver.class).setAction(ACTION_PULL);
         PendingIntent pm = PendingIntent.getBroadcast(c, 2, mark, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
@@ -87,9 +90,11 @@ public class DayLogService extends Service {
 
     static String textFor(Context c) {
         boolean log = DayLog.enabled(c), h10 = PolarH10.wanted;
-        if (log && h10) return DayLog.statusLine(c) + " | H10: " + PolarH10.shortStatus();
+        String link = "";
+        try { if (log) link = MainActivity.linkState(c).chip + " | "; } catch (Throwable ignored) { }   // 0.13.4: LIVE / OFFLINE / ... right in the notification
+        if (log && h10) return link + DayLog.statusLine(c) + " | H10: " + PolarH10.shortStatus();
         if (h10) return "H10: " + PolarH10.shortStatus();
-        return DayLog.statusLine(c);
+        return link + DayLog.statusLine(c);
     }
 
     static void refresh(Context c) {

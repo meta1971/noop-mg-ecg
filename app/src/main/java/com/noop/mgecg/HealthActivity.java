@@ -46,6 +46,8 @@ public class HealthActivity extends Activity {
     private int tab = 0;
     private HealthModel.Data data;
     private volatile boolean loading;
+    private boolean loadedOnce = false;                  // 0.13.4: the first load has finished (so "no records" is true, not just "not loaded yet")
+    private TextView todayHrNum, todayHrSub; private String todayHrSubTail = "";               // 0.13.4: the Today heart-rate card follows the live frames
     private volatile List<ActivityDetector.Bout> actBouts = new ArrayList<ActivityDetector.Bout>();
     private volatile String actLine = "";          // today's activity in one line, read off the main thread
     private TextView liveNum, liveUnit;
@@ -58,6 +60,11 @@ public class HealthActivity extends Activity {
                 liveUnit.setText("  " + shownLabel(liveData));
             }
             applyLink();
+            if (tab == 0 && todayHrNum != null && todayHrSub != null) {
+                int hh = shownHr(data);
+                todayHrNum.setText(hh > 0 ? hh + " bpm" : "\u2014");
+                todayHrSub.setText(shownLabel(data).replace("bpm, ", "") + todayHrSubTail);
+            }
             ui.postDelayed(this, 2000L);
         }
     };
@@ -152,7 +159,7 @@ public class HealthActivity extends Activity {
                             : "No logged data yet today";
                 } catch (Throwable ignored) { }
                 final HealthModel.Data dd = d;
-                ui.post(new Runnable() { @Override public void run() { loading = false; if (!isFinishing()) { data = dd; render(); } } });
+                ui.post(new Runnable() { @Override public void run() { loading = false; loadedOnce = true; if (!isFinishing()) { data = dd; render(); } } });
             }
         }, "health-load").start();
     }
@@ -463,10 +470,13 @@ public class HealthActivity extends Activity {
             c.addView(pillButton("Turn on the day logger", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { turnOnLogger(); } }), lp(-1, dpi(42), 0));
             return c;
         }
-        if (ageSec > 1200L) {
+        LinkState.Info li = MainActivity.linkState(this);
+        if (LinkState.staleBanner(li.level, ageSec)) {
             LinearLayout c = card(16);
-            c.addView(caps("NO NEW DATA FROM THE STRAP"));
-            TextView t = tv("The newest second is " + StrapData.ageText(ageSec) + " old. Check that the strap is on your wrist and not on the charger, that it has battery, and that Bluetooth is on. The app keeps trying on its own.", 13, INK, 400);
+            c.addView(caps(li.level == LinkState.GOOD ? "NO HISTORY PULLED FOR A WHILE" : "NO NEW DATA FROM THE STRAP"));
+            TextView t = tv(li.level == LinkState.GOOD
+                    ? "The strap is connected, but the newest stored second is " + StrapData.ageText(ageSec) + " old. Use \"Pull now\" in the day-logger notification."
+                    : "The newest second is " + StrapData.ageText(ageSec) + " old and the strap is not connected (" + li.chip.toLowerCase(java.util.Locale.UK) + "). Check that the strap is on your wrist and not on the charger, and that it has battery. The app keeps trying on its own. Tap the chip at the top for details.", 13, INK, 400);
             t.setLineSpacing(0, 1.25f);
             t.setPadding(0, dpi(8), 0, 0);
             c.addView(t);
@@ -490,6 +500,13 @@ public class HealthActivity extends Activity {
     private View todayTab() {
         LinearLayout col = screen();
         HealthModel.Data d = data;
+        if (!loadedOnce) {
+            col.addView(head("Hi, " + name(), "Today", null));
+            TextView lt = tv("Reading your records\u2026", 14, MUT, 400);
+            lt.setPadding(0, dpi(18), 0, 0);
+            col.addView(lt);
+            return wrap(col);
+        }
         if (d == null || d.day == null || d.day.newestTs == 0) {
             col.addView(head("Hi, " + name(), "Today", null));
             LinearLayout c = card(18);
@@ -526,9 +543,12 @@ public class HealthActivity extends Activity {
         LinearLayout nowRow = hrow();
         nowRow.addView(caps("HEART RATE NOW"));
         nowRow.addView(spacer());
-        nowRow.addView(tv(shownHr(d) > 0 ? shownHr(d) + " bpm" : "\u2014", 20, INK, 300));
+        todayHrNum = tv(shownHr(d) > 0 ? shownHr(d) + " bpm" : "\u2014", 20, INK, 300);
+        nowRow.addView(todayHrNum);
         nowCard.addView(nowRow);
-        nowCard.addView(tv(shownLabel(d).replace("bpm, ", "") + (n != null && !Double.isNaN(day.restingHr) ? "  \u00b7  lowest five minutes " + Math.round(day.restingHr) : ""), 11, MUT, 400), lp(-2, -2, 4));
+        todayHrSub = tv(shownLabel(d).replace("bpm, ", "") + (n != null && !Double.isNaN(day.restingHr) ? "  \u00b7  lowest five minutes " + Math.round(day.restingHr) : ""), 11, MUT, 400);
+        todayHrSubTail = (n != null && !Double.isNaN(day.restingHr) ? "  \u00b7  lowest five minutes " + Math.round(day.restingHr) : "");
+        nowCard.addView(todayHrSub, lp(-2, -2, 4));
         nowCard.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { go(1); } });
         col.addView(nowCard, lp(-1, -2, 12));
 

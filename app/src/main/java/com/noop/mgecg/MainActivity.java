@@ -10144,10 +10144,26 @@ public class MainActivity extends NewLookActivity {
 
         super.onCreate(b);
 
+        // 0.13.4: reopening the app after a swipe-away must NOT drop a strap link that the closed screen is still holding (that cost about
+        // 20 s of OFFLINE every time). With the logger on and a held link, this launch only hands the screen to the heart app and ends; the
+        // held link keeps running. Old screens (ECG start, saved report, "stay") still take over the link as before.
+        {
+            android.content.Intent pi = getIntent();
+            boolean wantsOldNow = pi != null && (pi.getBooleanExtra("stay", false) || pi.getBooleanExtra("start_ecg", false) || pi.getStringExtra("open_report") != null);
+            if (b == null && !wantsOldNow && headless != null && headless != this && DayLog.enabled(this)) {
+                passThrough = true;
+                startActivity(new android.content.Intent(this, HealthActivity.class));
+                overridePendingTransition(0, 0);
+                requestReconnect(this);          // if the held link is down, try now instead of waiting for the next tick
+                finish();
+                return;
+            }
+        }
+
         final MainActivity kept = headless;    // 0.5.12: a screen closed by a swipe-away may still hold the strap link
         if (kept != null && kept != this) { headless = null; kept.retireHeadless("a new screen opened"); }
         instance = this;
-        mainH.postDelayed(dayLogTick, 20000L);
+        mainH.postDelayed(dayLogTick, DayLog.enabled(this) ? 3000L : 20000L);   // 0.13.4: reconnect within seconds, not 20 s
 
         adapter =
                 ((BluetoothManager)
@@ -10554,6 +10570,12 @@ public class MainActivity extends NewLookActivity {
         final MainActivity m = instance != null ? instance : headless;
         if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNow(); } });
     }
+
+    /** 0.13.4: true for a launch that only handed the screen on and ended; it must not become the held link in onDestroy. */
+    private boolean passThrough = false;
+
+    /** 0.13.4: a MainActivity (open screen, or a closed one kept alive by the logger) owns the strap link. */
+    static boolean linkRunning() { return instance != null || headless != null; }
 
     /** 0.13.3: what the strap link is doing right now, for the screens (chip on every tab, the Strap data page). */
     static LinkState.Info linkState(Context c) {
@@ -13822,10 +13844,13 @@ public class MainActivity extends NewLookActivity {
     @Override
     protected void onDestroy() {
 
+        if (passThrough) { super.onDestroy(); return; }     // 0.13.4: a hand-over launch owns nothing
+
         // 0.5.12: with the logger on and a strap link open, closing the screen (swipe-away or Back) no longer ends the
         // link. The foreground service keeps the process alive; this closed screen keeps running the logger loop and the
         // Bluetooth link without a window, and the next screen that opens retires it before reconnecting.
-        if (!isChangingConfigurations() && gatt != null && DayLog.enabled(this)) {
+        // 0.13.4: also when the link happens to be down at that moment (gatt null): the closed screen keeps its reconnect loop running.
+        if (!isChangingConfigurations() && DayLog.enabled(this)) {
             if (instance == this) instance = null;
             headless = this;
             logRaw("HEADLESS_KEEP the screen was closed; logger on, strap link kept");
