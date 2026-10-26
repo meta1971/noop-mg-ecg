@@ -10555,6 +10555,47 @@ public class MainActivity extends NewLookActivity {
         if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNow(); } });
     }
 
+    /** 0.13.3: what the strap link is doing right now, for the screens (chip on every tab, the Strap data page). */
+    static LinkState.Info linkState(Context c) {
+        boolean on = DayLog.enabled(c);
+        MainActivity m = instance != null ? instance : headless;
+        if (m == null) return LinkState.describe(on, false, false, false, false, -1L, 0, -1L, false, false, 0L);
+        return m.linkStateInner(on);
+    }
+
+    private LinkState.Info linkStateInner(boolean on) {
+        long now = System.currentTimeMillis();
+        boolean ready = gatt != null && cmdWrite != null;
+        boolean connecting = gatt != null && cmdWrite == null && !passiveConnectPending;
+        boolean btOff = adapter != null && !adapter.isEnabled();
+        LiveHr.Sample s = LiveHr.latest();
+        return LinkState.describe(on, true, ready, connecting, passiveConnectPending, lastStrapRxMs > 0L ? now - lastStrapRxMs : -1L,
+                s == null ? 0 : s.hr, s == null ? -1L : now - s.ms, btOff, bleOnlyAvailable(), dayLogBackoffMs);
+    }
+
+    /** 0.13.3: "Reconnect now" from the link dialog. Starts the screen that owns the link if it is not running. */
+    static void requestReconnect(Context c) {
+        final MainActivity m = instance != null ? instance : headless;
+        if (m == null) {
+            Intent i = new Intent(c, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            c.startActivity(i);
+            return;
+        }
+        m.mainH.post(new Runnable() {
+            @Override public void run() {
+                try {
+                    if (m.gatt == null) {
+                        m.dayLogReconnectAttempts = 0;
+                        m.dayLogBackoffMs = 60000L;
+                        m.dayLogLastReconnectMs = 0L;
+                        m.connectBondedResearchStrap("ui_tap", false);
+                    }
+                } catch (Throwable t) { m.logRaw("RECONNECT_TAP_ERROR " + t); }
+            }
+        });
+    }
+
     private BluetoothGatt realtimeGatt;
     private long realtimeArmedMs = 0L;
 

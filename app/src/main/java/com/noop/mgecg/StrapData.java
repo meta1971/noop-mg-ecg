@@ -272,7 +272,10 @@ final class StrapData {
                     long newest = 0L;
                     Cursor nq = DayLog.db(a).rawQuery("SELECT MAX(ts) FROM r18", null);
                     try { if (nq.moveToFirst()) newest = nq.getLong(0); } finally { nq.close(); }
-                    rows.addAll(statusRows(DayLog.enabled(a), newest, now));
+                    List<String[]> st = statusRows(DayLog.enabled(a), newest, now);
+                    LinkState.Info li = MainActivity.linkState(a);
+                    st.add(1, row("STATUS", "Strap link", li.title, li.detail));
+                    rows.addAll(st);
                     if (!recs.isEmpty()) rows.addAll(nowRows(recs.get(recs.size() - 1)));
                     rows.addAll(liveRows());
                     rows.addAll(dayRows(recs, now));

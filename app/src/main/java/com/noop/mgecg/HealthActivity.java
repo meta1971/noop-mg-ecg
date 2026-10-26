@@ -57,6 +57,7 @@ public class HealthActivity extends Activity {
                 liveNum.setText(h > 0 ? String.valueOf(h) : "\u2014");
                 liveUnit.setText("  " + shownLabel(liveData));
             }
+            applyLink();
             ui.postDelayed(this, 2000L);
         }
     };
@@ -236,7 +237,7 @@ public class HealthActivity extends Activity {
         t.setPadding(0, dpi(6), 0, 0);
         l.addView(t);
         r.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
-        if (right != null) r.addView(right);
+        r.addView(right != null ? right : linkChip());   // 0.13.3: the strap link state is on every tab
         return r;
     }
 
@@ -414,6 +415,42 @@ public class HealthActivity extends Activity {
     private int screenW() { return getResources().getDisplayMetrics().widthPixels - dpi(36); }
 
     // ------------------------------------------------------------------ TODAY
+    // ---- 0.13.3: the strap link, always visible
+    private TextView linkChipRef;
+
+    private View linkChip() {
+        LinkState.Info li = MainActivity.linkState(this);
+        TextView t = chip(li.chip, 1);
+        t.setTextColor(li.level == LinkState.GOOD ? GREEN : li.level == LinkState.WARN ? GOLD : ROSE);
+        t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { showLinkDialog(); } });
+        linkChipRef = t;
+        return t;
+    }
+
+    private void applyLink() {
+        TextView t = linkChipRef;
+        if (t == null) return;
+        LinkState.Info li = MainActivity.linkState(this);
+        t.setText("\u25CF  " + li.chip);
+        t.setTextColor(li.level == LinkState.GOOD ? GREEN : li.level == LinkState.WARN ? GOLD : ROSE);
+    }
+
+    private void showLinkDialog() {
+        final LinkState.Info li = MainActivity.linkState(this);
+        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
+        b.setTitle(li.title).setMessage(li.detail);
+        if (li.action == LinkState.ACT_TURN_ON || li.action == LinkState.ACT_START)
+            b.setPositiveButton(li.action == LinkState.ACT_TURN_ON ? "Turn on the day logger" : "Start the link", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface d, int w) { turnOnLogger(); }
+            });
+        else if (li.action == LinkState.ACT_RECONNECT)
+            b.setPositiveButton("Reconnect now", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface d, int w) { MainActivity.requestReconnect(HealthActivity.this); }
+            });
+        b.setNegativeButton("Close", null);
+        b.show();
+    }
+
     /** The two ways the all-day log silently stops: the day logger is switched off, or the strap has gone quiet. Null when all is well. */
     private View loggerBanner(long ageSec) {
         if (!DayLog.enabled(this)) {
@@ -467,9 +504,7 @@ public class HealthActivity extends Activity {
         TodayModel.Day day = d.day;
         SleepNight.Night n = day.night;
         long age = System.currentTimeMillis() / 1000L - day.newestTs;
-        TextView strap = chip("STRAP", 1);
-        strap.setTextColor(age < 900 ? GREEN : GOLD);
-        col.addView(head("Hi, " + name(), n != null ? "You slept " + HealthModel.hmShort((long) (n.tstH * 3600)) : "Good morning", strap));
+        col.addView(head("Hi, " + name(), n != null ? "You slept " + HealthModel.hmShort((long) (n.tstH * 3600)) : "Good morning", null));
         View banner = loggerBanner(age);                       // 0.13.2: say so when the all-day log is not running
         if (banner != null) col.addView(banner, lp(-1, -2, 12));
         // ---- the three rings and the day's plan (0.12.0)
