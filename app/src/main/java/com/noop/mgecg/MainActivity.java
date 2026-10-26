@@ -10152,6 +10152,7 @@ public class MainActivity extends NewLookActivity {
             boolean wantsOldNow = pi != null && (pi.getBooleanExtra("stay", false) || pi.getBooleanExtra("start_ecg", false) || pi.getStringExtra("open_report") != null);
             if (b == null && !wantsOldNow && headless != null && headless != this && DayLog.enabled(this)) {
                 passThrough = true;
+                noteLink("kept", true);
                 startActivity(new android.content.Intent(this, HealthActivity.class));
                 overridePendingTransition(0, 0);
                 requestReconnect(this);          // if the held link is down, try now instead of waiting for the next tick
@@ -10161,7 +10162,8 @@ public class MainActivity extends NewLookActivity {
         }
 
         final MainActivity kept = headless;    // 0.5.12: a screen closed by a swipe-away may still hold the strap link
-        if (kept != null && kept != this) { headless = null; kept.retireHeadless("a new screen opened"); }
+        if (kept != null && kept != this) { headless = null; kept.retireHeadless("a new screen opened"); noteLink("rebuilt", true); }
+        else if (b == null) noteLink("fresh", true);          // nothing held a link: the process was new (killed, or first start)
         instance = this;
         mainH.postDelayed(dayLogTick, DayLog.enabled(this) ? 3000L : 20000L);   // 0.13.4: reconnect within seconds, not 20 s
 
@@ -10569,6 +10571,16 @@ public class MainActivity extends NewLookActivity {
     static void requestPull() {
         final MainActivity m = instance != null ? instance : headless;
         if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNow(); } });
+    }
+
+    /** 0.14.1: what happened at each open and swipe-away, kept in preferences so it survives the process being killed (shown on Strap data). */
+    private void noteLink(String kind, boolean opened) {
+        try {
+            android.content.SharedPreferences p = getSharedPreferences("linkdiag", MODE_PRIVATE);
+            android.content.SharedPreferences.Editor ed = p.edit().putInt("n_" + kind, p.getInt("n_" + kind, 0) + 1);
+            if (opened) ed.putString("last_kind", kind).putLong("last_ms", System.currentTimeMillis());
+            ed.apply();
+        } catch (Throwable ignored) { }
     }
 
     /** 0.13.4: true for a launch that only handed the screen on and ended; it must not become the held link in onDestroy. */
@@ -13853,6 +13865,7 @@ public class MainActivity extends NewLookActivity {
         if (!isChangingConfigurations() && DayLog.enabled(this)) {
             if (instance == this) instance = null;
             headless = this;
+            noteLink("swipe_keep", false);
             logRaw("HEADLESS_KEEP the screen was closed; logger on, strap link kept");
             super.onDestroy();
             return;

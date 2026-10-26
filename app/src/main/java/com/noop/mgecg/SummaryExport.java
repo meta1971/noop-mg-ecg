@@ -435,17 +435,17 @@ final class SummaryExport {
     }
 
     // ------------------------------------------------------------------ per-minute summary of the per-second records (0.14.0)
-    static final String MIN_HEADER = "minute_unix,minute_local,seconds,hr_mean,hr_min,hr_max,beat_intervals,skin_c_mean,cell_c_mean,steps_end,activity_max,sleep_state_mode,spo2_byte_max,pulse_lock_lost_pct,optical_quality_mean,accel_step_max_g";
+    static final String MIN_HEADER = "minute_unix,minute_local,seconds,hr_mean,hr_min,hr_max,beat_intervals,skin_c_mean,cell_c_mean,steps_end,activity_max,sleep_state_mode,spo2_percent_max,b82_status_max,pulse_lock_lost_pct,optical_quality_mean,accel_step_max_g";
 
     /** One minute of per-second records. Pure apart from the formatter; tested on the logged R18 fixture. */
     static final class Minutes {
         private final SimpleDateFormat lf = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US);
         long minute = -1;
-        int n, hrN, hrMin, hrMax, rr, act, spo2, lost, opt, skinN, steps;
+        int n, hrN, hrMin, hrMax, rr, act, spo2, stat, lost, opt, skinN, steps;
         double hrSum, skinSum, cellSum, acc;
         int[] st = new int[4];
 
-        void reset(long m) { minute = m; n = 0; hrN = 0; hrMin = 999; hrMax = 0; rr = 0; act = 0; spo2 = 0; lost = 0; opt = 0; skinN = 0; steps = 0; hrSum = 0; skinSum = 0; cellSum = 0; acc = 0; st = new int[4]; }
+        void reset(long m) { minute = m; n = 0; hrN = 0; hrMin = 999; hrMax = 0; rr = 0; act = 0; spo2 = 0; stat = 0; lost = 0; opt = 0; skinN = 0; steps = 0; hrSum = 0; skinSum = 0; cellSum = 0; acc = 0; st = new int[4]; }
 
         void add(byte[] f) {
             int hr = R18Codec.hr(f);
@@ -459,7 +459,7 @@ final class SummaryExport {
             act = Math.max(act, R18Codec.u8(f, 63));
             st[R18Codec.state(f)]++;
             int b82 = R18Codec.u8(f, 82);
-            if (b82 > 0 && b82 <= 100) spo2 = Math.max(spo2, b82);
+            if (b82 >= 80 && b82 <= 100) spo2 = Math.max(spo2, b82); else if (b82 > 0) stat = Math.max(stat, b82);   // 80-100 = a percentage; anything else is a status code
             acc = Math.max(acc, R18Codec.f32(f, 41));
             n++;
         }
@@ -471,7 +471,7 @@ final class SummaryExport {
             Locale L = Locale.US;
             return minute * 60L + "," + lf.format(new Date(minute * 60000L)) + "," + n + ","
                     + (hrN > 0 ? String.format(L, "%.1f", hrSum / hrN) : "") + "," + (hrN > 0 ? hrMin : "") + "," + (hrN > 0 ? hrMax : "") + "," + rr + ","
-                    + (skinN > 0 ? String.format(L, "%.2f", skinSum / skinN) : "") + "," + String.format(L, "%.1f", cellSum / n) + "," + steps + "," + act + "," + mode + "," + (spo2 > 0 ? spo2 : "") + ","
+                    + (skinN > 0 ? String.format(L, "%.2f", skinSum / skinN) : "") + "," + String.format(L, "%.1f", cellSum / n) + "," + steps + "," + act + "," + mode + "," + (spo2 > 0 ? spo2 : "") + "," + (stat > 0 ? stat : "") + ","
                     + String.format(L, "%.0f", 100.0 * lost / n) + "," + String.format(L, "%.0f", opt / (double) n) + "," + String.format(L, "%.4f", acc) + "\n";
         }
     }

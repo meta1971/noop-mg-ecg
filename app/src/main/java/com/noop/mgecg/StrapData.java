@@ -48,6 +48,12 @@ final class StrapData {
         return String.format(Locale.UK, "%.1f h", sec / 3600.0);
     }
 
+    /** One line on what happened at each open and swipe-away (counts kept in preferences). Pure. */
+    static String diagText(int kept, int rebuilt, int fresh, int swipeKeep, long lastMs, String lastKind) {
+        String last = lastMs <= 0L ? "" : ". Last open: " + ("kept".equals(lastKind) ? "kept the link" : "rebuilt".equals(lastKind) ? "rebuilt the link" : "fresh start") + " at " + new SimpleDateFormat("d MMM HH:mm", Locale.UK).format(new Date(lastMs));
+        return "Closed screens that kept the link " + swipeKeep + "; opens that kept it " + kept + ", rebuilt it " + rebuilt + ", fresh start " + fresh + last;
+    }
+
     /** Is the all-day log running, and how fresh is the newest second? Pure. */
     static List<String[]> statusRows(boolean loggerOn, long newestTs, long nowSec) {
         List<String[]> r = new ArrayList<>();
@@ -275,6 +281,10 @@ final class StrapData {
                     List<String[]> st = statusRows(DayLog.enabled(a), newest, now);
                     LinkState.Info li = MainActivity.linkState(a);
                     st.add(1, row("STATUS", "Strap link", li.title, li.detail));
+                    android.content.SharedPreferences dp = a.getSharedPreferences("linkdiag", Context.MODE_PRIVATE);
+                    st.add(2, row("STATUS", "Swipe-away and reopen", dp.getInt("n_kept", 0) + " kept / " + dp.getInt("n_rebuilt", 0) + " rebuilt / " + dp.getInt("n_fresh", 0) + " fresh",
+                            diagText(dp.getInt("n_kept", 0), dp.getInt("n_rebuilt", 0), dp.getInt("n_fresh", 0), dp.getInt("n_swipe_keep", 0), dp.getLong("last_ms", 0L), dp.getString("last_kind", ""))
+                            + ". Fresh start after a swipe means Android killed the app process."));
                     rows.addAll(st);
                     if (!recs.isEmpty()) rows.addAll(nowRows(recs.get(recs.size() - 1)));
                     rows.addAll(liveRows());

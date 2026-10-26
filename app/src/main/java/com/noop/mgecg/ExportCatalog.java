@@ -165,11 +165,11 @@ final class ExportCatalog {
         for (Row r : rows) {
             s.append("- ").append(r.name).append('\n');
             s.append("    ").append(r.what.isEmpty() ? "" : r.what).append('\n');
-            s.append("    rows ").append(r.rows).append(", ").append(r.bytes < 1024 ? r.bytes + " B" : (r.bytes / 1024) + " KB");
+            s.append("    ").append(r.rows >= 0 ? (r.name.endsWith("_hex.txt") ? "frames " : "rows ") + r.rows + ", " : "").append(r.bytes < 1024 ? r.bytes + " B" : (r.bytes / 1024) + " KB");
             if (r.from > 0) s.append(", data ").append(local(r.from)).append(" to ").append(local(r.to));
             s.append(", md5 ").append(r.md5).append('\n');
         }
-        if (raw) s.append("\n- ").append(id).append("_raw_history.zip\n    The raw history files (historical_bin_*.bin) of this period, as the strap sent them.\n");
+        if (raw) s.append("\n- ").append(id).append("_raw_history.zip   (a separate file, NOT inside this zip: send it with the Raw button)\n    The raw history files (historical_bin_*.bin) of this period, as the strap sent them.\n");
         return s.toString();
     }
 
@@ -251,7 +251,8 @@ final class ExportCatalog {
             String sn = shortName(e.getKey());
             byte[] b = e.getValue().getBytes(StandardCharsets.UTF_8);
             int[] tc = timeCols(sn);
-            long[] w = sn.endsWith(".csv") ? csvWindow(e.getValue(), tc[0], tc[1], tc[2]) : new long[] {0, 0, 0};
+            long[] w = sn.endsWith(".csv") ? csvWindow(e.getValue(), tc[0], tc[1], tc[2]) : new long[] {-1, 0, 0};
+            if (sn.endsWith("_hex.txt")) { long fr = 0; for (String ln : e.getValue().split("\n")) if (!ln.isEmpty() && !ln.startsWith("#")) fr++; w = new long[] {fr, 0, 0}; }
             Row r = new Row();
             r.name = id + "_" + sn; r.what = what(sn); r.md5 = md5(b); r.bytes = b.length; r.rows = w[0]; r.from = w[1]; r.to = w[2];
             rows.add(r);
