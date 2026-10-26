@@ -235,6 +235,101 @@ final class SummaryExport {
 
     // ------------------------------------------------------------------ the export
     /** days = 0 means everything on the phone; otherwise the history files and logs of the last [days] days. Runs on the calling thread (call from a worker). */
+    // ------------------------------------------------------------------ real R16 frames for upstream (0.13.1)
+    /**
+     * Cuts a handful of REAL stored-ECG frames out of the history files for a bug report or a decoder test, byte for byte: real strap clock, real
+     * counter, original CRC32, nothing rebased. Picks the newest reading that reached a normal verdict: the zero-sample record that opens it, the first
+     * record with samples, three consecutive quality-3 seconds, the second before the verdict and the verdict record, plus one record of each lead-off
+     * layout (10 and 11 slots). An R16 frame carries no serial, MAC or account data; the samples are the wearer's own ECG. Pure Java, tested off the phone.
+     */
+    static final class Fixture {
+        private Fixture() {}
+        static int u8(byte[] f, int o) { return f[o] & 0xff; }
+        static int u16(byte[] f, int o) { return (f[o] & 0xff) | ((f[o + 1] & 0xff) << 8); }
+        static long u32(byte[] f, int o) { return (f[o] & 0xffL) | ((f[o + 1] & 0xffL) << 8) | ((f[o + 2] & 0xffL) << 16) | ((f[o + 3] & 0xffL) << 24); }
+        static boolean has(byte[] f) { return u16(f, 32) > 0; }
+        static String hex(byte[] f, int from, int to) { StringBuilder s = new StringBuilder((to - from) * 2); for (int i = from; i < to; i++) s.append(String.format("%02x", f[i] & 0xff)); return s.toString(); }
+        static String utc(long t) { SimpleDateFormat d = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US); d.setTimeZone(java.util.TimeZone.getTimeZone("UTC")); return d.format(new Date(t * 1000L)) + " UTC"; }
+        static int stretch(List<Long> run, TreeMap<Long, byte[]> fr) {
+            for (int i = 0; i + 2 < run.size(); i++) {
+                boolean ok = true;
+                for (int j = i; j < i + 3 && ok; j++) { byte[] f = fr.get(run.get(j)); ok = u8(f, 21) == 3 && u16(f, 32) == 500; }
+                if (ok) return i;
+            }
+            return -1;
+        }
+        static boolean verdict(List<Long> run, TreeMap<Long, byte[]> fr) {
+            for (long k : run) { byte[] f = fr.get(k); if (u8(f, 24) == 2 && u8(f, 23) == 1) return true; }
+            return false;
+        }
+        /** {json, hex text, one-line summary}; json and hex are null when no suitable reading exists. */
+        static String[] build(TreeMap<Long, byte[]> fr) {
+            if (fr.isEmpty()) return new String[] {null, null, "no R16 records found"};
+            List<List<Long>> runs = new ArrayList<>();
+            List<Long> cur = new ArrayList<>();
+            for (long k : fr.keySet()) {
+                if (!cur.isEmpty() && k - cur.get(cur.size() - 1) > 2) { runs.add(cur); cur = new ArrayList<>(); }
+                cur.add(k);
+            }
+            runs.add(cur);
+            List<Long> pickRun = null, anyRun = null;
+            for (List<Long> r : runs) { if (stretch(r, fr) < 0) continue; anyRun = r; if (verdict(r, fr)) pickRun = r; }
+            if (pickRun == null) pickRun = anyRun;
+            if (pickRun == null) return new String[] {null, null, "no reading with three consecutive quality-3 seconds"};
+            LinkedHashMap<Long, String> pick = new LinkedHashMap<>();
+            Long open = null, first = null;
+            for (long k : pickRun) { if (!has(fr.get(k))) open = k; else if (first == null) first = k; }
+            if (open != null && (first == null || open < first)) pick.put(open, "zero-sample record that opens the reading (declared count 0)");
+            if (first != null && !pick.containsKey(first)) pick.put(first, "first record with samples");
+            int g = stretch(pickRun, fr);
+            for (int j = g; j < g + 3; j++) if (!pick.containsKey(pickRun.get(j))) pick.put(pickRun.get(j), "quality 3, 500 samples");
+            int vi = -1;
+            for (int i = 0; i < pickRun.size(); i++) if (u8(fr.get(pickRun.get(i)), 24) == 2) { vi = i; break; }
+            if (vi > 0 && !pick.containsKey(pickRun.get(vi - 1))) pick.put(pickRun.get(vi - 1), "second before the verdict (state 1)");
+            if (vi >= 0 && !pick.containsKey(pickRun.get(vi))) pick.put(pickRun.get(vi), "first state-2 record: the verdict (result byte 23, reason mask byte 26)");
+            for (int ln = 10; ln <= 11; ln++) {
+                Long k = null;
+                for (long x : pickRun) { byte[] f = fr.get(x); if (u8(f, 1534) == ln && has(f)) { k = x; break; } }
+                if (k == null) for (Long x : fr.descendingKeySet()) { byte[] f = fr.get(x); if (u8(f, 1534) == ln && has(f)) { k = x; break; } }
+                if (k != null && !pick.containsKey(k)) pick.put(k, "lead-off count " + ln + " (I words 1535-1556, Q words 1557-1578)");
+            }
+            TreeMap<Long, String> sorted = new TreeMap<>(pick);
+            StringBuilder j = new StringBuilder(80000), h = new StringBuilder(30000);
+            j.append("{\n \"description\": \"Real, unedited R16 (layout 16, 1584 B) frames from one WHOOP MG, hardware WS50_r00, firmware 50.40.1.0. Strap clock and counter as recorded, original CRC32. ")
+             .append("Sample = signed 18-bit, big-endian in the 3-byte slot from frame byte 34 ((b0&3)<<16|b1<<8|b2); b0 bit 7 = contact, bit 6 = fast recovery. Lead-off block bytes 1534-1579.\",\n \"frames\": [\n");
+            boolean firstFrame = true;
+            for (Map.Entry<Long, String> e : sorted.entrySet()) {
+                byte[] f = fr.get(e.getKey());
+                int n = Math.min(u16(f, 32), 500), contact = 0, fast = 0;
+                int[] s = new int[n];
+                for (int k = 0; k < n; k++) {
+                    int b0 = u8(f, 34 + 3 * k), v = ((b0 & 3) << 16) | (u8(f, 35 + 3 * k) << 8) | u8(f, 36 + 3 * k);
+                    if (v >= 131072) v -= 262144;
+                    s[k] = v; contact += (b0 >> 7) & 1; fast += (b0 >> 6) & 1;
+                }
+                if (!firstFrame) j.append(",\n");
+                firstFrame = false;
+                j.append("  {\"label\": \"").append(e.getValue()).append("\", \"strap_time_utc\": \"").append(utc(u32(f, 15))).append("\", \"frame_len\": ").append(f.length)
+                 .append(", \"crc32_ok\": true,\n   \"inner_hex_frame_bytes_8_to_1579\": \"").append(hex(f, 8, f.length - 4)).append("\",\n   \"frame_hex\": \"").append(hex(f, 0, f.length)).append("\",\n")
+                 .append("   \"decoded\": {\"counter\": ").append(u32(f, 11)).append(", \"strap_unix\": ").append(u32(f, 15)).append(", \"sub_second_q15\": ").append(u16(f, 19))
+                 .append(", \"byte10\": ").append(u8(f, 10)).append(", \"quality\": ").append(u8(f, 21)).append(", \"flags22\": ").append(u8(f, 22)).append(", \"result\": ").append(u8(f, 23))
+                 .append(", \"state\": ").append(u8(f, 24)).append(", \"progress\": ").append(u8(f, 25)).append(", \"reason_mask\": ").append(u8(f, 26)).append(", \"avg_hr\": ").append(u8(f, 27))
+                 .append(", \"live_hr\": ").append(u8(f, 28)).append(", \"hrv_u16\": ").append(u16(f, 29)).append(", \"byte31\": ").append(u8(f, 31)).append(", \"declared_count\": ").append(u16(f, 32))
+                 .append(", \"leadoff_count\": ").append(u8(f, 1534)).append(", \"leadoff_I\": [");
+                for (int k = 0; k < 11; k++) j.append(k > 0 ? ", " : "").append(u16(f, 1535 + 2 * k));
+                j.append("], \"leadoff_Q\": [");
+                for (int k = 0; k < 11; k++) j.append(k > 0 ? ", " : "").append((short) u16(f, 1557 + 2 * k));
+                j.append("], \"contact_flag_samples\": ").append(contact).append(", \"fast_recovery_flag_samples\": ").append(fast).append(", \"samples\": [");
+                for (int k = 0; k < n; k++) j.append(k > 0 ? "," : "").append(s[k]);
+                j.append("]}}");
+                h.append("# ").append(e.getValue()).append(" | strap ").append(utc(u32(f, 15))).append(" | counter ").append(u32(f, 11)).append(" | quality ").append(u8(f, 21)).append(" | state ").append(u8(f, 24))
+                 .append(" | result ").append(u8(f, 23)).append(" | count ").append(u16(f, 32)).append(" | lead-off n ").append(u8(f, 1534)).append('\n').append(hex(f, 0, f.length)).append('\n');
+            }
+            j.append("\n ]\n}\n");
+            return new String[] {j.toString(), h.toString(), sorted.size() + " frames from the reading starting " + utc(pickRun.get(0)) + " (" + pickRun.size() + " records)"};
+        }
+    }
+
     static Result run(Context c, int days) {
         Result res = new Result();
         Context app = c.getApplicationContext();
@@ -384,6 +479,7 @@ final class SummaryExport {
         });
         final TreeMap<Long, String> v16 = new TreeMap<>();
         final TreeMap<Long, String> v26 = new TreeMap<>();
+        final TreeMap<Long, byte[]> v16raw = new TreeMap<>();   // newest 4,000 stored-ECG frames, for the real-frame fixture
         for (File f : bins) {
             byte[] data = Files.readAllBytes(f.toPath());
             R18Codec.scan(data, new R18Codec.Visitor() {
@@ -393,6 +489,7 @@ final class SummaryExport {
                     if (ts < 1700000000L || ts > now + 86400L || (since > 0 && ts < since)) return;
                     if (Rows.isV16(fr)) {
                         if (!v16.containsKey(ts)) v16.put(ts, Rows.v16(fr));
+                        if (!v16raw.containsKey(ts)) { v16raw.put(ts, fr.clone()); if (v16raw.size() > 4000) v16raw.remove(v16raw.firstKey()); }
                     } else if (Rows.isV26(fr)) {
                         long key = ts * 65536L + Rows.u16(fr, 21);
                         if (!v26.containsKey(key)) v26.put(key, Rows.v26(fr));
@@ -405,6 +502,11 @@ final class SummaryExport {
         for (String s : v16.values()) b16.append(s).append('\n');
         files.put("mg_ecg_status.csv", b16.toString());
         info.append("v16_rows,").append(v16.size()).append('\n');
+        try {
+            String[] fxo = Fixture.build(v16raw);
+            if (fxo[0] != null) { files.put("mg_r16_fixture.json", fxo[0]); files.put("mg_r16_fixture_hex.txt", fxo[1]); }
+            info.append("r16_fixture,").append(Rows.q(fxo[2])).append('\n');
+        } catch (Throwable t) { info.append("error_r16_fixture,").append(Rows.q(String.valueOf(t))).append('\n'); }
 
         Map<Long, long[]> r18 = new HashMap<>();
         if (db != null && !v26.isEmpty()) {

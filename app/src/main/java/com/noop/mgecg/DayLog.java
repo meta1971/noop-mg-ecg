@@ -55,7 +55,7 @@ final class DayLog {
 
     // ------------------------------------------------------------------ database
     private static final class Helper extends SQLiteOpenHelper {
-        Helper(Context c) { super(c.getApplicationContext(), "daylog.db", null, 3); }
+        Helper(Context c) { super(c.getApplicationContext(), "daylog.db", null, 4); }
         @Override public void onCreate(SQLiteDatabase db) {
             db.execSQL("CREATE TABLE r18 (ts INTEGER PRIMARY KEY, hr INTEGER, state INTEGER, skin REAL, b82 INTEGER, steps INTEGER, act INTEGER, rec BLOB)");
             db.execSQL("CREATE TABLE other_rec (ts INTEGER, ver INTEGER, len INTEGER, PRIMARY KEY (ts, ver))");
@@ -64,7 +64,7 @@ final class DayLog {
             createV2(db);
             createV3(db);
         }
-        @Override public void onUpgrade(SQLiteDatabase db, int o, int n) { if (o < 2) createV2(db); if (o < 3) createV3(db); }
+        @Override public void onUpgrade(SQLiteDatabase db, int o, int n) { if (o < 2) createV2(db); if (o < 3) createV3(db); if (o < 4) db.execSQL("DELETE FROM night_stats"); }   // 0.11.1: R-R words are milliseconds, so cached nightly RMSSD must be recomputed
         /** v3 (0.11.0): every notification from the strap's standard Heart Rate service, beat-interval words kept raw. */
         private void createV3(SQLiteDatabase db) {
             db.execSQL("CREATE TABLE IF NOT EXISTS live_hr (ms INTEGER PRIMARY KEY, hr INTEGER, flags INTEGER, rr TEXT)");

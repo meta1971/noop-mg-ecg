@@ -57,10 +57,14 @@ final class R18Codec {
     /** Byte 32: 0 in 95.5% of seconds, 128 (bit 7) in 4.4%, only while the wrist is stationary (never with activity class above 0; median max accel delta 0.009 vs 0.036 g): a stillness flag candidate. Rare low values 1, 2, 4, 6, 16, 24 (59 records). Exported raw. */
     static int b32(byte[] f) { return u8(f, 32); }
 
-    /** The R-R words of one record in milliseconds (0 where absent). */
+    /**
+     * The R-R words of one record in milliseconds (0 where absent). 0.11.1: the words ARE milliseconds. The old x1000/1024 (read as
+     * 1/1024 s ticks) made every interval 2.3% short. Measured 25 Oct on this strap: 999.7 words per elapsed second over 4,804
+     * five-minute windows with complete beat coverage (1,024 would be ticks), and 1,001.5 words per beat x HR / 60 over 62,564 windows.
+     */
     static double rr(byte[] f, int k) {
         int n = Math.min(u8(f, 23), 4);
-        return k < n ? u16(f, 24 + 2 * k) * 1000.0 / 1024.0 : 0.0;
+        return k < n ? u16(f, 24 + 2 * k) : 0.0;
     }
 
     static String csv(byte[] f) {

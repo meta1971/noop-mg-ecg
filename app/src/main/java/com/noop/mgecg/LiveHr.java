@@ -68,31 +68,68 @@ final class LiveHr {
         return s;
     }
 
-    /** Called from the Bluetooth callback for every heart-rate notification. Never throws. */
+    private static volatile long lastLiveMs = 0L;
+
+    /** When the newest live sample arrived (phone clock), 0 when none yet. */
+    static long lastLiveMs() { return lastLiveMs; }
+
+    /** Called from the Bluetooth callback for every standard heart-rate notification (0x2A37). Never throws. */
     static void onNotification(final Context c, byte[] value) {
+        try { keep(c, parse(value, System.currentTimeMillis())); } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 0.11.1: the WHOOP 5/MG sends its live heart rate as real-time frames (type 40), not on 0x2A37, once TOGGLE_REALTIME_HR(1) is on.
+     * Layout (frame bytes): type @8 = 40, unix @10, sub-second @14, heart rate @16, interval count @17, interval words @18 (u16, milliseconds).
+     * The frame is accepted only when its CRC32 matches. Never throws.
+     */
+    static void onRealtimeFrame(final Context c, byte[] f) {
         try {
-            long now = System.currentTimeMillis();
-            Sample s = parse(value, now);
-            if (s == null || s.hr <= 0 || s.hr > 250) return;
-            latest = s;
-            synchronized (pending) {
-                if (now - lastKeptMs < 450L) return;
-                lastKeptMs = now;
-                ContentValues cv = new ContentValues();
-                cv.put("ms", now);
-                cv.put("hr", s.hr);
-                cv.put("flags", s.flags);
-                StringBuilder sb = new StringBuilder();
-                for (int k = 0; k < s.rr.length; k++) { if (k > 0) sb.append(','); sb.append(s.rr[k]); }
-                cv.put("rr", sb.toString());
-                pending.add(cv);
-                countToday++;
-                if (now - lastFlushMs < 10000L && pending.size() < 40) return;
-                lastFlushMs = now;
+            if (f == null || f.length < 22 || (f[0] & 0xff) != 0xAA || (f[1] & 0xff) != 0x01 || (f[8] & 0xff) != 40) return;
+            int len = (f[2] & 0xff) | ((f[3] & 0xff) << 8);
+            if (len + 8 != f.length) return;
+            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+            crc.update(f, 8, f.length - 12);
+            long want = (f[f.length - 4] & 0xffL) | ((f[f.length - 3] & 0xffL) << 8) | ((f[f.length - 2] & 0xffL) << 16) | ((f[f.length - 1] & 0xffL) << 24);
+            if (crc.getValue() != want) return;
+            Sample s = new Sample();
+            s.ms = System.currentTimeMillis();
+            s.hr = f[16] & 0xff;
+            s.flags = 0x100;
+            int n = Math.min(f[17] & 0xff, 8);
+            List<Integer> rr = new ArrayList<>();
+            for (int k = 0; k < n && 18 + 2 * k + 1 < f.length - 4; k++) {
+                int w = (f[18 + 2 * k] & 0xff) | ((f[19 + 2 * k] & 0xff) << 8);
+                if (w > 0) rr.add(w);
             }
-            final Context app = c.getApplicationContext();
-            EXEC.execute(new Runnable() { @Override public void run() { flush(app); } });
+            s.rr = new int[rr.size()];
+            for (int k = 0; k < s.rr.length; k++) s.rr[k] = rr.get(k);
+            keep(c, s);
         } catch (Throwable ignored) { }
+    }
+
+    private static void keep(final Context c, Sample s) {
+        if (s == null || s.hr <= 0 || s.hr > 250) return;
+        long now = s.ms;
+        latest = s;
+        lastLiveMs = now;
+        synchronized (pending) {
+            if (now - lastKeptMs < 450L) return;
+            lastKeptMs = now;
+            ContentValues cv = new ContentValues();
+            cv.put("ms", now);
+            cv.put("hr", s.hr);
+            cv.put("flags", s.flags);
+            StringBuilder sb = new StringBuilder();
+            for (int k = 0; k < s.rr.length; k++) { if (k > 0) sb.append(','); sb.append(s.rr[k]); }
+            cv.put("rr", sb.toString());
+            pending.add(cv);
+            countToday++;
+            if (now - lastFlushMs < 10000L && pending.size() < 40) return;
+            lastFlushMs = now;
+        }
+        final Context app = c.getApplicationContext();
+        EXEC.execute(new Runnable() { @Override public void run() { flush(app); } });
     }
 
     private static void flush(Context app) {
@@ -106,7 +143,7 @@ final class LiveHr {
             SQLiteDatabase db = DayLog.db(app);
             db.beginTransaction();
             try {
-                for (ContentValues cv : batch) db.insert("live_hr", null, cv);
+                for (ContentValues cv : batch) db.insertWithOnConflict("live_hr", null, cv, SQLiteDatabase.CONFLICT_IGNORE);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();

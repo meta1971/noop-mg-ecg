@@ -46,6 +46,7 @@ public class HealthActivity extends Activity {
     private int tab = 0;
     private HealthModel.Data data;
     private volatile boolean loading;
+    private volatile List<ActivityDetector.Bout> actBouts = new ArrayList<ActivityDetector.Bout>();
     private volatile String actLine = "";          // today's activity in one line, read off the main thread
     private TextView liveNum, liveUnit;
     private HealthModel.Data liveData;
@@ -144,6 +145,7 @@ public class HealthActivity extends Activity {
                 try { d = HealthModel.load(app, mh, g); } catch (Throwable ignored) { }
                 try {
                     ActivityStore.DayData ad = ActivityStore.glanceDay(app);
+                    if (ad != null && ad.r != null && ad.r.bouts != null) actBouts = new ArrayList<ActivityDetector.Bout>(ad.r.bouts);
                     actLine = (ad != null && ad.hasData && ad.r != null)
                             ? "Active " + HealthModel.hmShort(ad.r.activeMin * 60L) + (ad.r.longestBoutMin > 0 ? " \u00b7 longest " + HealthModel.hmShort(ad.r.longestBoutMin * 60L) : "") + " \u00b7 load " + Math.round(ad.r.load)
                             : "No logged data yet today";
@@ -432,28 +434,104 @@ public class HealthActivity extends Activity {
         TextView strap = chip("STRAP", 1);
         strap.setTextColor(age < 900 ? GREEN : GOLD);
         col.addView(head("Hi, " + name(), n != null ? "You slept " + HealthModel.hmShort((long) (n.tstH * 3600)) : "Good morning", strap));
-        float frac = 0f;
-        if (d.nowHr > 0 && !Double.isNaN(day.restingHr)) frac = (float) ((d.nowHr - day.restingHr) / Math.max(30.0, maxHr() - day.restingHr));
-        int ow = Math.min(screenW(), dpi(300));
-        View orb = new OrbView(this, d.nowHr > 0 ? String.valueOf(d.nowHr) : "\u2014", "BPM NOW", frac, BLUE, 0xFF8FD8FF, 0xFF1FA0EE, 0xFF0B6FD0);
-        LinearLayout.LayoutParams op = lp(ow, ow, 4);
-        op.gravity = Gravity.CENTER_HORIZONTAL;
-        col.addView(orb, op);
-        if (n != null) {
-            double pct = day.sleepPct;
-            col.addView(tv(pct >= 92 ? "A full night" : "A short night", 19, INK, 400), lp(-2, -2, 6));
-            StringBuilder s = new StringBuilder();
-            s.append("You woke at ").append(hhmm(n.endTs));
-            if (!Double.isNaN(day.restingHr)) s.append(" with a lowest five-minute heart rate of ").append(Math.round(day.restingHr));
-            s.append(".");
-            if (day.spo2 != null && day.spo2.validWindows > 0) s.append(" SpO2 held around ").append(day.spo2.median).append("%.");
-            if (!Double.isNaN(n.brMedian)) s.append(" Breathing was ").append(String.format(Locale.UK, "%.1f", n.brMedian)).append(" a minute.");
-            s.append(" Efficiency ").append(Math.round(n.effPct)).append("%.");
-            TextView p = tv(s.toString(), 14, MUT, 400);
-            p.setLineSpacing(0, 1.25f);
-            p.setPadding(0, dpi(6), 0, 0);
-            col.addView(p);
+        // ---- the three rings and the day's plan (0.12.0)
+        double rec = day.recovery;
+        float[] rf = {Double.isNaN(rec) ? 0f : (float) (rec / 100.0), (float) (day.effort / 21.0), Double.isNaN(day.sleepPct) ? 0f : (float) Math.min(1.0, day.sleepPct / 100.0)};
+        int[] rc = {DailyViews.recoveryColor(rec), BLUE, VIOLET};
+        String[] rb = {Double.isNaN(rec) ? "\u2014" : Math.round(rec) + "%", String.format(Locale.UK, "%.1f", day.effort), Double.isNaN(day.sleepPct) ? "\u2014" : Math.round(day.sleepPct) + "%"};
+        String[] rl = {"RECOVERY", "EFFORT", "SLEEP"};
+        String[] rcap = {Double.isNaN(rec) ? "needs " + TodayModel.MIN_BASELINE + " nights" : "vs your last " + day.baselineNights + " nights", "of 21 today",
+                n == null ? "no night yet" : HealthModel.hmShort((long) (n.tstH * 3600)) + " of " + Math.round(day.sleepGoalH) + " h goal"};
+        col.addView(new DailyViews.RingsView(this, rf, rc, rb, rl, rcap), lp(-1, dpi(196), 6));
+        TextView plan = tv(DailyViews.plan(rec), 14, INK, 400);
+        plan.setLineSpacing(0, 1.25f);
+        col.addView(plan, lp(-2, -2, 8));
+        col.addView(tv("Estimates from this strap's own records, built on your own recent nights. Not WHOOP's scores and not a medical measure.", 11, MUT, 400), lp(-2, -2, 4));
+
+        // ---- heart rate now
+        LinearLayout nowCard = card(14);
+        LinearLayout nowRow = hrow();
+        nowRow.addView(caps("HEART RATE NOW"));
+        nowRow.addView(spacer());
+        nowRow.addView(tv(shownHr(d) > 0 ? shownHr(d) + " bpm" : "\u2014", 20, INK, 300));
+        nowCard.addView(nowRow);
+        nowCard.addView(tv(shownLabel(d).replace("bpm, ", "") + (n != null && !Double.isNaN(day.restingHr) ? "  \u00b7  lowest five minutes " + Math.round(day.restingHr) : ""), 11, MUT, 400), lp(-2, -2, 4));
+        nowCard.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { go(1); } });
+        col.addView(nowCard, lp(-1, -2, 12));
+
+        // ---- health monitor: last night against your own usual range
+        List<DailyViews.Metric> mon = DailyViews.monitor(d);
+        if (!mon.isEmpty()) {
+            LinearLayout hmc = card(16);
+            LinearLayout hmh = hrow();
+            hmh.addView(caps("HEALTH MONITOR"));
+            hmh.addView(spacer());
+            hmh.addView(tv("last night against your usual", 12, MUT, 400));
+            hmc.addView(hmh);
+            for (DailyViews.Metric mt : mon) {
+                LinearLayout row = hrow();
+                row.addView(tv(mt.name, 13, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+                row.addView(tv(mt.valueText(), 15, INK, 600));
+                hmc.addView(row, lp(-1, -2, 12));
+                hmc.addView(new DailyViews.BandView(this, mt), lp(-1, dpi(18), 2));
+                hmc.addView(tv(mt.rangeText(), 11, MUT, 400));
+            }
+            TextView hn = tv("Green is inside your usual range, amber about two spreads out, red further. HRV here comes from the wrist's optical intervals. A guide, not a diagnosis.", 11, MUT, 400);
+            hn.setLineSpacing(0, 1.2f);
+            hmc.addView(hn, lp(-2, -2, 10));
+            col.addView(hmc, lp(-1, -2, 12));
         }
+
+        col.addView(rowCard("Trends", "Recovery, resting heart rate, HRV, sleep, breathing and skin temperature over 7, 30 or 90 nights",
+                new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } }), lp(-1, -2, 12));
+        col.addView(rowCard("Strap data", "Every value the strap sends while worn: heart, motion, temperatures, state, events",
+                new View.OnClickListener() { @Override public void onClick(View v) { StrapData.show(HealthActivity.this); } }), lp(-1, -2, 10));
+
+        // ---- effort today
+        LinearLayout efc = card(16);
+        LinearLayout efh = hrow();
+        efh.addView(caps("EFFORT"));
+        efh.addView(spacer());
+        efh.addView(tv(String.format(Locale.UK, "%.1f of 21", day.effort), 13, INK, 600));
+        efc.addView(efh);
+        efc.addView(new ZoneBarView(this, d.zoneSec), lp(-1, dpi(10), 10));
+        efc.addView(tv("Time in heart-rate zones over the last 24 hours, weighted into a 0 to 21 effort." + (day.steps > 0 ? " " + day.steps + " steps." : "") + " This is not WHOOP's strain.", 11, MUT, 400), lp(-2, -2, 8));
+        col.addView(efc, lp(-1, -2, 12));
+
+        // ---- workouts and activity found in today's records
+        LinearLayout wkc = card(16);
+        wkc.addView(caps("ACTIVITY TODAY"));
+        int shownBouts = 0;
+        List<ActivityDetector.Bout> bs = actBouts;
+        for (ActivityDetector.Bout b : bs) {
+            if (b.durationMin < 10) continue;
+            LinearLayout wr = hrow();
+            wr.addView(tv(hhmm(b.start) + "  " + b.durationMin + " min" + (b.label == null || b.label.isEmpty() ? "" : "  \u00b7  " + b.label), 13, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+            wr.addView(tv("avg " + Math.round(b.avgHr) + " \u00b7 peak " + Math.round(b.peakHr), 12, MUT, 400));
+            wkc.addView(wr, lp(-1, -2, 10));
+            if (++shownBouts >= 6) break;
+        }
+        if (shownBouts == 0) wkc.addView(tv("No stretch of ten minutes or more found yet today.", 12, MUT, 400), lp(-2, -2, 8));
+        wkc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, ActivityActivity.class)); } });
+        col.addView(wkc, lp(-1, -2, 12));
+
+        // ---- journal: one tap puts a time-stamped marker in the day log
+        LinearLayout jc = card(16);
+        jc.addView(caps("JOURNAL"));
+        jc.addView(tv("Tap to log it now. The log lines it up with the heart and sleep numbers later.", 11, MUT, 400), lp(-2, -2, 4));
+        String[][] marks = {{"Caffeine", "caffeine"}, {"Meal", "meal"}, {"Alcohol", "alcohol"}, {"Stress", "stress"}, {"Workout start", "workout_start"}, {"Workout end", "workout_end"}, {"Symptom", "symptom"}, {"Going to bed", "bed"}};
+        LinearLayout jr = null;
+        for (int mi = 0; mi < marks.length; mi++) {
+            if (mi % 2 == 0) { jr = hrow(); jc.addView(jr, lp(-1, -2, 8)); }
+            final String mName = marks[mi][0], mKind = marks[mi][1];
+            TextView pill = HeartGraph.pill(this, mName, 0x1AFFFFFF, INK);
+            pill.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { DayLog.addEvent(HealthActivity.this, "marker", mKind); android.widget.Toast.makeText(HealthActivity.this, mName + " logged at " + hhmm(System.currentTimeMillis() / 1000L), android.widget.Toast.LENGTH_SHORT).show(); } });
+            LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(0, -2, 1f);
+            pl.rightMargin = dpi(8);
+            jr.addView(pill, pl);
+        }
+        col.addView(jc, lp(-1, -2, 12));
+
         String ecgTitle = "No ECG reading yet", ecgSub = "Start one from the ECG tab";
         if (!d.readings.isEmpty()) {
             HealthModel.Reading r = d.readings.get(0);
@@ -799,6 +877,19 @@ public class HealthActivity extends Activity {
             so.addView(t);
             col.addView(so, lp(-1, -2, 12));
         }
+        // ---- this week: average sleep, sleep debt and bedtime spread
+        List<TodayModel.NightStat> wk = Trends.allNights(d);
+        if (wk.size() >= 2) {
+            LinearLayout wc = card(16);
+            wc.addView(caps("THIS WEEK"));
+            TextView wt = tv(Trends.weekSummary(wk, goal()), 13, INK, 400);
+            wt.setLineSpacing(0, 1.25f);
+            wt.setPadding(0, dpi(8), 0, 0);
+            wc.addView(wt);
+            wc.addView(tv("Tap for the trends", 12, BLUE, 400), lp(-2, -2, 8));
+            wc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } });
+            col.addView(wc, lp(-1, -2, 12));
+        }
         return wrap(col);
     }
 
@@ -883,6 +974,8 @@ public class HealthActivity extends Activity {
         final SharedPreferences ctl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
         st.addView(toggleRow("Near-live 500 Hz during readings", ctl, "ecg_tail"), lp(-1, dpi(52), 6));
         st.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
+        st.addView(toggleRow("Morning summary notification", sp(), "n_morning"), lp(-1, dpi(52), 0));
+        st.addView(toggleRow("Strap battery alert (15% or less)", sp(), "n_battery"), lp(-1, dpi(52), 0));
         final TextView goalV = tv(String.format(Locale.UK, "%.1f h", goal()), 14, INK, 600);
         st.addView(valueRow("Sleep goal", goalV, new View.OnClickListener() {
             @Override public void onClick(View v) { float g = goal() + 0.5f; if (g > 9.5f) g = 6.5f; sp().edit().putFloat("goal", g).apply(); goalV.setText(String.format(Locale.UK, "%.1f h", g)); load(); }

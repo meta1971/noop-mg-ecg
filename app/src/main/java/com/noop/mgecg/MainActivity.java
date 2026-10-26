@@ -1369,6 +1369,8 @@ public class MainActivity extends NewLookActivity {
             } else if (envType == 0x32 && envCmd == 0x02) {
                 dumpAsciiRuns(value);
                 extractCursorFromDebugText(value);
+            } else if (envType == 40) {
+                LiveHr.onRealtimeFrame(getApplicationContext(), value);   // 0.11.1: the strap's live heart rate and beat intervals
             } else if (envType == 43) {
                 handleRealtimeEcgFrame(uuid, value);
             } else if (envType == 0x31) {
@@ -10553,6 +10555,9 @@ public class MainActivity extends NewLookActivity {
         if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNow(); } });
     }
 
+    private BluetoothGatt realtimeGatt;
+    private long realtimeArmedMs = 0L;
+
     private void dayLogTickBody() {
         if (!DayLog.enabled(this)) return;
         dayLogTickCount++;
@@ -10609,10 +10614,19 @@ public class MainActivity extends NewLookActivity {
                 }
             }
         } else {
+            // 0.11.1: turn the strap's real-time heart rate on once per link, and again after 10 minutes if nothing live has arrived
+            if ((gatt != realtimeGatt || (now - realtimeArmedMs > 600000L && now - LiveHr.lastLiveMs() > 120000L))
+                    && !pullAckActive && !ecgSessionRunning && !pendingEcgStoredAnalysis) {
+                realtimeGatt = gatt;
+                realtimeArmedMs = now;
+                logRaw("LIVE_HR_ARM TOGGLE_REALTIME_HR(1)");
+                sendToggleRealtimeHr(1);
+            }
             long dueMs = DayLog.intervalMin(this) * 60000L;
             if (now - DayLog.lastPullMs(this) >= dueMs) dayLogPullNow();
         }
         DayLog.scanNewFiles(this);
+        Daily.tick(this);   // 0.12.0: morning summary and strap-battery alert (own thread, at most every 10 minutes)
         if (dayLogTickCount % 5 == 0) DayLog.sampleSensors(this);
         DayLogService.refresh(this);
     }
@@ -10759,6 +10773,7 @@ public class MainActivity extends NewLookActivity {
             }
             sb.append(" payload=").append(Protocol.hex(payload));
             logRaw(sb.toString());
+            StrapEvents.store(this, id, payload);   // 0.13.0: kept in daylog.db, 118 / 119 decoded on arrival
         } catch (Throwable t) {
             logRaw("EVENT_LOG_ERROR " + t);
         }
