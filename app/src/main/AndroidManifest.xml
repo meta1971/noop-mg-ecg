@@ -39,6 +39,8 @@
     <!-- All-day logger: keep running in the background and show its status -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -117,6 +119,16 @@
         <receiver
             android:name=".DayLogReceiver"
             android:exported="false" />
+
+        <!-- The daily backup: the alarm, and the foreground service that does the copying -->
+        <receiver
+            android:name=".BackupReceiver"
+            android:exported="false" />
+
+        <service
+            android:name=".BackupService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- After a restart or an app update: one alert that reconnects the strap when tapped -->
         <receiver
