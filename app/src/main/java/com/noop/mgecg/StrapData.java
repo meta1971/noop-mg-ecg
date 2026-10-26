@@ -41,6 +41,26 @@ final class StrapData {
 
     static String clock(long sec) { return new SimpleDateFormat("EEE d MMM HH:mm:ss", Locale.UK).format(new Date(sec * 1000L)); }
 
+    static String ageText(long sec) {
+        if (sec < 0) sec = 0;
+        if (sec < 90) return sec + " s";
+        if (sec < 5400) return Math.round(sec / 60.0) + " min";
+        return String.format(Locale.UK, "%.1f h", sec / 3600.0);
+    }
+
+    /** Is the all-day log running, and how fresh is the newest second? Pure. */
+    static List<String[]> statusRows(boolean loggerOn, long newestTs, long nowSec) {
+        List<String[]> r = new ArrayList<>();
+        String G = "STATUS";
+        r.add(row(G, "Day logger", loggerOn ? "on" : "OFF", loggerOn ? null : "nothing is recorded; switch it on from the Today screen"));
+        if (newestTs <= 0) { r.add(row(G, "Newest record", "none", null)); return r; }
+        long age = nowSec - newestTs;
+        String note = null;
+        if (age > 600) note = loggerOn ? "no new data: strap off the wrist or on the charger, flat, or Bluetooth off" : "the logger was off, so the strap's history has not been pulled";
+        r.add(row(G, "Newest record", ageText(age) + " ago", note));
+        return r;
+    }
+
     // ------------------------------------------------------------------ the newest second, every field
     static List<String[]> nowRows(byte[] f) {
         List<String[]> r = new ArrayList<>();
@@ -249,6 +269,10 @@ final class StrapData {
                         if (q.moveToFirst()) recs.add(q.getBlob(0));
                         q.close();
                     }
+                    long newest = 0L;
+                    Cursor nq = DayLog.db(a).rawQuery("SELECT MAX(ts) FROM r18", null);
+                    try { if (nq.moveToFirst()) newest = nq.getLong(0); } finally { nq.close(); }
+                    rows.addAll(statusRows(DayLog.enabled(a), newest, now));
                     if (!recs.isEmpty()) rows.addAll(nowRows(recs.get(recs.size() - 1)));
                     rows.addAll(liveRows());
                     rows.addAll(dayRows(recs, now));

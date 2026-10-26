@@ -414,6 +414,42 @@ public class HealthActivity extends Activity {
     private int screenW() { return getResources().getDisplayMetrics().widthPixels - dpi(36); }
 
     // ------------------------------------------------------------------ TODAY
+    /** The two ways the all-day log silently stops: the day logger is switched off, or the strap has gone quiet. Null when all is well. */
+    private View loggerBanner(long ageSec) {
+        if (!DayLog.enabled(this)) {
+            LinearLayout c = card(16);
+            c.addView(caps("DAY LOGGER IS OFF"));
+            TextView t = tv("Nothing is being recorded, so recovery, sleep, trends and the morning summary stop updating. Switch it on and the app connects to the strap in the background.", 13, INK, 400);
+            t.setLineSpacing(0, 1.25f);
+            t.setPadding(0, dpi(8), 0, dpi(10));
+            c.addView(t);
+            c.addView(pillButton("Turn on the day logger", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { turnOnLogger(); } }), lp(-1, dpi(42), 0));
+            return c;
+        }
+        if (ageSec > 1200L) {
+            LinearLayout c = card(16);
+            c.addView(caps("NO NEW DATA FROM THE STRAP"));
+            TextView t = tv("The newest second is " + StrapData.ageText(ageSec) + " old. Check that the strap is on your wrist and not on the charger, that it has battery, and that Bluetooth is on. The app keeps trying on its own.", 13, INK, 400);
+            t.setLineSpacing(0, 1.25f);
+            t.setPadding(0, dpi(8), 0, 0);
+            c.addView(t);
+            return c;
+        }
+        return null;
+    }
+
+    private void turnOnLogger() {
+        DayLog.setEnabled(this, true);
+        DayLogService.start(this);
+        if (MainActivity.instance == null) {
+            Intent i = new Intent(this, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            startActivity(i);
+        }
+        android.widget.Toast.makeText(this, "Day logger on. It connects to the strap in the background.", android.widget.Toast.LENGTH_LONG).show();
+        render();
+    }
+
     private View todayTab() {
         LinearLayout col = screen();
         HealthModel.Data d = data;
@@ -434,6 +470,8 @@ public class HealthActivity extends Activity {
         TextView strap = chip("STRAP", 1);
         strap.setTextColor(age < 900 ? GREEN : GOLD);
         col.addView(head("Hi, " + name(), n != null ? "You slept " + HealthModel.hmShort((long) (n.tstH * 3600)) : "Good morning", strap));
+        View banner = loggerBanner(age);                       // 0.13.2: say so when the all-day log is not running
+        if (banner != null) col.addView(banner, lp(-1, -2, 12));
         // ---- the three rings and the day's plan (0.12.0)
         double rec = day.recovery;
         float[] rf = {Double.isNaN(rec) ? 0f : (float) (rec / 100.0), (float) (day.effort / 21.0), Double.isNaN(day.sleepPct) ? 0f : (float) Math.min(1.0, day.sleepPct / 100.0)};
