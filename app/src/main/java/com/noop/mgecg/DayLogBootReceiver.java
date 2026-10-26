@@ -12,6 +12,7 @@ public class DayLogBootReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context c, Intent i) {
         String a = i == null ? null : i.getAction();
         if (Intent.ACTION_BOOT_COMPLETED.equals(a) || "android.intent.action.QUICKBOOT_POWERON".equals(a) || Intent.ACTION_MY_PACKAGE_REPLACED.equals(a)) {
+            try { Backup.schedule(c); Backup.ensure(c); } catch (Throwable ignored) { }      // 0.16.0: the alarm does not survive a restart or an update by itself
             KeepAlive.afterRestart(c);
         }
     }

@@ -284,14 +284,34 @@ final class StrapData {
                     try { if (nq.moveToFirst()) newest = nq.getLong(0); } finally { nq.close(); }
                     LinkState.Info li = MainActivity.linkState(a);
                     List<String[]> st = statusRows(DayLog.enabled(a), newest, now, li.level == LinkState.GOOD);
-                    st.add(1, row("STATUS", "Strap link", li.title, li.detail));
-                    st.add(2, row("STATUS", "Logger service", DayLogService.alive ? "running" : (DayLog.enabled(a) ? "NOT running" : "off"),
+                    st.add(Math.min(1, st.size()), row("STATUS", "Strap link", li.title, li.detail));
+                    st.add(Math.min(2, st.size()), row("STATUS", "Logger service", DayLogService.alive ? "running" : (DayLog.enabled(a) ? "NOT running" : "off"),
                             "The foreground service (the \"MG day logger\" notification) is what stops Android ending the app when you swipe it away. After an app update or a restart it must be started again; the app now does that when it opens."));
+                    st.add(Math.min(3, st.size()), row("STATUS", "Daily backup", Backup.shortStatus(a), Backup.statusText(a)));
+                    String btv = "?";
+                    try { android.bluetooth.BluetoothAdapter ad = android.bluetooth.BluetoothAdapter.getDefaultAdapter(); if (ad != null) btv = ad.isEnabled() ? "ON" : "switch OFF (BLE-only or off)"; } catch (Throwable ignored) { }
+                    android.content.SharedPreferences ck = a.getSharedPreferences("clockchk", Context.MODE_PRIVATE);
+                    st.add(Math.min(3, st.size()), row("STATUS", "Phone Bluetooth", btv, "The official WHOOP app runs ECG only on a fully ready link (connected, bonded, hello exchanged, clock set). For the live raw test keep the Bluetooth switch ON; today's earlier readings ran with it off (BLE-only)."));
+                    if (ck.getLong("at_ms", 0L) > 0) st.add(Math.min(4, st.size()), row("STATUS", "Strap clock", String.format(java.util.Locale.UK, "%+.2f s against the phone", ck.getFloat("diff_s", 0f)), "Measured after the last clock set (includes the Bluetooth delay of some tens of milliseconds). Before the sub-second set it was about -0.4 to -1.1 s."));
+                    android.content.SharedPreferences bl = a.getSharedPreferences("backlog", Context.MODE_PRIVATE);
+                    String cond = StrapEvents.lastDec(a, 29);
+                    if (bl.getLong("ring", 0L) > 0 || cond != null) {
+                        long ring = bl.getLong("ring", 0L), beh = bl.getLong("behind", 0L);
+                        st.add(Math.min(4, st.size()), row("STATUS", "Strap storage", ring > 0 ? String.format(java.util.Locale.UK, "%,d pages behind (%.2f %%)", beh, 100.0 * beh / ring) : "no pull yet",
+                                (ring > 0 ? "Flash ring of " + String.format(java.util.Locale.UK, "%,d", ring) + " pages; read pointer " + bl.getLong("read", 0L) + ", write pointer " + bl.getLong("write", 0L) + ", at the last pull. " : "")
+                                        + (cond != null ? "Strap condition report (every 10 minutes): " + cond : "No condition report received yet.")));
+                    }
+                    android.content.SharedPreferences lrp = a.getSharedPreferences("liveraw", Context.MODE_PRIVATE);
+                    if (lrp.getInt("n_ok", 0) + lrp.getInt("n_bad", 0) + lrp.getInt("r126", -1) + lrp.getInt("r127", -1) > -2) {
+                        st.add(Math.min(5, st.size()), row("STATUS", "Live raw 500 Hz test", lrp.getInt("n_ok", 0) + " frames ok / " + lrp.getInt("n_bad", 0) + " bad",
+                                "Command 126 answered " + (lrp.getInt("r126", -1) < 0 ? "not yet" : String.valueOf(lrp.getInt("r126", -1))) + ", command 127 answered " + (lrp.getInt("r127", -1) < 0 ? "not yet" : String.valueOf(lrp.getInt("r127", -1)))
+                                        + " (1 = accepted). Gaps " + lrp.getInt("gaps", 0) + ", missing records " + lrp.getInt("missing", 0) + ". Last frame lag " + String.format(java.util.Locale.UK, "%.1f", lrp.getFloat("lag_s", 0f)) + " s including the clock offset; last record counter " + lrp.getLong("last_ctr", 0L) + ", " + lrp.getInt("last_n", 0) + " samples. Frame census: " + lrp.getString("census", "none yet")));
+                    }
                     android.content.SharedPreferences dp = a.getSharedPreferences("linkdiag", Context.MODE_PRIVATE);
-                    st.add(3, row("STATUS", "Swipe-away and reopen", dp.getInt("n_kept", 0) + " kept / " + dp.getInt("n_rebuilt", 0) + " rebuilt / " + dp.getInt("n_fresh", 0) + " fresh",
+                    st.add(Math.min(6, st.size()), row("STATUS", "Swipe-away and reopen", dp.getInt("n_kept", 0) + " kept / " + dp.getInt("n_rebuilt", 0) + " rebuilt / " + dp.getInt("n_fresh", 0) + " fresh",
                             diagText(dp.getInt("n_kept", 0), dp.getInt("n_rebuilt", 0), dp.getInt("n_fresh", 0), dp.getInt("n_swipe_keep", 0), dp.getLong("last_ms", 0L), dp.getString("last_kind", ""))
                             + ". Fresh start after a swipe means Android killed the app process."));
-                    st.add(4, row("STATUS", "Link owner starts",
+                    st.add(Math.min(7, st.size()), row("STATUS", "Link owner starts",
                             dp.getInt("n_host", 0) + " invisible / " + dp.getInt("n_destroy", 0) + " screens ended / " + dp.getInt("n_svc_restart", 0) + " service restarts",
                             "Invisible = started by the app with no screen. Screens ended counts every time the strap-link screen was destroyed, kept or not. Service restarts = Android brought the logger service back after ending it. Service starts " + dp.getInt("n_svc_start", 0) + "."));
                     rows.addAll(st);

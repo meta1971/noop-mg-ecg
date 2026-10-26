@@ -45,6 +45,7 @@ public class DayLogService extends Service {
 
     /** 0.15.1: start the foreground service if the logger is on and it is not running. An app update, a restart or Android ending the process stops it, and nothing else started it again. */
     static void ensure(Context c) {
+        try { Backup.ensure(c); } catch (Throwable ignored) { }                                   // 0.16.0: the daily backup alarm, and a missed backup
         try { if (DayLog.enabled(c) && !alive) start(c); } catch (Throwable ignored) { }
     }
 

@@ -1069,6 +1069,15 @@ public class HealthActivity extends Activity {
         final SharedPreferences ctl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
         st.addView(toggleRow("Near-live 500 Hz during readings", ctl, "ecg_tail"), lp(-1, dpi(52), 6));
         st.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
+        st.addView(toggleRow("Set the strap clock to the sub-second (as the official app)", ctl, "clock_subsec"), lp(-1, dpi(52), 0));
+        final TextView lrv = tv(liveRawModeText(ctl), 14, BLUE, 600);
+        st.addView(valueRow("TEST: live raw 500 Hz (command 126)", lrv, new View.OnClickListener() {
+            @Override public void onClick(View v) { int md = (ctl.getInt("ecg_liveraw_mode", 0) + 1) % 3; ctl.edit().putInt("ecg_liveraw_mode", md).apply(); lrv.setText(liveRawModeText(ctl)); }
+        }), lp(-1, dpi(52), 0));
+        TextView lrNote = tv("Tap to change. Staged: 126 on at about 16 s and off at about 41 s of one reading, so the frames can be seen starting and stopping.", 11.5f, MUT, 400);
+        lrNote.setPadding(0, 0, 0, dpi(6));
+        st.addView(lrNote);
+        st.addView(toggleRow("TEST: save filtered ECG (command 127)", ctl, "ecg_savefiltered", false), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Morning summary notification", sp(), "n_morning"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Strap battery alert (15% or less)", sp(), "n_battery"), lp(-1, dpi(52), 0));
         final boolean ovl = android.os.Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(this);
@@ -1100,6 +1109,10 @@ public class HealthActivity extends Activity {
         TextView exNote = tv("Pick a period, make one dated zip, send it. Earlier exports are listed with their date and time.", 11.5f, MUT, 400);
         exNote.setPadding(0, dpi(6), 0, 0);
         dt.addView(exNote);
+        dt.addView(pillButton("Daily backup", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { BackupScreen.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));
+        TextView bkNote = tv("Copies all the app's data every day at a time you choose into Download/MGbackup.  Backup: " + Backup.shortStatus(this), 11.5f, MUT, 400);
+        bkNote.setPadding(0, dpi(6), 0, 0);
+        dt.addView(bkNote);
         dt.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 8));
         dt.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(oldScreens()); } }), lp(-1, dpi(44), 8));
@@ -1135,11 +1148,18 @@ public class HealthActivity extends Activity {
         };
     }
 
-    private View toggleRow(String label, final SharedPreferences prefs, final String key) {
+    private View toggleRow(String label, final SharedPreferences prefs, final String key) { return toggleRow(label, prefs, key, true); }
+
+    private static String liveRawModeText(SharedPreferences p) {
+        int md = p.getInt("ecg_liveraw_mode", 0);
+        return md == 1 ? "On at start" : md == 2 ? "Staged" : "Off";
+    }
+
+    private View toggleRow(String label, final SharedPreferences prefs, final String key, final boolean def) {
         LinearLayout r = hrow();
         r.addView(tv(label, 14, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
-        final Toggle t = new Toggle(this, prefs.getBoolean(key, true));
-        t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !prefs.getBoolean(key, true); prefs.edit().putBoolean(key, on).apply(); t.set(on); } });
+        final Toggle t = new Toggle(this, prefs.getBoolean(key, def));
+        t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !prefs.getBoolean(key, def); prefs.edit().putBoolean(key, on).apply(); t.set(on); } });
         r.addView(t, new LinearLayout.LayoutParams(dpi(46), dpi(28)));
         r.setBackground(null);
         return r;

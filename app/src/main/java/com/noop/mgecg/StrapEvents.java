@@ -48,7 +48,7 @@ final class StrapEvents {
     }
 
     /** Events too frequent to keep (they stay in the text log). */
-    static boolean skip(int id) { return id == 3 || id == 29 || id == 63 || id == 110 || id == 120 || id == 124; }
+    static boolean skip(int id) { return id == 3 || id == 63 || id == 110 || id == 120 || id == 124; }          // 0.16.0: 29 (condition report, every 10 min) and 109 (battery pack) are now decoded and kept
 
     static int u8(byte[] b, int o) { return b[o] & 0xff; }
     static int u16(byte[] b, int o) { return (b[o] & 0xff) | ((b[o + 1] & 0xff) << 8); }
@@ -73,7 +73,23 @@ final class StrapEvents {
         if (id == 118 && in.length >= 39 && in[0] == 2)
             return String.format(L, "window %d s, progress %d; A=%d B=%d C=%d D=%d E=%d; N=%d n1=%d n2=%d pct1=%.1f pct2=%.1f",
                     u8(in, 3), u8(in, 2), u32(in, 5), u32(in, 9), u16(in, 13), u16(in, 15), u16(in, 17), u32(in, 19), u32(in, 23), u32(in, 27), f32(in, 31), f32(in, 35));
+        // 0.16.0: from the vendor app's own parsers (WHOOP 5.469.0), checked on 188 logged reports
+        if (id == 29 && in.length >= 11)
+            return String.format(L, "backlog %d pages (%.1f %%), battery %.1f %%, flash status %d, charging %d, wrist %d", u32(in, 0), u16(in, 4) / 10.0, u16(in, 6) / 10.0, u8(in, 8), u8(in, 9), u8(in, 10));
+        if (id == 109 && in.length >= 27)
+            return String.format(L, "battery pack: battery %.1f %%, colourway %d, type %d (its address and name are not shown)", u16(in, 23) / 10.0, u8(in, 25), u8(in, 26));
         return "";
+    }
+
+    /** The newest decoded text of one event id as "dd HH:mm  text", or null. */
+    static String lastDec(Context c, int id) {
+        try {
+            SQLiteDatabase d = DayLog.db(c);
+            ensure(d);
+            Cursor q = d.rawQuery("SELECT ts, dec FROM strap_events WHERE id = ? ORDER BY ts DESC LIMIT 1", new String[] {String.valueOf(id)});
+            try { if (q.moveToFirst()) return new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(new java.util.Date(q.getLong(0) * 1000L)) + "  " + q.getString(1); } finally { q.close(); }
+        } catch (Throwable ignored) { }
+        return null;
     }
 
     private static String hex(byte[] b) {
