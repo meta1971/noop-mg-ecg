@@ -1071,12 +1071,13 @@ public class HealthActivity extends Activity {
         st.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Set the strap clock to the sub-second (as the official app)", ctl, "clock_subsec"), lp(-1, dpi(52), 0));
         final TextView lrv = tv(liveRawModeText(ctl), 14, BLUE, 600);
-        st.addView(valueRow("TEST: live raw 500 Hz (command 126)", lrv, new View.OnClickListener() {
-            @Override public void onClick(View v) { int md = (ctl.getInt("ecg_liveraw_mode", 0) + 1) % 3; ctl.edit().putInt("ecg_liveraw_mode", md).apply(); lrv.setText(liveRawModeText(ctl)); }
+        st.addView(valueRow("Live raw 500 Hz during readings (command 126)", lrv, new View.OnClickListener() {
+            @Override public void onClick(View v) { int md = (ctl.getInt("ecg_liveraw_mode", 1) + 1) % 3; ctl.edit().putInt("ecg_liveraw_mode", md).apply(); lrv.setText(liveRawModeText(ctl)); }
         }), lp(-1, dpi(52), 0));
-        TextView lrNote = tv("Tap to change. Staged: 126 on at about 16 s and off at about 41 s of one reading, so the frames can be seen starting and stopping.", 11.5f, MUT, 400);
+        TextView lrNote = tv("Tap to change: Off, On at start (the default: the live 500 Hz stream from the first second, about 0.1 s behind), Staged (126 on at about 16 s and off at about 41 s of one reading, a test).", 11.5f, MUT, 400);
         lrNote.setPadding(0, 0, 0, dpi(6));
         st.addView(lrNote);
+        st.addView(toggleRow("Show the 500 Hz graph when live raw frames arrive", ctl, "ecg_view500"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("TEST: save filtered ECG (command 127)", ctl, "ecg_savefiltered", false), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Morning summary notification", sp(), "n_morning"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Strap battery alert (15% or less)", sp(), "n_battery"), lp(-1, dpi(52), 0));
@@ -1151,7 +1152,7 @@ public class HealthActivity extends Activity {
     private View toggleRow(String label, final SharedPreferences prefs, final String key) { return toggleRow(label, prefs, key, true); }
 
     private static String liveRawModeText(SharedPreferences p) {
-        int md = p.getInt("ecg_liveraw_mode", 0);
+        int md = p.getInt("ecg_liveraw_mode", 1);
         return md == 1 ? "On at start" : md == 2 ? "Staged" : "Off";
     }
 
