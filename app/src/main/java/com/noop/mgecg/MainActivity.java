@@ -45,6 +45,9 @@ public class MainActivity extends NewLookActivity {
      */
     private FrameLayout ecgScreenContainer;
     private EcgWaveformView ecgWaveformView;
+    private Live500View live500View;                 // 0.17.0: the 500 Hz live graph beside the 100 Hz one
+    private TextView graphSourceLabel;
+    private volatile boolean graphLive;
     private TextView ecgStatusText;
     private TextView ecgHrText;
     private TextView ecgElapsedText;
@@ -5606,7 +5609,7 @@ public class MainActivity extends NewLookActivity {
         liveRawN = 0;
         lastLiveRawCtr = -1L;
         liveRawGaps = 0; liveRawMissing = 0;
-        final int lrMode = testGates.getInt("ecg_liveraw_mode", 0);
+        final int lrMode = testGates.getInt("ecg_liveraw_mode", 1);
         if (lrMode != 0 || testGates.getBoolean("ecg_savefiltered", false) || testGates.getBoolean("ecg_tail", true)) {   // NOOP's working live IMU capture also asks for the high connection priority; the near-live pull moves about 5 KB a second
             try { if (gatt != null && Build.VERSION.SDK_INT >= 21) { gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH); logRaw("CONN_PRIORITY high (live raw test)"); } } catch (Throwable ignored) { }
         }          // 0 off, 1 on at start, 2 staged: on at +16 s, off at +41 s of this call
@@ -9161,6 +9164,19 @@ public class MainActivity extends NewLookActivity {
      * Counted, CRC-checked, timed against the phone clock (the lag includes the 0.5 to 1 s clock offset) and kept in the live-frame file;
      * the first three are logged in full as a fixture. Nothing else is done with it yet.
      */
+    /** 0.17.0: which graph the ECG screen shows. [framesNow] = live raw frames are arriving. Preference ecg_view500 (default on) picks the 500 Hz graph. */
+    private void updateGraphSource(boolean framesNow) {
+        graphLive = framesNow;
+        if (live500View == null || ecgWaveformView == null) return;
+        boolean show500 = framesNow && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_view500", true);
+        live500View.setVisibility(show500 ? View.VISIBLE : View.GONE);
+        ecgWaveformView.setVisibility(show500 ? View.GONE : View.VISIBLE);
+        if (graphSourceLabel != null) {
+            graphSourceLabel.setVisibility(framesNow ? View.VISIBLE : View.GONE);
+            graphSourceLabel.setText(show500 ? "500 Hz raw graph. Tap here for the 100 Hz filtered graph." : "100 Hz filtered graph. Tap here for the 500 Hz raw graph.");
+        }
+    }
+
     private void handleLiveRawR16(byte[] v) {
         saveRealtimeEcgFragment(v);
         boolean crc = false;
@@ -9174,6 +9190,7 @@ public class MainActivity extends NewLookActivity {
         long nowMs = System.currentTimeMillis();
         double lag = nowMs / 1000.0 - (ts + (((v[19] & 0xff) | ((v[20] & 0xff) << 8)) / 32768.0));
         liveRawN++;
+        if (crc && Live500.feedFrame(v, nowMs) > 0 && (Live500.frames() == 1 || !graphLive)) mainH.post(() -> updateGraphSource(true));       // 0.17.0: frames are arriving (also again after a pause): show the 500 Hz graph
         if (lastLiveRawCtr >= 0 && ctr != lastLiveRawCtr + 1) { liveRawGaps++; if (ctr > lastLiveRawCtr && ctr - lastLiveRawCtr < 1000) liveRawMissing += (int) (ctr - lastLiveRawCtr - 1); }
         lastLiveRawCtr = ctr;
         SharedPreferences lr = getSharedPreferences("liveraw", MODE_PRIVATE);
@@ -10447,6 +10464,23 @@ public class MainActivity extends NewLookActivity {
         waveformCard.addView(ecgWaveformView,
                 new LinearLayout.LayoutParams(-1, 520));
 
+        // 0.17.0: the 500 Hz live graph (frames from command 126) sits in the same card; it is shown while live raw frames arrive
+        live500View = new Live500View(this);
+        live500View.setVisibility(View.GONE);
+        live500View.setStaleCallback(() -> updateGraphSource(false));
+        waveformCard.addView(live500View, new LinearLayout.LayoutParams(-1, 520));
+        graphSourceLabel = new TextView(this);
+        graphSourceLabel.setTextSize(12);
+        graphSourceLabel.setTextColor(0xFF8FA1BD);
+        graphSourceLabel.setPadding(8, 10, 8, 6);
+        graphSourceLabel.setVisibility(View.GONE);
+        graphSourceLabel.setOnClickListener(x -> {
+            SharedPreferences cc = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
+            cc.edit().putBoolean("ecg_view500", !cc.getBoolean("ecg_view500", true)).apply();
+            updateGraphSource(Live500.isLive(System.currentTimeMillis()));
+        });
+        waveformCard.addView(graphSourceLabel, new LinearLayout.LayoutParams(-1, -2));
+
         col.addView(waveformCard,
                 new LinearLayout.LayoutParams(-1, -2));
 
@@ -11060,6 +11094,8 @@ public class MainActivity extends NewLookActivity {
                 .putBoolean("ecg_session_guard", true).apply();
         ecgSessionEstablishedThisRun = false;
         ecgWaveformView.reset();
+        Live500.reset();
+        updateGraphSource(false);
         ecgLiveBeatIntervalsMs.clear();
         ecgFullSessionIntervalsMs.clear();
         ecgFrameArrivalLog.clear();
@@ -11158,8 +11194,8 @@ public class MainActivity extends NewLookActivity {
                 800);
         {                                                                                  // 0.16.0: leave the test gates off, as the documentation asks
             final SharedPreferences tg = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
-            if (tg.getInt("ecg_liveraw_mode", 0) != 0) mainH.postDelayed(() -> send(0x7E, 0, "TOGGLE_RAW_ECG_LIVE_OFF [TEST 126] (ECG screen)"), 1200);
-            if (tg.getInt("ecg_liveraw_mode", 0) != 0 || tg.getBoolean("ecg_savefiltered", false) || tg.getBoolean("ecg_tail", true)) mainH.postDelayed(() -> { try { if (gatt != null) { gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED); logRaw("CONN_PRIORITY balanced"); } } catch (Throwable ignored) { } }, 14000);
+            if (tg.getInt("ecg_liveraw_mode", 1) != 0) mainH.postDelayed(() -> send(0x7E, 0, "TOGGLE_RAW_ECG_LIVE_OFF [TEST 126] (ECG screen)"), 1200);
+            if (tg.getInt("ecg_liveraw_mode", 1) != 0 || tg.getBoolean("ecg_savefiltered", false) || tg.getBoolean("ecg_tail", true)) mainH.postDelayed(() -> { try { if (gatt != null) { gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED); logRaw("CONN_PRIORITY balanced"); } } catch (Throwable ignored) { } }, 14000);
             if (tg.getBoolean("ecg_savefiltered", false)) mainH.postDelayed(() -> send(0x7F, 0, "TOGGLE_FILTERED_ECG_SAVE_OFF [TEST 127] (ECG screen)"), 1600);
         }
 
@@ -12273,11 +12309,13 @@ public class MainActivity extends NewLookActivity {
         SharedPreferences prefs = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
         if (!prefs.getBoolean("ecg_session_guard", false) || ecgSessionRunning) return;
         prefs.edit().putBoolean("ecg_session_guard", false).apply();
-        logRaw("ECG_LEFTOVER_CLEANUP sending 124 01 01, 139 01 00, 125 01 00");
+        logRaw("ECG_LEFTOVER_CLEANUP sending 124 01 01, 139 01 00, 125 01 00, 126 01 00, 127 01 00");
         line("*** Last ECG session was not stopped cleanly - stopping ECG / raw-save on the strap ***");
         send(0x7C, 1, "ECG_STOP (leftover cleanup)");
         mainH.postDelayed(() -> send(0x8B, 0, "LABRADOR_FILTERED_OFF (leftover cleanup)"), 400);
         mainH.postDelayed(() -> send(0x7D, 0, "LABRADOR_RAW_SAVE_OFF (leftover cleanup)"), 800);
+        mainH.postDelayed(() -> send(0x7E, 0, "RAW_ECG_LIVE_OFF (leftover cleanup)"), 1200);       // 0.17.0: 126 is on by default now, so the cleanup clears it and 127 too
+        mainH.postDelayed(() -> send(0x7F, 0, "FILTERED_ECG_SAVE_OFF (leftover cleanup)"), 1600);
     }
 
     private void maybeSendEcgRestart() {
