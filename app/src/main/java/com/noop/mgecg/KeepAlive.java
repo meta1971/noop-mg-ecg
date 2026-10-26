@@ -89,9 +89,14 @@ final class KeepAlive {
         try {
             if (!DayLog.enabled(c)) { cancel(c); return; }
             long m = ActivityStore.staleMinutes(c);
-            if (m >= STALE_MIN) {
+            // 0.15.2: stored seconds arrive with each history pull, about every 30 minutes, so a live link legitimately shows data 25 minutes old.
+            // With a good link warn only after 75 minutes; otherwise as before.
+            boolean linkGood = false;
+            try { linkGood = MainActivity.linkState(c).level == LinkState.GOOD; } catch (Throwable ignored) { }
+            if (linkGood ? m >= 75 : m >= STALE_MIN) {
                 post(c, "Day logger: no strap data for " + (m >= 120 ? (m / 60) + " h" : m + " min"),
-                        "The strap may be out of range, switched off, or the connection dropped. Tap to reconnect and carry on logging.");
+                        linkGood ? "The strap is connected but no history has been pulled for a while. Open the app, or use Pull now in the notification."
+                                : "The strap may be out of range, switched off, or the connection dropped. Tap to reconnect and carry on logging.");
             } else if (m >= 0) {
                 cancel(c);
             }

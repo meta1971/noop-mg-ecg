@@ -27,13 +27,29 @@ public final class EcgReport {
      * Writes the report for a finished stored-ECG analysis as ecg_report_&lt;strap unix time&gt;.html in
      * reportDir. Never throws: a report that cannot be saved must not disturb the analysis.
      */
+    private static long lastReportStart = 0L;
+    private static int lastReportRecords = 0;
+
+    /**
+     * 0.15.2: after a reading is stopped the app pulls the last few stored seconds and analyses them again, which used to save a second,
+     * almost empty "Not judged" report for the same reading. True when a report with few records starts inside, or just after, the span of the
+     * reading that was saved a moment ago: that is the late tail, not a new reading. Pure.
+     */
+    static boolean isLateTail(long lastStart, int lastRecords, long t, int records) {
+        return lastStart > 0L && records < Math.max(20, lastRecords / 2) && t >= lastStart && t <= lastStart + lastRecords + 10L;
+    }
+
     public static void saveReportFile(EcgR16Analyzer.Result r, EcgR16Analyzer.Strip s) {
         java.io.File dir = reportDir;
         if (dir == null || r == null || s == null || r.recordsIn == 0 || s.mv.length == 0) return;
         try {
-            String html = html(r, s, null);
             long t = s.startUnix;
             if (t < 1672531200L || t > 1924992000L) t = System.currentTimeMillis() / 1000L;
+            synchronized (EcgReport.class) {
+                if (isLateTail(lastReportStart, lastReportRecords, t, r.recordsIn)) return;      // 0.15.2: no second report for one reading
+                if (r.recordsIn >= 20) { lastReportStart = t; lastReportRecords = r.recordsIn; }
+            }
+            String html = html(r, s, null);
             java.io.File f = new java.io.File(dir, "ecg_report_" + t + ".html");
             java.io.FileOutputStream out = new java.io.FileOutputStream(f);
             try {
@@ -1020,18 +1036,18 @@ public final class EcgReport {
     }
 
     private static final String CSS =
-            ":root{--bg:#0B0F14;--card:#131A23;--line:#243244;--text:#E8EEF5;--muted:#A3B2C5;--green:#3DDC97;--amber:#FFB454;--red:#FF7A7A;--blue:#6CB6FF;--grey:#46566A}"
+            ":root{--bg:#07090C;--card:#0D1116;--line:#1D2631;--text:#F2F6FA;--muted:#98A3B3;--green:#5CE5A0;--amber:#F2B35B;--red:#FF8CA2;--blue:#2FA8F0;--grey:#46566A;--violet:#8E93E8;--teal:#4EE3CB}"
             + "@media print{:root{--bg:#fff;--card:#fff;--line:#c9d2dc;--text:#111;--muted:#444;--green:#0a8a54;--amber:#b36200;--red:#c0392b;--blue:#1565c0;--grey:#8a97a6}.card{break-inside:avoid;border:1px solid var(--line)}}"
-            + "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Roboto,'Segoe UI',system-ui,sans-serif;line-height:1.45}"
+            + "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:'Outfit',-apple-system,Roboto,'Segoe UI',system-ui,sans-serif;line-height:1.45}"
             + "main{max-width:480px;margin:0 auto;padding:20px 16px 32px;display:flex;flex-direction:column;gap:14px}"
-            + "h1{font-size:24px;margin:0}h2{font-size:17px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin:2px 0 0}"
-            + ".card{background:var(--card);border-radius:18px;padding:16px}.q{display:flex;gap:16px;align-items:center}.q p{margin:4px 0 0;color:var(--muted);font-size:14px}"
-            + ".k{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}.big{font-size:22px;font-weight:700;margin-top:4px}"
+            + "h1{font-size:30px;font-weight:300;margin:0}h2{font-size:17px;font-weight:600;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin:4px 0 0}"
+            + ".card{background:var(--card);border:1px solid rgba(255,255,255,.07);border-radius:26px;padding:18px 20px}.q{display:flex;gap:16px;align-items:center}.q p{margin:4px 0 0;color:var(--muted);font-size:14px}"
+            + ".k{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}.big{font-size:24px;font-weight:300;margin-top:4px}"
             + ".lead{font-size:15px;line-height:1.5;margin:6px 0 0}.hint{font-size:13px;color:var(--muted);margin:0 0 10px}.cap{font-size:14px;line-height:1.45;color:var(--muted);margin:10px 0 0}"
             + ".grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.tile{min-height:140px}.tile .cap{font-size:13px;margin-top:8px}"
-            + ".val{font-size:32px;font-weight:700;margin-top:8px;line-height:1}.val small{font-size:14px;color:var(--muted);font-weight:400;margin-left:6px}"
+            + ".val{font-size:42px;font-weight:300;margin-top:8px;line-height:1}.val small{font-size:14px;color:var(--muted);font-weight:400;margin-left:6px}"
             + ".row2{display:flex;justify-content:space-between;align-items:center;gap:8px}.pill{border:1px solid var(--amber);color:var(--amber);border-radius:999px;padding:2px 10px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}"
-            + ".grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}.mini{border:1px solid var(--line);border-radius:12px;padding:10px}.mini span{display:block;font-size:11px;color:var(--muted)}.mini b{font-size:18px}"
+            + ".grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}.mini{border:1px solid var(--line);border-radius:16px;padding:10px 12px}.mini span{display:block;font-size:11px;color:var(--muted)}.mini b{font-size:18px}"
             + ".row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line);font-size:14px}.row span:first-child{color:var(--muted)}.row span:last-child{text-align:right}"
             + "ul{margin:8px 0 0;padding-left:20px;font-size:14px;line-height:1.6;color:var(--muted)}.foot{font-size:12px;color:var(--muted);text-align:center;margin:4px 8px 0}"
             + ".legend{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:6px;font-size:13px;color:var(--muted)}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}"

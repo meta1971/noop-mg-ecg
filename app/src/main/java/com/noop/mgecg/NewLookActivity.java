@@ -425,6 +425,7 @@ public class NewLookActivity extends Activity {
         }
         state = ST_ECG;
         restyleEcgOnce();
+        fontAll(ecgContainer());
         updateEcgExtras();
     }
 
@@ -448,6 +449,36 @@ public class NewLookActivity extends Activity {
      * away). It finds the pieces by their position in the old screen and checks each one's type and text first; if
      * anything does not match it leaves the old look untouched, so the recording itself can never be affected.
      */
+    private static String fontCss;
+
+    /** 0.15.2: the report is plain HTML; give the WebView the app's Outfit font (not stored in the saved file, which falls back to the system font). */
+    private String withFont(String html) {
+        try {
+            if (fontCss == null) {
+                java.io.File ff = OutfitData.file(this);
+                byte[] b = new byte[(int) ff.length()];
+                java.io.FileInputStream in = new java.io.FileInputStream(ff);
+                try { int off = 0, k; while (off < b.length && (k = in.read(b, off, b.length - off)) > 0) off += k; } finally { in.close(); }
+                fontCss = "<style>@font-face{font-family:'Outfit';font-weight:100 900;src:url(data:font/ttf;base64," + android.util.Base64.encodeToString(b, android.util.Base64.NO_WRAP) + ")}</style>";
+            }
+            int i = html.indexOf("</head>");
+            return i < 0 ? html : html.substring(0, i) + fontCss + html.substring(i);
+        } catch (Throwable t) { return html; }
+    }
+
+    /** 0.15.2: Outfit on every text of the old ECG screen (log lines in a monospace font keep theirs). */
+    private void fontAll(View v) {
+        if (v == null) return;
+        try {
+            if (v instanceof TextView) {
+                TextView t = (TextView) v;
+                Typeface cur = t.getTypeface();
+                if (cur != Typeface.MONOSPACE) t.setTypeface(HealthViews.font(this, cur != null && cur.isBold() ? 600 : 400));
+            }
+            if (v instanceof ViewGroup) { ViewGroup g = (ViewGroup) v; for (int i = 0; i < g.getChildCount(); i++) fontAll(g.getChildAt(i)); }
+        } catch (Throwable ignored) { }
+    }
+
     private void restyleEcgOnce() {
         if (ecgStyled) return;
         try {
@@ -587,6 +618,7 @@ public class NewLookActivity extends Activity {
 
     /** Keeps the restyled screen in step with the old one: tips only when idle, button colour, the report line. */
     private void updateEcgExtras() {
+        if (state == ST_ECG) fontAll(ecgContainer());          // 0.15.2: late-added texts get the app font too
         if (!ecgStyled || ecgStartBtn == null) return;
         boolean running = ecgStartBtn.getText().toString().startsWith("STOP");
         int rs = running ? 1 : 0;
@@ -642,7 +674,7 @@ public class NewLookActivity extends Activity {
         bannerPending = false;
         Rep r = describe(f);
         reportTitle.setText(r.dateText);
-        webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null);
+        webView.loadDataWithBaseURL(null, withFont(html), "text/html", "UTF-8", null);
         reportLayer.setVisibility(View.VISIBLE);
     }
 

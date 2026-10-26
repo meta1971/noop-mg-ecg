@@ -185,6 +185,8 @@ final class SummaryExport {
             try { id = Integer.parseInt(tok(text, "id")); } catch (Exception e) { return null; }
             if (skipEvent(id)) return null;
             String payload = tok(text, "payload");
+            int pi = text.indexOf(" payload=");                                  // 0.15.2: the hex is written with spaces and tok() stopped at the first one
+            if (pi >= 0) payload = text.substring(pi + 9).replaceAll("[^0-9A-Fa-f]", "");
             o.append(ms).append(',').append(id).append(',').append(q(tok(text, "name"))).append(',').append(tok(text, "seq")).append(',')
                     .append(tok(text, "src")).append(',').append(tok(text, "ts")).append(',').append(tok(text, "sub")).append(',')
                     .append(tok(text, "phoneMinusStrapS")).append(',').append(payload.length() / 2).append(',').append(payload);

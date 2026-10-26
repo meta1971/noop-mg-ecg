@@ -223,7 +223,7 @@ final class HealthModel {
             } catch (Exception ignored) { }
             r.timeMs = t;
             r.when = new SimpleDateFormat("EEE d MMM, HH:mm", Locale.UK).format(new Date(t));
-            String head = readHead(f, 2500);
+            String head = readHead(f, 9000);
             String v = meta(head, "ecg-hr");
             if (v != null) r.hr = v;
             v = meta(head, "ecg-hrv");
@@ -232,12 +232,21 @@ final class HealthModel {
             if (v != null) r.rhythm = v;
             v = meta(head, "ecg-grade");
             if (v != null) r.grade = v;
+            int tot = fragmentSeconds(head);                       // 0.15.2: the late tail of a reading ("0 of 3 seconds"): not a reading
+            if (tot >= 0 && tot < 20) continue;
             out.add(r);
         }
         Collections.sort(out, new Comparator<Reading>() {
             @Override public int compare(Reading a, Reading b) { return Long.compare(b.timeMs, a.timeMs); }
         });
         return out;
+    }
+
+    /** Total seconds a report says it covers ("54 of 61 seconds", "for 40 of 62 seconds"), or -1 when the text is not there. Pure. */
+    static int fragmentSeconds(String head) {
+        Matcher m = Pattern.compile("(\\d+) of (\\d+) seconds").matcher(head == null ? "" : head);
+        if (!m.find()) return -1;
+        try { return Integer.parseInt(m.group(2)); } catch (Exception e) { return -1; }
     }
 
     private static String readHead(File f, int max) {
