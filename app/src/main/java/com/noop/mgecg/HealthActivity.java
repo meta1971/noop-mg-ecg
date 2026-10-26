@@ -645,9 +645,15 @@ public class HealthActivity extends Activity {
         LinearLayout h = hrow();
         h.addView(caps("THE LAST 24 HOURS"));
         h.addView(spacer());
-        h.addView(tv("data to " + ago(day.newestTs), 12, MUT, 400));
+        h.addView(tv("data to " + ago(day.newestTs) + "  \u00b7  Full graph \u203a", 12, MUT, 400));
         c.addView(h);
-        c.addView(new HrChartView(this, day.hrT, day.hrV, n == null ? 0 : n.bedTs, n == null ? 0 : n.endTs, false), lp(-1, dpi(80), 8));
+        View last24 = new HrChartView(this, day.hrT, day.hrV, n == null ? 0 : n.bedTs, n == null ? 0 : n.endTs, false);
+        last24.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openGraph(2); } });
+        c.addView(last24, lp(-1, dpi(110), 8));
+        TextView hint24 = tv("Tap to open the full graph: pinch to zoom, drag to move, expand to fill the screen.", 11, MUT, 400);
+        hint24.setPadding(0, dpi(6), 0, 0);
+        c.addView(hint24);
+        c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openGraph(2); } });
         col.addView(c, lp(-1, -2, 10));
         return wrap(col);
     }
@@ -1084,8 +1090,10 @@ public class HealthActivity extends Activity {
         t.setPadding(0, dpi(6), 0, 0);
         dt.addView(t);
         dt.addView(pillButton("Import a pull (zip)", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { pickZip(); } }), lp(-1, dpi(44), 12));
-        dt.addView(pillButton("Export summary (CSV, last 4 days)", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { exportSummary(4); } }), lp(-1, dpi(44), 12));
-        dt.addView(pillButton("Export summary, all days", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { exportSummary(0); } }), lp(-1, dpi(44), 8));
+        dt.addView(pillButton("Export and send data", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { ExportScreen.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));
+        TextView exNote = tv("Pick a period, make one dated zip, send it. Earlier exports are listed with their date and time.", 11.5f, MUT, 400);
+        exNote.setPadding(0, dpi(6), 0, 0);
+        dt.addView(exNote);
         dt.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 8));
         dt.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(oldScreens()); } }), lp(-1, dpi(44), 8));

@@ -330,7 +330,9 @@ final class SummaryExport {
         }
     }
 
-    static Result run(Context c, int days) {
+    static Result run(Context c, int days) { return run(c, days, false); }
+
+    static Result run(Context c, int days, boolean rawHistory) {
         Result res = new Result();
         Context app = c.getApplicationContext();
         long now = System.currentTimeMillis() / 1000L;
@@ -360,14 +362,14 @@ final class SummaryExport {
                 b.append(mm.format(new Date(r.timeMs))).append(',').append(r.timeMs / 1000L).append(',').append(Rows.q(r.hr)).append(',')
                         .append(Rows.q(r.hrv)).append(',').append(Rows.q(r.rhythm)).append(',').append(Rows.q(r.grade)).append(",app\n");
             }
-            files.put("mg_ecg_readings.csv", b.toString());
+            files.put("mg_ecg_readings.csv", ExportCatalog.filterSince(b.toString(), 1, 1, since));
             info.append("readings,").append(rs.size()).append('\n');
         } catch (Throwable t) { info.append("error_readings,").append(Rows.q(String.valueOf(t))).append('\n'); }
 
         if (db != null) {
             // ---- nights (same columns as mg_nights.csv; logged_h = hours of per-second records in the analysed window)
             try {
-                files.put("mg_nights.csv", nights(db, info));
+                files.put("mg_nights.csv", ExportCatalog.filterSince(nights(db, info), 4, 1, since));
             } catch (Throwable t) { info.append("error_nights,").append(Rows.q(String.valueOf(t))).append('\n'); }
             // ---- record counter against the strap clock, from the day-logger database
             try {
@@ -383,7 +385,8 @@ final class SummaryExport {
                         n++;
                     }
                 } finally { q.close(); }
-                files.put("mg_idx_runs.csv", ir.finish());
+                files.put("mg_idx_runs.csv", ExportCatalog.filterSince(ir.finish(), 1, 1, since));
+                files.put("mg_r18_minutes.csv", r18Minutes(db, since));
                 info.append("r18_records,").append(n).append('\n').append("idx_runs,").append(ir.rows).append('\n');
                 q = db.rawQuery("SELECT MIN(ts), MAX(ts) FROM r18", null);
                 try { if (q.moveToFirst() && !q.isNull(0)) info.append("r18_first_ts,").append(q.getLong(0)).append('\n').append("r18_last_ts,").append(q.getLong(1)).append('\n'); } finally { q.close(); }
@@ -402,20 +405,94 @@ final class SummaryExport {
             events(app, since, files, info);
         } catch (Throwable t) { info.append("error_events,").append(Rows.q(String.valueOf(t))).append('\n'); }
 
-        StringBuilder sizes = new StringBuilder();
         files.put("mg_export_info.csv", info.toString());
-        for (Map.Entry<String, String> e : files.entrySet()) {
-            try {
-                Uri u = writeDownload(app, e.getKey(), e.getValue());
-                if (u != null) res.uris.add(u);
-                sizes.append(e.getKey().replace("mg_", "").replace(".csv", "")).append(' ').append(e.getValue().length() / 1024).append(" KB, ");
-            } catch (Throwable t) {
-                sizes.append(e.getKey()).append(" FAILED (").append(t.getMessage()).append("), ");
-            }
-        }
-        res.note = "Wrote " + files.size() + " files to Download/" + FOLDER + (days <= 0 ? " (all days)" : " (last " + days + " days)") + ": " + sizes;
-        return res;
+        String ver = "?";
+        try { ver = app.getPackageManager().getPackageInfo(app.getPackageName(), 0).versionName; } catch (Throwable ignored) { }
+        long newest = 0L;
+        try {
+            if (db != null) { Cursor nq = db.rawQuery("SELECT MAX(ts) FROM r18", null); try { if (nq.moveToFirst()) newest = nq.getLong(0); } finally { nq.close(); } }
+        } catch (Throwable ignored) { }
+        return ExportCatalog.commit(app, files, System.currentTimeMillis(), days, since, ver, Build.MANUFACTURER + " " + Build.MODEL + " android " + Build.VERSION.RELEASE, newest,
+                rawHistory ? rawBins(app, since) : null);
     }
+
+    /** The raw history files (historical_bin_*.bin) in the app folder whose stamp falls in the period. */
+    static List<File> rawBins(Context app, long since) {
+        List<File> out = new ArrayList<>();
+        File dir = app.getExternalFilesDir(null);
+        File[] fs = dir == null ? null : dir.listFiles();
+        if (fs == null) return out;
+        for (File f : fs) {
+            String n = f.getName();
+            if (!n.startsWith("historical_bin_") || !n.endsWith(".bin")) continue;
+            long stamp = 0;
+            try { stamp = Long.parseLong(n.substring("historical_bin_".length(), n.length() - 4)); } catch (Exception ignored) { }
+            if (since > 0 && stamp > 0 && stamp < since) continue;
+            out.add(f);
+        }
+        Collections.sort(out, new Comparator<File>() { @Override public int compare(File a, File b) { return a.getName().compareTo(b.getName()); } });
+        return out;
+    }
+
+    // ------------------------------------------------------------------ per-minute summary of the per-second records (0.14.0)
+    static final String MIN_HEADER = "minute_unix,minute_local,seconds,hr_mean,hr_min,hr_max,beat_intervals,skin_c_mean,cell_c_mean,steps_end,activity_max,sleep_state_mode,spo2_byte_max,pulse_lock_lost_pct,optical_quality_mean,accel_step_max_g";
+
+    /** One minute of per-second records. Pure apart from the formatter; tested on the logged R18 fixture. */
+    static final class Minutes {
+        private final SimpleDateFormat lf = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US);
+        long minute = -1;
+        int n, hrN, hrMin, hrMax, rr, act, spo2, lost, opt, skinN, steps;
+        double hrSum, skinSum, cellSum, acc;
+        int[] st = new int[4];
+
+        void reset(long m) { minute = m; n = 0; hrN = 0; hrMin = 999; hrMax = 0; rr = 0; act = 0; spo2 = 0; lost = 0; opt = 0; skinN = 0; steps = 0; hrSum = 0; skinSum = 0; cellSum = 0; acc = 0; st = new int[4]; }
+
+        void add(byte[] f) {
+            int hr = R18Codec.hr(f);
+            if (hr > 0) { hrSum += hr; hrN++; hrMin = Math.min(hrMin, hr); hrMax = Math.max(hrMax, hr); }
+            rr += Math.min(R18Codec.u8(f, 23), 4);
+            if ((byte) R18Codec.u8(f, 108) == -128) lost++;
+            opt += R18Codec.u8(f, 40);
+            if (R18Codec.skinOk(f)) { skinSum += R18Codec.skinC(f); skinN++; }
+            cellSum += R18Codec.i16(f, 69) / 10.0;
+            steps = R18Codec.steps(f);
+            act = Math.max(act, R18Codec.u8(f, 63));
+            st[R18Codec.state(f)]++;
+            int b82 = R18Codec.u8(f, 82);
+            if (b82 > 0 && b82 <= 100) spo2 = Math.max(spo2, b82);
+            acc = Math.max(acc, R18Codec.f32(f, 41));
+            n++;
+        }
+
+        String row() {
+            if (n == 0) return "";
+            int mode = 0;
+            for (int i = 1; i < 4; i++) if (st[i] > st[mode]) mode = i;
+            Locale L = Locale.US;
+            return minute * 60L + "," + lf.format(new Date(minute * 60000L)) + "," + n + ","
+                    + (hrN > 0 ? String.format(L, "%.1f", hrSum / hrN) : "") + "," + (hrN > 0 ? hrMin : "") + "," + (hrN > 0 ? hrMax : "") + "," + rr + ","
+                    + (skinN > 0 ? String.format(L, "%.2f", skinSum / skinN) : "") + "," + String.format(L, "%.1f", cellSum / n) + "," + steps + "," + act + "," + mode + "," + (spo2 > 0 ? spo2 : "") + ","
+                    + String.format(L, "%.0f", 100.0 * lost / n) + "," + String.format(L, "%.0f", opt / (double) n) + "," + String.format(L, "%.4f", acc) + "\n";
+        }
+    }
+
+    static String r18Minutes(SQLiteDatabase db, long since) {
+        StringBuilder out = new StringBuilder(MIN_HEADER).append('\n');
+        Minutes m = new Minutes();
+        Cursor q = db.rawQuery("SELECT rec FROM r18 WHERE ts >= ? ORDER BY ts", new String[] {String.valueOf(Math.max(0L, since))});
+        try {
+            while (q.moveToNext()) {
+                byte[] f = q.getBlob(0);
+                if (f == null || !R18Codec.isR18(f)) continue;
+                long min = R18Codec.ts(f) / 60L;
+                if (min != m.minute) { out.append(m.row()); m.reset(min); }
+                m.add(f);
+            }
+        } finally { q.close(); }
+        out.append(m.row());
+        return out.toString();
+    }
+
 
     private static String nights(SQLiteDatabase db, StringBuilder info) {
         Cursor q = db.rawQuery("SELECT ts FROM r18 WHERE state = 2 ORDER BY ts", null);
