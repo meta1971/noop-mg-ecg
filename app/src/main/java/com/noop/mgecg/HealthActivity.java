@@ -389,7 +389,7 @@ public class HealthActivity extends Activity {
 
     private void startEcg() { NewLookActivity.pendingEcg = true; Intent i = oldScreens(); i.putExtra("start_ecg", true); startActivity(i); }
 
-    private void openReport(java.io.File f) { NewLookActivity.pendingReport = f.getAbsolutePath(); Intent i = oldScreens(); i.putExtra("open_report", f.getAbsolutePath()); startActivity(i); }
+    private void openReport(java.io.File f) { startActivity(new Intent(this, ReportActivity.class).putExtra("path", f.getAbsolutePath())); }        // 0.19.2: its own process, so the logger process never loads WebView
 
     @Override public void onBackPressed() { moveTaskToBack(true); }
 

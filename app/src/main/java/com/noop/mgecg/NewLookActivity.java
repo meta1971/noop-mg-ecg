@@ -15,8 +15,7 @@ import android.print.PrintManager;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.webkit.WebSettings;
-import android.webkit.WebView;
+import android.content.Intent;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -83,7 +82,6 @@ public class NewLookActivity extends Activity {
     private LinearLayout reportsList, homeLatestCard;
     private TextView homeConn, homeLatestTitle, homeLatestBody, reportTitle, banner;
     private Button devPill;
-    private WebView webView;
 
     private File bannerFile, openFile, latestFile;
     private long reportBaseline;
@@ -224,11 +222,6 @@ public class NewLookActivity extends Activity {
     @Override
     protected void onDestroy() {
         ui.removeCallbacks(tick);
-        try {
-            if (webView != null) webView.destroy();
-        } catch (Throwable ignored) {
-            // shutting down anyway
-        }
         super.onDestroy();
     }
 
@@ -669,37 +662,21 @@ public class NewLookActivity extends Activity {
         reportsLayer.setVisibility(View.VISIBLE);
     }
 
+    /** 0.19.2: reports open in ReportActivity, which runs in its own process. This screen must never create a WebView: a WebView in the logger's process gets it killed
+     *  whenever Google updates Android System WebView (27 Oct 00:06:47). */
     void openReport(File f) {
-        String html = readAll(f);
-        if (html == null) {
+        if (f == null || !f.exists()) {
             toast("Could not read that report.");
             return;
         }
-        state = ST_REPORT;
-        openFile = f;
-        hideLayers();
         bannerPending = false;
-        Rep r = describe(f);
-        reportTitle.setText(r.dateText);
-        webView.loadDataWithBaseURL(null, withFont(html), "text/html", "UTF-8", null);
-        reportLayer.setVisibility(View.VISIBLE);
+        startActivity(new Intent(this, ReportActivity.class).putExtra("path", f.getAbsolutePath()));
     }
 
     private void showDev() {
         state = ST_DEV;
         hideLayers();
         devPill.setVisibility(View.VISIBLE);
-    }
-
-    private void printReport() {
-        try {
-            PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
-            if (pm == null || webView == null) return;
-            String name = "ECG report";
-            pm.print(name, webView.createPrintDocumentAdapter(name), new PrintAttributes.Builder().build());
-        } catch (Throwable t) {
-            toast("Could not start printing: " + t.getMessage());
-        }
     }
 
     // ------------------------------------------------------------------ Home
@@ -996,20 +973,15 @@ public class NewLookActivity extends Activity {
     // ------------------------------------------------------------------ one report
 
     private FrameLayout buildReport() {
+        // 0.19.2: no WebView here any more (see openReport); the layer stays hidden and only keeps the layout code that still refers to it
         FrameLayout layer = new FrameLayout(this);
         layer.setBackgroundColor(BG);
         layer.setClickable(true);
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout bar = topBar("Report", "Save PDF", v -> showReports(), v -> printReport());
+        LinearLayout bar = topBar("Report", null, v -> showReports(), null);
         reportTitle = (TextView) bar.getTag();
         col.addView(bar, new LinearLayout.LayoutParams(-1, -2));
-        webView = new WebView(this);
-        webView.setBackgroundColor(BG);
-        WebSettings ws = webView.getSettings();
-        ws.setJavaScriptEnabled(false);
-        ws.setAllowFileAccess(false);
-        col.addView(webView, new LinearLayout.LayoutParams(-1, 0, 1f));
         layer.addView(col, new FrameLayout.LayoutParams(-1, -1));
         return layer;
     }
