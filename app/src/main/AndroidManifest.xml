@@ -89,6 +89,15 @@
             android:screenOrientation="portrait"
             android:exported="false" />
 
+        <!-- 0.19.2: the report viewer lives in its own process so that the logger process never loads WebView -->
+        <activity
+            android:name=".ReportActivity"
+            android:label="ECG report"
+            android:process=":report"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
         <activity
             android:name=".TodayActivity"
             android:label="MG Today"
