@@ -48,6 +48,7 @@ public class MainActivity extends NewLookActivity {
     private Live500View live500View;                 // 0.17.0: the 500 Hz live graph beside the 100 Hz one
     private TextView graphSourceLabel;
     private volatile boolean graphLive;
+    private int graphSourceLogged;
     private TextView ecgStatusText;
     private TextView ecgHrText;
     private TextView ecgElapsedText;
@@ -554,6 +555,14 @@ public class MainActivity extends NewLookActivity {
 
         logRaw("LOG_FILE_OPENED path=" +
                 rawLogFile.getAbsolutePath());
+        try {                                                          // 0.19.0: why did the previous process end, and is the logger set up to survive
+            for (String x : ProcExit.check(this)) logRaw("PROCESS_EXIT " + x);
+            android.content.SharedPreferences ld = getSharedPreferences("linkdiag", MODE_PRIVATE);
+            logRaw("LOGGER_HEALTH batteryExempt=" + KeepAlive.batteryExempt(this) + " overlay=" + (Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(this))
+                    + " taskRemoved=" + ld.getInt("n_task_removed", 0) + " svcRestart=" + ld.getInt("n_svc_restart", 0) + " alarmRuns=" + ld.getInt("n_alarm", 0) + " alarmRestarts=" + ld.getInt("n_alarm_restart", 0));
+            String crash = CrashLog.last(this);
+            if (!crash.isEmpty()) logRaw("LAST_CRASH " + crash.replace('\n', '|'));
+        } catch (Throwable ignored) { }
     }
 
     /*
@@ -777,6 +786,8 @@ public class MainActivity extends NewLookActivity {
 
                 line("GATT CONNECTED");
                 logRaw("GATT_CONNECTED");
+                liveRxCount = 0;
+                clockRetried = false;
                 lastStrapRxMs = System.currentTimeMillis();   // 0.7.3: link watchdog
                 BtRecovery.ok("strap");
                 updateStatus("● CONNECTED");
@@ -1271,6 +1282,7 @@ public class MainActivity extends NewLookActivity {
          * history frame - which the historical bin already holds byte for
          * byte. During a pull, 0005 frames get one short line here.
          */
+        if (uuid != null && uuid.contains("0005")) liveRxCount++;          // 0.19.0: live frames since this link came up (the fast dead-link limit)
         if (quietScreen) {
             logRaw("RX_GENERIC channel=" + uuid +
                     " len=" + value.length +
@@ -3631,12 +3643,23 @@ public class MainActivity extends NewLookActivity {
      * (EASY_CONNECT_NO_GATT) and BtRecovery switches Bluetooth on after 30 s.
      */
     private static final long STRAP_SILENT_MS = 15L * 60000L;
+    /** 0.19.0: once live frames (one a second) have been flowing on this link, two minutes of silence mean the link is dead. On 26 Oct the strap dropped the link at 23:26:08, the phone got no callback and the 15 minute limit let 15 minutes pass. */
+    private static final long STRAP_SILENT_LIVE_MS = 150000L;
+    private volatile int liveRxCount = 0;
+    private long silentLimitMs() { return liveRxCount >= 30 ? STRAP_SILENT_LIVE_MS : STRAP_SILENT_MS; }
     private volatile long lastStrapRxMs = 0L;
     private int linkWatchdogRecoveries = 0;
 
     private void teardownDeadLink(String why) {
         pendingDevice = null;
         logRaw("LINK_WATCHDOG_TEARDOWN why=" + why);
+        liveRxCount = 0;
+        if (pullAckActive) {                 // 0.19.0: the old pull must not go on sending blind acks on the new link (it did for 3 minutes on 26 Oct)
+            pullAckActive = false;
+            pullGeneration++;
+            logRaw("LINK_WATCHDOG aborted the running pull");
+        }
+        try { DayLog.setLastPullMs(this, 0L); } catch (Throwable ignored) { }       // so the first logger tick after the reconnect pulls what the strap kept
         easyConnectPending = false;
         passiveConnectPending = false;
         rssiMonitoringActive = false;
@@ -9110,12 +9133,21 @@ public class MainActivity extends NewLookActivity {
     }
 
     /** 0.16.0: the GET_CLOCK reply after a SET_CLOCK: strap minus phone, including the one-way Bluetooth delay (some tens of milliseconds). */
+    private boolean clockRetried;       // 0.19.1: one retry per connection
+
     private void noteClockCheck(byte[] v) {
         try {
             double d = ClockSet.strapMinusPhone(v, System.currentTimeMillis());
             if (Double.isNaN(d) || Math.abs(d) > 3600) return;
             getSharedPreferences("clockchk", MODE_PRIVATE).edit().putFloat("diff_s", (float) d).putLong("at_ms", System.currentTimeMillis()).apply();
             logRaw(String.format(java.util.Locale.UK, "CLOCK_CHECK strapMinusPhoneS=%.3f", d));
+            // 0.19.1: the first set on a freshly reconnected link landed 0.5 s late (05:56 on 27 Oct: -0.61 s, against -0.08 to -0.11 s all evening). Set it once more, now that the link is warm.
+            if (Math.abs(d) > 0.3 && !clockRetried && !ecgSessionRunning && gatt != null && cmdWrite != null
+                    && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("clock_subsec", true)) {
+                clockRetried = true;
+                logRaw("CLOCK_RETRY after a check of " + String.format(java.util.Locale.UK, "%.3f", d) + " s");
+                mainH.postDelayed(() -> { try { if (gatt != null && cmdWrite != null && !ecgSessionRunning) { sendRealSetClock(); sendZeroArg(0x0B, "GET_CLOCK"); } } catch (Throwable ignored) { } }, 1500L);
+            }
         } catch (Throwable ignored) { }
     }
 
@@ -9155,7 +9187,7 @@ public class MainActivity extends NewLookActivity {
         try { android.bluetooth.BluetoothAdapter ad = android.bluetooth.BluetoothAdapter.getDefaultAdapter(); if (ad != null) btState = ad.isEnabled() ? "ON" : (bleOnlyAvailable() ? "BLE-ONLY (switch off)" : "OFF"); } catch (Throwable ignored) { }
         String bond = "?";
         try { if (gatt != null) bond = gatt.getDevice().getBondState() == BluetoothDevice.BOND_BONDED ? "bonded" : "not bonded"; } catch (Throwable ignored) { }
-        logRaw("FRAME_CENSUS " + tag + " elapsedS=" + el + " bluetooth=" + btState + " link=" + bond + " mtu=" + lastMtu + " liveRaw=" + liveRawN + " gaps=" + liveRawGaps + " missing=" + liveRawMissing + " : " + s.toString().trim());
+        logRaw("FRAME_CENSUS " + tag + " elapsedS=" + el + " bluetooth=" + btState + " link=" + bond + " mtu=" + lastMtu + " smooth=" + Live500.modeLabel() + " beats=" + Live500.beatsSeen() + " liveRaw=" + liveRawN + " gaps=" + liveRawGaps + " missing=" + liveRawMissing + " : " + s.toString().trim());
         getSharedPreferences("liveraw", MODE_PRIVATE).edit().putString("census", tag + " (" + el + " s, phone Bluetooth " + btState + ", " + bond + "): " + s.toString().trim()).apply();
     }
 
@@ -9169,6 +9201,8 @@ public class MainActivity extends NewLookActivity {
         graphLive = framesNow;
         if (live500View == null || ecgWaveformView == null) return;
         boolean show500 = framesNow && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_view500", true);
+        int srcNow = show500 ? 500 : 100;
+        if (srcNow != graphSourceLogged) { graphSourceLogged = srcNow; logRaw("GRAPH_SOURCE " + srcNow + " framesNow=" + framesNow + " smooth=" + Live500.modeLabel() + " beats=" + Live500.beatsSeen() + " delayS=" + String.format(java.util.Locale.UK, "%.2f", Live500.delaySeconds())); }
         live500View.setVisibility(show500 ? View.VISIBLE : View.GONE);
         ecgWaveformView.setVisibility(show500 ? View.GONE : View.VISIBLE);
         if (graphSourceLabel != null) {
@@ -10258,6 +10292,7 @@ public class MainActivity extends NewLookActivity {
 
     @Override
     protected void onCreate(Bundle b) {
+        CrashLog.install(this);                       // 0.19.0
 
         super.onCreate(b);
 
@@ -10799,7 +10834,7 @@ public class MainActivity extends NewLookActivity {
         long now = System.currentTimeMillis();
         boolean connected = gatt != null && cmdWrite != null;
         // 0.7.3: a link that looks up but has delivered nothing for 15 minutes is dead (see STRAP_SILENT_MS): close it and reconnect
-        if (connected && !passiveConnectPending && lastStrapRxMs > 0L && now - lastStrapRxMs > STRAP_SILENT_MS) {
+        if (connected && !passiveConnectPending && lastStrapRxMs > 0L && now - lastStrapRxMs > silentLimitMs()) {
             linkWatchdogRecoveries++;
             logRaw("LINK_WATCHDOG silent_s=" + ((now - lastStrapRxMs) / 1000L) + " recoveries=" + linkWatchdogRecoveries + " (closing the link and reconnecting)");
             line("No data from the strap for " + ((now - lastStrapRxMs) / 60000L) + " min - link closed, reconnecting");
@@ -11095,6 +11130,7 @@ public class MainActivity extends NewLookActivity {
         ecgSessionEstablishedThisRun = false;
         ecgWaveformView.reset();
         Live500.reset();
+        Live500.setMode(getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getInt("ecg_smooth500", 2));       // 0.18.0: 0 not smoothed, 1 light, 2 smoothed (default)
         updateGraphSource(false);
         ecgLiveBeatIntervalsMs.clear();
         ecgFullSessionIntervalsMs.clear();
