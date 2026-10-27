@@ -120,6 +120,11 @@
             android:name=".DayLogReceiver"
             android:exported="false" />
 
+        <!-- 0.19.0: the 15 minute alarm that brings the logger back if Android ended the process -->
+        <receiver
+            android:name=".LoggerAlarmReceiver"
+            android:exported="false" />
+
         <!-- The daily backup: the alarm, and the foreground service that does the copying -->
         <receiver
             android:name=".BackupReceiver"
