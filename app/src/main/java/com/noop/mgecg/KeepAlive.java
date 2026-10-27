@@ -58,6 +58,39 @@ final class KeepAlive {
         nm.createNotificationChannel(ch);
     }
 
+    static final String QUIET_CHANNEL = "daylog_quiet";
+    /** 0.19.3: out of range for this long (link not good) before the quiet note appears. The strap keeps about three weeks of data, so being away is normal. */
+    static final long OUT_OF_RANGE_NOTE_MIN = 180;
+
+    static void ensureQuietChannel(Context c) {
+        NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null || nm.getNotificationChannel(QUIET_CHANNEL) != null) return;
+        NotificationChannel ch = new NotificationChannel(QUIET_CHANNEL, "MG logger notes (silent)", NotificationManager.IMPORTANCE_LOW);
+        ch.setDescription("Silent notes: the strap is out of range, or no history was pulled for a while");
+        nm.createNotificationChannel(ch);
+    }
+
+    /** Silent and only once: no sound, no vibration, updates in place. */
+    static void postQuiet(Context c, String title, String text) {
+        try {
+            ensureQuietChannel(c);
+            NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            Intent open = new Intent(c, MainActivity.class).putExtra(EXTRA_RESUME, true).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            PendingIntent pi = PendingIntent.getActivity(c, 7, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            Notification n = new Notification.Builder(c, QUIET_CHANNEL)
+                    .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setStyle(new Notification.BigTextStyle().bigText(text))
+                    .setContentIntent(pi)
+                    .setOnlyAlertOnce(true)
+                    .setAutoCancel(true)
+                    .build();
+            nm.notify(ID, n);
+        } catch (Throwable ignored) { }
+    }
+
     static void post(Context c, String title, String text) {
         try {
             ensureChannel(c);
@@ -93,10 +126,14 @@ final class KeepAlive {
             // With a good link warn only after 75 minutes; otherwise as before.
             boolean linkGood = false;
             try { linkGood = MainActivity.linkState(c).level == LinkState.GOOD; } catch (Throwable ignored) { }
-            if (linkGood ? m >= 75 : m >= STALE_MIN) {
-                post(c, "Day logger: no strap data for " + (m >= 120 ? (m / 60) + " h" : m + " min"),
-                        linkGood ? "The strap is connected but no history has been pulled for a while. Open the app, or use Pull now in the notification."
-                                : "The strap may be out of range, switched off, or the connection dropped. Tap to reconnect and carry on logging.");
+            // 0.19.3: being out of range is normal when the phone stays behind. The strap keeps its data (about three weeks of it) and the logger pulls it when the
+            // strap is back in range, so a missing link raises only a silent note, after 3 hours. A good link without pulls still raises one after 75 minutes.
+            if (linkGood && m >= 75) {
+                postQuiet(c, "Day logger: no strap data for " + (m >= 120 ? (m / 60) + " h" : m + " min"),
+                        "The strap is connected but no history has been pulled for a while. Open the app, or use Pull now in the notification.");
+            } else if (!linkGood && m >= OUT_OF_RANGE_NOTE_MIN) {
+                postQuiet(c, "Day logger: strap out of range for " + (m / 60) + " h",
+                        "Nothing is lost: the strap keeps its data (about three weeks) and the logger pulls it by itself when the strap is back in range. Tap to reconnect now.");
             } else if (m >= 0) {
                 cancel(c);
             }

@@ -25,6 +25,7 @@ final class LoggerAlarm {
             long at = System.currentTimeMillis() + ms;
             if (Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi);
             else am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi);
+            c.getSharedPreferences("linkdiag", Context.MODE_PRIVATE).edit().putLong("alarm_next_ms", at).apply();       // 0.19.4: shown on Strap data, so a late or missing alarm is visible
         } catch (Throwable ignored) { }
     }
 }

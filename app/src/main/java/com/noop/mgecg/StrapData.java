@@ -48,6 +48,23 @@ final class StrapData {
         return String.format(Locale.UK, "%.1f h", sec / 3600.0);
     }
 
+    /**
+     * 0.19.3: how much of the last 24 hours the strap was out of reach, from its own "Bluetooth down" (12) and "Bluetooth up" (11) events, oldest first as {id, strapTime}.
+     * Gaps of 2 minutes or more count as absences, shorter ones as drops. Returns {absences, drops, longestSec, totalSec}. Pure.
+     */
+    static long[] rangeSummary(java.util.List<long[]> ev) {
+        long down = -1, longest = 0, total = 0; int away = 0, drops = 0;
+        for (long[] e : ev) {
+            if (e[0] == 12) down = e[1];
+            else if (e[0] == 11 && down >= 0) {
+                long d = e[1] - down; down = -1;
+                if (d < 0) continue;
+                if (d >= 120) { away++; total += d; if (d > longest) longest = d; } else drops++;
+            }
+        }
+        return new long[] { away, drops, longest, total };
+    }
+
     /** One line on what happened at each open and swipe-away (counts kept in preferences). Pure. */
     static String diagText(int kept, int rebuilt, int fresh, int swipeKeep, long lastMs, String lastKind) {
         String last = lastMs <= 0L ? "" : ". Last open: " + ("kept".equals(lastKind) ? "kept the link" : "rebuilt".equals(lastKind) ? "rebuilt the link" : "fresh start") + " at " + new SimpleDateFormat("d MMM HH:mm", Locale.UK).format(new Date(lastMs));
@@ -288,6 +305,15 @@ final class StrapData {
                     st.add(Math.min(2, st.size()), row("STATUS", "Logger service", DayLogService.alive ? "running" : (DayLog.enabled(a) ? "NOT running" : "off"),
                             "The foreground service (the \"MG day logger\" notification) is what stops Android ending the app when you swipe it away. After an app update or a restart it must be started again; the app now does that when it opens."));
                     st.add(Math.min(3, st.size()), row("STATUS", "Daily backup", Backup.shortStatus(a), Backup.statusText(a)));
+                    {   // 0.19.3: out of range summary from the strap's own connection events
+                        long nowS = System.currentTimeMillis() / 1000L;
+                        java.util.List<long[]> evs = new java.util.ArrayList<>();
+                        java.util.List<String[]> raw = StrapEvents.recent(a, nowS - 86400L, 800);
+                        for (int i = raw.size() - 1; i >= 0; i--) { String[] r = raw.get(i); int id = Integer.parseInt(r[1]); if (id == 11 || id == 12) evs.add(new long[] { id, Long.parseLong(r[0]) }); }
+                        long[] rs = rangeSummary(evs);
+                        st.add(Math.min(3, st.size()), row("STATUS", "Out of range (24 h)", rs[0] + " absences over 2 min" + (rs[0] > 0 ? ", longest " + ageText(rs[2]) + ", total " + ageText(rs[3]) : "") + "; " + rs[1] + " short drops",
+                                "From the strap's own Bluetooth up and down events in the last 24 hours. While the phone is out of reach the strap keeps everything (about three weeks of storage) and the logger pulls it by itself when the strap is back in range. The events of an absence arrive with the first pull after you are back."));
+                    }
                     String btv = "?";
                     try { android.bluetooth.BluetoothAdapter ad = android.bluetooth.BluetoothAdapter.getDefaultAdapter(); if (ad != null) btv = ad.isEnabled() ? "ON" : "switch OFF (BLE-only or off)"; } catch (Throwable ignored) { }
                     android.content.SharedPreferences ck = a.getSharedPreferences("clockchk", Context.MODE_PRIVATE);
@@ -305,7 +331,8 @@ final class StrapData {
                     java.text.SimpleDateFormat hf = new java.text.SimpleDateFormat("EEE d MMM HH:mm", java.util.Locale.UK);
                     st.add(Math.min(7, st.size()), row("STATUS", "Logger survival", "swiped away " + ld.getInt("n_task_removed", 0) + "x, alarm ran " + ld.getInt("n_alarm", 0) + "x, restarted by alarm " + ld.getInt("n_alarm_restart", 0) + "x",
                             "Battery optimisation: " + (KeepAlive.batteryExempt(a) ? "exempt (good)" : "NOT exempt (Android may end the app)") + ". Display over other apps: " + (android.os.Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(a) ? "allowed" : "not allowed")
-                                    + ". Last swipe away: " + (trm > 0 ? hf.format(new java.util.Date(trm)) : "never counted") + ". Last alarm: " + (alm > 0 ? hf.format(new java.util.Date(alm)) + (ld.getBoolean("alarm_alive", true) ? " (service was running)" : " (service was NOT running, the alarm started it)") : "not yet")
+                                    + ". Last swipe away: " + (trm > 0 ? hf.format(new java.util.Date(trm)) : "never counted") + ". Next alarm due: " + (ld.getLong("alarm_next_ms", 0L) > 0 ? hf.format(new java.util.Date(ld.getLong("alarm_next_ms", 0L))) + (System.currentTimeMillis() > ld.getLong("alarm_next_ms", 0L) + 300000L ? " (OVERDUE by " + ageText((System.currentTimeMillis() - ld.getLong("alarm_next_ms", 0L)) / 1000L) + ")" : "") : "unknown")
+                                    + ". Last alarm: " + (alm > 0 ? hf.format(new java.util.Date(alm)) + (ld.getBoolean("alarm_alive", true) ? " (service was running)" : " (service was NOT running, the alarm started it)") : "not yet")
                                     + ". Android restarted the service by itself " + ld.getInt("n_svc_restart", 0) + "x."));
                     android.content.SharedPreferences bl = a.getSharedPreferences("backlog", Context.MODE_PRIVATE);
                     String cond = StrapEvents.lastDec(a, 29);

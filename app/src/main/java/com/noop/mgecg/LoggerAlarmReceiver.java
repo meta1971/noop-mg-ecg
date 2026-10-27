@@ -14,6 +14,7 @@ public class LoggerAlarmReceiver extends BroadcastReceiver {
         new Thread(new Runnable() {
             @Override public void run() {
                 try {
+                    LoggerAlarm.schedule(app);          // 0.19.4: arm the NEXT alarm first, so nothing below can break the chain (the 10:40 alarm on 27 Oct never came)
                     DayLogService.bump(app, "alarm");
                     app.getSharedPreferences("linkdiag", Context.MODE_PRIVATE).edit().putLong("alarm_ms", System.currentTimeMillis()).putBoolean("alarm_alive", DayLogService.alive).apply();
                     ProcExit.check(app);
@@ -22,7 +23,6 @@ public class LoggerAlarmReceiver extends BroadcastReceiver {
                         else DayLogService.tryHost(app);
                         KeepAlive.checkStale(app);
                     }
-                    LoggerAlarm.schedule(app);
                 } catch (Throwable ignored) {
                 } finally {
                     pr.finish();
