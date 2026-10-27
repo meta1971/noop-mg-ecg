@@ -293,6 +293,20 @@ final class StrapData {
                     android.content.SharedPreferences ck = a.getSharedPreferences("clockchk", Context.MODE_PRIVATE);
                     st.add(Math.min(3, st.size()), row("STATUS", "Phone Bluetooth", btv, "The official WHOOP app runs ECG only on a fully ready link (connected, bonded, hello exchanged, clock set). For the live raw test keep the Bluetooth switch ON; today's earlier readings ran with it off (BLE-only)."));
                     if (ck.getLong("at_ms", 0L) > 0) st.add(Math.min(4, st.size()), row("STATUS", "Strap clock", String.format(java.util.Locale.UK, "%+.2f s against the phone", ck.getFloat("diff_s", 0f)), "Measured after the last clock set (includes the Bluetooth delay of some tens of milliseconds). Before the sub-second set it was about -0.4 to -1.1 s."));
+                    // 0.19.0: logger health: why the app process ended, crashes, swipes, the 15 minute alarm, battery and overlay settings
+                    android.content.SharedPreferences ld = a.getSharedPreferences("linkdiag", Context.MODE_PRIVATE);
+                    String pe = ProcExit.stored(a);
+                    String[] pel = pe.isEmpty() ? new String[0] : pe.split("\n");
+                    st.add(Math.min(5, st.size()), row("STATUS", "App process deaths", pel.length == 0 ? (android.os.Build.VERSION.SDK_INT < 30 ? "not available below Android 11" : "none recorded yet") : pel.length + " recorded, newest " + pel[0].substring(0, Math.min(pel[0].length(), 60)),
+                            pel.length == 0 ? "Android keeps the reason each time it ends this app (system exit history, read at every start and by the 15 minute alarm). A line looks like: when, REASON, importance when it ended, process." : pe));
+                    String cr = CrashLog.last(a);
+                    st.add(Math.min(6, st.size()), row("STATUS", "Last app crash", cr.isEmpty() ? "none recorded" : cr.substring(0, Math.min(cr.length(), 60)), cr.isEmpty() ? "An uncaught exception would be stored here with its stack." : cr));
+                    long trm = ld.getLong("task_removed_ms", 0L), alm = ld.getLong("alarm_ms", 0L);
+                    java.text.SimpleDateFormat hf = new java.text.SimpleDateFormat("EEE d MMM HH:mm", java.util.Locale.UK);
+                    st.add(Math.min(7, st.size()), row("STATUS", "Logger survival", "swiped away " + ld.getInt("n_task_removed", 0) + "x, alarm ran " + ld.getInt("n_alarm", 0) + "x, restarted by alarm " + ld.getInt("n_alarm_restart", 0) + "x",
+                            "Battery optimisation: " + (KeepAlive.batteryExempt(a) ? "exempt (good)" : "NOT exempt (Android may end the app)") + ". Display over other apps: " + (android.os.Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(a) ? "allowed" : "not allowed")
+                                    + ". Last swipe away: " + (trm > 0 ? hf.format(new java.util.Date(trm)) : "never counted") + ". Last alarm: " + (alm > 0 ? hf.format(new java.util.Date(alm)) + (ld.getBoolean("alarm_alive", true) ? " (service was running)" : " (service was NOT running, the alarm started it)") : "not yet")
+                                    + ". Android restarted the service by itself " + ld.getInt("n_svc_restart", 0) + "x."));
                     android.content.SharedPreferences bl = a.getSharedPreferences("backlog", Context.MODE_PRIVATE);
                     String cond = StrapEvents.lastDec(a, 29);
                     if (bl.getLong("ring", 0L) > 0 || cond != null) {

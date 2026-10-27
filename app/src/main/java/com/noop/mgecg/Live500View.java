@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.17.0 (27 Oct): the 500 Hz live graph (data in Live500.java).
+// FILE VERSION 0.18.0 (27 Oct): the 500 Hz live graph (data and smoothing in Live500.java).
 
 import android.content.Context;
 import android.graphics.Canvas;
@@ -100,7 +100,7 @@ public class Live500View extends View {
         if (m == 0) canvas.drawText("Waiting for the live 500 Hz frames", w / 2f, h / 2f, big);
         else if (nanTail >= 250) canvas.drawText("No finger contact", w / 2f, h / 2f, big);
 
-        canvas.drawText(String.format(java.util.Locale.UK, "500 Hz live raw  \u00b7  %s  \u00b7  %.2f s behind", autoScale ? "auto scale" : "fixed -1 to +2 mV", Live500.delaySeconds()), 16f, 34f, label);
+        canvas.drawText(String.format(java.util.Locale.UK, "500 Hz live raw  \u00b7  %s  \u00b7  %s  \u00b7  %.2f s behind", Live500.modeLabel(), autoScale ? "auto scale" : "fixed -1 to +2 mV", Live500.delaySeconds()), 16f, 34f, label);
         canvas.drawRect(1, 1, w - 1, h - 1, border);
         postInvalidateOnAnimation();
     }

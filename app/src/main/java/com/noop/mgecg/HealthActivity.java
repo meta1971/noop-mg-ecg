@@ -1078,6 +1078,13 @@ public class HealthActivity extends Activity {
         lrNote.setPadding(0, 0, 0, dpi(6));
         st.addView(lrNote);
         st.addView(toggleRow("Show the 500 Hz graph when live raw frames arrive", ctl, "ecg_view500"), lp(-1, dpi(52), 0));
+        final TextView smv = tv(smoothText(ctl), 14, BLUE, 600);
+        st.addView(valueRow("500 Hz graph smoothing (display only)", smv, new View.OnClickListener() {
+            @Override public void onClick(View v) { int md = ctl.getInt("ecg_smooth500", 2); md = md == 2 ? 1 : md == 1 ? 0 : 2; ctl.edit().putInt("ecg_smooth500", md).apply(); smv.setText(smoothText(ctl)); }
+        }), lp(-1, dpi(52), 0));
+        TextView smNote = tv("Tap to change: Smooth (default), Light, Off. Smooths the noise between the beats and keeps the QRS sharp; the R wave, the P and T waves are kept (T and P about 90 %). Display only: the reports and the stored data are not changed. Takes effect at the next reading.", 11.5f, MUT, 400);
+        smNote.setPadding(0, 0, 0, dpi(6));
+        st.addView(smNote);
         st.addView(toggleRow("TEST: save filtered ECG (command 127)", ctl, "ecg_savefiltered", false), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Morning summary notification", sp(), "n_morning"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Strap battery alert (15% or less)", sp(), "n_battery"), lp(-1, dpi(52), 0));
@@ -1150,6 +1157,11 @@ public class HealthActivity extends Activity {
     }
 
     private View toggleRow(String label, final SharedPreferences prefs, final String key) { return toggleRow(label, prefs, key, true); }
+
+    private static String smoothText(SharedPreferences p) {
+        int md = p.getInt("ecg_smooth500", 2);
+        return md == 1 ? "Light" : md == 0 ? "Off" : "Smooth";
+    }
 
     private static String liveRawModeText(SharedPreferences p) {
         int md = p.getInt("ecg_liveraw_mode", 1);

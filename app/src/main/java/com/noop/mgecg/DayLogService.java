@@ -47,6 +47,7 @@ public class DayLogService extends Service {
     static void ensure(Context c) {
         try { Backup.ensure(c); } catch (Throwable ignored) { }                                   // 0.16.0: the daily backup alarm, and a missed backup
         try { if (DayLog.enabled(c) && !alive) start(c); } catch (Throwable ignored) { }
+        try { LoggerAlarm.schedule(c); } catch (Throwable ignored) { }                          // 0.19.0
     }
 
     /** 0.15.0: counters kept in preferences, shown on Strap data (they survive the process being ended). */
@@ -69,6 +70,21 @@ public class DayLogService extends Service {
         }
     };
 
+    @Override public void onCreate() {
+        super.onCreate();
+        CrashLog.install(this);                          // 0.19.0: a crash is recorded, not silent
+    }
+
+    /** 0.19.0: the app was swiped away from the recents list. Counted, and a quick alarm brings the logger back should Android end the process now. */
+    @Override public void onTaskRemoved(Intent rootIntent) {
+        try {
+            bump(this, "task_removed");
+            getSharedPreferences("linkdiag", MODE_PRIVATE).edit().putLong("task_removed_ms", System.currentTimeMillis()).apply();
+            LoggerAlarm.scheduleIn(this, 12000L);
+        } catch (Throwable ignored) { }
+        super.onTaskRemoved(rootIntent);
+    }
+
     @Override public int onStartCommand(Intent i, int flags, int startId) {
         alive = true;
         bump(this, i == null ? "svc_restart" : "svc_start");
@@ -83,6 +99,8 @@ public class DayLogService extends Service {
             watchdog.postDelayed(hostTick, 20L * 1000L);
         }
         if (i == null) tryHost(this);          // the system restarted the service: bring the strap link back if allowed
+        LoggerAlarm.schedule(this);            // 0.19.0: the 15 minute alarm
+        ProcExit.check(this);                  // 0.19.0: remember why the previous process ended
         return START_STICKY;
     }
 
