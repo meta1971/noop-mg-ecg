@@ -89,6 +89,13 @@
             android:screenOrientation="portrait"
             android:exported="false" />
 
+        <!-- 0.20.0: every frame the strap sends, live -->
+        <activity
+            android:name=".LiveFramesActivity"
+            android:label="Live frames"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:exported="false" />
+
         <!-- 0.19.2: the report viewer lives in its own process so that the logger process never loads WebView -->
         <activity
             android:name=".ReportActivity"
