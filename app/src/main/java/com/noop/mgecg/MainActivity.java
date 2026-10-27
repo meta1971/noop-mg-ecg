@@ -1253,6 +1253,7 @@ public class MainActivity extends NewLookActivity {
         rxCount++;
 
         String uuid = shortUuid(c.getUuid());
+        FrameMonitor.note(System.currentTimeMillis(), uuid, value);                    // 0.20.0: the Live frames screen
 
         /*
          * Always preserve the raw packet first.
@@ -10750,6 +10751,14 @@ public class MainActivity extends NewLookActivity {
         try { if (gatt != null) gatt.close(); } catch (Exception ignored) { }
         gatt = null;
         cmdWrite = null;
+    }
+
+    /** 0.20.0: for the Today screen: null when no pull is running, otherwise a short progress text. */
+    static String pullStatus() {
+        MainActivity m = instance != null ? instance : headless;
+        if (m == null || !m.pullAckActive) return null;
+        long s = Math.max(0L, (System.currentTimeMillis() - m.pullStartMs) / 1000L);
+        return s + " s" + (m.historyEndsAcked > 0 ? ", " + m.historyEndsAcked + " chunks" : "");
     }
 
     static void requestPull() {
