@@ -156,6 +156,9 @@ final class Trends {
         TextView note = HeartGraph.label(a, "One point per night. The shaded band is your usual range for the nights shown (average plus or minus one spread). Recovery is each night against the nights before it. HRV is from the wrist's optical intervals. Estimates, not a diagnosis.", 11, MUT, 400);
         note.setLineSpacing(0, 1.2f);
         root.addView(note, HeartGraph.lp(a, -1, -2, 8));
+        final TextView about = HeartGraph.label(a, "", 12.5f, INK, 400);              // 0.21.0: what the selected graph means
+        about.setLineSpacing(0, 1.25f);
+        root.addView(about, HeartGraph.lp(a, -1, -2, 8));
 
         final Runnable[] redraw = new Runnable[1];
         redraw[0] = new Runnable() {
@@ -187,6 +190,7 @@ final class Trends {
                 if (st[2] == 0) summary.setText("No " + NAME[metric].toLowerCase(Locale.UK) + " numbers for these nights yet.");
                 else summary.setText("Latest " + fmt(metric, last) + "  \u00b7  average " + fmt(metric, st[0]) + "  \u00b7  usual " + fmt(metric, st[0] - st[1]) + " to " + fmt(metric, st[0] + st[1]) + "\n" + (int) st[2] + " of " + (to - from) + " nights have a value.\n" + (metric == 3 ? weekSummary(all, a.getSharedPreferences("today", Context.MODE_PRIVATE).getFloat("goal", 8.0f)) : ""));
                 read.setText("Touch the graph to read a night.");
+                about.setText(NAME[metric] + ": " + Explain.trend(NAME[metric]));
             }
         };
         dlg.setContentView(root);

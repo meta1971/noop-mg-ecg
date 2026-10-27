@@ -49,6 +49,63 @@ final class StrapData {
     }
 
     /**
+     * 0.20.0: the strap's battery from its condition reports (event 29), newest first as {ts, id, name, decoded}. Returns for example "88 %, about 7 days left at the last day's rate",
+     * "96 %, charging" or "88 %" while there is too little history. The rate uses the non-charging reports of the last 24 hours (since the last charge if there was one) and needs
+     * at least 6 hours and a fall of at least 1 point. Pure.
+     */
+    static String batteryText(List<String[]> ev, long nowSec) {
+        java.util.regex.Pattern pb = java.util.regex.Pattern.compile("battery ([0-9.]+) %"), pc = java.util.regex.Pattern.compile("charging (\\d)");
+        List<double[]> pts = new ArrayList<>();                      // {ts, percent, charging}, oldest first
+        for (int i = ev.size() - 1; i >= 0; i--) {
+            String[] r = ev.get(i);
+            if (!"29".equals(r[1]) || r[3] == null) continue;
+            java.util.regex.Matcher m = pb.matcher(r[3]), c = pc.matcher(r[3]);
+            if (!m.find()) continue;
+            pts.add(new double[] { Double.parseDouble(r[0]), Double.parseDouble(m.group(1)), c.find() ? Double.parseDouble(c.group(1)) : 0 });
+        }
+        if (pts.isEmpty()) return null;
+        double[] last = pts.get(pts.size() - 1);
+        String now = Math.round(last[1]) + " %";
+        if (last[2] == 1) return now + ", charging";
+        int from = 0;
+        for (int i = 0; i < pts.size(); i++) { if (pts.get(i)[2] == 1 || pts.get(i)[0] < nowSec - 86400L) from = i + 1; }
+        if (from >= pts.size() - 1) return now;
+        double[] first = pts.get(from);
+        double hours = (last[0] - first[0]) / 3600.0, fall = first[1] - last[1];
+        if (hours < 6.0 || fall < 1.0) return now;
+        double perHour = fall / hours;
+        double days = last[1] / perHour / 24.0;
+        return now + String.format(java.util.Locale.UK, ", about %.0f days left at the last day's rate (%.2f %% an hour)", days, perHour);
+    }
+
+    /** 0.21.0: "57 absences over 2 min, longest 5.8 h, total 10.9 h; 83 short drops" for the last 24 hours, by event id. Reads the database: call off the main thread. */
+    static String rangeLine(Context a) {
+        try {
+            long nowS = System.currentTimeMillis() / 1000L;
+            List<long[]> evs = new ArrayList<>();
+            List<String[]> raw = StrapEvents.byIds(a, nowS - 86400L, 3000, 11, 12);
+            for (int i = raw.size() - 1; i >= 0; i--) { String[] r = raw.get(i); evs.add(new long[] { Integer.parseInt(r[1]), Long.parseLong(r[0]) }); }
+            long[] rs = rangeSummary(evs);
+            return rs[0] + " absences over 2 min" + (rs[0] > 0 ? ", longest " + ageText(rs[2]) + ", total " + ageText(rs[3]) : "") + "; " + rs[1] + " short drops";
+        } catch (Throwable t) { return ""; }
+    }
+
+    /** 0.21.0: the strap battery line (see batteryText), by event id. Reads the database: call off the main thread. */
+    static String batteryLine(Context a) {
+        try { return batteryText(StrapEvents.byIds(a, System.currentTimeMillis() / 1000L - 3 * 86400L, 600, 29), System.currentTimeMillis() / 1000L); } catch (Throwable t) { return null; }
+    }
+
+    /** 0.21.0: the logger's own counters in one line, from preferences (cheap, main thread is fine). */
+    static String loggerLine(Context a) {
+        try {
+            android.content.SharedPreferences ld = a.getSharedPreferences("linkdiag", Context.MODE_PRIVATE);
+            long nx = ld.getLong("alarm_next_ms", 0L);
+            return "alarm every 15 min" + (nx > 0 ? ", next " + new java.text.SimpleDateFormat("HH:mm", Locale.UK).format(new Date(nx)) : "") + "; app swiped away " + ld.getInt("n_task_removed", 0) + " times; ran " + ld.getInt("n_alarm", 0)
+                    + " alarm checks; restarted by the alarm " + ld.getInt("n_alarm_restart", 0) + " times; restarted by Android " + ld.getInt("n_svc_restart", 0) + " times";
+        } catch (Throwable t) { return ""; }
+    }
+
+    /**
      * 0.19.3: how much of the last 24 hours the strap was out of reach, from its own "Bluetooth down" (12) and "Bluetooth up" (11) events, oldest first as {id, strapTime}.
      * Gaps of 2 minutes or more count as absences, shorter ones as drops. Returns {absences, drops, longestSec, totalSec}. Pure.
      */
@@ -273,6 +330,21 @@ final class StrapData {
         top.addView(close, cl);
         root.addView(top);
         root.addView(HeartGraph.label(a, "Everything the strap sends while it is worn. Nothing here needs an ECG reading.", 12, MUT, 400), HeartGraph.lp(a, -1, -2, 6));
+        LinearLayout actions = new LinearLayout(a);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView lfBtn = HeartGraph.pill(a, "Live frames", 0x1A2EE6A8, 0xFF2EE6A8);
+        lfBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { a.startActivity(new android.content.Intent(a, LiveFramesActivity.class)); } });
+        actions.addView(lfBtn);
+        TextView pnBtn = HeartGraph.pill(a, "Pull now", 0x1AFFFFFF, INK);
+        pnBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            if (!MainActivity.linkRunning()) MainActivity.startLinkHost(a);
+            MainActivity.requestPull();
+            android.widget.Toast.makeText(a, "Pull requested", android.widget.Toast.LENGTH_SHORT).show();
+        } });
+        LinearLayout.LayoutParams pl2 = new LinearLayout.LayoutParams(-2, -2);
+        pl2.leftMargin = Math.round(dp(a, 8));
+        actions.addView(pnBtn, pl2);
+        root.addView(actions, HeartGraph.lp(a, -2, -2, 8));
         final LinearLayout body = new LinearLayout(a);
         body.setOrientation(LinearLayout.VERTICAL);
         body.addView(HeartGraph.label(a, "Reading the log\u2026", 14, MUT, 400));
@@ -308,7 +380,7 @@ final class StrapData {
                     {   // 0.19.3: out of range summary from the strap's own connection events
                         long nowS = System.currentTimeMillis() / 1000L;
                         java.util.List<long[]> evs = new java.util.ArrayList<>();
-                        java.util.List<String[]> raw = StrapEvents.recent(a, nowS - 86400L, 800);
+                        java.util.List<String[]> raw = StrapEvents.byIds(a, nowS - 86400L, 3000, 11, 12);          // 0.20.1: by id; a limit on all events cut the night off
                         for (int i = raw.size() - 1; i >= 0; i--) { String[] r = raw.get(i); int id = Integer.parseInt(r[1]); if (id == 11 || id == 12) evs.add(new long[] { id, Long.parseLong(r[0]) }); }
                         long[] rs = rangeSummary(evs);
                         st.add(Math.min(3, st.size()), row("STATUS", "Out of range (24 h)", rs[0] + " absences over 2 min" + (rs[0] > 0 ? ", longest " + ageText(rs[2]) + ", total " + ageText(rs[3]) : "") + "; " + rs[1] + " short drops",
@@ -334,6 +406,10 @@ final class StrapData {
                                     + ". Last swipe away: " + (trm > 0 ? hf.format(new java.util.Date(trm)) : "never counted") + ". Next alarm due: " + (ld.getLong("alarm_next_ms", 0L) > 0 ? hf.format(new java.util.Date(ld.getLong("alarm_next_ms", 0L))) + (System.currentTimeMillis() > ld.getLong("alarm_next_ms", 0L) + 300000L ? " (OVERDUE by " + ageText((System.currentTimeMillis() - ld.getLong("alarm_next_ms", 0L)) / 1000L) + ")" : "") : "unknown")
                                     + ". Last alarm: " + (alm > 0 ? hf.format(new java.util.Date(alm)) + (ld.getBoolean("alarm_alive", true) ? " (service was running)" : " (service was NOT running, the alarm started it)") : "not yet")
                                     + ". Android restarted the service by itself " + ld.getInt("n_svc_restart", 0) + "x."));
+                    {
+                        String bt = batteryText(StrapEvents.byIds(a, now - 3 * 86400L, 600, 29), now);
+                        if (bt != null) st.add(Math.min(5, st.size()), row("STATUS", "Strap battery", bt, "From the strap's own condition report, every 10 minutes. The rate is the fall over the last 24 hours without charging; it includes ECG readings and the live stream."));
+                    }
                     android.content.SharedPreferences bl = a.getSharedPreferences("backlog", Context.MODE_PRIVATE);
                     String cond = StrapEvents.lastDec(a, 29);
                     if (bl.getLong("ring", 0L) > 0 || cond != null) {

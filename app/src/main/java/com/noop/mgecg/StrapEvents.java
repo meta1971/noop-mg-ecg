@@ -126,6 +126,22 @@ final class StrapEvents {
         });
     }
 
+    /** 0.20.1: newest first, only the given event ids, so a day's 800 other events cannot push the ones wanted out of the row limit. {ts, id, name, decoded}. */
+    static List<String[]> byIds(Context c, long sinceSec, int limit, int... ids) {
+        List<String[]> out = new ArrayList<>();
+        if (ids == null || ids.length == 0) return out;
+        try {
+            StringBuilder in = new StringBuilder();
+            for (int i = 0; i < ids.length; i++) in.append(i == 0 ? "" : ",").append(ids[i]);
+            SQLiteDatabase d = DayLog.db(c);
+            ensure(d);
+            Cursor q = d.rawQuery("SELECT ts, id, dec FROM strap_events WHERE ts >= ? AND id IN (" + in + ") ORDER BY ts DESC LIMIT " + limit, new String[] {String.valueOf(sinceSec)});
+            while (q.moveToNext()) out.add(new String[] {String.valueOf(q.getLong(0)), String.valueOf(q.getInt(1)), name(q.getInt(1)), q.getString(2)});
+            q.close();
+        } catch (Throwable ignored) { }
+        return out;
+    }
+
     /** Newest first: {ts, id, name, decoded}. */
     static List<String[]> recent(Context c, long sinceSec, int limit) {
         List<String[]> out = new ArrayList<>();

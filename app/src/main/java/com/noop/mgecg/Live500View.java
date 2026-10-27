@@ -44,14 +44,19 @@ public class Live500View extends View {
     /** Called once on the UI thread when the frames stop arriving for a few seconds, so the screen can go back to the 100 Hz graph. */
     public void setStaleCallback(Runnable r) { staleCb = r; }
 
+    private float qrsMv;                                // 0.20.0: smoothed QRS height in mV, shown so finger placement can be tried live
+
     private void updateScale(long now, int m) {
-        if (!autoScale || now - lastScaleMs < 300 || m < 250) return;
+        if (now - lastScaleMs < 300 || m < 250) return;
         lastScaleMs = now;
         int k = 0;
         for (int i = 0; i < m; i++) if (!Float.isNaN(v[i])) tmp[k++] = v[i] / 1000f;
         if (k < 250) return;
         java.util.Arrays.sort(tmp, 0, k);
         float hi = tmp[Math.min(k - 1, (int) (k * 0.997f))], lo = tmp[(int) (k * 0.003f)];
+        float h0 = Math.max(hi, -lo);
+        qrsMv = qrsMv <= 0f ? h0 : qrsMv * 0.6f + h0 * 0.4f;
+        if (!autoScale) return;
         float wantMax = Math.max(0.8f, hi * 1.25f), wantMin = Math.min(-0.4f, lo * 1.4f);
         yMax += (wantMax - yMax) * (wantMax > yMax ? 0.6f : 0.08f);          // open up quickly, close slowly
         yMin += (wantMin - yMin) * (wantMin < yMin ? 0.6f : 0.08f);
@@ -101,6 +106,13 @@ public class Live500View extends View {
         else if (nanTail >= 250) canvas.drawText("No finger contact", w / 2f, h / 2f, big);
 
         canvas.drawText(String.format(java.util.Locale.UK, "500 Hz live raw  \u00b7  %s  \u00b7  %s  \u00b7  %.2f s behind", Live500.modeLabel(), autoScale ? "auto scale" : "fixed -1 to +2 mV", Live500.delaySeconds()), 16f, 34f, label);
+        if (m > 250 && qrsMv > 0f) {
+            Paint qp = label;
+            int keep = qp.getColor();
+            qp.setColor(qrsMv < 0.5f ? Color.parseColor("#FFB347") : Color.parseColor("#2EE6A8"));
+            canvas.drawText(String.format(java.util.Locale.UK, "QRS height %.2f mV%s", qrsMv, qrsMv < 0.5f ? "  (weak signal)" : ""), 16f, 64f, qp);
+            qp.setColor(keep);
+        }
         canvas.drawRect(1, 1, w - 1, h - 1, border);
         postInvalidateOnAnimation();
     }

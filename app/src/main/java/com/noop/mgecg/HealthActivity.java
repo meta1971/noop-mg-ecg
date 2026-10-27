@@ -50,6 +50,12 @@ public class HealthActivity extends Activity {
     private TextView todayHrNum, todayHrSub; private String todayHrSubTail = "";               // 0.13.4: the Today heart-rate card follows the live frames
     private volatile List<ActivityDetector.Bout> actBouts = new ArrayList<ActivityDetector.Bout>();
     private volatile String actLine = "";          // today's activity in one line, read off the main thread
+    private volatile String syncRange = "", syncBattery = "";     // 0.21.0: for the sync card's explainer, read off the main thread
+    private final java.util.HashSet<String> openCards = new java.util.HashSet<>();     // 0.21.0: which explainers are open (they stay open when the screen refreshes)
+    private volatile String syncSub = "";           // 0.20.0: the strap line of the sync strip (pages behind, battery), read off the main thread
+    private TextView syncTitleTv, syncSubTv;
+    private int ringOpen = -1;                       // 0.20.0: which ring on Today is expanded (0 recovery, 1 effort, 2 sleep), -1 none
+    private LinearLayout ringPanel;
     private TextView liveNum, liveUnit;
     private HealthModel.Data liveData;
     private final Runnable liveTick = new Runnable() {
@@ -60,6 +66,7 @@ public class HealthActivity extends Activity {
                 liveUnit.setText("  " + shownLabel(liveData));
             }
             applyLink();
+            if (tab == 0) updateSyncStrip();                      // 0.20.0
             if (tab == 0 && todayHrNum != null && todayHrSub != null) {
                 int hh = shownHr(data);
                 todayHrNum.setText(hh > 0 ? hh + " bpm" : "\u2014");
@@ -157,6 +164,18 @@ public class HealthActivity extends Activity {
                     actLine = (ad != null && ad.hasData && ad.r != null)
                             ? "Active " + HealthModel.hmShort(ad.r.activeMin * 60L) + (ad.r.longestBoutMin > 0 ? " \u00b7 longest " + HealthModel.hmShort(ad.r.longestBoutMin * 60L) : "") + " \u00b7 load " + Math.round(ad.r.load)
                             : "No logged data yet today";
+                } catch (Throwable ignored) { }
+                try {                                                    // 0.20.0: strap line of the sync strip, from the last condition report (every 10 minutes)
+                    String cond = StrapEvents.lastDec(app, 29), pages = "", bat = "";
+                    if (cond != null) {
+                        java.util.regex.Matcher mp = java.util.regex.Pattern.compile("backlog (\\d+) pages").matcher(cond), mb = java.util.regex.Pattern.compile("battery ([0-9.]+) %").matcher(cond);
+                        if (mp.find()) pages = mp.group(1) + " pages behind";
+                        if (mb.find()) bat = "battery " + Math.round(Double.parseDouble(mb.group(1))) + " %";
+                    }
+                    syncRange = StrapData.rangeLine(app);
+                    String bl = StrapData.batteryLine(app);
+                    syncBattery = bl == null ? "" : bl;
+                    syncSub = cond == null ? "" : "Strap: " + pages + (pages.isEmpty() || bat.isEmpty() ? "" : "  \u00b7  ") + bat;
                 } catch (Throwable ignored) { }
                 final HealthModel.Data dd = d;
                 ui.post(new Runnable() { @Override public void run() { loading = false; loadedOnce = true; if (!isFinishing()) { data = dd; render(); } } });
@@ -493,6 +512,374 @@ public class HealthActivity extends Activity {
         render();
     }
 
+    // ------------------------------------------------------------------ 0.20.0: sync strip and the opened rings on Today
+    // ------------------------------------------------------------------ 0.21.0: explainers on every card, graph and ring
+    interface Filler { void fill(LinearLayout panel); }
+
+    /** Adds a "More about this" strip to a card; tapping opens a panel built on demand. The open state survives a refresh. */
+    private void expandable(final String key, final LinearLayout card, final Filler f) {
+        final LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setVisibility(View.GONE);
+        final TextView bar = tv("\u25BE  More about this", 12, BLUE, 600);
+        bar.setPadding(0, dpi(12), 0, dpi(2));
+        card.addView(bar);
+        card.addView(panel, lp(-1, -2, 4));
+        final Runnable open = new Runnable() { @Override public void run() {
+            panel.removeAllViews();
+            View sep = new View(HealthActivity.this);
+            sep.setBackgroundColor(0x14FFFFFF);
+            panel.addView(sep, new LinearLayout.LayoutParams(-1, 1));
+            try { f.fill(panel); } catch (Throwable t) { panel.addView(tv("Could not build this panel.", 12, MUT, 400)); }
+            panel.setVisibility(View.VISIBLE);
+            bar.setText("\u25B4  Hide");
+        } };
+        bar.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            if (openCards.contains(key)) { openCards.remove(key); panel.removeAllViews(); panel.setVisibility(View.GONE); bar.setText("\u25BE  More about this"); }
+            else { openCards.add(key); open.run(); }
+        } });
+        if (openCards.contains(key)) open.run();
+    }
+
+    /** Heading and paragraph rows from Explain. */
+    private void rows(LinearLayout p, String[][] r) {
+        for (String[] x : r) {
+            p.addView(caps(x[0]), lp(-2, -2, 12));
+            TextView t = tv(x[1], 12.5f, INK, 400);
+            t.setLineSpacing(0, 1.25f);
+            p.addView(t, lp(-2, -2, 3));
+        }
+    }
+
+    private void yours(LinearLayout p) { p.addView(caps("YOUR NUMBERS"), lp(-2, -2, 12)); }
+
+    private static final String[] ZONE_NAME = {"Resting", "Easy", "Steady", "Hard", "All out"};
+
+    private void fillHrNow(LinearLayout p) {
+        HealthModel.Data d = data;
+        if (d == null || d.day == null) return;
+        TodayModel.Day day = d.day;
+        int mh = maxHr(), hr = shownHr(d);
+        yours(p);
+        kv(p, "Now", hr > 0 ? hr + " bpm  (" + ZONE_NAME[HealthModel.zoneOfHr(hr, mh)] + ")" : "\u2014");
+        if (d.hr24Max > 0) kv(p, "Last 24 hours", d.hr24Min + " low, " + Math.round(d.hr24Mean) + " average, " + d.hr24Max + " high");
+        if (!Double.isNaN(day.restingHr)) kv(p, "Lowest five minutes", Math.round(day.restingHr) + " bpm");
+        int[] ze = HealthModel.zoneEdges(mh);
+        kv(p, "Zone edges (maximum " + mh + ")", ze[0] + " / " + ze[1] + " / " + ze[2] + " / " + ze[3] + " bpm");
+        rows(p, Explain.heartNow(mh));
+    }
+
+    private void fillSyncPanel(LinearLayout p) {
+        yours(p);
+        kv(p, "Last pull", syncTitleText(data == null ? null : data.day));
+        if (!syncSub.isEmpty()) kv(p, "Strap", syncSub.replace("Strap: ", ""));
+        if (!syncBattery.isEmpty()) kv(p, "Battery", syncBattery);
+        if (!syncRange.isEmpty()) kv(p, "Out of range (24 h)", syncRange);
+        kv(p, "Logger", StrapData.loggerLine(this));
+        rows(p, Explain.sync());
+    }
+
+    private void fillActivityPanel(LinearLayout p) {
+        HealthModel.Data d = data;
+        yours(p);
+        if (d != null && d.day != null) {
+            kv(p, "Steps today", String.valueOf(d.day.steps));
+            kv(p, "Walking / running (strap's class)", d.day.walkMin + " / " + d.day.runMin + " min");
+        }
+        int shown = 0;
+        for (ActivityDetector.Bout b : actBouts) {
+            LinearLayout r = hrow();
+            r.addView(tv(hhmm(b.start) + "  " + b.durationMin + " min" + (b.label == null || b.label.isEmpty() ? "" : "  \u00b7  " + b.label), 12.5f, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+            r.addView(tv("avg " + Math.round(b.avgHr) + " \u00b7 peak " + Math.round(b.peakHr), 12, MUT, 400));
+            p.addView(r, lp(-1, -2, 8));
+            if (++shown >= 12) break;
+        }
+        if (shown == 0) note(p, "No bout found yet today.");
+        rows(p, Explain.activity());
+    }
+
+    private void fillJournalPanel(LinearLayout p) {
+        yours(p);
+        int n = 0;
+        try {
+            long from = TodayModel.dayStartOf(System.currentTimeMillis() / 1000L) * 1000L;
+            android.database.Cursor q = DayLog.db(this).rawQuery("SELECT ms, text FROM events WHERE kind = 'marker' AND ms >= ? ORDER BY ms DESC LIMIT 20", new String[] {String.valueOf(from)});
+            while (q.moveToNext()) { kv(p, new SimpleDateFormat("HH:mm", Locale.UK).format(new Date(q.getLong(0))), String.valueOf(q.getString(1))); n++; }
+            q.close();
+        } catch (Throwable ignored) { }
+        if (n == 0) note(p, "No notes logged since 04:00.");
+        rows(p, Explain.journal());
+    }
+
+    private void fillEcgPanel(LinearLayout p) {
+        HealthModel.Data d = data;
+        yours(p);
+        int k = 0;
+        if (d != null) for (HealthModel.Reading r : d.readings) {
+            kv(p, r.when, ("-".equals(r.hr) ? "" : r.hr + " bpm") + ("-".equals(r.hrv) ? "" : "  \u00b7  HRV " + r.hrv + " ms") + ("-".equals(r.rhythm) ? "" : "  \u00b7  " + r.rhythm) + ("-".equals(r.grade) ? "" : "  \u00b7  grade " + r.grade));
+            if (++k >= 5) break;
+        }
+        if (k == 0) note(p, "No reading saved yet.");
+        rows(p, Explain.ecgReadings());
+    }
+
+    private void fillH24Panel(LinearLayout p) {
+        HealthModel.Data d = data;
+        if (d == null || d.day == null) return;
+        yours(p);
+        if (d.hr24Max > 0) { kv(p, "Lowest", d.hr24Min + " bpm"); kv(p, "Average", Math.round(d.hr24Mean) + " bpm"); kv(p, "Highest", d.hr24Max + " bpm"); }
+        if (!Double.isNaN(d.day.restingHr)) kv(p, "Lowest five minutes", Math.round(d.day.restingHr) + " bpm");
+        for (int i = 0; i < 5; i++) if (d.zoneSec[i] > 0) kv(p, ZONE_NAME[i], HealthModel.hm(d.zoneSec[i] / 3600.0));
+        rows(p, Explain.hrChart());
+    }
+
+    private void fillZonesPanel(LinearLayout p) {
+        int mh = maxHr();
+        int[] ze = HealthModel.zoneEdges(mh);
+        yours(p);
+        kv(p, "Maximum heart rate", mh + " bpm");
+        kv(p, "Resting", "under " + ze[0] + " bpm");
+        kv(p, "Easy", ze[0] + " to " + ze[1] + " bpm");
+        kv(p, "Steady", ze[1] + " to " + ze[2] + " bpm");
+        kv(p, "Hard", ze[2] + " to " + ze[3] + " bpm");
+        kv(p, "All out", ze[3] + " bpm and over");
+        rows(p, Explain.zones());
+    }
+
+    private void fillB2BPanel(LinearLayout p) {
+        HealthModel.Data d = data;
+        if (d == null) return;
+        yours(p);
+        for (HealthModel.Reading r : d.readings) if (!"-".equals(r.hrv)) { kv(p, "Latest ECG HRV", r.hrv + " ms  (" + r.when + ")"); break; }
+        double lastOpt = Double.NaN;
+        for (TodayModel.NightStat ns : d.nights) if (!Double.isNaN(ns.rmssd)) lastOpt = ns.rmssd;
+        if (!Double.isNaN(lastOpt)) kv(p, "Last night, optical", Math.round(lastOpt) + " ms");
+        rows(p, Explain.beatToBeat());
+    }
+
+    private void fillOverTimePanel(LinearLayout p) {
+        HealthModel.Data d = data;
+        if (d == null) return;
+        yours(p);
+        int shown = 0;
+        for (int i = d.nights.size() - 1; i >= 0 && shown < 7; i--) {
+            TodayModel.NightStat ns = d.nights.get(i);
+            if (Double.isNaN(ns.hrLow5)) continue;
+            kv(p, new SimpleDateFormat("EEE d MMM", Locale.UK).format(new Date(ns.bed * 1000L)), Math.round(ns.hrLow5) + " bpm" + (Double.isNaN(ns.rmssd) ? "" : "  \u00b7  HRV " + Math.round(ns.rmssd) + " ms"));
+            shown++;
+        }
+        if (shown == 0) note(p, "No night with a resting heart rate yet.");
+        rows(p, Explain.heartOverTime());
+    }
+
+    private void fillSleepWeekPanel(LinearLayout p) {
+        HealthModel.Data d = data;
+        if (d == null) return;
+        double goal = goal();
+        yours(p);
+        for (int i = d.lastSeven.length - 1; i >= 0; i--) {
+            if (Double.isNaN(d.lastSeven[i])) continue;
+            double diff = d.lastSeven[i] - goal;
+            kv(p, new SimpleDateFormat("EEE d MMM", Locale.UK).format(new Date(d.lastSevenBed[i] * 1000L)), HealthModel.hm(d.lastSeven[i]) + "  (" + (diff < 0 ? HealthModel.hm(-diff) + " under" : HealthModel.hm(diff) + " over") + ")");
+        }
+        rows(p, Explain.sleepWeek());
+    }
+
+    private void fillShapePanel(LinearLayout p) {
+        HealthModel.Data d = data;
+        if (d == null) return;
+        long tot = 0;
+        for (long s : d.stageSecs) tot += s;
+        yours(p);
+        if (tot > 0) {
+            String[] nm = {"Awake", "REM", "Light", "Deep"};
+            int[] idx = {HealthModel.WAKE, HealthModel.REM, HealthModel.LIGHT, HealthModel.DEEP};
+            for (int i = 0; i < 4; i++) kv(p, nm[i], HealthModel.hmShort(d.stageSecs[idx[i]]) + "  (" + Math.round(100.0 * d.stageSecs[idx[i]] / tot) + " %)");
+        }
+        rows(p, Explain.sleepShape());
+    }
+
+    private void fillWholeNightPanel(LinearLayout p) {
+        HealthModel.Data d = data;
+        if (d == null) return;
+        int sure = 0, all = 0;
+        for (int i = 0; i < d.binStage.length; i++) if (d.binStage[i] >= 0) { all++; if (d.binSure[i]) sure++; }
+        yours(p);
+        kv(p, "Five-minute blocks", String.valueOf(all));
+        kv(p, "Where two methods agree", all == 0 ? "\u2014" : Math.round(100.0 * sure / all) + " %");
+        rows(p, Explain.sleepNight());
+    }
+
+    private void fillSpo2Panel(LinearLayout p) {
+        HealthModel.Data d = data;
+        if (d == null || d.day == null || d.day.spo2 == null) return;
+        yours(p);
+        kv(p, "Night value", d.day.spo2.median + " %");
+        kv(p, "Windows used", String.valueOf(d.day.spo2.validWindows));
+        kv(p, "Lowest / highest window", d.day.spo2.min + " / " + d.day.spo2.max + " %");
+        kv(p, "Windows below 94 %", String.valueOf(d.day.spo2.below94));
+        rows(p, Explain.spo2());
+    }
+
+    private void fillMonitorPanel(LinearLayout p, DailyViews.Metric mt) {
+        int st = mt.status();
+        kv(p, "Last night", mt.valueText());
+        kv(p, "Your usual", mt.rangeText());
+        kv(p, "Against your usual", st < 0 ? "not enough nights yet" : st == 0 ? "inside the usual range" : st == 1 ? "a little outside (worth noting)" : "well outside");
+        rows(p, Explain.monitor(mt.name));
+    }
+
+    private LinearLayout explainerCard(String title, String sub) {
+        LinearLayout c = card(14);
+        c.addView(caps(title));
+        c.addView(tv(sub, 11.5f, MUT, 400), lp(-2, -2, 2));
+        return c;
+    }
+
+    private String syncTitleText(TodayModel.Day day) {
+        String ps = MainActivity.pullStatus();
+        if (ps != null) return "Syncing\u2026 " + ps;
+        long lp = DayLog.lastPullMs(this);
+        if (lp > 0) {
+            long s = Math.max(0L, (System.currentTimeMillis() - lp) / 1000L);
+            return "Synced " + (s < 90 ? s + " s" : s < 5400 ? (s / 60) + " min" : String.format(Locale.UK, "%.1f h", s / 3600.0)) + " ago";
+        }
+        return day != null && day.newestTs > 0 ? "Latest record " + ago(day.newestTs) : "Not synced yet";
+    }
+
+    private View syncStrip(final TodayModel.Day day) {
+        LinearLayout c = card(12);
+        LinearLayout r = hrow();
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        syncTitleTv = tv(syncTitleText(day), 14, INK, 600);
+        syncSubTv = tv(syncSub.isEmpty() ? (MainActivity.linkRunning() ? "Strap link up" : "Strap link not up: Sync now opens it") : syncSub, 11, MUT, 400);
+        left.addView(syncTitleTv);
+        left.addView(syncSubTv, lp(-2, -2, 2));
+        r.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView btn = HeartGraph.pill(this, "Sync now", 0x1A2EE6A8, 0xFF2EE6A8);
+        btn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            if (!MainActivity.linkRunning()) MainActivity.startLinkHost(HealthActivity.this);
+            MainActivity.requestPull();
+            android.widget.Toast.makeText(HealthActivity.this, "Syncing the strap", android.widget.Toast.LENGTH_SHORT).show();
+            if (syncTitleTv != null) syncTitleTv.setText("Syncing\u2026");
+        } });
+        r.addView(btn);
+        c.addView(r);
+        expandable("t_sync", c, new Filler() { @Override public void fill(LinearLayout p) { fillSyncPanel(p); } });
+        return c;
+    }
+
+    private void updateSyncStrip() {
+        try {
+            if (syncTitleTv == null || syncSubTv == null) return;
+            syncTitleTv.setText(syncTitleText(data == null ? null : data.day));
+            if (!syncSub.isEmpty()) syncSubTv.setText(syncSub);
+        } catch (Throwable ignored) { }
+    }
+
+    private void toggleRing(int i) {
+        if (ringPanel == null) return;
+        if (ringOpen == i) { ringOpen = -1; ringPanel.removeAllViews(); ringPanel.setVisibility(View.GONE); return; }
+        showRing(i);
+    }
+
+    private void showRing(int i) {
+        if (ringPanel == null) return;
+        HealthModel.Data d = data;
+        if (d == null || d.day == null) return;
+        ringOpen = i;
+        ringPanel.removeAllViews();
+        LinearLayout c = card(16);
+        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else fillSleep(c, d.day);
+        ringPanel.addView(c, lp(-1, -2, 0));
+        ringPanel.setVisibility(View.VISIBLE);
+    }
+
+    private void kv(LinearLayout c, String k, String v) {
+        LinearLayout r = hrow();
+        r.addView(tv(k, 13, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+        r.addView(tv(v, 13, INK, 600));
+        c.addView(r, lp(-1, -2, 8));
+    }
+
+    private void note(LinearLayout c, String s) {
+        TextView t = tv(s, 11, MUT, 400);
+        t.setLineSpacing(0, 1.2f);
+        c.addView(t, lp(-2, -2, 8));
+    }
+
+    /** "Lower than your usual by 0.8 spreads" for a z-score where positive means better. Pure text. */
+    static String zText(String what, double z, String betterWord, String worseWord) {
+        if (Double.isNaN(z)) return "";
+        if (Math.abs(z) < 0.3) return what + ": right at your usual.";
+        return what + ": " + String.format(Locale.UK, "%.1f", Math.abs(z)) + " spreads " + (z > 0 ? betterWord : worseWord) + " (" + (z > 0 ? "good" : "worth watching") + ").";
+    }
+
+    private void fillRecovery(LinearLayout c, TodayModel.Day day) {
+        SleepNight.Night n = day.night;
+        c.addView(caps("RECOVERY: HOW IT IS WORKED OUT"));
+        if (Double.isNaN(day.recovery)) {
+            note(c, "Not shown yet. It needs " + TodayModel.MIN_BASELINE + " earlier nights that each have a resting heart rate and an HRV; this strap has " + day.baselineNights + ".");
+        } else {
+            kv(c, "Estimate", Math.round(day.recovery) + " %");
+            kv(c, "Compared with", "your last " + day.baselineNights + " nights");
+            if (n != null) {
+                kv(c, "Resting heart rate (lowest 5 min of the night)", Math.round(n.hrLow5) + " bpm");
+                note(c, zText("Against your usual", day.zRhr, "lower", "higher"));
+                kv(c, "Overnight HRV (RMSSD, optical)", Math.round(n.rmssd) + " ms");
+                note(c, zText("Against your usual", day.zHrv, "higher", "lower"));
+            }
+            note(c, "Score = 100 x the normal curve of the average of the two z-scores. One spread is your own usual night-to-night change. A lower resting rate and a higher HRV both raise it.");
+            rows(c, Explain.recoveryBands());
+        }
+        if (n != null) {
+            kv(c, "Slept", HealthModel.hm(n.tstH));
+            if (!Double.isNaN(n.brMedian)) kv(c, "Breathing", String.format(Locale.UK, "%.1f a minute", n.brMedian));
+            if (!Double.isNaN(n.skinMedian)) kv(c, "Skin temperature (night median)", String.format(Locale.UK, "%.1f \u00b0C", n.skinMedian));
+            kv(c, "Not in the score", "sleep, breathing, skin, SpO2");
+        }
+        note(c, "An estimate from this strap's own records. Optical HRV reads higher than an ECG strap's; your own nights absorb that. Not WHOOP's recovery and not a medical measure.");
+    }
+
+    private void fillEffort(LinearLayout c, TodayModel.Day day) {
+        c.addView(caps("EFFORT: HOW IT IS WORKED OUT"));
+        kv(c, "Effort", String.format(Locale.UK, "%.1f of 21", day.effort));
+        kv(c, "Counted from", hhmm(day.dayStart) + " (wake-up or 04:00)");
+        int[] lo = {0, 50, 60, 70, 80, 90};
+        String[] nm = {"Zone 0", "Zone 1", "Zone 2", "Zone 3", "Zone 4", "Zone 5"};
+        for (int z = 0; z < 6; z++) {
+            int a = Math.round(lo[z] * day.maxHr / 100f), b = z == 5 ? day.maxHr : Math.round(lo[z + 1] * day.maxHr / 100f) - 1;
+            kv(c, nm[z] + "  " + (z == 0 ? "under " + (Math.round(50 * day.maxHr / 100f)) : a + " to " + b) + " bpm  (x" + z + ")", day.zoneMin[z] + " min");
+        }
+        kv(c, "Load (minutes x zone weight)", String.format(Locale.UK, "%.0f", day.trimp));
+        note(c, "Effort = 21 x (1 - e^(-load / 150)). A minute counts when the strap logged at least 20 heart-rate seconds in it; its median sets the zone from your maximum heart rate of " + day.maxHr + " bpm.");
+        kv(c, "Steps", String.valueOf(day.steps));
+        kv(c, "Walking / running (strap's class)", day.walkMin + " / " + day.runMin + " min");
+        rows(c, Explain.effortScale());
+    }
+
+    private void fillSleep(LinearLayout c, TodayModel.Day day) {
+        SleepNight.Night n = day.night;
+        c.addView(caps("SLEEP: LAST NIGHT"));
+        if (n == null) { note(c, "No complete night found yet."); return; }
+        kv(c, "In bed", hhmm(n.bedTs) + " to " + hhmm(n.endTs) + "  (" + HealthModel.hm(n.tibH) + ")");
+        kv(c, "Asleep", HealthModel.hm(n.tstH) + (Double.isNaN(day.sleepPct) ? "" : "  (" + Math.round(day.sleepPct) + " % of your " + Math.round(day.sleepGoalH) + " h goal)"));
+        kv(c, "Efficiency", Math.round(n.effPct) + " %");
+        kv(c, "Time to settle", Math.round(n.settleMin) + " min");
+        kv(c, "In bed but still / awake / up", Math.round(n.minStill) + " / " + Math.round(n.minWake) + " / " + Math.round(n.minUp) + " min");
+        kv(c, "Restless spells", String.valueOf(n.restless.size()));
+        if (!Double.isNaN(n.hrLow5)) kv(c, "Lowest 5-minute heart rate", Math.round(n.hrLow5) + " bpm" + (n.hrLow5Ts > 0 ? " at " + hhmm(n.hrLow5Ts) : ""));
+        if (!Double.isNaN(n.hrMean)) kv(c, "Average heart rate", Math.round(n.hrMean) + " bpm");
+        if (!Double.isNaN(n.rmssd)) kv(c, "HRV (RMSSD, optical)", Math.round(n.rmssd) + " ms");
+        if (!Double.isNaN(n.brMedian)) kv(c, "Breathing", String.format(Locale.UK, "%.1f a minute", n.brMedian));
+        if (!Double.isNaN(n.skinMedian)) kv(c, "Skin temperature", String.format(Locale.UK, "%.1f \u00b0C (%.1f to %.1f)", n.skinMedian, n.skinMin, n.skinMax));
+        if (day.spo2 != null && day.spo2.validWindows > 0) kv(c, "SpO2 (sleep-only windows)", day.spo2.median + " %  (" + day.spo2.validWindows + " windows)");
+        kv(c, "Records present", Math.round(n.coveragePct) + " %" + (n.partialStart || n.partialEnd ? "  (partial night)" : ""));
+        note(c, "From the strap's own sleep state (awake, still, sleep, up): an envelope, not a stage split. The Rest tab shows the estimated stages.");
+        rows(c, Explain.sleepRing(day.sleepGoalH));
+    }
+
     private View todayTab() {
         LinearLayout col = screen();
         HealthModel.Data d = data;
@@ -520,6 +907,7 @@ public class HealthActivity extends Activity {
         col.addView(head("Hi, " + name(), n != null ? "You slept " + HealthModel.hmShort((long) (n.tstH * 3600)) : "Good morning", null));
         View banner = loggerBanner(age);                       // 0.13.2: say so when the all-day log is not running
         if (banner != null) col.addView(banner, lp(-1, -2, 12));
+        col.addView(syncStrip(day), lp(-1, -2, 10));              // 0.20.0: when it last synced, how far behind the strap is, and a Sync now button
         // ---- the three rings and the day's plan (0.12.0)
         double rec = day.recovery;
         float[] rf = {Double.isNaN(rec) ? 0f : (float) (rec / 100.0), (float) (day.effort / 21.0), Double.isNaN(day.sleepPct) ? 0f : (float) Math.min(1.0, day.sleepPct / 100.0)};
@@ -528,11 +916,49 @@ public class HealthActivity extends Activity {
         String[] rl = {"RECOVERY", "EFFORT", "SLEEP"};
         String[] rcap = {Double.isNaN(rec) ? "needs " + TodayModel.MIN_BASELINE + " nights" : "vs your last " + day.baselineNights + " nights", "of 21 today",
                 n == null ? "no night yet" : HealthModel.hmShort((long) (n.tstH * 3600)) + " of " + Math.round(day.sleepGoalH) + " h goal"};
-        col.addView(new DailyViews.RingsView(this, rf, rc, rb, rl, rcap), lp(-1, dpi(196), 6));
+        DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
+        final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onSingleTapUp(android.view.MotionEvent e) { return true; }
+        });
+        rings.setClickable(true);
+        rings.setOnTouchListener(new View.OnTouchListener() {
+            @Override public boolean onTouch(View v, android.view.MotionEvent e) {                // 0.20.0: tap a ring to open how it is worked out
+                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) toggleRing(Math.max(0, Math.min(2, (int) (e.getX() / (v.getWidth() / 3f)))));
+                return false;
+            }
+        });
+        col.addView(rings, lp(-1, dpi(196), 6));
+        TextView ringHint = tv("Tap Recovery, Effort or Sleep to see how it is worked out.", 11, MUT, 400);
+        ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.addView(ringHint, lp(-1, -2, 0));
+        ringPanel = new LinearLayout(this);
+        ringPanel.setOrientation(LinearLayout.VERTICAL);
+        ringPanel.setVisibility(View.GONE);
+        col.addView(ringPanel, lp(-1, -2, 8));
+        if (ringOpen >= 0) showRing(ringOpen);
         TextView plan = tv(DailyViews.plan(rec), 14, INK, 400);
         plan.setLineSpacing(0, 1.25f);
         col.addView(plan, lp(-2, -2, 8));
         col.addView(tv("Estimates from this strap's own records, built on your own recent nights. Not WHOOP's scores and not a medical measure.", 11, MUT, 400), lp(-2, -2, 4));
+
+        // ---- workouts and activity found in today's records (0.20.0: moved up, under the rings)
+        LinearLayout wkc = card(16);
+        wkc.addView(caps("ACTIVITY TODAY"));
+        wkc.addView(tv(actLine.isEmpty() ? "Steps, time on your feet and workouts found today" : actLine + (day.steps > 0 ? "  \u00b7  " + day.steps + " steps" : ""), 12, INK, 400), lp(-2, -2, 6));
+        int shownBouts = 0;
+        List<ActivityDetector.Bout> bs = actBouts;
+        for (ActivityDetector.Bout b : bs) {
+            if (b.durationMin < 10) continue;
+            LinearLayout wr = hrow();
+            wr.addView(tv(hhmm(b.start) + "  " + b.durationMin + " min" + (b.label == null || b.label.isEmpty() ? "" : "  \u00b7  " + b.label), 13, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+            wr.addView(tv("avg " + Math.round(b.avgHr) + " \u00b7 peak " + Math.round(b.peakHr), 12, MUT, 400));
+            wkc.addView(wr, lp(-1, -2, 10));
+            if (++shownBouts >= 6) break;
+        }
+        if (shownBouts == 0) wkc.addView(tv("No stretch of ten minutes or more found yet today.", 12, MUT, 400), lp(-2, -2, 8));
+        wkc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, ActivityActivity.class)); } });
+        expandable("t_act", wkc, new Filler() { @Override public void fill(LinearLayout p) { fillActivityPanel(p); } });
+        col.addView(wkc, lp(-1, -2, 12));
 
         // ---- heart rate now
         LinearLayout nowCard = card(14);
@@ -546,6 +972,7 @@ public class HealthActivity extends Activity {
         todayHrSubTail = (n != null && !Double.isNaN(day.restingHr) ? "  \u00b7  lowest five minutes " + Math.round(day.restingHr) : "");
         nowCard.addView(todayHrSub, lp(-2, -2, 4));
         nowCard.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { go(1); } });
+        expandable("t_hr", nowCard, new Filler() { @Override public void fill(LinearLayout p) { fillHrNow(p); } });
         col.addView(nowCard, lp(-1, -2, 12));
 
         // ---- health monitor: last night against your own usual range
@@ -564,8 +991,19 @@ public class HealthActivity extends Activity {
                 hmc.addView(row, lp(-1, -2, 12));
                 hmc.addView(new DailyViews.BandView(this, mt), lp(-1, dpi(18), 2));
                 hmc.addView(tv(mt.rangeText(), 11, MUT, 400));
+                final LinearLayout mp = new LinearLayout(this);
+                mp.setOrientation(LinearLayout.VERTICAL);
+                mp.setVisibility(View.GONE);
+                hmc.addView(mp, lp(-1, -2, 4));
+                final String mkey = "mon_" + mt.name;
+                final DailyViews.Metric mtf = mt;
+                row.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                    if (openCards.contains(mkey)) { openCards.remove(mkey); mp.removeAllViews(); mp.setVisibility(View.GONE); }
+                    else { openCards.add(mkey); mp.removeAllViews(); fillMonitorPanel(mp, mtf); mp.setVisibility(View.VISIBLE); }
+                } });
+                if (openCards.contains(mkey)) { fillMonitorPanel(mp, mtf); mp.setVisibility(View.VISIBLE); }
             }
-            TextView hn = tv("Green is inside your usual range, amber about two spreads out, red further. HRV here comes from the wrist's optical intervals. A guide, not a diagnosis.", 11, MUT, 400);
+            TextView hn = tv("Tap a line to see what it means. Green is inside your usual range, amber about two spreads out, red further. HRV here comes from the wrist's optical intervals. A guide, not a diagnosis.", 11, MUT, 400);
             hn.setLineSpacing(0, 1.2f);
             hmc.addView(hn, lp(-2, -2, 10));
             col.addView(hmc, lp(-1, -2, 12));
@@ -585,24 +1023,8 @@ public class HealthActivity extends Activity {
         efc.addView(efh);
         efc.addView(new ZoneBarView(this, d.zoneSec), lp(-1, dpi(10), 10));
         efc.addView(tv("Time in heart-rate zones over the last 24 hours, weighted into a 0 to 21 effort." + (day.steps > 0 ? " " + day.steps + " steps." : "") + " This is not WHOOP's strain.", 11, MUT, 400), lp(-2, -2, 8));
+        expandable("t_effort", efc, new Filler() { @Override public void fill(LinearLayout p) { TodayModel.Day dd = data == null ? null : data.day; if (dd != null) fillEffort(p, dd); } });
         col.addView(efc, lp(-1, -2, 12));
-
-        // ---- workouts and activity found in today's records
-        LinearLayout wkc = card(16);
-        wkc.addView(caps("ACTIVITY TODAY"));
-        int shownBouts = 0;
-        List<ActivityDetector.Bout> bs = actBouts;
-        for (ActivityDetector.Bout b : bs) {
-            if (b.durationMin < 10) continue;
-            LinearLayout wr = hrow();
-            wr.addView(tv(hhmm(b.start) + "  " + b.durationMin + " min" + (b.label == null || b.label.isEmpty() ? "" : "  \u00b7  " + b.label), 13, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
-            wr.addView(tv("avg " + Math.round(b.avgHr) + " \u00b7 peak " + Math.round(b.peakHr), 12, MUT, 400));
-            wkc.addView(wr, lp(-1, -2, 10));
-            if (++shownBouts >= 6) break;
-        }
-        if (shownBouts == 0) wkc.addView(tv("No stretch of ten minutes or more found yet today.", 12, MUT, 400), lp(-2, -2, 8));
-        wkc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, ActivityActivity.class)); } });
-        col.addView(wkc, lp(-1, -2, 12));
 
         // ---- journal: one tap puts a time-stamped marker in the day log
         LinearLayout jc = card(16);
@@ -619,6 +1041,7 @@ public class HealthActivity extends Activity {
             pl.rightMargin = dpi(8);
             jr.addView(pill, pl);
         }
+        expandable("t_journal", jc, new Filler() { @Override public void fill(LinearLayout p) { fillJournalPanel(p); } });
         col.addView(jc, lp(-1, -2, 12));
 
         String ecgTitle = "No ECG reading yet", ecgSub = "Start one from the ECG tab";
@@ -630,13 +1053,14 @@ public class HealthActivity extends Activity {
             if (ecgSub.isEmpty()) ecgSub = "Open to see why";
         }
         col.addView(rowCard(ecgTitle, ecgSub, new View.OnClickListener() { @Override public void onClick(View v) { go(2); } }), lp(-1, -2, 16));
+        LinearLayout egc = explainerCard("ABOUT YOUR ECG READINGS", "What the grades mean and how to get a strong reading");
+        expandable("t_ecg", egc, new Filler() { @Override public void fill(LinearLayout p) { fillEcgPanel(p); } });
+        col.addView(egc, lp(-1, -2, 10));
         if (n != null) {
             String sub = (Double.isNaN(n.brMedian) ? "" : "Breathing " + String.format(Locale.UK, "%.1f", n.brMedian) + " a minute") + (Double.isNaN(n.skinMedian) ? "" : ", skin " + String.format(Locale.UK, "%.1f", n.skinMedian) + " \u00b0C");
             col.addView(rowCard("Last night \u00b7 " + HealthModel.hm(n.tstH) + " asleep" + (day.spo2 != null && day.spo2.validWindows > 0 ? " \u00b7 SpO2 " + day.spo2.median + "%" : ""), sub.isEmpty() ? "Open Rest for the whole night" : sub,
                     new View.OnClickListener() { @Override public void onClick(View v) { go(3); } }), lp(-1, -2, 10));
         }
-        col.addView(rowCard("Activity \u00b7 today on your feet", actLine.isEmpty() ? "Tap for the day, the week and your usual" : actLine,
-                new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, ActivityActivity.class)); } }), lp(-1, -2, 10));
         LinearLayout c = card(16);
         LinearLayout h = hrow();
         h.addView(caps("THE LAST 24 HOURS"));
@@ -650,6 +1074,7 @@ public class HealthActivity extends Activity {
         hint24.setPadding(0, dpi(6), 0, 0);
         c.addView(hint24);
         c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openGraph(2); } });
+        expandable("t_h24", c, new Filler() { @Override public void fill(LinearLayout p) { fillH24Panel(p); } });
         col.addView(c, lp(-1, -2, 10));
         return wrap(col);
     }
@@ -687,6 +1112,9 @@ public class HealthActivity extends Activity {
         col.addView(big, lp(-1, -2, 8));
         col.addView(tv(shownHr(d) > 0 && !Double.isNaN(day.restingHr) ? (shownHr(d) > day.restingHr + 8 ? "Above your lowest 5-minute rate of " : "Close to your lowest 5-minute rate of ") + Math.round(day.restingHr) + ". " + hrvSrc + "." : hrvSrc + ".", 12, MUT, 400), lp(-2, -2, 6));
 
+        LinearLayout hrc = explainerCard("ABOUT THE HEART RATE", "How it is measured, what the zones mean and when to trust it");
+        expandable("h_hr", hrc, new Filler() { @Override public void fill(LinearLayout p) { fillHrNow(p); } });
+        col.addView(hrc, lp(-1, -2, 10));
         LinearLayout c = card(16);
         LinearLayout h = hrow();
         h.addView(caps("TODAY \u00b7 LAST 24 HOURS"));
@@ -708,6 +1136,7 @@ public class HealthActivity extends Activity {
         chipsRow.addView(spacer());
         chipsRow.addView(tv("Full graph \u203a", 12, BLUE, 400));
         c.addView(chipsRow, lp(-1, -2, 10));
+        expandable("h_chart", c, new Filler() { @Override public void fill(LinearLayout p) { fillH24Panel(p); } });
         col.addView(c, lp(-1, -2, 14));
 
         LinearLayout z = card(16);
@@ -733,6 +1162,7 @@ public class HealthActivity extends Activity {
             r.addView(tv(d.zoneSec[i] == 0 ? "\u2014" : HealthModel.hm(d.zoneSec[i] / 3600.0), 13, INK, 600));
             z.addView(r, lp(-1, dpi(26), i == 0 ? 10 : 0));
         }
+        expandable("h_zones", z, new Filler() { @Override public void fill(LinearLayout p) { fillZonesPanel(p); } });
         col.addView(z, lp(-1, -2, 12));
 
         LinearLayout bb = card(16);
@@ -760,6 +1190,7 @@ public class HealthActivity extends Activity {
         int withRm = 0;
         for (TodayModel.NightStat ns : d.nights) if (!Double.isNaN(ns.rmssd)) withRm++;
         if (withRm >= 2) bb.addView(new NightsLineView(this, d.nights, true), lp(-1, dpi(90), 10));
+        expandable("h_b2b", bb, new Filler() { @Override public void fill(LinearLayout p) { fillB2BPanel(p); } });
         col.addView(bb, lp(-1, -2, 12));
 
         LinearLayout rd = card(16);
@@ -769,6 +1200,7 @@ public class HealthActivity extends Activity {
         t.setPadding(0, dpi(6), 0, 0);
         rd.addView(t);
         rd.addView(pillButton("Start an ECG reading", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), lp(-1, dpi(42), 12));
+        expandable("h_read", rd, new Filler() { @Override public void fill(LinearLayout p) { fillEcgPanel(p); } });
         col.addView(rd, lp(-1, -2, 12));
 
         // heart over time
@@ -783,6 +1215,7 @@ public class HealthActivity extends Activity {
         TextView note = tv(nn >= 2 ? "Lowest five-minute heart rate each night. Optical HRV is in the Rest tab." : "The line draws itself from the second night on. Last night's lowest five-minute heart rate was " + (Double.isNaN(day.restingHr) ? "\u2014" : String.valueOf(Math.round(day.restingHr))) + ".", 12, MUT, 400);
         note.setPadding(0, dpi(8), 0, 0);
         ov.addView(note);
+        expandable("h_over", ov, new Filler() { @Override public void fill(LinearLayout p) { fillOverTimePanel(p); } });
         col.addView(ov, lp(-1, -2, 12));
         return wrap(col);
     }
@@ -836,6 +1269,9 @@ public class HealthActivity extends Activity {
         top.addView(pillButton("Start", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), new LinearLayout.LayoutParams(dpi(110), dpi(38)));
         col.addView(top, lp(-1, -2, 8));
         col.addView(tv(n == 0 ? "None saved yet. Two fingers on the clasp, about three minutes." : "Newest first. Tap one to open its full report.", 12.5f, MUT, 400), lp(-2, -2, 4));
+        LinearLayout egt = explainerCard("HOW TO GET A STRONG READING", "What the grades mean, finger placement, what the QRS height tells you");
+        expandable("e_ecg", egt, new Filler() { @Override public void fill(LinearLayout p) { fillEcgPanel(p); } });
+        col.addView(egt, lp(-1, -2, 12));
         if (d != null) {
             for (final HealthModel.Reading r : d.readings) {
                 LinearLayout c = card(16);
@@ -902,10 +1338,15 @@ public class HealthActivity extends Activity {
         capt.setGravity(Gravity.CENTER);
         col.addView(capt, lp(-1, -2, 28));
         col.addView(rowCard("The ring is " + Math.round(100 * need) + "% closed. See what the night was made of", "Stages are estimates from heart rate and movement", null), lp(-1, -2, 14));
+        LinearLayout ringc = explainerCard("ABOUT THE RING", "What it fills towards and how the stages are estimated");
+        final double goalF = goal;
+        expandable("r_ring", ringc, new Filler() { @Override public void fill(LinearLayout p) { rows(p, Explain.sleepRing(goalF)); } });
+        col.addView(ringc, lp(-1, -2, 10));
 
         LinearLayout w = card(16);
         w.addView(caps("YOUR LAST SEVEN"));
         w.addView(new WeekBarsView(this, d.lastSeven, d.lastSevenBed, goal), lp(-1, dpi(140), 12));
+        expandable("r_week", w, new Filler() { @Override public void fill(LinearLayout p) { fillSleepWeekPanel(p); } });
         col.addView(w, lp(-1, -2, 12));
 
         long tot = 0;
@@ -924,6 +1365,7 @@ public class HealthActivity extends Activity {
         } else {
             sh.addView(tv("The night was too short to stage.", 13, MUT, 400), lp(-2, -2, 10));
         }
+        expandable("r_shape", sh, new Filler() { @Override public void fill(LinearLayout p) { fillShapePanel(p); } });
         col.addView(sh, lp(-1, -2, 12));
 
         if (tot > 0) {
@@ -957,6 +1399,7 @@ public class HealthActivity extends Activity {
             note.setLineSpacing(0, 1.2f);
             note.setPadding(0, dpi(10), 0, 0);
             wn.addView(note);
+            expandable("r_night", wn, new Filler() { @Override public void fill(LinearLayout p) { fillWholeNightPanel(p); } });
             col.addView(wn, lp(-1, -2, 12));
         }
         if (d.day.spo2 != null && d.day.spo2.validWindows > 0) {
@@ -970,6 +1413,7 @@ public class HealthActivity extends Activity {
             TextView t = tv(d.day.spo2.validWindows + " windows, " + d.day.spo2.min + " to " + d.day.spo2.max + "%. " + (d.day.spo2.below94 == 0 ? "None below 94. " : d.day.spo2.below94 + " below 94. ") + "Not calibrated against an oximeter.", 12, MUT, 400);
             t.setPadding(0, dpi(8), 0, 0);
             so.addView(t);
+            expandable("r_spo2", so, new Filler() { @Override public void fill(LinearLayout p) { fillSpo2Panel(p); } });
             col.addView(so, lp(-1, -2, 12));
         }
         // ---- this week: average sleep, sleep debt and bedtime spread
@@ -1123,6 +1567,7 @@ public class HealthActivity extends Activity {
         dt.addView(bkNote);
         dt.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 8));
+        dt.addView(pillButton("Live frames (watch the strap's packets arrive)", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, LiveFramesActivity.class)); } }), lp(-1, dpi(44), 8));
         dt.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(oldScreens()); } }), lp(-1, dpi(44), 8));
         TextView imp = tv(importNote, 11.5f, MUT, 400);
         imp.setPadding(0, dpi(10), 0, 0);
