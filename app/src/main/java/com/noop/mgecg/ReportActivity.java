@@ -90,6 +90,10 @@ public class ReportActivity extends Activity {
         title.setPadding(dp(14), 0, 0, 0);
         try { title.setTypeface(HealthViews.font(this, 600)); } catch (Throwable ignored) { }
         bar.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView pro = pill("Pro PDF");                                   // 0.23.0: the professional report from the reading's own 500 Hz frames
+        pro.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.make(ReportActivity.this, new File(path)); } });
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-2, dp(44)); plp.rightMargin = dp(8);
+        bar.addView(pro, plp);
         TextView save = pill("Save PDF");
         save.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { printReport(); } });
         bar.addView(save, new LinearLayout.LayoutParams(-2, dp(44)));

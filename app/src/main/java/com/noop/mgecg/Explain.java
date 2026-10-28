@@ -178,4 +178,12 @@ final class Explain {
         if ("Blood oxygen".equals(name)) return "The night's blood-oxygen estimate from the strap's sleep-only windows. Typical healthy sleepers sit around 94 to 98 %. It is an estimate that has not been checked against a reference oximeter, so use it as a trend only.";
         return "";
     }
+
+    static String[][] reportMethod() {
+        return new String[][] {
+            {WHAT, "The professional PDF is made on the phone from the reading's own live raw ECG frames (500 samples a second). It averages the clean beats, measures the P, QRS and T boundaries on the average, and adds heart-rate variability, a study of the part of the signal above 40 Hz, and a chest-strap check when an H10 was recorded."},
+            {HOW, "The Java code in the app is a port of a Python analysis. On nine readings the two agree on heart rate within 0.01 bpm, RMSSD within 0.13 ms, QT within 0.3 ms, and QRS and PR within one sample. With an H10 worn, beats are paired and compared: the R-R difference was 0.7 ms on two simultaneous readings."},
+            {WATCH, "The method was tested once, on 28 Oct 2026, against public PhysioNet databases: QRS onset and end within about 10 to 14 ms of cardiologists' marks, the T end (QT) within about 40 ms, AF detection from beat times unchanged down to about 50 Hz timing, and a healthy-rhythm reference for variability. Those results are fixed in the report; the app does not download or re-run them. The code (Python and Java) can be saved to Downloads with the button above."}
+        };
+    }
 }

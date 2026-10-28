@@ -93,10 +93,11 @@ public class NewLookActivity extends Activity {
 
     // restyled ECG screen
     private boolean ecgStyled;
-    private Button ecgBackBtn, ecgStartBtn, markToggle, detailsToggle;
+    private Button ecgBackBtn, ecgStartBtn, markToggle, detailsToggle, packetsToggle;
+    private TextView packetsView;                               // 0.22.2: the packets arriving, shown on the reading screen itself
     // 0.22.0: a reading started from the new tabs goes straight to the ECG screen (no old Home page in between), starts by itself after a countdown,
     // and Back returns to the ECG tab of the new app
-    private boolean fromNew, counting, sawRunning;
+    private boolean fromNew, counting, sawRunning, h10StartedHere;
     private int countLeft;
     private FrameLayout startLayer;
     private TextView startMsg, startSub, countdownCard;
@@ -250,6 +251,7 @@ public class NewLookActivity extends Activity {
     @Override
     protected void onDestroy() {
         counting = false;                                   // 0.22.1: a countdown must never start a reading on a screen that is gone
+        maybeStopH10();
         ui.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -498,6 +500,24 @@ public class NewLookActivity extends Activity {
         startLayer.setVisibility(View.VISIBLE);
         startMsg.setText(msg);
         startSub.setText(sub);
+        maybeStartH10();
+    }
+
+    /** 0.23.0: with the setting on ("Record the H10 with each ECG reading") the chest strap is started with the Start flow, so it is connected before the reading; it is left alone if it was already running. */
+    private void maybeStartH10() {
+        try {
+            if (h10StartedHere || !getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("h10_with_reading", false)) return;
+            if (PolarH10.wanted) return;
+            if (PolarH10.missingPermissions(this).length > 0) { toast("H10: Bluetooth permission is missing. Open Day logger once and allow it."); return; }
+            PolarH10.start(this);
+            h10StartedHere = true;
+        } catch (Throwable ignored) { }
+    }
+
+    private void maybeStopH10() {
+        if (!h10StartedHere) return;
+        h10StartedHere = false;
+        try { PolarH10.stop(); } catch (Throwable ignored) { }
     }
 
     /** Five seconds to get the fingers on, then the same press of the Start button that you would make. Tap the card to cancel; the setting is in Settings. */
@@ -527,6 +547,7 @@ public class NewLookActivity extends Activity {
 
     /** Back from a reading that was started in the new tabs returns to the ECG tab; the old screens stay underneath for "Older screens". */
     private void leaveToNewApp() {
+        maybeStopH10();
         boolean ran = sawRunning;
         fromNew = false;
         counting = false;
@@ -708,6 +729,24 @@ public class NewLookActivity extends Activity {
         mp.topMargin = dp(12);
         col.addView(markToggle, col.indexOfChild(markLabel), mp);
 
+        // 0.22.2: the packets arriving (counters per kind, the newest lines), on the reading screen; opens by itself when a reading starts
+        packetsView = tv("", 11, INK, false);
+        packetsView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        packetsView.setPadding(dp(14), dp(10), dp(14), dp(10));
+        packetsView.setBackground(round(CARD, 16));
+        packetsView.setVisibility(View.GONE);
+        packetsView.setOnClickListener(v -> startActivity(new android.content.Intent(this, LiveFramesActivity.class)));
+        packetsToggle = pillButton("Packets  \u25be", CARD, MUTED);
+        packetsToggle.setTextSize(13);
+        packetsToggle.setOnClickListener(v -> openPackets(packetsView.getVisibility() != View.VISIBLE));
+        LinearLayout.LayoutParams ptp = new LinearLayout.LayoutParams(-1, dp(44));
+        ptp.topMargin = dp(12);
+        LinearLayout.LayoutParams pvp = new LinearLayout.LayoutParams(-1, -2);
+        pvp.topMargin = dp(6);
+        int pidx = col.indexOfChild(markToggle);
+        col.addView(packetsView, pidx, pvp);
+        col.addView(packetsToggle, pidx, ptp);
+
         // "preparing your report" line, and the research text folded away
         ecgPrep = tv("Preparing your report\u2026 this takes 1 to 3 minutes. A green banner appears when it is ready.", 14, AMBER, false);
         ecgPrep.setGravity(Gravity.CENTER);
@@ -727,6 +766,47 @@ public class NewLookActivity extends Activity {
         disclaimer.setTextSize(11);
     }
 
+    private final Runnable packetsTick = new Runnable() {
+        @Override public void run() {
+            if (packetsView == null || state != ST_ECG || packetsView.getVisibility() != View.VISIBLE) return;
+            refreshPackets();
+            ui.postDelayed(this, 300L);
+        }
+    };
+
+    /** 0.22.2: the live packet kinds (43 raw and filtered ECG, 40 heart rate, 48 events) with a green dot while they arrive, and the newest lines. Tap for the full Live frames screen. */
+    private void openPackets(boolean open) {
+        if (packetsView == null) return;
+        packetsView.setVisibility(open ? View.VISIBLE : View.GONE);
+        packetsToggle.setText("Packets" + (open ? "  \u25b4" : "  \u25be"));
+        ui.removeCallbacks(packetsTick);
+        if (open) { refreshPackets(); ui.postDelayed(packetsTick, 300L); }
+    }
+
+    private void refreshPackets() {
+        long now = System.currentTimeMillis();
+        android.text.SpannableStringBuilder t = new android.text.SpannableStringBuilder();
+        if (PolarH10.wanted) { int hh = PolarH10.hrNow(); t.append("H10 chest strap: " + (hh > 0 ? hh + " bpm" : "connecting...") + (PolarH10.recordToFile ? "  (recording)" : "") + "\n\n"); }
+        for (FrameMonitor.RowInfo i : FrameMonitor.rows(now)) {
+            if (i.type != 43 && i.type != 40 && i.type != 48) continue;
+            int start = t.length();
+            t.append(String.format(java.util.Locale.UK, "%s %s  %.1f/s  %d\n", i.active ? "\u25CF" : "\u25CB", i.name, i.perSecond, i.total));
+            t.setSpan(new android.text.style.ForegroundColorSpan(i.active ? 0xFF2EE6A8 : MUTED), start, start + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            if (i.last != null && !i.last.isEmpty()) {
+                int s2 = t.length();
+                t.append("    " + i.last + "\n");
+                t.setSpan(new android.text.style.ForegroundColorSpan(MUTED), s2, t.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+        }
+        if (t.length() == 0) t.append("No packet yet. Frames arrive about once a second while the link is up.");
+        else {
+            t.append("\nNewest first:\n");
+            for (String s : FrameMonitor.lines(false, 4)) t.append(s).append('\n');
+        }
+        t.append("\nTap for the full list");
+        packetsView.setText(t);
+    }
+
     private void toggle(Button b, View[] views, String label) {
         boolean open = views[0].getVisibility() != View.VISIBLE;
         for (View v : views) v.setVisibility(open ? View.VISIBLE : View.GONE);
@@ -741,9 +821,13 @@ public class NewLookActivity extends Activity {
         if (running) sawRunning = true;
         int rs = running ? 1 : 0;
         if (rs != lastRunningState) {                       // the old code resets the colour whenever it flips the button
+            int prevRs = lastRunningState;
             lastRunningState = rs;
+            if (!running && prevRs == 1) ui.postDelayed(new Runnable() { @Override public void run() { maybeStopH10(); } }, 6000L);       // 0.23.0: the H10 stops a few seconds after the reading
             ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
             if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
+            if (running && packetsView != null && packetsView.getVisibility() != View.VISIBLE
+                    && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_packets_open", true)) openPackets(true);
         }
         if (ecgPrep != null && ecgStoredView != null) {
             boolean fetching = ecgStoredView.getText().toString().contains("Fetching the stored");

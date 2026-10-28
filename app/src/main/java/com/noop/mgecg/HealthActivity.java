@@ -1274,6 +1274,14 @@ public class HealthActivity extends Activity {
         if (lastEnd > 0 && System.currentTimeMillis() - lastEnd < 6 * 60000L && (n == 0 || d.readings.get(0).timeMs < lastEnd - 300000L)) {
             col.addView(rowCard("Preparing your report\u2026", "The stored ECG is fetched and analysed, 1 to 3 minutes. This list fills in by itself.", null), lp(-1, -2, 12));
         }
+        if (n > 0 && d.readings.get(0).file != null) {
+            final java.io.File newest = d.readings.get(0).file;
+            col.addView(pillButton("Professional PDF of the newest reading", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.make(HealthActivity.this, newest); } }), lp(-1, dpi(44), 12));        // 0.23.0
+        }
+        col.addView(pillButton("Save the analysis code (Python and Java) to Downloads", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.saveCode(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.23.1
+        LinearLayout mc = explainerCard("HOW THE REPORT IS MADE AND CHECKED", "Method, agreement with the Python reference, and the database tests");
+        expandable("e_method", mc, new Filler() { @Override public void fill(LinearLayout p) { rows(p, Explain.reportMethod()); } });
+        col.addView(mc, lp(-1, -2, 10));
         LinearLayout egt = explainerCard("HOW TO GET A STRONG READING", "What the grades mean, finger placement, what the QRS height tells you");
         expandable("e_ecg", egt, new Filler() { @Override public void fill(LinearLayout p) { fillEcgPanel(p); } });
         col.addView(egt, lp(-1, -2, 12));
@@ -1517,6 +1525,8 @@ public class HealthActivity extends Activity {
         st.addView(caps("SETTINGS"));
         final SharedPreferences ctl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
         st.addView(toggleRow("Start the ECG reading by itself after a 5 second countdown", ctl, "ecg_autostart"), lp(-1, dpi(52), 6));
+        st.addView(toggleRow("Show the packet counters on the screen during a reading", ctl, "ecg_packets_open"), lp(-1, dpi(52), 0));
+        st.addView(toggleRow("Record the H10 with each ECG reading (adds a chest-strap check to the PDF)", ctl, "h10_with_reading", false), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Near-live 500 Hz during readings", ctl, "ecg_tail"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Set the strap clock to the sub-second (as the official app)", ctl, "clock_subsec"), lp(-1, dpi(52), 0));
