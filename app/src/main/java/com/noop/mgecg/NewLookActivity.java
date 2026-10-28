@@ -60,7 +60,7 @@ public class NewLookActivity extends Activity {
     static final int BG = HealthViews.BG, CARD = HealthViews.CARD, LINE = 0x1AFFFFFF, TEXT = HealthViews.INK,
             MUTED = HealthViews.MUT, PRIMARY = HealthViews.BLUE, GREEN = HealthViews.GREEN, AMBER = HealthViews.GOLD, RED = HealthViews.ROSE, INK = 0xFF05131E;
 
-    static final int ST_HOME = 0, ST_REPORTS = 1, ST_REPORT = 2, ST_ECG = 3, ST_DEV = 4;
+    static final int ST_HOME = 0, ST_REPORTS = 1, ST_REPORT = 2, ST_ECG = 3, ST_DEV = 4, ST_START = 5;
 
     private static final String ECG_BUTTON_PREFIX = "\u2764";           // the heart on the old ECG button
     private static final String SCAN_BUTTON_TEXT = "SCAN / CONNECT";
@@ -94,6 +94,14 @@ public class NewLookActivity extends Activity {
     // restyled ECG screen
     private boolean ecgStyled;
     private Button ecgBackBtn, ecgStartBtn, markToggle, detailsToggle;
+    // 0.22.0: a reading started from the new tabs goes straight to the ECG screen (no old Home page in between), starts by itself after a countdown,
+    // and Back returns to the ECG tab of the new app
+    private boolean fromNew, counting, sawRunning;
+    private int countLeft;
+    private FrameLayout startLayer;
+    private TextView startMsg, startSub, countdownCard;
+    /** When the last reading from the new tabs ended (0 when none ran); HealthActivity shows "Preparing your report" for a few minutes after it. */
+    static volatile long lastReadingEndMs;
     private TextView ecgTips, ecgPrep, ecgStoredView;
     private View[] markViews, detailViews;
     private int lastRunningState = -1;
@@ -128,6 +136,9 @@ public class NewLookActivity extends Activity {
         root.addView(homeLayer, new FrameLayout.LayoutParams(-1, -1));
         root.addView(reportsLayer, new FrameLayout.LayoutParams(-1, -1));
         root.addView(reportLayer, new FrameLayout.LayoutParams(-1, -1));
+        startLayer = buildStart();
+        root.addView(startLayer, new FrameLayout.LayoutParams(-1, -1));
+        startLayer.setVisibility(View.GONE);
 
         devPill = pillButton("HOME", CARD, TEXT);
         devPill.setTextSize(14);
@@ -136,6 +147,17 @@ public class NewLookActivity extends Activity {
         FrameLayout.LayoutParams pl = new FrameLayout.LayoutParams(-2, dp(44), Gravity.BOTTOM | Gravity.END);
         pl.setMargins(0, 0, dp(12), dp(12));
         root.addView(devPill, pl);
+
+        countdownCard = tv("", 16, INK, true);
+        countdownCard.setGravity(Gravity.CENTER);
+        countdownCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        countdownCard.setBackground(round(PRIMARY, 20));
+        countdownCard.setTextColor(0xFF05131E);
+        countdownCard.setVisibility(View.GONE);
+        countdownCard.setOnClickListener(v -> { counting = false; countdownCard.setVisibility(View.GONE); toast("Not starting by itself. Press Start when you are ready."); });
+        FrameLayout.LayoutParams cdp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        cdp.setMargins(dp(16), 0, dp(16), dp(40));
+        root.addView(countdownCard, cdp);
 
         banner = tv("Your report is ready  \u00b7  View", 15, INK, true);
         banner.setGravity(Gravity.CENTER);
@@ -166,7 +188,9 @@ public class NewLookActivity extends Activity {
         root.addView(navBar, nbp);
         updateNav();
         super.setContentView(root);
-        showHome();
+        android.content.Intent li0 = getIntent();
+        if (li0 != null && li0.getBooleanExtra("start_ecg", false) || pendingEcg) { fromNew = true; showStarting("Getting your strap ready\u2026", ""); }
+        else showHome();
         ui.removeCallbacks(tick);
         ui.postDelayed(tick, 500);
         handleLaunchExtras(getIntent());
@@ -187,7 +211,9 @@ public class NewLookActivity extends Activity {
             ui.postDelayed(() -> openReport(new File(rp)), 700);
         } else if (in.getBooleanExtra("start_ecg", false)) {
             in.removeExtra("start_ecg");
-            ui.postDelayed(() -> takeEcg(), 900);
+            fromNew = true;
+            showStarting("Getting your strap ready\u2026", "");
+            ui.postDelayed(() -> takeEcg(), 250);
         }
     }
 
@@ -202,7 +228,9 @@ public class NewLookActivity extends Activity {
             ui.postDelayed(() -> openReport(new File(rp)), 400);
         } else if (pendingEcg) {
             pendingEcg = false;
-            ui.postDelayed(() -> takeEcg(), 600);
+            fromNew = true;
+            showStarting("Getting your strap ready\u2026", "");
+            ui.postDelayed(() -> takeEcg(), 250);
         }
     }
 
@@ -230,6 +258,10 @@ public class NewLookActivity extends Activity {
         switch (state) {
             case ST_REPORT:
                 showReports();
+                return;
+            case ST_START:
+                waitingConnect = false;
+                leaveToNewApp();
                 return;
             case ST_REPORTS:
             case ST_DEV:
@@ -273,7 +305,7 @@ public class NewLookActivity extends Activity {
         updateConnection();
         if (state == ST_ECG) {
             View c = ecgContainer();
-            if (c != null && c.getVisibility() != View.VISIBLE) showHome();    // the old ECG screen was closed
+            if (c != null && c.getVisibility() != View.VISIBLE) { if (fromNew) leaveToNewApp(); else showHome(); }    // the old ECG screen was closed
             else updateEcgExtras();
         }
         checkNewReport();
@@ -295,6 +327,9 @@ public class NewLookActivity extends Activity {
             } else if (now - waitStart > 40000) {
                 waitingConnect = false;
                 toast("Could not connect. Check the band is on, nearby and not connected to another app.");
+                if (fromNew && state == ST_START) leaveToNewApp();
+            } else if (state == ST_START && startSub != null) {
+                startSub.setText(conn ? "Connected. Opening the ECG\u2026" : "Connecting\u2026 " + ((now - waitStart) / 1000) + " s (up to 40 s)");
             }
         }
         if (homeConn == null) return;
@@ -420,6 +455,86 @@ public class NewLookActivity extends Activity {
         restyleEcgOnce();
         fontAll(ecgContainer());
         updateEcgExtras();
+        if (fromNew) beginCountdown();
+    }
+
+    // ------------------------------------------------------------------ 0.22.0: starting, countdown, leaving
+
+    private FrameLayout buildStart() {
+        FrameLayout layer = new FrameLayout(this);
+        layer.setBackgroundColor(BG);
+        layer.setClickable(true);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER);
+        col.setPadding(dp(28), dp(28), dp(28), dp(28));
+        TextView t = tv("ECG", 34, INK, true);
+        t.setGravity(Gravity.CENTER);
+        col.addView(t, new LinearLayout.LayoutParams(-1, -2));
+        startMsg = tv("Getting your strap ready\u2026", 18, INK, true);
+        startMsg.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(-1, -2);
+        mp.topMargin = dp(18);
+        col.addView(startMsg, mp);
+        startSub = tv("", 13, MUTED, false);
+        startSub.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1, -2);
+        sp.topMargin = dp(8);
+        col.addView(startSub, sp);
+        Button cancel = pillButton("Cancel", CARD, TEXT);
+        cancel.setOnClickListener(v -> { waitingConnect = false; leaveToNewApp(); });
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(dp(160), dp(48));
+        cp.topMargin = dp(28);
+        cp.gravity = Gravity.CENTER_HORIZONTAL;
+        col.addView(cancel, cp);
+        layer.addView(col, new FrameLayout.LayoutParams(-1, -1));
+        return layer;
+    }
+
+    private void showStarting(String msg, String sub) {
+        state = ST_START;
+        hideLayers();
+        startLayer.setVisibility(View.VISIBLE);
+        startMsg.setText(msg);
+        startSub.setText(sub);
+    }
+
+    /** Five seconds to get the fingers on, then the same press of the Start button that you would make. Tap the card to cancel; the setting is in Settings. */
+    private void beginCountdown() {
+        if (!getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_autostart", true)) return;
+        counting = true;
+        countLeft = 5;
+        sawRunning = false;
+        ui.post(this::tickCountdown);
+    }
+
+    private void tickCountdown() {
+        if (!counting || state != ST_ECG || countdownCard == null) { counting = false; if (countdownCard != null) countdownCard.setVisibility(View.GONE); return; }
+        if (ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP")) { counting = false; countdownCard.setVisibility(View.GONE); return; }
+        if (countLeft <= 0) {
+            counting = false;
+            countdownCard.setVisibility(View.GONE);
+            if (ecgStartBtn != null) ecgStartBtn.performClick();
+            return;
+        }
+        countdownCard.setText("Two fingers on the indents, forearm on a table.\nStarting in " + countLeft + "    (tap to cancel)");
+        countdownCard.setVisibility(View.VISIBLE);
+        countLeft--;
+        ui.postDelayed(this::tickCountdown, 1000);
+    }
+
+    /** Back from a reading that was started in the new tabs returns to the ECG tab; the old screens stay underneath for "Older screens". */
+    private void leaveToNewApp() {
+        boolean ran = sawRunning;
+        fromNew = false;
+        counting = false;
+        waitingConnect = false;
+        if (countdownCard != null) countdownCard.setVisibility(View.GONE);
+        if (ran) lastReadingEndMs = System.currentTimeMillis();
+        showHome();
+        HealthActivity.pendingTab = 2;
+        startActivity(new android.content.Intent(this, HealthActivity.class).putExtra("tab", 2)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP));
     }
 
     private void connectOnly() {
@@ -621,6 +736,7 @@ public class NewLookActivity extends Activity {
         if (state == ST_ECG) fontAll(ecgContainer());          // 0.15.2: late-added texts get the app font too
         if (!ecgStyled || ecgStartBtn == null) return;
         boolean running = ecgStartBtn.getText().toString().startsWith("STOP");
+        if (running) sawRunning = true;
         int rs = running ? 1 : 0;
         if (rs != lastRunningState) {                       // the old code resets the colour whenever it flips the button
             lastRunningState = rs;
@@ -636,6 +752,7 @@ public class NewLookActivity extends Activity {
     // ------------------------------------------------------------------ screen switching
 
     private void hideLayers() {
+        if (startLayer != null) startLayer.setVisibility(View.GONE);
         homeLayer.setVisibility(View.GONE);
         reportsLayer.setVisibility(View.GONE);
         reportLayer.setVisibility(View.GONE);

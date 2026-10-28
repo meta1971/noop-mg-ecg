@@ -44,6 +44,7 @@ public class Live500View extends View {
     /** Called once on the UI thread when the frames stop arriving for a few seconds, so the screen can go back to the 100 Hz graph. */
     public void setStaleCallback(Runnable r) { staleCb = r; }
 
+    private final float[] tmp2 = new float[500];
     private float qrsMv;                                // 0.20.0: smoothed QRS height in mV, shown so finger placement can be tried live
 
     private void updateScale(long now, int m) {
@@ -54,7 +55,9 @@ public class Live500View extends View {
         if (k < 250) return;
         java.util.Arrays.sort(tmp, 0, k);
         float hi = tmp[Math.min(k - 1, (int) (k * 0.997f))], lo = tmp[(int) (k * 0.003f)];
-        float h0 = Math.max(hi, -lo);
+        // 0.22.0: robust height (see Live500.qrsHeightMv): a lifted finger or a rail spike in one second cannot move it
+        float h0 = Live500.qrsHeightMv(v, m, tmp2);
+        if (Float.isNaN(h0)) h0 = Math.max(hi, -lo);
         qrsMv = qrsMv <= 0f ? h0 : qrsMv * 0.6f + h0 * 0.4f;
         if (!autoScale) return;
         float wantMax = Math.max(0.8f, hi * 1.25f), wantMin = Math.min(-0.4f, lo * 1.4f);
@@ -109,8 +112,8 @@ public class Live500View extends View {
         if (m > 250 && qrsMv > 0f) {
             Paint qp = label;
             int keep = qp.getColor();
-            qp.setColor(qrsMv < 0.5f ? Color.parseColor("#FFB347") : Color.parseColor("#2EE6A8"));
-            canvas.drawText(String.format(java.util.Locale.UK, "QRS height %.2f mV%s", qrsMv, qrsMv < 0.5f ? "  (weak signal)" : ""), 16f, 64f, qp);
+            qp.setColor(Color.parseColor("#2EE6A8"));
+            canvas.drawText(String.format(java.util.Locale.UK, "QRS height %.2f mV", qrsMv), 16f, 64f, qp);
             qp.setColor(keep);
         }
         canvas.drawRect(1, 1, w - 1, h - 1, border);

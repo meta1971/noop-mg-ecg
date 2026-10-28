@@ -52,6 +52,7 @@ public class HealthActivity extends Activity {
     private volatile String actLine = "";          // today's activity in one line, read off the main thread
     private volatile String syncRange = "", syncBattery = "";     // 0.21.0: for the sync card's explainer, read off the main thread
     private final java.util.HashSet<String> openCards = new java.util.HashSet<>();     // 0.21.0: which explainers are open (they stay open when the screen refreshes)
+    static volatile int pendingTab = -1;               // 0.22.0: set by the old screens when they hand back to a tab (onNewIntent is not always called)
     private volatile String syncSub = "";           // 0.20.0: the strap line of the sync strip (pages behind, battery), read off the main thread
     private TextView syncTitleTv, syncSubTv;
     private int ringOpen = -1;                       // 0.20.0: which ring on Today is expanded (0 recovery, 1 effort, 2 sleep), -1 none
@@ -115,7 +116,7 @@ public class HealthActivity extends Activity {
         render();
     }
 
-    @Override protected void onResume() { super.onResume(); ui.removeCallbacks(tick); ui.post(tick); ui.removeCallbacks(liveTick); ui.post(liveTick); if (DayLog.enabled(this)) { DayLogService.ensure(this); MainActivity.startLinkHost(this); } }
+    @Override protected void onResume() { super.onResume(); if (pendingTab >= 0) { int pt = pendingTab; pendingTab = -1; tab = Math.max(0, Math.min(4, pt)); nav.setActive(tab); render(); } ui.removeCallbacks(tick); ui.post(tick); ui.removeCallbacks(liveTick); ui.post(liveTick); if (DayLog.enabled(this)) { DayLogService.ensure(this); MainActivity.startLinkHost(this); } }
 
     @Override protected void onPause() { super.onPause(); ui.removeCallbacks(tick); ui.removeCallbacks(liveTick); }
 
@@ -1269,6 +1270,10 @@ public class HealthActivity extends Activity {
         top.addView(pillButton("Start", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), new LinearLayout.LayoutParams(dpi(110), dpi(38)));
         col.addView(top, lp(-1, -2, 8));
         col.addView(tv(n == 0 ? "None saved yet. Two fingers on the clasp, about three minutes." : "Newest first. Tap one to open its full report.", 12.5f, MUT, 400), lp(-2, -2, 4));
+        long lastEnd = NewLookActivity.lastReadingEndMs;                   // 0.22.0: a reading just ended: the report takes 1 to 3 minutes
+        if (lastEnd > 0 && System.currentTimeMillis() - lastEnd < 6 * 60000L && (n == 0 || d.readings.get(0).timeMs < lastEnd - 300000L)) {
+            col.addView(rowCard("Preparing your report\u2026", "The stored ECG is fetched and analysed, 1 to 3 minutes. This list fills in by itself.", null), lp(-1, -2, 12));
+        }
         LinearLayout egt = explainerCard("HOW TO GET A STRONG READING", "What the grades mean, finger placement, what the QRS height tells you");
         expandable("e_ecg", egt, new Filler() { @Override public void fill(LinearLayout p) { fillEcgPanel(p); } });
         col.addView(egt, lp(-1, -2, 12));
@@ -1511,7 +1516,8 @@ public class HealthActivity extends Activity {
         LinearLayout st = card(16);
         st.addView(caps("SETTINGS"));
         final SharedPreferences ctl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
-        st.addView(toggleRow("Near-live 500 Hz during readings", ctl, "ecg_tail"), lp(-1, dpi(52), 6));
+        st.addView(toggleRow("Start the ECG reading by itself after a 5 second countdown", ctl, "ecg_autostart"), lp(-1, dpi(52), 6));
+        st.addView(toggleRow("Near-live 500 Hz during readings", ctl, "ecg_tail"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Set the strap clock to the sub-second (as the official app)", ctl, "clock_subsec"), lp(-1, dpi(52), 0));
         final TextView lrv = tv(liveRawModeText(ctl), 14, BLUE, 600);

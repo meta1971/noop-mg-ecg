@@ -274,4 +274,26 @@ final class Live500 {
     // ---- test hooks (used by the off-phone tests) ----
     static double[] testOutputs() { synchronized (LOCK) { int n = (int) Math.min(procUpTo, CAP - 64); double[] r = new double[n]; long s = procUpTo - n; for (int i = 0; i < n; i++) r[i] = outv[p(s + i)]; return r; } }
     static long[] testPeaks() { synchronized (LOCK) { int n = Math.min(pkCount, 64); long[] r = new long[n]; for (int i = 0; i < n; i++) r[i] = pk[(pkCount - n + i) & 63]; return r; } }
+
+    /**
+     * 0.22.0: the QRS height read-out in millivolts from the last m display samples (microvolts, NaN where there is no signal). For each whole second the 99.5th percentile minus the
+     * median (every second holds at least one beat), then the median over the seconds, so one second with a lifted finger or a rail spike cannot move it. tmp needs 500 floats.
+     * Returns NaN when there are fewer than two usable seconds. Pure.
+     */
+    static float qrsHeightMv(float[] v, int m, float[] tmp) {
+        int ncs = m / 500;
+        if (ncs < 2) return Float.NaN;
+        float[] am = new float[ncs];
+        int na = 0;
+        for (int cs = 0; cs < ncs; cs++) {
+            int kk = 0;
+            for (int i = cs * 500; i < (cs + 1) * 500; i++) if (!Float.isNaN(v[i])) tmp[kk++] = v[i] / 1000f;
+            if (kk < 250) continue;
+            java.util.Arrays.sort(tmp, 0, kk);
+            am[na++] = tmp[Math.min(kk - 1, (int) (kk * 0.995f))] - tmp[kk / 2];
+        }
+        if (na < 2) return Float.NaN;
+        java.util.Arrays.sort(am, 0, na);
+        return am[na / 2];
+    }
 }
