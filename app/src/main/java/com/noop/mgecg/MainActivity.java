@@ -10737,6 +10737,7 @@ public class MainActivity extends NewLookActivity {
                 retireHeadless("logger turned off");
                 return;
             }
+            if (headless == MainActivity.this && ecgSessionRunning) stopEcgBecauseScreenClosed();      // 0.22.1
             try { dayLogTickBody(); } catch (Throwable t) { logRaw("DAYLOG_TICK_ERROR " + t); }
             mainH.postDelayed(this, 60000L);
         }
@@ -11215,6 +11216,22 @@ public class MainActivity extends NewLookActivity {
             ecgUiHandler.postDelayed(ecgElapsedTicker, 250);
         };
         ecgUiHandler.post(ecgElapsedTicker);
+    }
+
+    /**
+     * 0.22.1: the screen was closed (swipe-away, Back) while a reading ran. Nothing is watching it, the 10 minute auto-restart would keep it going for hours (27 Oct: 07:35 to 10:11)
+     * and no report can come out of it, so it is stopped cleanly: generation stop, then the toggles off. No analysis (the screen that would show it is gone).
+     */
+    private void stopEcgBecauseScreenClosed() {
+        if (!ecgSessionRunning) return;
+        ecgSessionRunning = false;
+        try { if (ecgElapsedTicker != null) ecgUiHandler.removeCallbacks(ecgElapsedTicker); } catch (Throwable ignored) { }
+        logRaw("ECG_STOP_SCREEN_CLOSED elapsedS=" + (System.currentTimeMillis() - ecgSessionStartMs) / 1000 + " (no screen; auto-restart would have kept it running)");
+        send(0x7C, 1, "ECG_STOP (screen closed)");
+        mainH.postDelayed(() -> send(0x8B, 0, "TOGGLE_LABRADOR_FILTERED_OFF (screen closed)"), 400);
+        mainH.postDelayed(() -> send(0x7D, 0, "TOGGLE_LABRADOR_RAW_SAVE_OFF (screen closed)"), 800);
+        mainH.postDelayed(() -> send(0x7E, 0, "TOGGLE_RAW_ECG_LIVE_OFF (screen closed)"), 1200);
+        mainH.postDelayed(() -> send(0x7F, 0, "TOGGLE_FILTERED_ECG_SAVE_OFF (screen closed)"), 1600);
     }
 
     private void stopEcgScreenSession() {
@@ -14084,6 +14101,7 @@ public class MainActivity extends NewLookActivity {
         if (!isChangingConfigurations() && DayLog.enabled(this)) {
             if (instance == this) instance = null;
             headless = this;
+            if (ecgSessionRunning) stopEcgBecauseScreenClosed();       // 0.22.1: a reading must not run on with no screen
             noteLink("swipe_keep", false);
             logRaw("HEADLESS_KEEP the screen was closed; logger on, strap link kept");
             super.onDestroy();
