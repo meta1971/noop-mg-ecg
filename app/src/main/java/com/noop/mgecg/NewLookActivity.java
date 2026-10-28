@@ -249,7 +249,8 @@ public class NewLookActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        ui.removeCallbacks(tick);
+        counting = false;                                   // 0.22.1: a countdown must never start a reading on a screen that is gone
+        ui.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
 
@@ -511,10 +512,11 @@ public class NewLookActivity extends Activity {
     private void tickCountdown() {
         if (!counting || state != ST_ECG || countdownCard == null) { counting = false; if (countdownCard != null) countdownCard.setVisibility(View.GONE); return; }
         if (ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP")) { counting = false; countdownCard.setVisibility(View.GONE); return; }
+        if (isFinishing() || isDestroyed()) { counting = false; return; }                 // 0.22.1
         if (countLeft <= 0) {
             counting = false;
             countdownCard.setVisibility(View.GONE);
-            if (ecgStartBtn != null) ecgStartBtn.performClick();
+            if (ecgStartBtn != null && ecgStartBtn.isAttachedToWindow()) ecgStartBtn.performClick();
             return;
         }
         countdownCard.setText("Two fingers on the indents, forearm on a table.\nStarting in " + countLeft + "    (tap to cancel)");
