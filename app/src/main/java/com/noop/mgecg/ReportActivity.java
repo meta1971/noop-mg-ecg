@@ -86,22 +86,24 @@ public class ReportActivity extends Activity {
         TextView title = new TextView(this);
         title.setText(titleFor(path));
         title.setTextColor(TEXT);
-        title.setTextSize(16);
+        title.setTextSize(18);
         title.setPadding(dp(14), 0, 0, 0);
         try { title.setTypeface(HealthViews.font(this, 600)); } catch (Throwable ignored) { }
         bar.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView pro = pill("Pro PDF");                                   // 0.23.0: the professional report from the reading's own 500 Hz frames
         pro.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.make(ReportActivity.this, new File(path)); } });
-        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-2, dp(44)); plp.rightMargin = dp(8);
-        bar.addView(pro, plp);
+        final LinearLayout pills = new LinearLayout(this); pills.setOrientation(LinearLayout.HORIZONTAL); pills.setPadding(dp(12), 0, dp(12), dp(8));       // 0.25.1: the three buttons on their own row so the title keeps its width
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, dp(44), 1f); plp.rightMargin = dp(8);
+        pills.addView(pro, plp);
         TextView pull = pill("Full pull");                                  // 0.25.0: everything the app holds for this reading, one small zip
         pull.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { ReadingPull.make(ReportActivity.this, new File(path)); } });
-        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(-2, dp(44)); ulp.rightMargin = dp(8);
-        bar.addView(pull, ulp);
+        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(0, dp(44), 1f); ulp.rightMargin = dp(8);
+        pills.addView(pull, ulp);
         TextView save = pill("Save PDF");
         save.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { printReport(); } });
-        bar.addView(save, new LinearLayout.LayoutParams(-2, dp(44)));
+        pills.addView(save, new LinearLayout.LayoutParams(0, dp(44), 1f));
         root.addView(bar, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(pills, new LinearLayout.LayoutParams(-1, -2));
 
         webView = new WebView(this);
         webView.setBackgroundColor(BG);

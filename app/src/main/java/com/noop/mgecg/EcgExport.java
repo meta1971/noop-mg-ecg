@@ -55,6 +55,7 @@ final class EcgExport {
                 || (n.startsWith("labrador_") && (n.endsWith(".txt") || n.endsWith(".bin")))
                 || (n.startsWith("realtime_ecg_bin_") && n.endsWith(".bin"))
                 || (n.startsWith("reconstructed_waveform_") && n.endsWith(".csv"))
+                || (n.startsWith("unknown_frames_") && n.endsWith(".hex"))
                 || (n.startsWith("h10_") && (n.endsWith(".csv") || n.endsWith(".txt")));
     }
 

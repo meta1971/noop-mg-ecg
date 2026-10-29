@@ -12,7 +12,7 @@ import java.util.List;
 final class H10Compare {
     private H10Compare() {}
     static final class Result {
-        int nMg, nH10, nPaired; double offsetS, timingSdMs, rrDiffSdMs, rrDiffMedianMs; double hrMg, hrH10, rmssdMg, rmssdH10;
+        int nMg, nH10, nPaired; double offsetS, timingSdMs, rrDiffSdMs, rrDiffMedianMs; double hrMg, hrH10, rmssdMg, rmssdH10; boolean piecewise;
         double[] h10Mean, mgMean; double h10R, mgR;           // mean beats on a 2 ms grid from -300 ms, microvolts; their R heights
     }
 
@@ -42,8 +42,15 @@ final class H10Compare {
         for (double off = lo; off <= hi; off += 0.004) { double s = score(tm, th, off); if (s > best) { best = s; bestOff = off; } }
         double fo = bestOff; best = -1; for (double off = bestOff - 0.008; off <= bestOff + 0.008; off += 0.0005) { double s = score(tm, th, off); if (s > best) { best = s; fo = off; } }
         R.offsetS = fo;
+        double[] offAt = new double[tm.length]; Arrays.fill(offAt, fo);
+        if (tm[tm.length - 1] - tm[0] > 120) {      // 0.25.1: on a long reading the two clocks drift by tens of milliseconds, so the offset is refitted for every 30 s block
+            R.piecewise = true; int i0 = 0;
+            while (i0 < tm.length) { int i1 = i0; while (i1 < tm.length && tm[i1] < tm[i0] + 30) i1++;
+                if (i1 - i0 >= 15) { double[] sub = Arrays.copyOfRange(tm, i0, i1); double bo = fo, bs = -1; for (double off = fo - 0.08; off <= fo + 0.08; off += 0.0005) { double sc = score(sub, th, off); if (sc > bs) { bs = sc; bo = off; } } for (int k = i0; k < i1; k++) offAt[k] = bo; }
+                i0 = i1; }
+        }
         int[] ia = new int[tm.length], ja = new int[tm.length]; double[] dt = new double[tm.length]; int np = 0;
-        for (int i = 0; i < tm.length; i++) { int j = nearest(th, tm[i] + fo); if (j >= 0 && Math.abs(th[j] - (tm[i] + fo)) < 0.04) { ia[np] = i; ja[np] = j; dt[np] = (tm[i] + fo - th[j]) * 1000; np++; } }
+        for (int i = 0; i < tm.length; i++) { int j = nearest(th, tm[i] + offAt[i]); if (j >= 0 && Math.abs(th[j] - (tm[i] + offAt[i])) < 0.04) { ia[np] = i; ja[np] = j; dt[np] = (tm[i] + offAt[i] - th[j]) * 1000; np++; } }
         R.nPaired = np; if (np < 20) return R;
         double[] d2 = Arrays.copyOf(dt, np); double mean = ProDsp.mean(d2); double[] d0 = new double[np]; for (int i = 0; i < np; i++) d0[i] = d2[i] - mean; R.timingSdMs = ProDsp.std(d0, 1);
         List<Double> rrd = new ArrayList<>(), rm = new ArrayList<>(), rh = new ArrayList<>();

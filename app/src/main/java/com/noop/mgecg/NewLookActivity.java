@@ -767,6 +767,21 @@ public class NewLookActivity extends Activity {
         disclaimer.setTextSize(11);
     }
 
+    // 0.25.1: a short buzz and a note when the fingers come off the clasp during a reading, or when there is no contact after 14 s
+    private int lastWarnRun; private boolean warnedNoContact;
+    private void contactAlert(String m) { try { Toast.makeText(this, m, Toast.LENGTH_SHORT).show(); if (ecgStartBtn != null) ecgStartBtn.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { } }
+    private final Runnable contactTick = new Runnable() {
+        @Override public void run() {
+            boolean running = ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP");
+            if (!running || isFinishing()) { warnedNoContact = false; lastWarnRun = 0; return; }
+            int run = Live500.openRun;
+            if (run >= 3 && lastWarnRun < 3) contactAlert("Fingers are off the clasp: put them back");
+            lastWarnRun = run;
+            if (!Live500.everOn && System.currentTimeMillis() - Live500.startMs > 14000L && !warnedNoContact) { warnedNoContact = true; contactAlert("No finger contact yet: put two fingers on the clasp"); }
+            ui.postDelayed(this, 1000L);
+        }
+    };
+
     private final Runnable packetsTick = new Runnable() {
         @Override public void run() {
             if (packetsView == null || state != ST_ECG || packetsView.getVisibility() != View.VISIBLE) return;
@@ -826,6 +841,7 @@ public class NewLookActivity extends Activity {
             lastRunningState = rs;
             if (!running && prevRs == 1) ui.postDelayed(new Runnable() { @Override public void run() { maybeStopH10(); } }, 6000L);       // 0.23.0: the H10 stops a few seconds after the reading
             ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
+            if (running) { Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
             if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
             if (running && packetsView != null && packetsView.getVisibility() != View.VISIBLE
                     && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_packets_open", true)) openPackets(true);

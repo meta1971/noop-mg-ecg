@@ -104,6 +104,9 @@ final class Live500 {
     static void setMode(int m) { synchronized (LOCK) { mode = (m < 0 || m > 2) ? 2 : m; kSlow = kernel(mode == 0 ? SIGMA_FAST_MS : mode == 1 ? 8.0 : 12.0); } }
     static String modeLabel() { synchronized (LOCK) { return mode == 0 ? "not smoothed" : mode == 1 ? "light smoothing" : "smoothed"; } }
 
+    // 0.25.1: electrode contact seen in the live frames (about one frame a second)
+    static volatile int openRun; static volatile boolean everOn; static volatile long startMs;
+    static void resetContact() { openRun = 0; everOn = false; startMs = System.currentTimeMillis(); }
     static void reset() {
         synchronized (LOCK) {
             nAbs = 0; procUpTo = 0; primed = false; haveOffset = false; frames = 0; lastFrameMs = 0; lastCounter = -1; nextDue = Double.NaN; lastDueMs = 0;
@@ -218,6 +221,7 @@ final class Live500 {
         if (f == null || f.length < 1584 || (f[9] & 0xFF) != 16) return 0;
         int n = (f[32] & 0xFF) | ((f[33] & 0xFF) << 8);
         if (n < 1 || n > 500) return 0;
+        { int off = 0, tot = 0; for (int k = 0; k < n; k += 10) { tot++; if ((f[34 + 3 * k] & 0x80) == 0) off++; } if (tot > 0) { if (off * 10 >= tot * 9) openRun++; else { openRun = 0; if (off == 0) everOn = true; } } }
         long ctr = u32(f, 11);
         double recMs = (u32(f, 15) + (((f[19] & 0xFF) | ((f[20] & 0xFF) << 8)) / 32768.0)) * 1000.0;
         synchronized (LOCK) {

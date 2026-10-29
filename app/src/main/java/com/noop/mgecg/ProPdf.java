@@ -241,6 +241,8 @@ final class ProPdf {
     }
 
     static String secOrNone(int s) { return s < 0 ? "not reached" : s + " s"; }
+    static String liftLens(ProAnalysis.Result r) { StringBuilder sb = new StringBuilder(); for (int i = 0; i < r.lifts && i < 3; i++) sb.append(i == 0 ? "" : ", ").append(String.format(Locale.UK, "%.0f s", r.liftLen[i])); if (r.lifts > 3) sb.append(", ..."); return sb.toString(); }
+    static String liftText(ProAnalysis.Result r) { StringBuilder sb = new StringBuilder(); for (int i = 0; i < r.lifts && i < 3; i++) sb.append(i == 0 ? "" : ", ").append(String.format(Locale.UK, "%.0f s at %d:%02d", r.liftLen[i], (int) r.liftStart[i] / 60, (int) r.liftStart[i] % 60)); if (r.lifts > 3) sb.append(", ..."); return sb.toString(); }
     /** 0.24.0: the conditions of this reading against the six readings of 28 and 29 Oct, with a hint for each flag. */
     static void pageConditions(Pen p, ProAnalysis.Result r, Info info) {
         header(p, "Signal conditions of this reading", "What limited this reading and what to change next time. Reference = the readings of 28 and 29 Oct on this strap (wrist to finger, at rest, H10 worn).", info, 0);
@@ -254,6 +256,7 @@ final class ProPdf {
             {"Contact impedance, median", Double.isNaN(r.impI) ? "-" : f0(r.impI), "75 to 80", "above 200 means poor contact"},
             {"Impedance in the first 10 s", Double.isNaN(r.impIFirst10) ? "-" : f0(r.impIFirst10), "75 to 80", "high at the start: press evenly before Start"},
             {"Seconds with poor contact", Double.isNaN(r.impPoorShare) ? "-" : f0(100 * r.impPoorShare) + " %", "2 to 10 %", "seconds with impedance above 200"},
+            {"Finger lifts (electrodes open)", r.lifts == 0 ? "none" : r.lifts + " (" + liftLens(r) + ")", "none", "each lift costs about 7 s until quality 3 returns; nothing restarts"},
             {"Noise per beat", f0(r.noiseSingle) + " uV", "38 to 57 uV", "0.5 to 40 Hz, after removing the average beat"},
             {"Noise on the mean beat", f1(r.noiseMean) + " uV", "2.8 to 6.8 uV", "falls with the square root of the number of beats"},
             {"P wave / noise on the mean beat", Double.isNaN(pn) ? "-" : f1(pn), "2 to 10", "below 3 the P wave and PR are not reliable"},
@@ -269,6 +272,7 @@ final class ProPdf {
         if (r.noiseSingle > 55) hints.add("Noise is high: rest the forearm on a table, relax the hand and shoulder, do not grip or press hard, stay still and quiet.");
         if (!Double.isNaN(pn) && pn < 3) hints.add("The P wave is within 3 times the noise on the mean beat: a reading of 3 minutes or more lowers that noise by about the square root of the beats.");
         if (r.seconds < 90) hints.add("Short reading (" + r.seconds + " s): the first " + (r.firstQ3 < 0 ? 12 : r.firstQ3) + " s are warm-up, so under 90 s leaves few clean beats; use 90 s for rate and rhythm, 3 minutes for shape.");
+        if (r.lifts > 0) hints.add("The fingers came off " + r.lifts + " time" + (r.lifts == 1 ? "" : "s") + " (" + liftText(r) + "). Keep both fingers on and press evenly; the phone now buzzes when contact is lost for 3 s.");
         if (hints.isEmpty()) hints.add("No condition flags: this reading is at or better than the reference range.");
         for (String h : hints) y = para(p, "- " + h, 40, y, 760, 8.5, 11, INK, false) + 2;
         y += 12; p.text("Why these tests", 36, y, 10, INK, true, 0); y += 14;
@@ -305,7 +309,7 @@ final class ProPdf {
         header(p, "Chest-strap check (Polar H10, same time)", "The H10 is a reference for beat times and for the shape below about 40 Hz (130 Hz sampling); it cannot show anything above 40 Hz.", info, 7);
         String[][] rows = {{"", "Strap (MG)", "H10"}, {"Beats found", String.valueOf(h.nMg), String.valueOf(h.nH10)}, {"Beats paired (within 40 ms)", String.valueOf(h.nPaired), ""}, {"Heart rate (paired beats)", f1(h.hrMg) + " bpm", f1(h.hrH10) + " bpm"}, {"RMSSD (paired beats)", f1(h.rmssdMg) + " ms", f1(h.rmssdH10) + " ms"}, {"R height (mean beat)", f0(h.mgR) + " uV", f0(h.h10R) + " uV"}};
         double ty = 100; for (int i = 0; i < rows.length; i++) { if (i == 0) p.rect(36, ty - 11, 380, 15, LIGHT, -1, 0); p.text(rows[i][0], 40, ty, 8.5, INK, i == 0, 0); p.text(rows[i][1], 250, ty, 8.5, INK, true, 0); p.text(rows[i][2], 340, ty, 8.5, INK, true, 0); ty += 17; p.line(36, ty - 11, 416, ty - 11, 0.3, 0xC8D3DF); }
-        para(p, String.format(Locale.UK, "Clock offset %.3f s (found from the beat pattern). Beat-time scatter between the devices %.2f ms; R-R interval difference SD %.2f ms (median %+.1f ms).", h.offsetS, h.timingSdMs, h.rrDiffSdMs, h.rrDiffMedianMs), 36, ty + 10, 380, 8.5, 11, INK, false);
+        para(p, String.format(Locale.UK, "Clock offset %.3f s (found from the beat pattern" + (h.piecewise ? "; refitted every 30 s because the two clocks drift apart over a long reading" : "") + "). Beat-time scatter between the devices %.2f ms; R-R interval difference SD %.2f ms (median %+.1f ms).", h.offsetS, h.timingSdMs, h.rrDiffSdMs, h.rrDiffMedianMs), 36, ty + 10, 380, 8.5, 11, INK, false);
         para(p, "The R-R difference is the combined timing error of both devices, so the strap's own timing error is below it. A heart-rate and RMSSD that agree between devices show that the beats are real and correctly placed; an interval that both devices show is a real beat, not noise. The H10 reads a larger R wave because it is a chest lead.", 36, ty + 54, 380, 8.3, 10.5, GREY, false);
         if (h.h10Mean != null && h.mgMean != null) {
             p.text("Mean beat on both devices (microvolts, each from its own baseline)", 440, 96, 9, INK, true, 0);

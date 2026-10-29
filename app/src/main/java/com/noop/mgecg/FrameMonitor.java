@@ -77,8 +77,8 @@ final class FrameMonitor {
     private static void capture(long nowMs, String ch, byte[] f, boolean t50) {
         java.io.File dir = capDir; if (dir == null) return;
         synchronized (LOCK) {
-            if (t50) { if (cap50 >= 500) return; cap50++; } else { if (cap07 >= 300) return; cap07++; }
-            if (capBytes > 1200000L) return;
+            if (t50) { if (cap50 >= 3000) return; cap50++; } else { if (cap07 >= 300) return; cap07++; }
+            if (capBytes > 5000000L) return;
             try (java.io.FileWriter w = new java.io.FileWriter(new java.io.File(dir, "unknown_frames_" + new java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.UK).format(new java.util.Date(nowMs)) + ".hex"), true)) {
                 StringBuilder sb = new StringBuilder(); for (byte b : f) sb.append(String.format("%02X", b & 0xFF)); String ln = nowMs + " " + (ch.length() >= 8 ? ch.substring(4, 8) : ch) + " " + f.length + " " + sb + "\n"; w.write(ln); capBytes += ln.length();
             } catch (Exception ignored) { }
