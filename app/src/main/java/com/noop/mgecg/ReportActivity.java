@@ -86,7 +86,7 @@ public class ReportActivity extends Activity {
         TextView title = new TextView(this);
         title.setText(titleFor(path));
         title.setTextColor(TEXT);
-        title.setTextSize(20);
+        title.setTextSize(16);
         title.setPadding(dp(14), 0, 0, 0);
         try { title.setTypeface(HealthViews.font(this, 600)); } catch (Throwable ignored) { }
         bar.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -94,6 +94,10 @@ public class ReportActivity extends Activity {
         pro.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.make(ReportActivity.this, new File(path)); } });
         LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-2, dp(44)); plp.rightMargin = dp(8);
         bar.addView(pro, plp);
+        TextView pull = pill("Full pull");                                  // 0.25.0: everything the app holds for this reading, one small zip
+        pull.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { ReadingPull.make(ReportActivity.this, new File(path)); } });
+        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(-2, dp(44)); ulp.rightMargin = dp(8);
+        bar.addView(pull, ulp);
         TextView save = pill("Save PDF");
         save.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { printReport(); } });
         bar.addView(save, new LinearLayout.LayoutParams(-2, dp(44)));

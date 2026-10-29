@@ -72,6 +72,7 @@ public class DayLogService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
+        FrameMonitor.captureTo(getExternalFilesDir(null));          // 0.25.0: raw copies of undecoded frames
         CrashLog.install(this);                          // 0.19.0: a crash is recorded, not silent
     }
 

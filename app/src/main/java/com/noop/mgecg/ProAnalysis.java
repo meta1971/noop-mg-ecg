@@ -25,6 +25,13 @@ final class ProAnalysis {
     }
     static final class Result {
         double t0; int seconds, beatsUsed, beatsTotal, cleanSeconds; int[] qcount = new int[4];
+        // 0.24.0 conditions: warm-up, the strap's settling phase (status byte 22), contact impedance (real part), early seconds with data
+        int firstQ3 = -1, settleEnd = -1, earlyUsable; double impI = Double.NaN, impIFirst10 = Double.NaN, impPoorShare = Double.NaN;
+        // 0.25.0 detectors: record times, early beats, QT and ST per 20-beat window with their bootstrap uncertainty
+        double[] recT; double[] earlyT = new double[0], earlyR1 = new double[0], earlyR2 = new double[0];
+        double[] winT = new double[0], qtWin = new double[0], qtSig = new double[0], stWin = new double[0], stSig = new double[0];
+        double qtSdAcross = Double.NaN, qtSigMean = Double.NaN, stSdAcross = Double.NaN, stSigMean = Double.NaN;
+        ProDetect.Pat pat;       // set by the report maker from the stored optical records
         double[] rrMs; Hrv hrv; Iv iv; double[][] ci = new double[10][];       // lo, hi per key (see CI_KEYS)
         double[] meanFull, meanLp40, sd; double noiseSingle, noiseMean;
         double[] snrAvg = new double[9], snrSingle = new double[9]; double splitQrs, splitCtl;
@@ -79,6 +86,16 @@ final class ProAnalysis {
             }
         }
         R.cleanSeconds = R.qcount[3];
+        for (int s = 0; s < sec; s++) { byte[] f = fr.get(s); if (R.firstQ3 < 0 && q[s] == 3) R.firstQ3 = s; if (R.settleEnd < 0 && (f[22] & 0xFF) == 8) R.settleEnd = s; }
+        if (R.firstQ3 > 0) for (int s = 0; s < R.firstQ3; s++) { if (q[s] != 1 && q[s] != 2) continue; boolean fin = true; for (int k = 0; k < 500; k++) if (Double.isNaN(x[s * 500 + k])) { fin = false; break; } if (fin) R.earlyUsable++; }
+        {   // contact impedance block, frame bytes 1534 to 1579: n, then n u16 real parts
+            List<Double> all = new ArrayList<>(), first = new ArrayList<>(); int poor = 0;
+            for (int s = 0; s < sec; s++) { byte[] f = fr.get(s); int n = f[1534] & 0xFF; if (n < 1 || n > 11) continue;
+                double si = 0; for (int k = 0; k < n; k++) si += (f[1535 + 2 * k] & 0xFF) | ((f[1536 + 2 * k] & 0xFF) << 8);
+                double mi = si / n; all.add(mi); if (s < 10) first.add(mi); if (mi > 200) poor++; }
+            if (!all.isEmpty()) { double[] a = new double[all.size()]; for (int i = 0; i < a.length; i++) a[i] = all.get(i); R.impI = ProDsp.median(a); R.impPoorShare = poor / (double) a.length; }
+            if (!first.isEmpty()) { double[] a = new double[first.size()]; for (int i = 0; i < a.length; i++) a[i] = first.get(i); R.impIFirst10 = ProDsp.median(a); }
+        }
         // clean segments
         List<int[]> segs = new ArrayList<>(); int cur = -1;
         for (int s = 0; s < sec; s++) {
@@ -89,6 +106,7 @@ final class ProAnalysis {
         if (segs.isEmpty()) { why = "no stretch of 8 seconds with quality 3 and no flagged samples (" + R.qcount[3] + " seconds of quality 3 in " + sec + ")"; return null; }
         double[][] HP = ProDsp.butterHigh2(0.5, FS); double[][] NT = {ProDsp.notch(50, 35, FS)};
         List<Double> btAcc = new ArrayList<>(); List<double[]> beats = new ArrayList<>(); List<Integer> bpos = new ArrayList<>(); List<Double> rrAcc = new ArrayList<>();
+        List<Double> earlyT = new ArrayList<>(), earlyR1 = new ArrayList<>(), earlyR2 = new ArrayList<>();
         int bestSeg = 0; for (int i = 1; i < segs.size(); i++) if (segs.get(i)[1] - segs.get(i)[0] > segs.get(bestSeg)[1] - segs.get(bestSeg)[0]) bestSeg = i;
         for (int si = 0; si < segs.size(); si++) {
             int a = segs.get(si)[0], b = segs.get(si)[1];
@@ -97,6 +115,10 @@ final class ProAnalysis {
             double[] ylp = ProDsp.filtfilt(y, ProDsp.butterLow(4, 40, FS));
             for (int p : pk) { int l = Math.max(1, p - 2), h = Math.min(ylp.length - 2, p + 2), bi = l; for (int i = l; i <= h; i++) if (ylp[i] > ylp[bi]) bi = i; double A = ylp[bi - 1], B = ylp[bi], C = ylp[bi + 1], D = A - 2 * B + C; btAcc.add((a + bi + (D != 0 ? 0.5 * (A - C) / D : 0)) / FS); }
             for (int i = 1; i < pk.length; i++) rrAcc.add((pk[i] - pk[i - 1]) * 1000.0 / FS);
+            {   // 0.25.0 early beats: an interval under 80 % of the local median (11 intervals) followed by one over 112 %
+                int m = pk.length - 1; double[] rr = new double[m]; for (int i = 0; i < m; i++) rr[i] = (pk[i + 1] - pk[i]) * 1000.0 / FS;
+                if (m >= 12) for (int i = 0; i < m - 1; i++) { double med = ProDsp.median(rr, Math.max(0, i - 5), Math.min(m, i + 6)); if (rr[i] < 0.80 * med && rr[i + 1] > 1.12 * med) { earlyT.add((a + pk[i + 1]) / (double) FS); earlyR1.add(rr[i] / med); earlyR2.add(rr[i + 1] / med); } }
+            }
             for (int p : pk) if (p - PRE >= 0 && p + POST <= y.length) { beats.add(Arrays.copyOfRange(y, p - PRE, p + POST)); bpos.add(a + p); }
         }
         R.beatsTotal = beats.size(); if (beats.size() < 30) { why = "only " + beats.size() + " beats found in the clean stretches (30 are needed)"; return null; }
@@ -123,6 +145,23 @@ final class ProAnalysis {
         // variability
         R.hrv = hrv(R.rrMs); double rrS = ProDsp.median(R.rrMs) / 1000.0;
         R.iv = intervals(avg, rrS);
+        {   // 0.25.0 QT and ST per 20-beat window (step 10) with a bootstrap uncertainty for each window
+            final int K = 20, STEP = 10; List<Double> wt = new ArrayList<>(), qtl = new ArrayList<>(), qs = new ArrayList<>(), stl = new ArrayList<>(), ss = new ArrayList<>(); Random rb = new Random(7);
+            for (int a0 = 0; a0 + K <= N; a0 += STEP) {
+                double[] wa = new double[L]; for (int k = a0; k < a0 + K; k++) for (int i = 0; i < L; i++) wa[i] += Bal[k][i] / K;
+                Iv iw = intervals(wa, rrS); if (iw == null || !iw.qtValid || Double.isNaN(iw.st)) continue;
+                List<Double> bq = new ArrayList<>(), bs = new ArrayList<>();
+                for (int b = 0; b < 25; b++) { double[] wb = new double[L]; for (int k = 0; k < K; k++) { double[] be = Bal[a0 + rb.nextInt(K)]; for (int i = 0; i < L; i++) wb[i] += be[i] / K; } Iv ib = intervals(wb, rrS); if (ib != null && ib.qtValid && !Double.isNaN(ib.st)) { bq.add(ib.qt); bs.add(ib.st); } }
+                if (bq.size() < 12) continue;
+                wt.add(keptT.get(a0 + K / 2)); qtl.add(iw.qt); stl.add(iw.st); qs.add(sdOf(bq)); ss.add(sdOf(bs));
+            }
+            int nw = wt.size(); R.winT = new double[nw]; R.qtWin = new double[nw]; R.qtSig = new double[nw]; R.stWin = new double[nw]; R.stSig = new double[nw];
+            for (int i = 0; i < nw; i++) { R.winT[i] = wt.get(i); R.qtWin[i] = qtl.get(i); R.qtSig[i] = qs.get(i); R.stWin[i] = stl.get(i); R.stSig[i] = ss.get(i); }
+            if (nw >= 4) { R.qtSdAcross = sdOf(qtl); R.stSdAcross = sdOf(stl); }
+            if (nw >= 4) { double a = 0, b = 0; for (int i = 0; i < nw; i++) { a += R.qtSig[i]; b += R.stSig[i]; } R.qtSigMean = a / nw; R.stSigMean = b / nw; }
+        }
+        R.recT = recT; R.earlyT = new double[earlyT.size()]; R.earlyR1 = new double[earlyT.size()]; R.earlyR2 = new double[earlyT.size()];
+        for (int i = 0; i < earlyT.size(); i++) { R.earlyT[i] = earlyT.get(i); R.earlyR1[i] = earlyR1.get(i); R.earlyR2[i] = earlyR2.get(i); }
         // bootstrap confidence ranges
         Random rnd = new Random(1); int NB = 300; double[][] bs = new double[CI_KEYS.length][NB]; int ok = 0;
         for (int b = 0; b < NB; b++) {
@@ -186,6 +225,7 @@ final class ProAnalysis {
         return R;
     }
 
+    static double sdOf(List<Double> v) { if (v == null || v.size() < 2) return Double.NaN; double m = 0; for (double x : v) m += x; m /= v.size(); double q = 0; for (double x : v) q += (x - m) * (x - m); return Math.sqrt(q / v.size()); }
     static long u32(byte[] f, int o) { return (f[o] & 0xFFL) | ((f[o + 1] & 0xFFL) << 8) | ((f[o + 2] & 0xFFL) << 16) | ((f[o + 3] & 0xFFL) << 24); }
     static int u16(byte[] f, int o) { return (f[o] & 0xFF) | ((f[o + 1] & 0xFF) << 8); }
 

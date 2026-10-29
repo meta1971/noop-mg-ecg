@@ -71,9 +71,23 @@ final class FrameMonitor {
     }
 
     /** Call once per notification with the arrival time, the short characteristic id (for example "0005") and the value. */
+    // 0.25.0: raw capture of frames that are not decoded yet (console log type 50 and the device-info channel 0007), to unknown_frames_<date>.hex
+    private static volatile java.io.File capDir; private static int cap50, cap07; private static long capBytes;
+    static void captureTo(java.io.File dir) { if (dir != null) capDir = dir; }
+    private static void capture(long nowMs, String ch, byte[] f, boolean t50) {
+        java.io.File dir = capDir; if (dir == null) return;
+        synchronized (LOCK) {
+            if (t50) { if (cap50 >= 500) return; cap50++; } else { if (cap07 >= 300) return; cap07++; }
+            if (capBytes > 1200000L) return;
+            try (java.io.FileWriter w = new java.io.FileWriter(new java.io.File(dir, "unknown_frames_" + new java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.UK).format(new java.util.Date(nowMs)) + ".hex"), true)) {
+                StringBuilder sb = new StringBuilder(); for (byte b : f) sb.append(String.format("%02X", b & 0xFF)); String ln = nowMs + " " + (ch.length() >= 8 ? ch.substring(4, 8) : ch) + " " + f.length + " " + sb + "\n"; w.write(ln); capBytes += ln.length();
+            } catch (Exception ignored) { }
+        }
+    }
     static void note(long nowMs, String ch, byte[] f) {
         if (f == null || f.length == 0) return;
         int key = keyOf(f);
+        if (capDir != null && ch != null) { int ty = key >>> 24; if (ty == 50) capture(nowMs, ch, f, true); else if (ch.length() >= 8 && ch.substring(4, 8).equals("0007")) capture(nowMs, ch, f, false); }
         Entry e = new Entry(nowMs, ch, f.length, Arrays.copyOf(f, Math.min(f.length, HEAD)));
         int type = key >>> 24;
         synchronized (LOCK) {

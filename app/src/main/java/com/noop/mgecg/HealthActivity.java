@@ -83,6 +83,7 @@ public class HealthActivity extends Activity {
     // ------------------------------------------------------------------ lifecycle
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        FrameMonitor.captureTo(getExternalFilesDir(null));          // 0.25.0: raw copies of undecoded frames
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         root.addView(new GlowBg(this), new FrameLayout.LayoutParams(-1, -1));
@@ -1012,6 +1013,8 @@ public class HealthActivity extends Activity {
 
         col.addView(rowCard("Trends", "Recovery, resting heart rate, HRV, sleep, breathing and skin temperature over 7, 30 or 90 nights",
                 new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } }), lp(-1, -2, 12));
+        col.addView(rowCard("Healthspan (research)", "Age estimate and pace of aging from your nights: resting heart rate, sleep regularity, fitness. A research estimate, not WHOOP's number",
+                new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Healthspan.show(HealthActivity.this, data); } }), lp(-1, -2, 12));
         col.addView(rowCard("Strap data", "Every value the strap sends while worn: heart, motion, temperatures, state, events",
                 new View.OnClickListener() { @Override public void onClick(View v) { StrapData.show(HealthActivity.this); } }), lp(-1, -2, 10));
 

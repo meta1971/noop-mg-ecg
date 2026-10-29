@@ -29,16 +29,19 @@ final class ProPdf {
     static final class Info { String when = "", fileName = ""; String note = ""; }
 
     /** Draws every page. h may be null (no H10 recording of the reading). */
+    static int pageNo;
     static void render(Pen p, ProAnalysis.Result r, H10Compare.Result h, Info info) {
+        pageNo = 0;
         pageAnswers(p, r, h, info); pageSummary(p, r, info); pageStrip(p, r, info); pageBeat(p, r, info); pageHrv(p, r, info); pageBand(p, r, info);
         if (h != null && h.nPaired >= 20) pageH10(p, r, h, info);
+        pageConditions(p, r, info); pageDetectors(p, r, info);
         pageEval(p, r, info); pageMethods(p, info); pageRefs(p, info);
     }
 
     // ------------------------------------------------------------------ helpers
     static void header(Pen p, String title, String sub, Info info, int page) {
         p.newPage(); p.text(title, 36, 52, 20, INK, true, 0); if (sub != null) p.text(sub, 36, 70, 9, GREY, false, 0);
-        p.text("WHOOP MG 500 Hz ECG evaluation  |  " + info.when + "  |  research use only: not a diagnosis and not a medical device", 36, 578, 7.5, GREY, false, 0); p.text("page " + page, W - 36, 578, 7.5, GREY, false, 2);
+        p.text("WHOOP MG 500 Hz ECG evaluation  |  " + info.when + "  |  research use only: not a diagnosis and not a medical device", 36, 578, 7.5, GREY, false, 0); p.text("page " + (++pageNo), W - 36, 578, 7.5, GREY, false, 2);
     }
     static double para(Pen p, String s, double x, double y, double maxW, double size, double lead, int rgb, boolean bold) {
         for (String blk : s.split("\n")) {
@@ -237,6 +240,67 @@ final class ProPdf {
         para(p, "Reading: the energy above 40 Hz is beat-locked signal (C), strong after averaging (A) and weak on one beat (B). It carries the height and sharpness of the QRS (D). It does not improve beat timing or rhythm detection (see the H10 and database pages).", 36, y + 2, 770, 8.3, 10.5, GREY, false);
     }
 
+    static String secOrNone(int s) { return s < 0 ? "not reached" : s + " s"; }
+    /** 0.24.0: the conditions of this reading against the six readings of 28 and 29 Oct, with a hint for each flag. */
+    static void pageConditions(Pen p, ProAnalysis.Result r, Info info) {
+        header(p, "Signal conditions of this reading", "What limited this reading and what to change next time. Reference = the readings of 28 and 29 Oct on this strap (wrist to finger, at rest, H10 worn).", info, 0);
+        double pn = (r.iv != null && !Double.isNaN(r.iv.pAmp) && r.noiseMean > 0) ? r.iv.pAmp / r.noiseMean : Double.NaN;
+        double rn = (r.iv != null && r.noiseSingle > 0) ? r.iv.rAmp / r.noiseSingle : Double.NaN;
+        String[][] rows = {
+            {"", "This reading", "Reference", "What it means"},
+            {"First second of quality 3", secOrNone(r.firstQ3), "10 to 18 s", "warm-up before the strap trusts the signal (the strap itself, not the contact)"},
+            {"Seconds with usable data before it", String.valueOf(r.earlyUsable), "7 to 12", "quality 1 or 2, no gaps; usable for beat timing in a test (79 to 92 % of beats, 3 ms error)"},
+            {"Strap settling phase ends at", secOrNone(r.settleEnd), "38 to 40 s", "status byte 22 changes from 10 to 8"},
+            {"Contact impedance, median", Double.isNaN(r.impI) ? "-" : f0(r.impI), "75 to 80", "above 200 means poor contact"},
+            {"Impedance in the first 10 s", Double.isNaN(r.impIFirst10) ? "-" : f0(r.impIFirst10), "75 to 80", "high at the start: press evenly before Start"},
+            {"Seconds with poor contact", Double.isNaN(r.impPoorShare) ? "-" : f0(100 * r.impPoorShare) + " %", "2 to 10 %", "seconds with impedance above 200"},
+            {"Noise per beat", f0(r.noiseSingle) + " uV", "38 to 57 uV", "0.5 to 40 Hz, after removing the average beat"},
+            {"Noise on the mean beat", f1(r.noiseMean) + " uV", "2.8 to 6.8 uV", "falls with the square root of the number of beats"},
+            {"P wave / noise on the mean beat", Double.isNaN(pn) ? "-" : f1(pn), "2 to 10", "below 3 the P wave and PR are not reliable"},
+            {"R height / noise per beat", Double.isNaN(rn) ? "-" : f1(rn), "9 to 18", "contact, pressure and placement"},
+            {"Beats used / seconds of quality 3", r.beatsUsed + " / " + r.qcount[3], "71 to 192 / 65 to 180", "204 s gave 2.8 uV on the mean beat, 80 to 95 s gave 4.6 to 6.8 uV"},
+        };
+        double ty = 100;
+        for (int i = 0; i < rows.length; i++) { if (i == 0) p.rect(36, ty - 11, 770, 15, LIGHT, -1, 0); p.text(rows[i][0], 40, ty, 8.5, INK, i == 0, 0); p.text(rows[i][1], 250, ty, 8.5, INK, true, 0); p.text(rows[i][2], 340, ty, 8.5, GREY, i == 0, 0); p.text(rows[i][3], 450, ty, 8, GREY, false, 0); ty += 17.5; }
+        double y = ty + 18; p.text("What to change next time", 36, y, 10, INK, true, 0); y += 14;
+        List<String> hints = new ArrayList<>();
+        if (r.firstQ3 > 15 || r.firstQ3 < 0) hints.add("Slow start: put the fingers on, damp the finger and the wrist skin, press evenly and wait about 5 s before Start (the strap needed " + secOrNone(r.firstQ3) + " to trust the signal).");
+        if ((!Double.isNaN(r.impI) && r.impI > 150) || (!Double.isNaN(r.impPoorShare) && r.impPoorShare > 0.2)) hints.add("Contact impedance is high: damp the finger and the skin under the strap, avoid dry or cold hands, keep the pressure even.");
+        if (r.noiseSingle > 55) hints.add("Noise is high: rest the forearm on a table, relax the hand and shoulder, do not grip or press hard, stay still and quiet.");
+        if (!Double.isNaN(pn) && pn < 3) hints.add("The P wave is within 3 times the noise on the mean beat: a reading of 3 minutes or more lowers that noise by about the square root of the beats.");
+        if (r.seconds < 90) hints.add("Short reading (" + r.seconds + " s): the first " + (r.firstQ3 < 0 ? 12 : r.firstQ3) + " s are warm-up, so under 90 s leaves few clean beats; use 90 s for rate and rhythm, 3 minutes for shape.");
+        if (hints.isEmpty()) hints.add("No condition flags: this reading is at or better than the reference range.");
+        for (String h : hints) y = para(p, "- " + h, 40, y, 760, 8.5, 11, INK, false) + 2;
+        y += 12; p.text("Why these tests", 36, y, 10, INK, true, 0); y += 14;
+        para(p, "Published work on dry-electrode ECG: the skin-electrode impedance falls and the signal-to-noise ratio rises over minutes of stable contact, even without skin preparation, and electrode movement lowers the signal-to-noise ratio markedly [13]. Contact pressure and skin moisture also change the impedance. Muscle noise is the usual limit of a wrist lead. The P wave is normally smaller in lead I (wrist to finger) than in lead II, so P and PR need averaging over more beats. Compare this page between readings that differ in one condition (damp or dry fingers, arm supported or not, pressure, reading length).", 40, y, 760, 8.5, 11, GREY, false);
+    }
+
+    /** 0.25.0: pulse arrival time, early beats, QT and ST by window, each with its measurement uncertainty. */
+    static void pageDetectors(Pen p, ProAnalysis.Result r, Info info) {
+        header(p, "Detectors: pulse arrival, early beats, QT and ST", "Each value comes with its own measurement error. A change is only called real when it is larger than that error. Research use only.", info, 0);
+        double y = 96; p.text("Pulse arrival time (ECG R wave to the green-LED pulse peak at the wrist, stored 50 Hz optical)", 36, y, 10, INK, true, 0); y += 16;
+        ProDetect.Pat P = r.pat;
+        if (P == null || Double.isNaN(P.medianMs)) y = para(p, P == null ? "Not available." : P.note, 40, y, 760, 8.5, 11, GREY, false) + 4;
+        else {
+            double rrBreath = specOk(r.hrv) ? r.hrv.fpk * 60 : Double.NaN;
+            y = para(p, String.format(Locale.UK, "%d of %d beats have a pulse. Median %s ms, spread (SD) %s ms, typical deviation %s ms. Breathing from the pulse arrival series: %s a minute%s. Changes from beat to beat and between readings mean more than the absolute delay, which depends on the clocks of the two sensors.", P.withPulse, P.beats, f0(P.medianMs), f1(P.sdMs), f1(P.madMs), Double.isNaN(P.breathPerMin) ? "-" : f0(P.breathPerMin), Double.isNaN(rrBreath) ? "" : " (from the beat intervals: " + f0(rrBreath) + ")"), 40, y, 760, 8.5, 11, INK, false) + 6;
+        }
+        p.text("Early beats (an interval under 80 % of the local median, followed by one over 112 %)", 36, y, 10, INK, true, 0); y += 16;
+        if (r.earlyT == null || r.earlyT.length == 0) y = para(p, "None found in the clean stretches of this reading.", 40, y, 760, 8.5, 11, INK, false) + 6;
+        else { StringBuilder sb = new StringBuilder(r.earlyT.length + " found: "); for (int i = 0; i < r.earlyT.length && i < 8; i++) sb.append(String.format(Locale.UK, "%s at %.1f s (interval %.0f %%, next %.0f %%)", i == 0 ? "" : "; ", r.earlyT[i], 100 * r.earlyR1[i], 100 * r.earlyR2[i])); y = para(p, sb.toString() + ". The artifact filter removes such intervals from the heart-rate variability figures; they are listed here instead.", 40, y, 760, 8.5, 11, INK, false) + 6; }
+        p.text("QT and ST per window of 20 beats (step 10 beats)", 36, y, 10, INK, true, 0); y += 14;
+        int nw = r.qtWin == null ? 0 : r.qtWin.length;
+        if (nw < 4 || Double.isNaN(r.qtSdAcross)) y = para(p, "Too few valid windows in this reading (" + nw + "): a reading of 90 s or more gives about 6 windows, 3 minutes about 18.", 40, y, 760, 8.5, 11, GREY, false) + 4;
+        else {
+            double qm = ProDsp.median(r.qtWin), sm = ProDsp.median(r.stWin); double qr = r.qtSdAcross / r.qtSigMean, sr = r.stSdAcross / r.stSigMean;
+            String[][] rows = {{"", "Median", "Spread (SD)", "Error / window", "Spread / error", "Verdict"},
+                {"QT (tangent), ms", f0(qm), f1(r.qtSdAcross), f1(r.qtSigMean), f1(qr), qr > 1.5 ? "varies more than the error" : "within measurement error"},
+                {"ST at J+60 ms, uV", f0(sm), f1(r.stSdAcross), f1(r.stSigMean), f1(sr), sr > 1.5 ? "varies more than the error" : "within measurement error"}};
+            for (int i = 0; i < rows.length; i++) { if (i == 0) p.rect(36, y - 11, 770, 15, LIGHT, -1, 0); p.text(rows[i][0], 40, y, 8.5, INK, i == 0, 0); p.text(rows[i][1], 190, y, 8.5, INK, i > 0, 0); p.text(rows[i][2], 260, y, 8.5, INK, i > 0, 0); p.text(rows[i][3], 345, y, 8.5, INK, i > 0, 0); p.text(rows[i][4], 440, y, 8.5, INK, i > 0, 0); p.text(rows[i][5], 540, y, 8.5, i == 0 ? INK : GREY, i == 0, 0); y += 17.5; }
+            y += 4; y = para(p, nw + " windows. A QT or ST change is real only when it exceeds about twice the measurement error. The strap's own high-pass filter (corner unknown) alters ST, so only changes between windows and between readings count, not the absolute level.", 40, y, 760, 8.5, 11, GREY, false) + 4;
+        }
+    }
+
     static void pageH10(Pen p, ProAnalysis.Result r, H10Compare.Result h, Info info) {
         header(p, "Chest-strap check (Polar H10, same time)", "The H10 is a reference for beat times and for the shape below about 40 Hz (130 Hz sampling); it cannot show anything above 40 Hz.", info, 7);
         String[][] rows = {{"", "Strap (MG)", "H10"}, {"Beats found", String.valueOf(h.nMg), String.valueOf(h.nH10)}, {"Beats paired (within 40 ms)", String.valueOf(h.nPaired), ""}, {"Heart rate (paired beats)", f1(h.hrMg) + " bpm", f1(h.hrH10) + " bpm"}, {"RMSSD (paired beats)", f1(h.rmssdMg) + " ms", f1(h.rmssdH10) + " ms"}, {"R height (mean beat)", f0(h.mgR) + " uV", f0(h.h10R) + " uV"}};
@@ -306,7 +370,8 @@ final class ProPdf {
             "[9] Bazett HC. Heart 1920;7:353-370. Fridericia LS. Acta Med Scand 1920;53:469-486 (rate correction of the QT interval).",
             "[10] Dash S, Chon KH, Lu S, Raeder EA. Automatic real time detection of atrial fibrillation. Ann Biomed Eng 2009;37:1701-1709.",
             "[11] The CSE Working Party. Recommendations for measurement standards in quantitative electrocardiography. Eur Heart J 1985;6:815-825.",
-            "[12] Jane R, Blasi A, Garcia J, Laguna P. Evaluation of an automatic threshold based detector of waveform limits in Holter ECG with the QT database. Computers in Cardiology 1997 (tolerances 10.2, 12.7, 6.5, 11.6 and 30.6 ms)."};
+            "[12] Jane R, Blasi A, Garcia J, Laguna P. Evaluation of an automatic threshold based detector of waveform limits in Holter ECG with the QT database. Computers in Cardiology 1997 (tolerances 10.2, 12.7, 6.5, 11.6 and 30.6 ms).",
+            "[13] Joutsen A, et al. ECG signal quality in intermittent long-term dry electrode recordings with controlled motion artifacts. Sci Rep 2024 (doi 10.1038/s41598-024-56595-0)."};
         for (String s : refs) y = para(p, s, 36, y, W - 72, 8.8, 11.5, INK, false) + 4;
         para(p, "Generated on the phone by the NOOP-MG-ECG app from the reading's own live raw ECG frames. Research use only.", 36, y + 12, W - 72, 8.5, 11, GREY, false);
     }

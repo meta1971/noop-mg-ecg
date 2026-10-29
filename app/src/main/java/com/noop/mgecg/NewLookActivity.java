@@ -730,9 +730,10 @@ public class NewLookActivity extends Activity {
         col.addView(markToggle, col.indexOfChild(markLabel), mp);
 
         // 0.22.2: the packets arriving (counters per kind, the newest lines), on the reading screen; opens by itself when a reading starts
-        packetsView = tv("", 12, TEXT, false);
-        packetsView.setTypeface(HealthViews.font(this, 400));
-        packetsView.setPadding(dp(14), dp(10), dp(14), dp(10));
+        packetsView = tv("", 10, TEXT, false);                      // 0.25.0: compact log, 10 sp monospace, tight lines
+        packetsView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        packetsView.setLineSpacing(0, 0.92f);
+        packetsView.setPadding(dp(10), dp(6), dp(10), dp(6));
         packetsView.setBackground(round(CARD, 16));
         packetsView.setVisibility(View.GONE);
         packetsView.setOnClickListener(v -> startActivity(new android.content.Intent(this, LiveFramesActivity.class)));
@@ -786,7 +787,7 @@ public class NewLookActivity extends Activity {
     private void refreshPackets() {
         long now = System.currentTimeMillis();
         android.text.SpannableStringBuilder t = new android.text.SpannableStringBuilder();
-        if (PolarH10.wanted) { int hh = PolarH10.hrNow(); t.append("H10 chest strap: " + (hh > 0 ? hh + " bpm" : "connecting...") + (PolarH10.recordToFile ? "  (recording)" : "") + "\n\n"); }
+        if (PolarH10.wanted) { int hh = PolarH10.hrNow(); t.append("H10 chest strap: " + (hh > 0 ? hh + " bpm" : "connecting...") + (PolarH10.recordToFile ? "  (recording)" : "") + "\n"); }
         for (FrameMonitor.RowInfo i : FrameMonitor.rows(now)) {
             if (i.type != 43 && i.type != 40 && i.type != 48) continue;
             int start = t.length();
@@ -794,16 +795,16 @@ public class NewLookActivity extends Activity {
             t.setSpan(new android.text.style.ForegroundColorSpan(i.active ? 0xFF2EE6A8 : MUTED), start, start + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             if (i.last != null && !i.last.isEmpty()) {
                 int s2 = t.length();
-                t.append("    " + i.last + "\n");
+                t.append("  " + i.last + "\n");
                 t.setSpan(new android.text.style.ForegroundColorSpan(MUTED), s2, t.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
         }
         if (t.length() == 0) t.append("No packet yet. Frames arrive about once a second while the link is up.");
         else {
-            t.append("\nNewest first:\n");
-            for (String s : FrameMonitor.lines(false, 4)) t.append(s).append('\n');
+            t.append("Newest first:\n");
+            for (String s : FrameMonitor.lines(false, 3)) t.append(s).append('\n');
         }
-        t.append("\nTap for the full list");
+        t.append("Tap for the full list");
         packetsView.setText(t);
     }
 
