@@ -54,11 +54,15 @@ final class ProAnalysis {
     }
 
     // ---------------------------------------------------------------- the analysis
+    /** Why analyse() returned null (shown by the Pro PDF button). */
+    static volatile String why = "";
+
     static Result analyse(byte[] bin) {
+        why = "";
         List<byte[]> fr = new ArrayList<>();
         List<byte[]> fr17 = new ArrayList<>();
         for (byte[] f : frames(bin)) { if (f.length == 1584 && crcOk(f)) fr.add(f); else if (f.length == 240 && crcOk(f)) fr17.add(f); }
-        if (fr.size() < 20) return null;
+        if (fr.size() < 20) { why = "only " + fr.size() + " live frames in the frame file (20 seconds are needed)"; return null; }
         Result R = new Result(); int sec = fr.size(); R.seconds = sec;
         double[] x = new double[sec * 500]; int[] q = new int[sec]; double[] recT = new double[sec];
         for (int s = 0; s < sec; s++) {
@@ -82,7 +86,7 @@ final class ProAnalysis {
             if (ok && cur < 0) cur = s;
             if ((!ok || s == sec - 1) && cur >= 0) { int e = s + (ok && s == sec - 1 ? 1 : 0); if (e - cur >= 8) segs.add(new int[] {cur * 500 + 250, e * 500 - 250}); cur = -1; }
         }
-        if (segs.isEmpty()) return null;
+        if (segs.isEmpty()) { why = "no stretch of 8 seconds with quality 3 and no flagged samples (" + R.qcount[3] + " seconds of quality 3 in " + sec + ")"; return null; }
         double[][] HP = ProDsp.butterHigh2(0.5, FS); double[][] NT = {ProDsp.notch(50, 35, FS)};
         List<Double> btAcc = new ArrayList<>(); List<double[]> beats = new ArrayList<>(); List<Integer> bpos = new ArrayList<>(); List<Double> rrAcc = new ArrayList<>();
         int bestSeg = 0; for (int i = 1; i < segs.size(); i++) if (segs.get(i)[1] - segs.get(i)[0] > segs.get(bestSeg)[1] - segs.get(bestSeg)[0]) bestSeg = i;
@@ -95,7 +99,7 @@ final class ProAnalysis {
             for (int i = 1; i < pk.length; i++) rrAcc.add((pk[i] - pk[i - 1]) * 1000.0 / FS);
             for (int p : pk) if (p - PRE >= 0 && p + POST <= y.length) { beats.add(Arrays.copyOfRange(y, p - PRE, p + POST)); bpos.add(a + p); }
         }
-        R.beatsTotal = beats.size(); if (beats.size() < 30) return null;
+        R.beatsTotal = beats.size(); if (beats.size() < 30) { why = "only " + beats.size() + " beats found in the clean stretches (30 are needed)"; return null; }
         R.beatTimes = new double[btAcc.size()]; for (int i = 0; i < R.beatTimes.length; i++) R.beatTimes[i] = btAcc.get(i);
         R.rrMs = new double[rrAcc.size()]; for (int i = 0; i < R.rrMs.length; i++) R.rrMs[i] = rrAcc.get(i);
         R.rrMin = Arrays.stream(R.rrMs).min().orElse(0); R.rrMax = Arrays.stream(R.rrMs).max().orElse(0);
@@ -109,7 +113,7 @@ final class ProAnalysis {
         }
         List<double[]> kept = new ArrayList<>(); List<Double> keptT = new ArrayList<>();
         for (int k = 0; k < nb; k++) if (corrWin(cur2[k], T, PRE - 40, PRE + 60) > 0.9) { kept.add(shifted(beats.get(k), sh[k])); int gp = bpos.get(k); keptT.add(recT[Math.min(sec - 1, gp / 500)] + ((gp % 500) + sh[k]) / 500.0); }
-        int N = kept.size(); R.beatsUsed = N; if (N < 30) return null;
+        int N = kept.size(); R.beatsUsed = N; if (N < 30) { why = "only " + N + " of " + nb + " beats matched the average beat (30 are needed)"; return null; }
         double[][] Bal = kept.toArray(new double[0][]);
         double[] avg = new double[L], sd = new double[L];
         for (double[] b : Bal) for (int i = 0; i < L; i++) avg[i] += b[i] / N;

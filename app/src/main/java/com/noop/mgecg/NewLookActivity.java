@@ -730,8 +730,8 @@ public class NewLookActivity extends Activity {
         col.addView(markToggle, col.indexOfChild(markLabel), mp);
 
         // 0.22.2: the packets arriving (counters per kind, the newest lines), on the reading screen; opens by itself when a reading starts
-        packetsView = tv("", 11, INK, false);
-        packetsView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        packetsView = tv("", 12, TEXT, false);
+        packetsView.setTypeface(HealthViews.font(this, 400));
         packetsView.setPadding(dp(14), dp(10), dp(14), dp(10));
         packetsView.setBackground(round(CARD, 16));
         packetsView.setVisibility(View.GONE);

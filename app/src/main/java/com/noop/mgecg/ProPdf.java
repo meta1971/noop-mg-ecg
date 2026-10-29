@@ -54,6 +54,13 @@ final class ProPdf {
     static double bullet(Pen p, String s, double x, double y, double maxW, double size) { p.dot(x + 3, y - size * 0.32, 1.8, BLUE, -1); return para(p, s, x + 12, y, maxW - 12, size, size * 1.32, INK, false) + 2; }
     static String f0(double v) { return Double.isNaN(v) ? "-" : String.format(Locale.UK, "%.0f", v); }
     static String f1(double v) { return Double.isNaN(v) ? "-" : String.format(Locale.UK, "%.1f", v); }
+    /** 0.23.2: the spectrum is only computed from about 64 s of beats; without it LF, HF and the breathing peak are not values (they used to print as 0 and a first-bin artefact). */
+    static boolean specOk(ProAnalysis.Hrv h) { return h != null && (h.lf > 0 || h.hf > 0); }
+    /** 0.23.2: states where this reading's RMSSD sits against the database, instead of a fixed sentence. */
+    static String rmssdSentence(double v) {
+        String where = v < 21 ? "below the 5th percentile (21 ms)" : v < 40 ? "between the 5th percentile (21 ms) and the median (40 ms)" : v <= 64 ? "between the median (40 ms) and the 95th percentile (64 ms)" : "above the 95th percentile (64 ms)";
+        return "This reading's RMSSD (" + f1(v) + " ms) is " + where + " of the healthy-rhythm database (five-minute windows at 58 to 70 bpm).";
+    }
 
     static final class Ax {
         double x0, y0, w, h, xmin, xmax, ymin, ymax;
@@ -98,7 +105,7 @@ final class ProPdf {
         p.text("Reading by reading: what this report found", 36, y, 12.5, BLUE, true, 0); y += 16;
         y = bullet(p, String.format(Locale.UK, "Rhythm and rate: %.1f bpm, R-R %.0f to %.0f ms, irregularity (normalised RMSSD) %.3f; in the public AF database sinus windows have a median of 0.03 and AF windows 0.29.", r.hrv.hr, r.rrMin, r.rrMax, r.nrmssdMedian), 36, y, w, 9.3);
         y = bullet(p, String.format(Locale.UK, "Intervals on the mean beat: PR %s ms, QRS %s ms, QT %s ms, QTc Fridericia %s ms (Bazett %s). P %s, R %s, T %s microvolts. QT is repeatable but only accurate to about 40 ms; the P boundary to about 25 ms.", f0(r.iv.pr), f0(r.iv.qrs), f0(r.iv.qt), f0(r.iv.qtcF), f0(r.iv.qtcB), f0(r.iv.pAmp), f0(r.iv.rAmp), f0(r.iv.tAmp)), 36, y, w, 9.3);
-        y = bullet(p, String.format(Locale.UK, "Heart-rate variability: SDNN %.1f ms, RMSSD %.1f ms, breathing %.0f a minute. Healthy sinus rhythm at 58 to 70 bpm in the Normal Sinus Rhythm Database: RMSSD median 40 ms, 5th percentile 21 ms.", r.hrv.sdnnDetr, r.hrv.rmssd, r.hrv.fpk * 60), 36, y, w, 9.3);
+        y = bullet(p, String.format(Locale.UK, "Heart-rate variability: SDNN %.1f ms, RMSSD %.1f ms, breathing %s. Healthy sinus rhythm at 58 to 70 bpm in the Normal Sinus Rhythm Database: RMSSD median 40 ms, 5th percentile 21 ms.", r.hrv.sdnnDetr, r.hrv.rmssd, specOk(r.hrv) ? String.format(Locale.UK, "%.0f a minute", r.hrv.fpk * 60) : "not computed (needs about 3 minutes)"), 36, y, w, 9.3);
         if (r.hrv.removed > 0) y = bullet(p, r.hrv.removed + " interval(s) were more than 20 % away from the running median and left out of the variability figures. Seen by both devices when an H10 was worn, such an interval is a real early or late beat, not noise.", 36, y, w, 9.3);
         y += 6; p.text("Is the signal above 40 Hz useful? (study of 26 to 28 Oct 2026 on this strap, 9 readings)", 36, y, 12.5, BLUE, true, 0); y += 16;
         y = bullet(p, String.format(Locale.UK, "Real: two independent halves of the beats agree in the 40 to 150 Hz band (this reading %.2f, QRS-free control %.2f; the study range 0.93 to 0.98 against -0.10 to 0.26). After averaging this reading's beats the QRS stays %.0f dB above the noise at 40 to 60 Hz and %.0f dB at 100 to 130 Hz.", r.splitQrs, r.splitCtl, r.snrAvg[2], r.snrAvg[5]), 36, y, w, 9.3);
@@ -124,7 +131,7 @@ final class ProPdf {
             {"INTERVALS (mean beat)", "", ""}, {"PR", ciTxt(v.pr, r.ci[1], "ms"), "120-200; P edge +-25"}, {"QRS", ciTxt(v.qrs, r.ci[0], "ms"), "<120; method based"}, {"QT", ciTxt(v.qt, r.ci[2], "ms"), "accuracy +-40 ms"},
             {"QTc Fridericia", ciTxt(v.qtcF, r.ci[3], "ms"), "<450 M, <460 F"}, {"QTc Bazett", f0(v.qtcB) + " ms", ""},
             {"AMPLITUDES", "", ""}, {"P / R / T", f0(v.pAmp) + " / " + f0(v.rAmp) + " / " + f0(v.tAmp) + " uV", "scale unverified"}, {"ST at J+60 ms", f0(v.st) + " uV", "high-pass alters it"},
-            {"VARIABILITY", "", ""}, {"SDNN / RMSSD", f1(hv.sdnnDetr) + " / " + f1(hv.rmssd) + " ms", "NSRDB med 40, p5 21"}, {"LF / HF, breathing", f0(hv.lf) + " / " + f0(hv.hf) + " ms2, " + f0(hv.fpk * 60) + "/min", "short reading"}};
+            {"VARIABILITY", "", ""}, {"SDNN / RMSSD", f1(hv.sdnnDetr) + " / " + f1(hv.rmssd) + " ms", "NSRDB med 40, p5 21"}, {"LF / HF, breathing", specOk(hv) ? f0(hv.lf) + " / " + f0(hv.hf) + " ms2, " + f0(hv.fpk * 60) + "/min" : "not computed", specOk(hv) ? "short reading" : "needs about 3 min"}};
         for (int i = 0; i < rows.length; i++) { double yy = ty + i * rowH; if (rows[i][1].isEmpty()) { p.text(rows[i][0], tx, yy, 8, BLUE, true, 0); p.line(tx, yy + 3, W - 36, yy + 3, 0.5, 0xC8D3DF); } else { p.text(rows[i][0], tx + 6, yy, 8, INK, false, 0); p.text(rows[i][1], tx + 104, yy, 8, INK, true, 0); p.text(rows[i][2], tx + 236, yy, 6.4, GREY, false, 0); } }
         // lower panels
         drawTach(p, r, 36, 552, 250, 68, true); drawPoincare(p, r, 330, 484, 66); drawPsd(p, r, 450, 490, 190, 62);
@@ -199,7 +206,7 @@ final class ProPdf {
             {"SDNN (trend removed)", f1(r.hrv.sdnnDetr) + " ms", "NSRDB at 58 to 70 bpm: median 52 ms (30 to 80)", "computed from 859 five-minute windows"},
             {"RMSSD", f1(r.hrv.rmssd) + " ms", "NSRDB: median 40 ms, 5th percentile 21, 95th 64", "same windows"},
             {"pNN50", f1(r.hrv.pnn50) + " %", "", "successive differences over 50 ms"}, {"SD1 / SD2", f1(r.hrv.sd1) + " / " + f1(r.hrv.sd2) + " ms", "", "Poincare plot"},
-            {"LF / HF power", f0(r.hrv.lf) + " / " + f0(r.hrv.hf) + " ms2", "no norm quoted", "a short reading; LF is unreliable"}, {"Breathing from the series", f0(r.hrv.fpk * 60) + " a minute", "12 to 20 awake", "spectral peak 0.1 to 0.4 Hz"}};
+            {"LF / HF power", specOk(r.hrv) ? f0(r.hrv.lf) + " / " + f0(r.hrv.hf) + " ms2" : "not computed", "no norm quoted", specOk(r.hrv) ? "a short reading; LF is unreliable" : "needs about 3 minutes of beats"}, {"Breathing from the series", specOk(r.hrv) ? f0(r.hrv.fpk * 60) + " a minute" : "not computed", "12 to 20 awake", "spectral peak 0.1 to 0.4 Hz"}};
         double ty = 300; double[] cx = {36, 200, 330, 600};
         for (int i = 0; i < rows.length; i++) { if (i == 0) p.rect(36, ty - 11, W - 72, 15, LIGHT, -1, 0); for (int j = 0; j < 4; j++) p.text(rows[i][j], cx[j] + 3, ty, 8, i == 0 || j == 1 ? INK : (j == 3 ? GREY : INK), i == 0 || j == 1, 0); ty += 17; p.line(36, ty - 11, W - 36, ty - 11, 0.3, 0xC8D3DF); }
         para(p, "Variability falls with age and after exertion, and a short reading is a snapshot: compare with your own readings taken at the same time of day and posture. Published short-term norms differ widely between studies and are lower than the 1996 Task Force values, so the healthy-rhythm database computed here is used as the main comparison. The reading is shorter than the 5 minute standard.", 36, ty + 16, W - 72, 8.5, 11, GREY, false);
@@ -239,7 +246,7 @@ final class ProPdf {
         if (h.h10Mean != null && h.mgMean != null) {
             p.text("Mean beat on both devices (microvolts, each from its own baseline)", 440, 96, 9, INK, true, 0);
             double mx = Math.max(h.h10R, h.mgR) * 1.1; Ax ax = new Ax(480, 108, 330, 200, -300, 520, -mx * 0.3, mx); ax.frame(p, "ms from the R apex", null, 100, 500, true);
-            double[] tt = grid(411, -300, 2); ax.curve(p, tt, h.h10Mean, 1.1, ORANGE); ax.curve(p, tt, h.mgMean, 1.1, BLUE); p.text("orange: H10   blue: strap, 40 Hz low-pass", 480, 330, 8, GREY, false, 0);
+            double[] tt = grid(411, -300, 2); ax.curve(p, tt, h.h10Mean, 1.1, ORANGE); ax.curve(p, tt, h.mgMean, 1.1, BLUE); p.text("orange: H10   blue: strap, 40 Hz low-pass", 480, 350, 8, GREY, false, 0);
         }
     }
 
@@ -261,7 +268,7 @@ final class ProPdf {
         p.text("C  Delineation against cardiologists' marks (PhysioNet QT Database, 35 of 105 records)", 36, 262, 9, INK, true, 0);
         String[][] rows = {{"Boundary", "Mean error", "SD across records", "Records", "CSE tolerance on the SD"}, {"QRS onset", "+6.5 ms", "10.5 ms", "16 (held out)", "6.5 ms"}, {"QRS end", "-10.1 ms", "14.1 ms", "16 (held out)", "11.6 ms"}, {"T end", "+11.6 ms", "82.9 ms (median |error| 46 ms)", "14", "30.6 ms"}, {"P onset / end (single beats)", "", "25 and 27 ms", "35", "10.2 / 12.7 ms"}};
         double ty = 282; double[] cx = {36, 200, 290, 470, 560}; for (int i = 0; i < rows.length; i++) { if (i == 0) p.rect(36, ty - 11, W - 72, 15, LIGHT, -1, 0); for (int j = 0; j < 5; j++) p.text(rows[i][j], cx[j] + 3, ty, 8, INK, i == 0 || j == 1, 0); ty += 17; p.line(36, ty - 11, W - 36, ty - 11, 0.3, 0xC8D3DF); }
-        double y = para(p, "What this shows: atrial-fibrillation screening from beat times is insensitive to timing resolution above 50 Hz and to a few milliseconds of timing error, so a 256 Hz mode would not help it. This reading's variability sits in the lower tail of a healthy-rhythm database, as expected after a working day and exertion. Delineation of the QRS is within about 10 to 14 ms of the cardiologists, the T end (QT) within about 40 ms: use QT as a trend.", 36, ty + 14, W - 72, 8.6, 11, INK, false);
+        double y = para(p, "What this shows: atrial-fibrillation screening from beat times is insensitive to timing resolution above 50 Hz and to a few milliseconds of timing error, so a 256 Hz mode would not help it. " + rmssdSentence(r.hrv.rmssd) + " Delineation of the QRS is within about 10 to 14 ms of the cardiologists, the T end (QT) within about 40 ms: use QT as a trend.", 36, ty + 14, W - 72, 8.6, 11, INK, false);
         para(p, "What it does not show: that the strap detects atrial fibrillation (none was recorded by this strap; the AF database is two-lead ambulatory data), or that any value here is clinically accurate. A clinician must review any ECG.", 36, y + 2, W - 72, 8.6, 11, GREY, false);
     }
 

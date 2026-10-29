@@ -1526,7 +1526,7 @@ public class HealthActivity extends Activity {
         final SharedPreferences ctl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
         st.addView(toggleRow("Start the ECG reading by itself after a 5 second countdown", ctl, "ecg_autostart"), lp(-1, dpi(52), 6));
         st.addView(toggleRow("Show the packet counters on the screen during a reading", ctl, "ecg_packets_open"), lp(-1, dpi(52), 0));
-        st.addView(toggleRow("Record the H10 with each ECG reading (adds a chest-strap check to the PDF)", ctl, "h10_with_reading", false), lp(-1, dpi(52), 0));
+        st.addView(toggleRow("Record the H10 with each ECG reading (adds a PDF page)", ctl, "h10_with_reading", false), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Near-live 500 Hz during readings", ctl, "ecg_tail"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Set the strap clock to the sub-second (as the official app)", ctl, "clock_subsec"), lp(-1, dpi(52), 0));

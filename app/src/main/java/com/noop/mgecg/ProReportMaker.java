@@ -21,13 +21,13 @@ final class ProReportMaker {
     static final String FOLDER = "MGreports";
     private static volatile boolean busy;
 
-    /** The reading's saved report is ecg_report_<unix>.html; the live raw frames are realtime_ecg_bin_<unix>.bin saved within a few seconds of it. */
+    /** The reading's saved report is ecg_report_<unix>.html; the live raw frames are realtime_ecg_bin_<unix>.bin saved within a few seconds of it. 0.23.2: the LARGEST file within 30 s (a one-frame stub written just before the session start event used to win as the nearest name). */
     static File findBin(File dir, long unix) {
-        File best = null; long bd = 1000;
+        File best = null; long bl = -1;
         File[] fs = dir.listFiles(); if (fs == null) return null;
         for (File f : fs) {
             String n = f.getName(); if (!n.startsWith("realtime_ecg_bin_") || !n.endsWith(".bin")) continue;
-            try { long s = Long.parseLong(n.substring(17, n.length() - 4)); long d = Math.abs(s - unix); if (d <= 30 && d < bd) { bd = d; best = f; } } catch (NumberFormatException ignored) { }
+            try { long s = Long.parseLong(n.substring(17, n.length() - 4)); long d = Math.abs(s - unix); if (d <= 30 && f.length() > bl) { bl = f.length(); best = f; } } catch (NumberFormatException ignored) { }
         }
         return best;
     }
@@ -55,7 +55,7 @@ final class ProReportMaker {
                 else if (bin.length() > 60L * 1024 * 1024) msg = "The frame file of this reading is too large to analyse here.";
                 else {
                     ProAnalysis.Result r = ProAnalysis.analyse(Files.readAllBytes(bin.toPath()));
-                    if (r == null) msg = "This reading has too little clean signal for the report (it needs at least 30 beats of quality 3).";
+                    if (r == null) msg = "The report cannot be made: " + ProAnalysis.why + ". It needs 20 seconds of frames, a stretch of 8 clean seconds and at least 30 clean beats.";
                     else {
                         H10Compare.Result h = null; File hf = findH10(dir, r.t0, r.seconds);
                         if (hf != null) { try { h = H10Compare.compare(r, H10Compare.read(hf)); } catch (Throwable ignored) { h = null; } }

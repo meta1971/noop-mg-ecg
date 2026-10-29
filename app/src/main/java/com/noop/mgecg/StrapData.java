@@ -277,7 +277,7 @@ final class StrapData {
     static List<String[]> eventRows(Context c, long nowSec) {
         List<String[]> r = new ArrayList<>();
         String G = "STRAP EVENTS";
-        List<String[]> ev = StrapEvents.recent(c, nowSec - 86400L, 400);
+        List<String[]> ev = StrapEvents.recent(c, nowSec - 86400L, 5000);
         if (ev.isEmpty()) { r.add(row(G, "Events in the last 24 hours", "none stored yet", "kept from this version on; the strap sends them while the app is connected")); return r; }
         int[] ids = {9, 10, 7, 8, 14, 60, 11, 12, 113, 114};
         for (int id : ids) {
@@ -389,7 +389,7 @@ final class StrapData {
                     String btv = "?";
                     try { android.bluetooth.BluetoothAdapter ad = android.bluetooth.BluetoothAdapter.getDefaultAdapter(); if (ad != null) btv = ad.isEnabled() ? "ON" : "switch OFF (BLE-only or off)"; } catch (Throwable ignored) { }
                     android.content.SharedPreferences ck = a.getSharedPreferences("clockchk", Context.MODE_PRIVATE);
-                    st.add(Math.min(3, st.size()), row("STATUS", "Phone Bluetooth", btv, "The official WHOOP app runs ECG only on a fully ready link (connected, bonded, hello exchanged, clock set). For the live raw test keep the Bluetooth switch ON; today's earlier readings ran with it off (BLE-only)."));
+                    st.add(Math.min(3, st.size()), row("STATUS", "Phone Bluetooth", btv, "The official WHOOP app runs ECG only on a fully ready link (connected, bonded, hello exchanged, clock set). The live raw stream also works with the Bluetooth switch off (BLE-only): the readings of 28 and 29 Oct ran that way."));
                     if (ck.getLong("at_ms", 0L) > 0) st.add(Math.min(4, st.size()), row("STATUS", "Strap clock", String.format(java.util.Locale.UK, "%+.2f s against the phone", ck.getFloat("diff_s", 0f)), "Measured after the last clock set (includes the Bluetooth delay of some tens of milliseconds). Before the sub-second set it was about -0.4 to -1.1 s."));
                     // 0.19.0: logger health: why the app process ended, crashes, swipes, the 15 minute alarm, battery and overlay settings
                     android.content.SharedPreferences ld = a.getSharedPreferences("linkdiag", Context.MODE_PRIVATE);
