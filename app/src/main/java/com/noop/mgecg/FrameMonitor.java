@@ -90,7 +90,7 @@ final class FrameMonitor {
     static void note(long nowMs, String ch, byte[] f) {
         if (f == null || f.length == 0) return;
         int key = keyOf(f);
-        if (capDir != null && ch != null) { int ty = key >>> 24; if (ty == 50) { if (nowMs <= capUntil) capture(nowMs, ch, f, true); } else if (ch.length() >= 8 && ch.substring(4, 8).equals("0007")) capture(nowMs, ch, f, false); }
+        if (capDir != null && ch != null) { int ty = key >>> 24; if (ty == 50 && nowMs <= capUntil) capture(nowMs, ch, f, true); }
         Entry e = new Entry(nowMs, ch, f.length, Arrays.copyOf(f, Math.min(f.length, HEAD)));
         int type = key >>> 24;
         synchronized (LOCK) {

@@ -6509,6 +6509,9 @@ public class MainActivity extends NewLookActivity {
     private boolean historicalSaveFailedThisPull = false;
     private boolean loggedBlindAckFallback = false;
     private long pullStartMs = 0L;
+    // 0.26.0 pull watchdog: a pull whose loop stopped, or a flag left on, used to block every later pull (the "no history pulled for a while" stall)
+    private volatile long lastPullStepMs = 0L, lastHistRxMs = 0L, pendingEcgSinceMs = 0L, ecgRunningSinceMs = 0L, lastPullBlockLogMs = 0L, pendingRetryMs = 0L;
+    private int pullWatchdogResets = 0, pendingRetries = 0;
     private int historyEndsAcked = 0;
     private int historyStartsSeen = 0;
     private int historyAutoContinues = 0;
@@ -6745,6 +6748,7 @@ public class MainActivity extends NewLookActivity {
         captureStoredEcgRecord(value);
         historicalFragments.add(value);
         historicalTotalBytes += value.length;
+        lastHistRxMs = System.currentTimeMillis();   // 0.26.0: watchdog progress
         saveHistoricalFragment(value);
 
         pullIdleCycles = 0;
@@ -7959,6 +7963,7 @@ public class MainActivity extends NewLookActivity {
         sendZeroArg(0x16, "SEND_HISTORICAL_DATA");
 
         pullAckActive = true;
+        lastPullStepMs = lastHistRxMs = System.currentTimeMillis();   // 0.26.0
         pullAckCounter = 0;
         pullGeneration++;
 
@@ -8084,6 +8089,7 @@ public class MainActivity extends NewLookActivity {
         if (!pullAckActive || myGeneration != pullGeneration) {
             return;
         }
+        lastPullStepMs = System.currentTimeMillis();   // 0.26.0: watchdog heartbeat
 
         boolean allowBlindAck = !realEndAckMode &&
                 !puffinMetadataSeenThisPull &&
@@ -10764,7 +10770,7 @@ public class MainActivity extends NewLookActivity {
 
     static void requestPull() {
         final MainActivity m = instance != null ? instance : headless;
-        if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNow(); } });
+        if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNowUser(); } });      // 0.26.0: clears a stalled pull first
     }
 
     /** 0.14.1: what happened at each open and swipe-away, kept in preferences so it survives the process being killed (shown on Strap data). */
@@ -10902,6 +10908,7 @@ public class MainActivity extends NewLookActivity {
                 logRaw("LIVE_HR_ARM TOGGLE_REALTIME_HR(1)");
                 sendToggleRealtimeHr(1);
             }
+            pullWatchdog(now, false);   // 0.26.0
             long dueMs = DayLog.intervalMin(this) * 60000L;
             if (now - DayLog.lastPullMs(this) >= dueMs) dayLogPullNow();
         }
@@ -10911,9 +10918,54 @@ public class MainActivity extends NewLookActivity {
         DayLogService.refresh(this);
     }
 
+    /** 0.26.0: "Pull now" from the notification: clear stale flags first (never during a reading with live frames). */
+    void dayLogPullNowUser() {
+        if (gatt == null || cmdWrite == null) return;
+        logRaw("DAYLOG_PULL_REQUESTED pull=" + pullAckActive + " ecg=" + ecgSessionRunning + " pendingStored=" + pendingEcgStoredAnalysis);
+        pullWatchdog(System.currentTimeMillis(), true);
+        dayLogPullNow();
+    }
+
+    /** 0.26.0: ends a pull that stopped moving and clears flags left on, each with a log line; then the normal schedule can pull again. */
+    private void pullWatchdog(long now, boolean userAsked) {
+        try {
+            boolean liveEcg = Live500.isLive(now);
+            if (pendingEcgStoredAnalysis) { if (pendingEcgSinceMs == 0L) pendingEcgSinceMs = now; } else { pendingEcgSinceMs = 0L; pendingRetries = 0; }
+            if (ecgSessionRunning) { if (ecgRunningSinceMs == 0L) ecgRunningSinceMs = now; } else ecgRunningSinceMs = 0L;
+            if (pullAckActive) {
+                long stepAge = lastPullStepMs > 0L ? now - lastPullStepMs : 0L, rxAge = now - Math.max(lastHistRxMs, pullStartMs);
+                if (stepAge > 60000L || rxAge > 240000L || (userAsked && rxAge > 90000L)) {
+                    pullWatchdogResets++;
+                    logRaw("PULL_WATCHDOG stalled pull ended: loop_step_age_s=" + stepAge / 1000L + " history_age_s=" + rxAge / 1000L + " user=" + userAsked + " resets=" + pullWatchdogResets);
+                    line("Pull stalled (" + rxAge / 1000L + " s without history) - ended so a new one can start");
+                    pullAckActive = false; pullGeneration++;
+                    try { recordPullOutcomeAndSummarize(); } catch (Throwable t) { logRaw("PULL_WATCHDOG summary failed " + t); }
+                }
+            }
+            if (ecgSessionRunning && !liveEcg && ecgRunningSinceMs > 0L && now - ecgRunningSinceMs > 12L * 60000L) {
+                logRaw("PULL_WATCHDOG clearing an ECG-session flag left on for " + (now - ecgRunningSinceMs) / 1000L + " s with no live ECG frames");
+                ecgSessionRunning = false; ecgRunningSinceMs = 0L;
+            }
+            if (pendingEcgStoredAnalysis && !pullAckActive && !ecgSessionRunning && pendingEcgSinceMs > 0L && (userAsked || now - pendingEcgSinceMs > 120000L) && now - pendingRetryMs > 120000L) {
+                if (pendingRetries < 3 && !liveEcg) {
+                    pendingRetries++; pendingRetryMs = now;
+                    logRaw("PULL_WATCHDOG stored-ECG analysis still pending after " + (now - pendingEcgSinceMs) / 1000L + " s with no pull running: starting the pull (try " + pendingRetries + ")");
+                    startRealHistoricalPull();
+                } else if (pendingRetries >= 3) {
+                    logRaw("PULL_WATCHDOG stored-ECG analysis given up after " + pendingRetries + " tries: the flag is cleared so the day logger can pull again");
+                    pendingEcgStoredAnalysis = false; pendingEcgSinceMs = 0L; pendingRetries = 0;
+                }
+            }
+        } catch (Throwable t) { logRaw("PULL_WATCHDOG error " + t); }
+    }
+
     void dayLogPullNow() {
         if (gatt == null || cmdWrite == null) return;
-        if (pullAckActive || ecgSessionRunning || pendingEcgStoredAnalysis) return;
+        if (pullAckActive || ecgSessionRunning || pendingEcgStoredAnalysis) {
+            long now = System.currentTimeMillis();
+            if (now - lastPullBlockLogMs > 600000L) { lastPullBlockLogMs = now; logRaw("DAYLOG_PULL_BLOCKED pull=" + pullAckActive + " ecg=" + ecgSessionRunning + " pendingStored=" + pendingEcgStoredAnalysis + " since_last_pull_s=" + (now - DayLog.lastPullMs(this)) / 1000L); }
+            return;
+        }
         DayLog.setLastPullMs(this, System.currentTimeMillis());
         logRaw("DAYLOG_PULL");
         dayLogQuiet = true;

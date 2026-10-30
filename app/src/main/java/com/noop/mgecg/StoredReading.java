@@ -33,7 +33,7 @@ final class StoredReading {
         Map<Long, Sess> m = new TreeMap<>(); Pattern p = Pattern.compile("STORED_ECG_PULL_BEGIN sessionStart=(\\d+) sessionStop=(\\d+)");
         File[] fs = dir == null ? null : dir.listFiles(); if (fs == null) return new ArrayList<>();
         for (File f : fs) {
-            String n = f.getName(); if (!n.startsWith("labrador_log_") || !n.endsWith(".txt") || f.length() > 300L * 1024 * 1024) continue;
+            String n = f.getName(); if (!n.startsWith("labrador_log_") || !n.endsWith(".txt") || f.length() > 300L * 1024 * 1024 || System.currentTimeMillis() - f.lastModified() > 21L * 86400000L) continue;      // 0.25.3: the strap keeps about 3 weeks
             try (BufferedReader br = new BufferedReader(new FileReader(f))) {
                 String ln; while ((ln = br.readLine()) != null) { if (ln.indexOf("STORED_ECG_PULL_BEGIN") < 0) continue; Matcher mt = p.matcher(ln); if (!mt.find()) continue;
                     long a = Long.parseLong(mt.group(1)), b = Long.parseLong(mt.group(2)); if (b - a >= 30 && b - a <= 3000) { Sess s = new Sess(); s.start = a; s.stop = b; m.put(a, s); } }

@@ -27,7 +27,7 @@ final class ProDetect {
         for (long t : ks) { if (m.get(t)[2] > 0) { if (rs < 0) { rs = t; re = t; } else if (t - re <= 5) re = t; else { runs.add(new long[] {rs, re}); rs = t; re = t; } } }
         if (rs >= 0) runs.add(new long[] {rs, re});
         long[] best = null; double lim = R.t0 + R.seconds;
-        for (long[] r : runs) { int st = (m.get(r[1])[1] - m.get(r[0])[1]) & 0xFFFF; if (r[1] - r[0] >= 20 && st >= 30 && r[1] <= lim && r[0] >= R.t0 - 600) best = r; }
+        for (long[] r : runs) { int st = (m.get(r[1])[1] - m.get(r[0])[1]) & 0xFFFF; if (r[1] - r[0] >= 20 && st >= 30 && st * 60.0 / (r[1] - r[0] + 1) >= 80 && r[1] <= lim && r[0] >= R.t0 - 600) best = r; }      // 0.25.3: 80 steps a minute or more, so a short walk to a chair is not called exercise
         if (best == null) return E;
         long a = best[0], b = best[1]; E.found = true; E.startRel = a - R.t0; E.durS = b - a + 1; E.steps = (m.get(b)[1] - m.get(a)[1]) & 0xFFFF; E.cadence = E.steps * 60.0 / E.durS;
         double pk = 0; for (long t : ks) if (t >= a && t <= b + 5) pk = Math.max(pk, m.get(t)[0]); E.peakHr = pk;
@@ -37,6 +37,25 @@ final class ProDetect {
         E.hr0 = hrBetween(bt, b + 3, b + 13); E.hr30 = hrBetween(bt, b + 25, b + 35); E.hr60 = hrBetween(bt, b + 55, b + 65); E.hr90 = hrBetween(bt, b + 85, b + 95); E.ecgCovers = !Double.isNaN(E.hr0);
         return E;
     }
+
+    static final class Opt { int seconds; double greenPi = Double.NaN, greenDc = Double.NaN, irNear = Double.NaN, irFar = Double.NaN, irRatio = Double.NaN, irRatioMin = Double.NaN, irRatioMax = Double.NaN; }
+
+    /** 0.25.3: green perfusion (median pulse peak-to-peak per second against the steady level, %) and the infrared near/far photodiode ratio (block 4, slot A over slot B) per 20 s, from the stored 50 Hz optical records of the reading. */
+    static Opt optics(List<byte[]> r20, double t0, double t1) {
+        Opt O = new Opt(); if (r20 == null) return O;
+        List<double[]> g = new ArrayList<>(); List<Double> pp = new ArrayList<>(), dc = new ArrayList<>(), na = new ArrayList<>(), fa = new ArrayList<>(); java.util.TreeMap<Integer, List<Double>> rw = new java.util.TreeMap<>();
+        for (byte[] f : r20) {
+            double t = ProAnalysis.u32(f, 15); if (t < t0 || t > t1) continue; O.seconds++;
+            int n = f[26] & 0xFF; if (n >= 40 && n <= 50) { double[] x = new double[n]; double mx = -1e18, mn = 1e18, s = 0; for (int k = 0; k < n; k++) { int o = 26 + 21 + 4 * k; int r = (f[o] & 0xFF) | ((f[o + 1] & 0xFF) << 8) | ((f[o + 2] & 0xFF) << 16); if ((r & 0x800000) != 0) r -= 0x1000000; x[k] = r; s += r; mx = Math.max(mx, r); mn = Math.min(mn, r); } pp.add(mx - mn); dc.add(s / n); }
+            int ob = 26 + 422 * 4, m = f[ob] & 0xFF; if (m >= 40 && m <= 50) { double sa = 0, sb = 0; for (int k = 0; k < m; k++) { int oa = ob + 21 + 4 * k, obb = ob + 221 + 4 * k; int ra = (f[oa] & 0xFF) | ((f[oa + 1] & 0xFF) << 8) | ((f[oa + 2] & 0xFF) << 16), rb = (f[obb] & 0xFF) | ((f[obb + 1] & 0xFF) << 8) | ((f[obb + 2] & 0xFF) << 16); if ((ra & 0x800000) != 0) ra -= 0x1000000; if ((rb & 0x800000) != 0) rb -= 0x1000000; sa += ra; sb += rb; }
+                sa /= m; sb /= m; na.add(sa); fa.add(sb); if (sb > 100) { int w = (int) ((t - t0) / 20); rw.computeIfAbsent(w, kk -> new ArrayList<>()).add(sa / sb); } }
+        }
+        if (pp.size() >= 20) { double d = med(dc); O.greenDc = d; if (Math.abs(d) > 10000) O.greenPi = 100.0 * med(pp) / Math.abs(d); }
+        if (na.size() >= 20) { O.irNear = med(na); O.irFar = med(fa); }
+        if (rw.size() >= 2) { List<Double> ws = new ArrayList<>(); for (List<Double> v : rw.values()) if (v.size() >= 5) ws.add(med(v)); if (!ws.isEmpty()) { O.irRatio = med(ws); O.irRatioMin = java.util.Collections.min(ws); O.irRatioMax = java.util.Collections.max(ws); } }
+        return O;
+    }
+    private static double med(List<Double> v) { double[] a = new double[v.size()]; for (int i = 0; i < a.length; i++) a[i] = v.get(i); return ProDsp.median(a); }
 
     static final class Pat {
         int beats, withPulse; double medianMs = Double.NaN, sdMs = Double.NaN, madMs = Double.NaN, breathPerMin = Double.NaN; double[] ms = new double[0]; double[] t = new double[0]; String note = "";

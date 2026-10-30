@@ -83,7 +83,8 @@ final class ReadingPull {
         String stamp = html == null ? "" : html.getName().replaceAll("[^0-9]", ""); File png = new File(dir, "ecg_strip_" + stamp + ".png"); if (png.exists() && png.length() < 5000000) out.put(png.getName(), Files.readAllBytes(png.toPath()));
         File hf = ProReportMaker.findH10(dir, t0, (int) (t1 - t0) + 1); if (hf != null && hf.length() < 40000000) out.put(hf.getName(), Files.readAllBytes(hf.toPath()));
         StringBuilder con = new StringBuilder(); int lastC = -1;
-        if (fs != null) for (File f : fs) { String n = f.getName(); if (n.startsWith("unknown_frames_") && n.endsWith(".hex") && f.length() < 6000000) {
+        java.text.SimpleDateFormat dayF = new java.text.SimpleDateFormat("yyyyMMdd", Locale.UK); String day0 = dayF.format(new java.util.Date((long) (t0 * 1000))), day1 = dayF.format(new java.util.Date((long) (t1 * 1000 + 600000)));      // 0.25.3: the capture files of the reading's day only
+        if (fs != null) for (File f : fs) { String n = f.getName(); if (n.startsWith("unknown_frames_") && n.endsWith(".hex") && f.length() < 6000000 && (n.contains(day0) || n.contains(day1))) {
             out.put(n, Files.readAllBytes(f.toPath()));
             try (BufferedReader br = new BufferedReader(new FileReader(f))) { String ln; while ((ln = br.readLine()) != null) { String[] c = ln.split(" "); if (c.length < 4 || c[3].length() != 152) continue; byte[] b = new byte[76]; for (int i = 0; i < 76; i++) b[i] = (byte) Integer.parseInt(c[3].substring(2 * i, 2 * i + 2), 16); if ((b[8] & 0xFF) != 50) continue;
                 int cc = b[9] & 0xFF; if (lastC >= 0 && ((cc - lastC) & 0xFF) != 1) con.append("\n[frames missing]\n"); lastC = cc; int e = 21; while (e < 71 && b[e] != 0) e++; con.append(new String(b, 21, e - 21, "ISO-8859-1")); } } catch (Exception ignored) { } } }
@@ -96,7 +97,7 @@ final class ReadingPull {
         + "ecg_100hz_filtered_live.csv: the strap's own filtered 100 Hz stream (layout 17), 1 uV per count.\n"
         + "ecg_500hz_stored_r16.csv: the stored copy of layout 16 delivered by the history pull (fills gaps in the live stream).\n"
         + "per_second_r18.csv: one row a second: heart rate, up to four beat intervals in ms (optical), accel_step_g, gravity vector, step counter, optical quality, skin temperature, activity class, sleep state, bytes 33 and 36 (flags, not decoded).\n"
-        + "optical_50hz_r20.csv: the raw optical record, 50 samples a second. block 0 = green (the pulse), 1 and 2 configured but empty, 3 = infrared, 4 = ambient; slot A and B; value = signed 24-bit counts; led_current_mA from the block header.\n"
+        + "optical_50hz_r20.csv: the raw optical record, 50 samples a second. block 0 = green LED (the pulse; perfusion about 5 %), 1 and 2 configured (127.5 and 53 mA) but empty in ECG sessions, 3 = LED current 0 (dark reading; it follows the green level, not room light), 4 = LED at 2 mA, INFERRED infrared, slot A near and slot B far photodiode (A/B about 10, the same ratio the firmware wear detector logs as opt_ir_m_ratio); slots A and B are the two photodiodes; value = signed 24-bit counts; led_current_mA from the block header.\n"
         + "motion_100hz_r21.csv: accelerometer in g (4096 counts per g) and gyroscope in degrees per second (16.384 counts per dps), 100 samples a second.\n"
         + "pulse_packets_r26_hex.csv: raw pulse information packets (layout 26) as hex.\n"
         + "events.txt and app_log_excerpt.txt: the strap events and the app log lines around the reading (bulk packet lines left out).\n"

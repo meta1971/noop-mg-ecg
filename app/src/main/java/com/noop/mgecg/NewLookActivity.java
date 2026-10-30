@@ -781,10 +781,11 @@ public class NewLookActivity extends Activity {
         @Override public void run() {
             boolean running = ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP");
             if (!running || isFinishing()) { warnedNoContact = false; lastWarnRun = 0; return; }
-            int run = Live500.openRun;
-            if (run >= 3 && lastWarnRun < 3) contactAlert("Fingers are off the clasp: put them back");
+            boolean live = Live500.isLive(System.currentTimeMillis());          // 0.25.3: no alerts when live raw frames are not coming (live raw switched off)
+            int run = live ? Live500.openRun : 0;
+            if (live && run >= 3 && lastWarnRun < 3) contactAlert("Fingers are off the clasp: put them back");
             lastWarnRun = run;
-            if (!Live500.everOn && System.currentTimeMillis() - Live500.startMs > 14000L && !warnedNoContact) { warnedNoContact = true; contactAlert("No finger contact yet: put two fingers on the clasp"); }
+            if (live && !Live500.everOn && System.currentTimeMillis() - Live500.startMs > 14000L && !warnedNoContact) { warnedNoContact = true; contactAlert("No finger contact yet: put two fingers on the clasp"); }
             ui.postDelayed(this, 1000L);
         }
     };

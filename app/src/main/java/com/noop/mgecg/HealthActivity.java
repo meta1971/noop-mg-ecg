@@ -1283,6 +1283,7 @@ public class HealthActivity extends Activity {
         }
         col.addView(pillButton("Save the analysis code (Python and Java) to Downloads", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.saveCode(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.23.1
         col.addView(pillButton("Recover readings from the strap's stored data", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { StoredReading.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.25.1
+        col.addView(pillButton("Blood pressure research capture", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { BpCapture.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.26.0
         LinearLayout mc = explainerCard("HOW THE REPORT IS MADE AND CHECKED", "Method, agreement with the Python reference, and the database tests");
         expandable("e_method", mc, new Filler() { @Override public void fill(LinearLayout p) { rows(p, Explain.reportMethod()); } });
         col.addView(mc, lp(-1, -2, 10));

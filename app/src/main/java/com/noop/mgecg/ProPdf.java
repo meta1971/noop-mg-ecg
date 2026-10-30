@@ -242,6 +242,7 @@ final class ProPdf {
         para(p, "Reading: the energy above 40 Hz is beat-locked signal (C), strong after averaging (A) and weak on one beat (B). It carries the height and sharpness of the QRS (D). It does not improve beat timing or rhythm detection (see the H10 and database pages).", 36, y + 2, 770, 8.3, 10.5, GREY, false);
     }
 
+    static String f2(double v) { return Double.isNaN(v) ? "-" : String.format(Locale.UK, "%.2f", v); }
     static String dropTxt(double a, double b) { return Double.isNaN(a) || Double.isNaN(b) ? "-" : "-" + f0(a - b) + " bpm"; }
     static String secOrNone(int s) { return s < 0 ? "not reached" : s + " s"; }
     static String liftLens(ProAnalysis.Result r) { StringBuilder sb = new StringBuilder(); for (int i = 0; i < r.lifts && i < 3; i++) sb.append(i == 0 ? "" : ", ").append(String.format(Locale.UK, "%.0f s", r.liftLen[i])); if (r.lifts > 3) sb.append(", ..."); return sb.toString(); }
@@ -291,6 +292,15 @@ final class ProPdf {
         else {
             double rrBreath = specOk(r.hrv) ? r.hrv.fpk * 60 : Double.NaN;
             y = para(p, String.format(Locale.UK, "%d of %d beats have a pulse. Median %s ms, spread (SD) %s ms, typical deviation %s ms. Breathing from the pulse arrival series: %s%s. Changes from beat to beat and between readings mean more than the absolute delay, which depends on the clocks of the two sensors.", P.withPulse, P.beats, f0(P.medianMs), f1(P.sdMs), f1(P.madMs), Double.isNaN(P.breathPerMin) ? "not computed (it needs 2 minutes of data)" : f0(P.breathPerMin) + " a minute", Double.isNaN(rrBreath) ? "" : " (from the beat intervals: " + f0(rrBreath) + ")"), 40, y, 760, 8.5, 11, INK, false) + 6;
+        }
+        ProDetect.Opt O = r.opt;
+        if (O != null && O.seconds >= 30 && (!Double.isNaN(O.greenPi) || !Double.isNaN(O.irRatio))) {
+            p.text("Optical contact and perfusion (stored 50 Hz optical)", 36, y, 10, INK, true, 0); y += 16;
+            y = para(p, String.format(Locale.UK, "Green perfusion %s %% (pulse size against the steady light level; 8.0 %% in the 29 Oct 21:39 reading). Infrared near/far photodiode ratio %s (range %s to %s over 20 s blocks): it changes when the strap shifts on the wrist (9.5 to 10.9 during a jog on 29 Oct), and the strap's own wear detector logs the same ratio. INFERRED: block 4 of the optical record is infrared.", f1(O.greenPi), f2(O.irRatio), f2(O.irRatioMin), f2(O.irRatioMax)), 40, y, 760, 8.5, 11, INK, false) + 6;
+        }
+        if (r.strapHr > 0 || r.strapHrv > 0) {
+            p.text("The strap's own figures (its built-in analysis)", 36, y, 10, INK, true, 0); y += 16;
+            y = para(p, String.format(Locale.UK, "Heart rate at its verdict %s bpm (this report %.0f); its HRV field at the end of the reading %s ms. The HRV field is a rolling RMSSD: across 150 checks in four readings it matched our RMSSD with r 0.90 and a mean difference of -0.8 ms.", r.strapHr > 0 ? String.valueOf(r.strapHr) : "-", r.hrv.hr, r.strapHrv > 0 ? String.valueOf(r.strapHrv) : "-"), 40, y, 760, 8.5, 11, INK, false) + 6;
         }
         p.text("Early beats (an interval under 80 % of the local median, followed by one over 112 %)", 36, y, 10, INK, true, 0); y += 16;
         if (r.earlyT == null || r.earlyT.length == 0) y = para(p, "None found in the clean stretches of this reading.", 40, y, 760, 8.5, 11, INK, false) + 6;

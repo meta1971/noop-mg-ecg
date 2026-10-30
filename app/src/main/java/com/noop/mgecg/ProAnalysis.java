@@ -32,6 +32,8 @@ final class ProAnalysis {
         double[] winT = new double[0], qtWin = new double[0], qtSig = new double[0], stWin = new double[0], stSig = new double[0];
         double qtSdAcross = Double.NaN, qtSigMean = Double.NaN, stSdAcross = Double.NaN, stSigMean = Double.NaN;
         ProDetect.Pat pat;       // set by the report maker from the stored optical records
+        int strapHr = -1, strapHrv = -1;   // 0.26.0: the strap's own average heart rate at the verdict (frame byte 27) and its HRV field at the end (bytes 29-30, a rolling RMSSD in ms)
+        ProDetect.Opt opt;      // 0.25.3: green perfusion and the infrared near/far ratio
         String tag = "", hrvNote = ""; double[] rrT = new double[0]; Hrv hrvAll; boolean rateStep; ProDetect.Ex ex;      // 0.25.2: reading tag, steady-phase note, R-R times, the whole-reading variability when a steady phase is used, exercise
         int lifts; double[] liftStart = new double[0], liftLen = new double[0];      // 0.25.1: runs of 2 s or more with the electrodes open after the first contact (start second, length in s)
         double[] rrMs; Hrv hrv; Iv iv; double[][] ci = new double[10][];       // lo, hi per key (see CI_KEYS)
@@ -88,6 +90,7 @@ final class ProAnalysis {
             }
         }
         R.cleanSeconds = R.qcount[3];
+        { int vIdx = -1; for (int s = 0; s < sec; s++) { byte[] f = fr.get(s); if (vIdx < 0 && (f[25] & 0xFF) == 100) { vIdx = s; int h = f[27] & 0xFF; if (h >= 30 && h <= 220) R.strapHr = h; } int v = (f[29] & 0xFF) | ((f[30] & 0xFF) << 8); if (v >= 3 && v <= 300) R.strapHrv = v; } }
         for (int s = 0; s < sec; s++) { byte[] f = fr.get(s); if (R.firstQ3 < 0 && q[s] == 3) R.firstQ3 = s; if (R.settleEnd < 0 && (f[22] & 0xFF) == 8) R.settleEnd = s; }
         if (R.firstQ3 > 0) for (int s = 0; s < R.firstQ3; s++) { if (q[s] != 1 && q[s] != 2) continue; boolean fin = true; for (int k = 0; k < 500; k++) if (Double.isNaN(x[s * 500 + k])) { fin = false; break; } if (fin) R.earlyUsable++; }
         {   // 0.25.1 finger lifts: runs of at least 2 seconds with 90 % of the sampled points flagged lead-off, after the first contact
