@@ -16,6 +16,7 @@ final class ProAnalysis {
     static final double[][] BANDS = {{0, 20}, {20, 40}, {40, 60}, {60, 80}, {80, 100}, {100, 130}, {130, 160}, {160, 200}, {200, 250}};
 
     static final class Iv {
+        double sAmp = Double.NaN;      // 0.26.1: S-wave depth, the lowest point from the R apex to 80 ms after it, against the PR baseline
         double qrsOn, qrsOff, qrs, base, rAmp, st = Double.NaN, tAmp = Double.NaN, tPeak = Double.NaN, tEnd = Double.NaN, pAmp = Double.NaN, pPeak = Double.NaN, pOn = Double.NaN, pOff = Double.NaN, pr = Double.NaN, pDur = Double.NaN;
         double qt = Double.NaN, qtcB = Double.NaN, qtcF = Double.NaN, qtcFr = Double.NaN; boolean qtValid;
     }
@@ -32,6 +33,7 @@ final class ProAnalysis {
         double[] winT = new double[0], qtWin = new double[0], qtSig = new double[0], stWin = new double[0], stSig = new double[0];
         double qtSdAcross = Double.NaN, qtSigMean = Double.NaN, stSdAcross = Double.NaN, stSigMean = Double.NaN;
         ProDetect.Pat pat;       // set by the report maker from the stored optical records
+        int motionDropped; boolean weighted; double nEff = Double.NaN;      // 0.26.1: seconds left out for wrist movement; noise-weighted mean beat and its effective beat count
         int strapHr = -1, strapHrv = -1;   // 0.26.0: the strap's own average heart rate at the verdict (frame byte 27) and its HRV field at the end (bytes 29-30, a rolling RMSSD in ms)
         ProDetect.Opt opt;      // 0.25.3: green perfusion and the infrared near/far ratio
         String tag = "", hrvNote = ""; double[] rrT = new double[0]; Hrv hrvAll; boolean rateStep; ProDetect.Ex ex;      // 0.25.2: reading tag, steady-phase note, R-R times, the whole-reading variability when a steady phase is used, exercise
@@ -68,7 +70,13 @@ final class ProAnalysis {
     /** Why analyse() returned null (shown by the Pro PDF button). */
     static volatile String why = "";
 
-    static Result analyse(byte[] bin) {
+    /** 0.26.1: noise weighting of the mean beat, tested and left OFF: across 9 readings (odd against even beats) it did not make QRS, PR or QT
+     *  more repeatable (median disagreement 2, 4, 1.9 ms weighted against 0, 2, 1.9 ms equal); it helped only the two short noisy morning readings. */
+    static final boolean WEIGHTED = false;
+    static Result analyse(byte[] bin) { return analyse(bin, null); }
+
+    /** 0.26.1: rejectUnix = strap seconds with heavy wrist rotation (from the stored motion record); they are left out of the clean stretches. */
+    static Result analyse(byte[] bin, java.util.Set<Long> rejectUnix) {
         why = "";
         List<byte[]> fr = new ArrayList<>();
         List<byte[]> fr17 = new ArrayList<>();
@@ -115,6 +123,7 @@ final class ProAnalysis {
         List<int[]> segs = new ArrayList<>(); int cur = -1;
         for (int s = 0; s < sec; s++) {
             boolean ok = q[s] == 3; if (ok) for (int k = 0; k < 500; k++) if (Double.isNaN(x[s * 500 + k])) { ok = false; break; }
+            if (ok && rejectUnix != null && rejectUnix.contains(u32(fr.get(s), 15))) { ok = false; R.motionDropped++; }
             if (ok && cur < 0) cur = s;
             if ((!ok || s == sec - 1) && cur >= 0) { int e = s + (ok && s == sec - 1 ? 1 : 0); if (e - cur >= 8) segs.add(new int[] {cur * 500 + 250, e * 500 - 250}); cur = -1; }
         }
@@ -154,7 +163,11 @@ final class ProAnalysis {
         int N = kept.size(); R.beatsUsed = N; if (N < 30) { why = "only " + N + " of " + nb + " beats matched the average beat (30 are needed)"; return null; }
         double[][] Bal = kept.toArray(new double[0][]);
         double[] avg = new double[L], sd = new double[L];
-        for (double[] b : Bal) for (int i = 0; i < L; i++) avg[i] += b[i] / N;
+        // 0.26.1: noise-weighted mean beat. Each beat's noise is measured in the quiet stretch 450 to 550 ms after R; weight = 1 / noise^2,
+        // with the noise floored at half the median (no beat counts more than 4 times a typical one).
+        final double[] wts = new double[N]; { double[] nz = new double[N]; for (int k = 0; k < N; k++) nz[k] = ProDsp.std(ProDsp.detrend(Arrays.copyOfRange(Bal[k], PRE + 225, PRE + 275)), 1); double md = ProDsp.median(nz);
+            double sw = 0, sw2 = 0; for (int k = 0; k < N; k++) { double n = Math.max(nz[k], 0.5 * md); wts[k] = WEIGHTED ? 1.0 / (n * n) : 1.0; sw += wts[k]; } for (int k = 0; k < N; k++) { wts[k] /= sw; sw2 += wts[k] * wts[k]; } R.nEff = 1.0 / sw2; R.weighted = WEIGHTED; }
+        for (int k = 0; k < N; k++) for (int i = 0; i < L; i++) avg[i] += wts[k] * Bal[k][i];
         for (double[] b : Bal) for (int i = 0; i < L; i++) sd[i] += (b[i] - avg[i]) * (b[i] - avg[i]);
         for (int i = 0; i < L; i++) sd[i] = Math.sqrt(sd[i] / N);
         R.meanFull = avg; R.sd = sd; R.meanLp40 = ProDsp.filtfilt(avg, ProDsp.butterLow(4, 40, FS));
@@ -182,8 +195,8 @@ final class ProAnalysis {
         // bootstrap confidence ranges
         Random rnd = new Random(1); int NB = 300; double[][] bs = new double[CI_KEYS.length][NB]; int ok = 0;
         for (int b = 0; b < NB; b++) {
-            double[] m = new double[L]; for (int i = 0; i < N; i++) { double[] bb = Bal[rnd.nextInt(N)]; for (int j = 0; j < L; j++) m[j] += bb[j]; }
-            for (int j = 0; j < L; j++) m[j] /= N;
+            double[] m = new double[L]; double swb = 0; for (int i = 0; i < N; i++) { int ix = rnd.nextInt(N); double[] bb = Bal[ix]; double wv = wts[ix]; swb += wv; for (int j = 0; j < L; j++) m[j] += wv * bb[j]; }
+            for (int j = 0; j < L; j++) m[j] /= swb;
             Iv v = intervals(m, rrS); if (v == null) continue;
             double[] vals = {v.qrs, v.pr, v.qt, v.qtcF, v.qtcB, v.pAmp, v.rAmp, v.tAmp, v.st, v.pDur};
             for (int k = 0; k < vals.length; k++) bs[k][ok] = vals[k]; ok++;
@@ -194,7 +207,7 @@ final class ProAnalysis {
         }
         // noise and band signal to noise
         double[] ns = new double[N]; for (int k = 0; k < N; k++) { double[] w = Arrays.copyOfRange(Bal[k], PRE + 225, PRE + 275); ns[k] = ProDsp.std(ProDsp.detrend(w), 1); }
-        R.noiseSingle = ProDsp.median(ns); R.noiseMean = R.noiseSingle / Math.sqrt(N);
+        R.noiseSingle = ProDsp.median(ns); if (WEIGHTED) { double v = 0; for (int k = 0; k < N; k++) { double n = ns[k]; v += wts[k] * wts[k] * n * n; } R.noiseMean = Math.sqrt(v); } else R.noiseMean = R.noiseSingle / Math.sqrt(N);      // 0.26.1: noise of the weighted mean
         double[] sig = ProDsp.bandPower(avg, QW0, QW1 - QW0, 256);
         double[] noiseAcc = new double[sig.length]; int NBO = 150;
         for (int b = 0; b < NBO; b++) {
@@ -374,6 +387,7 @@ final class ProAnalysis {
         while (i < r + sm(120)) { if (act[i]) { off = i; g = 0; } else { g++; if (g > gap) break; } i++; }
         int b0 = on - sm(30), b1 = on - sm(10); double base = (b1 > b0 && b0 >= 0) ? ProDsp.median(a, b0, b1) : ProDsp.median(a, Math.max(0, on - sm(30)), on);
         Iv o = new Iv(); o.qrsOn = ms(on - r); o.qrsOff = ms(off - r); o.qrs = ms(off - on); o.base = base; o.rAmp = a[r] - base;
+        { double mn = a[r]; for (int k = r; k <= Math.min(a.length - 1, r + sm(80)); k++) mn = Math.min(mn, a[k]); o.sAmp = mn - base; }
         int j = off + sm(60); if (j + sm(10) < a.length) { double s = 0; int c = 0; for (int k = j - sm(10); k < j + sm(10); k++) { s += a[k]; c++; } o.st = s / c - base; }
         int t0 = off + sm(60), t1 = Math.min(a.length - 1, r + (int) (Math.min(0.55 * rrS, 0.5) * FS));
         double[][] L15 = ProDsp.butterLow(2, 15, FS);

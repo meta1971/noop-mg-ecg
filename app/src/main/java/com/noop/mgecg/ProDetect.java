@@ -38,6 +38,17 @@ final class ProDetect {
         return E;
     }
 
+    /** 0.26.1: strap seconds whose wrist rotation (SD of the gyroscope magnitude over the second, stored 100 Hz motion) is above max(1.5 deg/s, 4 x the reading's median). */
+    static java.util.Set<Long> motionRejects(List<byte[]> r21) {
+        java.util.Set<Long> out = new java.util.HashSet<>(); if (r21 == null || r21.size() < 20) return out;
+        List<double[]> v = new ArrayList<>();
+        for (byte[] f : r21) { double s = 0, s2 = 0; for (int k = 0; k < 100; k++) { double gx = (short) ((f[640 + 2 * k] & 0xFF) | ((f[641 + 2 * k] & 0xFF) << 8)) / 16.384, gy = (short) ((f[840 + 2 * k] & 0xFF) | ((f[841 + 2 * k] & 0xFF) << 8)) / 16.384, gz = (short) ((f[1040 + 2 * k] & 0xFF) | ((f[1041 + 2 * k] & 0xFF) << 8)) / 16.384; double g = Math.sqrt(gx * gx + gy * gy + gz * gz); s += g; s2 += g * g; }
+            double m = s / 100, sd = Math.sqrt(Math.max(0, s2 / 100 - m * m)); v.add(new double[] {ProAnalysis.u32(f, 15), sd}); }
+        double[] a = new double[v.size()]; for (int i = 0; i < a.length; i++) a[i] = v.get(i)[1]; double thr = Math.max(1.5, 4 * ProDsp.median(a));
+        for (double[] x : v) if (x[1] > thr) out.add((long) x[0]);
+        return out;
+    }
+
     static final class Opt { int seconds; double greenPi = Double.NaN, greenDc = Double.NaN, irNear = Double.NaN, irFar = Double.NaN, irRatio = Double.NaN, irRatioMin = Double.NaN, irRatioMax = Double.NaN; }
 
     /** 0.25.3: green perfusion (median pulse peak-to-peak per second against the steady level, %) and the infrared near/far photodiode ratio (block 4, slot A over slot B) per 20 s, from the stored 50 Hz optical records of the reading. */

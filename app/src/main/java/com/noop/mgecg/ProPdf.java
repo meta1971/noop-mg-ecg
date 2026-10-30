@@ -109,7 +109,7 @@ final class ProPdf {
         if (r.hrvNote != null && !r.hrvNote.isEmpty()) y = bullet(p, r.hrvNote, 36, y, w, 9.3);
         if (r.tag != null && !r.tag.isEmpty()) y = bullet(p, "Position or activity tag chosen before Start: " + r.tag + ".", 36, y, w, 9.3);
         y = bullet(p, String.format(Locale.UK, "Rhythm and rate: %.1f bpm, R-R %.0f to %.0f ms, irregularity (normalised RMSSD) %.3f; in the public AF database sinus windows have a median of 0.03 and AF windows 0.29.", r.hrv.hr, r.rrMin, r.rrMax, r.nrmssdMedian), 36, y, w, 9.3);
-        y = bullet(p, String.format(Locale.UK, "Intervals on the mean beat: PR %s ms, QRS %s ms, QT %s ms, QTc Fridericia %s ms (Bazett %s, Framingham %s). P %s, R %s, T %s microvolts. QT is repeatable but only accurate to about 40 ms; the P boundary to about 25 ms.", f0(r.iv.pr), f0(r.iv.qrs), f0(r.iv.qt), f0(r.iv.qtcF), f0(r.iv.qtcB), f0(r.iv.qtcFr), f0(r.iv.pAmp), f0(r.iv.rAmp), f0(r.iv.tAmp)), 36, y, w, 9.3);
+        y = bullet(p, String.format(Locale.UK, "Intervals on the mean beat: PR %s ms, QRS %s ms, QT %s ms, QTc Fridericia %s ms (Bazett %s, Framingham %s). P %s, R %s, S %s, T %s microvolts. QT is repeatable but only accurate to about 40 ms; the P boundary to about 25 ms.", f0(r.iv.pr), f0(r.iv.qrs), f0(r.iv.qt), f0(r.iv.qtcF), f0(r.iv.qtcB), f0(r.iv.qtcFr), f0(r.iv.pAmp), f0(r.iv.rAmp), f0(r.iv.sAmp), f0(r.iv.tAmp)), 36, y, w, 9.3);
         y = bullet(p, String.format(Locale.UK, "Heart-rate variability: SDNN %.1f ms, RMSSD %.1f ms, breathing %s. Healthy sinus rhythm at 58 to 70 bpm in the Normal Sinus Rhythm Database: RMSSD median 40 ms, 5th percentile 21 ms.", r.hrv.sdnnDetr, r.hrv.rmssd, specOk(r.hrv) ? String.format(Locale.UK, "%.0f a minute", r.hrv.fpk * 60) : "not computed (needs about 3 minutes)"), 36, y, w, 9.3);
         if (r.hrv.removed > 0) y = bullet(p, r.hrv.removed + " interval(s) were more than 20 % away from the running median and left out of the variability figures. Seen by both devices when an H10 was worn, such an interval is a real early or late beat, not noise.", 36, y, w, 9.3);
         y += 6; p.text("Is the signal above 40 Hz useful? (study of 26 to 28 Oct 2026 on this strap, 9 readings)", 36, y, 12.5, BLUE, true, 0); y += 16;
@@ -135,7 +135,7 @@ final class ProPdf {
             {"RATE AND RHYTHM", "", ""}, {"Heart rate / R-R", String.format(Locale.UK, "%.1f bpm / %.0f ms", hv.hr, hv.meanRr), "60 to 100 at rest"}, {"Irregularity (nRMSSD)", String.format(Locale.UK, "%.3f", r.nrmssdMedian), "sinus 0.03, AF 0.29"},
             {"INTERVALS (mean beat)", "", ""}, {"PR", ciTxt(v.pr, r.ci[1], "ms"), "120-200; P edge +-25"}, {"QRS", ciTxt(v.qrs, r.ci[0], "ms"), "<120; method based"}, {"QT", ciTxt(v.qt, r.ci[2], "ms"), "accuracy +-40 ms"},
             {"QTc Fridericia", ciTxt(v.qtcF, r.ci[3], "ms"), "<450 M, <460 F"}, {"QTc Bazett", f0(v.qtcB) + " ms", ""}, {"QTc Framingham", f0(v.qtcFr) + " ms", "QT + 154 (1 - R-R)"},
-            {"AMPLITUDES", "", ""}, {"P / R / T", f0(v.pAmp) + " / " + f0(v.rAmp) + " / " + f0(v.tAmp) + " uV", "scale unverified"}, {"ST at J+60 ms", f0(v.st) + " uV", "high-pass alters it"},
+            {"AMPLITUDES", "", ""}, {"P / R / S / T", f0(v.pAmp) + " / " + f0(v.rAmp) + " / " + f0(v.sAmp) + " / " + f0(v.tAmp) + " uV", "scale unverified"}, {"ST at J+60 ms", f0(v.st) + " uV", "high-pass alters it"},
             {"VARIABILITY", "", ""}, {"SDNN / RMSSD", f1(hv.sdnnDetr) + " / " + f1(hv.rmssd) + " ms", "NSRDB med 40, p5 21"}, {"LF / HF, breathing", specOk(hv) ? f0(hv.lf) + " / " + f0(hv.hf) + " ms2, " + f0(hv.fpk * 60) + "/min" : "not computed", specOk(hv) ? "short reading" : "needs about 3 min"}};
         for (int i = 0; i < rows.length; i++) { double yy = ty + i * rowH; if (rows[i][1].isEmpty()) { p.text(rows[i][0], tx, yy, 8, BLUE, true, 0); p.line(tx, yy + 3, W - 36, yy + 3, 0.5, 0xC8D3DF); } else { p.text(rows[i][0], tx + 6, yy, 8, INK, false, 0); p.text(rows[i][1], tx + 104, yy, 8, INK, true, 0); p.text(rows[i][2], tx + 236, yy, 6.4, GREY, false, 0); } }
         // lower panels
@@ -180,7 +180,7 @@ final class ProPdf {
             {"QT interval", ciTxt(v.qt, r.ci[2], "ms"), "depends on rate", "QRS onset to the tangent T end; repeatable, but absolute accuracy about 40 ms (QT Database test)."},
             {"QTc Fridericia", ciTxt(v.qtcF, r.ci[3], "ms"), "under 450 men, 460 women", "QT / R-R^(1/3); Bazett " + f0(v.qtcB) + " ms, Framingham " + f0(v.qtcFr) + " ms (the heart-rate recovery of 29 Oct favoured Fridericia and Framingham over Bazett)."},
             {"ST at J+60 ms", f0(v.st) + " uV", "about 0", "Relative to the end of the PR segment; the 0.5 Hz high-pass alters ST levels."},
-            {"P / R / T", f0(v.pAmp) + " / " + f0(v.rAmp) + " / " + f0(v.tAmp) + " uV", "wrist lead", "Scale is the design value, not checked with a calibrator."}};
+            {"P / R / S / T", f0(v.pAmp) + " / " + f0(v.rAmp) + " / " + f0(v.sAmp) + " / " + f0(v.tAmp) + " uV", "wrist lead", "S = lowest point within 80 ms after R. Scale is the design value, not checked with a calibrator."}};
         double ty = 410; double[] cx = {36, 150, 290, 420};
         for (int i = 0; i < rows.length; i++) { if (i == 0) p.rect(36, ty - 11, W - 72, 15, LIGHT, -1, 0); for (int j = 0; j < 4; j++) para(p, rows[i][j], cx[j] + 3, ty, j < 3 ? cx[j + 1] - cx[j] - 6 : W - 36 - cx[3] - 6, 7.8, 9, i == 0 ? INK : (j == 3 ? GREY : INK), i == 0 || j == 1); ty += (i == 0 ? 17 : 20); p.line(36, ty - 12, W - 36, ty - 12, 0.3, 0xC8D3DF); }
     }
@@ -265,7 +265,8 @@ final class ProPdf {
             {"Noise on the mean beat", f1(r.noiseMean) + " uV", "2.8 to 6.8 uV", "falls with the square root of the number of beats"},
             {"P wave / noise on the mean beat", Double.isNaN(pn) ? "-" : f1(pn), "2 to 10", "below 3 the P wave and PR are not reliable"},
             {"R height / noise per beat", Double.isNaN(rn) ? "-" : f1(rn), "9 to 18", "contact, pressure and placement"},
-            {"Beats used / seconds of quality 3", r.beatsUsed + " / " + r.qcount[3], "71 to 192 / 65 to 180", "204 s gave 2.8 uV on the mean beat, 80 to 95 s gave 4.6 to 6.8 uV"},
+            {"Seconds left out for wrist movement", String.valueOf(r.motionDropped), "0 at a still table", "wrist rotation over 1.5 deg/s (gyroscope); left out of every average"},
+            {"Beats used / seconds of quality 3", r.beatsUsed + " / " + r.qcount[3] + (r.weighted ? String.format(Locale.UK, " (weighted: %.0f effective)", r.nEff) : ""), "71 to 192 / 65 to 180", "204 s gave 2.8 uV on the mean beat, 80 to 95 s gave 4.6 to 6.8 uV"},
         };
         double ty = 100;
         for (int i = 0; i < rows.length; i++) { if (i == 0) p.rect(36, ty - 11, 770, 15, LIGHT, -1, 0); p.text(rows[i][0], 40, ty, 8.5, INK, i == 0, 0); p.text(rows[i][1], 250, ty, 8.5, INK, true, 0); p.text(rows[i][2], 340, ty, 8.5, GREY, i == 0, 0); p.text(rows[i][3], 450, ty, 8, GREY, false, 0); ty += 17.5; }

@@ -713,7 +713,7 @@ public class NewLookActivity extends Activity {
         lastRunningState = -1;
 
         // tips card above the button (idle only)
-        ecgTips = tv("Rest your forearm on a table  \u00b7  hold steady contact with both fingers  \u00b7  stay on for a minute or more",
+        ecgTips = tv("Sit at a table, forearm supported at heart level, hand relaxed  \u00b7  two fingertips resting lightly on the clasp  \u00b7  stay still and quiet for 3 minutes without lifting",
                 13, MUTED, false);
         ecgTips.setGravity(Gravity.CENTER);
         ecgTips.setPadding(dp(8), dp(4), dp(8), dp(10));

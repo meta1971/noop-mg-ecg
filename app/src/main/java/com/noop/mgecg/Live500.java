@@ -9,7 +9,7 @@ package com.noop.mgecg;
  * exactly these samples; this class only prepares them for the eye.
  *
  * Pipeline (all of it for display only; the reports keep their own zero-phase filter):
- *  1. causal front end: 0.67 Hz high-pass and 50 Hz notch (UK mains), settled on the first good sample so the trace starts at zero;
+ *  1. causal front end: 0.05 Hz first-order high-pass (0.26.1; was 0.67 Hz second order, which dug a false dip after each R wave) and 50 Hz notch (UK mains), settled on the first good sample so the trace starts at zero;
  *  2. a polarity-independent QRS detector on the 5 to 20 Hz band (derivative energy), tuned on 161 and 208 beats of two real readings;
  *  3. two Gaussian smoothers, fast (sigma 3 ms, about 44 Hz) and slow (sigma 8 or 12 ms, about 15 or 11 Hz), blended by a QRS weight: the fast one
  *     around each beat (from about R-100 ms to R+86 ms), the slow one in between. The R wave and its width stay, the baseline fuzz between the
@@ -45,12 +45,12 @@ final class Live500 {
     /** 0.67 Hz high-pass then 50 Hz notch, designed with scipy at 500 Hz. */
     static final class Front {
         final Biquad[] s = new Biquad[] {
-            new Biquad(0.9940642234526351, -1.9881284469052702, 0.9940642234526351, -1.988093213151696, 0.9881636806588452),
+            new Biquad(0.9996859393893597, -0.9996859393893597, 0.0, -0.9993718787787192, 0.0),      // 0.26.1: first-order 0.05 Hz high-pass (the 0.67 Hz second-order one dug a false dip after every R wave: S -156 against -30 uV true on 29 Oct)
             new Biquad(0.9875889380903247, -1.5979524687435611, 0.9875889380903247, -1.5979524687435611, 0.9751778761806493)
         };
         double step(double x) { for (Biquad q : s) x = q.step(x); return x; }
         void clear() { for (Biquad q : s) q.clear(); }
-        void settle(double x0) { clear(); for (int i = 0; i < 1500; i++) step(x0); }
+        void settle(double x0) { clear(); s[0].z1 = -s[0].b0 * x0; }      // 0.26.1: the exact steady state of a constant input (the 0.05 Hz filter needs about 30 s to settle by stepping)
     }
 
     /** Band-pass 5 to 20 Hz (two second-order sections) for the QRS detector. */

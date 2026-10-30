@@ -54,7 +54,9 @@ final class ProReportMaker {
                 if (bin == null) msg = "No live raw frames were saved for this reading (readings before 0.17.0, or with live raw switched off, cannot be analysed at 500 Hz).";
                 else if (bin.length() > 60L * 1024 * 1024) msg = "The frame file of this reading is too large to analyse here.";
                 else {
-                    ProAnalysis.Result r = ProAnalysis.analyse(Files.readAllBytes(bin.toPath()));
+                    byte[] binBytes = Files.readAllBytes(bin.toPath()); java.util.Set<Long> rej = null;
+                    try { java.util.List<byte[]> fr0 = ProAnalysis.frames(binBytes); if (!fr0.isEmpty()) { long a0 = ProAnalysis.u32(fr0.get(0), 15), a1 = ProAnalysis.u32(fr0.get(fr0.size() - 1), 15); rej = ProDetect.motionRejects(ReadingFrames.collect(dir, a0, a1).r21); } } catch (Throwable ignored) { rej = null; }      // 0.26.1: wrist-movement seconds
+                    ProAnalysis.Result r = ProAnalysis.analyse(binBytes, rej);
                     if (r == null) msg = "The report cannot be made: " + ProAnalysis.why + ". It needs 20 seconds of frames, a stretch of 8 clean seconds and at least 30 clean beats.";
                     else {
                         try { r.tag = ReadingTag.forReading(dir, r.t0); ReadingFrames.Sets stored = ReadingFrames.collect(dir, r.t0 - 600, r.t0 + r.seconds); r.pat = ProDetect.pat(r, stored.r20); r.ex = ProDetect.exercise(r, stored.r18); r.opt = ProDetect.optics(stored.r20, r.t0, r.t0 + r.seconds); } catch (Throwable ignored) { r.pat = null; }
