@@ -106,8 +106,10 @@ final class ProPdf {
         header(p, "WHOOP MG 500 Hz ECG: evaluation report", "One lead (wrist under the band to the fingertips of the other hand). " + info.when + ": " + r.seconds + " s recorded, " + r.cleanSeconds + " s of quality 3, " + r.beatsUsed + " beats averaged.", info, 1);
         double y = 96, w = W - 72;
         p.text("Reading by reading: what this report found", 36, y, 12.5, BLUE, true, 0); y += 16;
+        if (r.hrvNote != null && !r.hrvNote.isEmpty()) y = bullet(p, r.hrvNote, 36, y, w, 9.3);
+        if (r.tag != null && !r.tag.isEmpty()) y = bullet(p, "Position or activity tag chosen before Start: " + r.tag + ".", 36, y, w, 9.3);
         y = bullet(p, String.format(Locale.UK, "Rhythm and rate: %.1f bpm, R-R %.0f to %.0f ms, irregularity (normalised RMSSD) %.3f; in the public AF database sinus windows have a median of 0.03 and AF windows 0.29.", r.hrv.hr, r.rrMin, r.rrMax, r.nrmssdMedian), 36, y, w, 9.3);
-        y = bullet(p, String.format(Locale.UK, "Intervals on the mean beat: PR %s ms, QRS %s ms, QT %s ms, QTc Fridericia %s ms (Bazett %s). P %s, R %s, T %s microvolts. QT is repeatable but only accurate to about 40 ms; the P boundary to about 25 ms.", f0(r.iv.pr), f0(r.iv.qrs), f0(r.iv.qt), f0(r.iv.qtcF), f0(r.iv.qtcB), f0(r.iv.pAmp), f0(r.iv.rAmp), f0(r.iv.tAmp)), 36, y, w, 9.3);
+        y = bullet(p, String.format(Locale.UK, "Intervals on the mean beat: PR %s ms, QRS %s ms, QT %s ms, QTc Fridericia %s ms (Bazett %s, Framingham %s). P %s, R %s, T %s microvolts. QT is repeatable but only accurate to about 40 ms; the P boundary to about 25 ms.", f0(r.iv.pr), f0(r.iv.qrs), f0(r.iv.qt), f0(r.iv.qtcF), f0(r.iv.qtcB), f0(r.iv.qtcFr), f0(r.iv.pAmp), f0(r.iv.rAmp), f0(r.iv.tAmp)), 36, y, w, 9.3);
         y = bullet(p, String.format(Locale.UK, "Heart-rate variability: SDNN %.1f ms, RMSSD %.1f ms, breathing %s. Healthy sinus rhythm at 58 to 70 bpm in the Normal Sinus Rhythm Database: RMSSD median 40 ms, 5th percentile 21 ms.", r.hrv.sdnnDetr, r.hrv.rmssd, specOk(r.hrv) ? String.format(Locale.UK, "%.0f a minute", r.hrv.fpk * 60) : "not computed (needs about 3 minutes)"), 36, y, w, 9.3);
         if (r.hrv.removed > 0) y = bullet(p, r.hrv.removed + " interval(s) were more than 20 % away from the running median and left out of the variability figures. Seen by both devices when an H10 was worn, such an interval is a real early or late beat, not noise.", 36, y, w, 9.3);
         y += 6; p.text("Is the signal above 40 Hz useful? (study of 26 to 28 Oct 2026 on this strap, 9 readings)", 36, y, 12.5, BLUE, true, 0); y += 16;
@@ -132,7 +134,7 @@ final class ProPdf {
         String[][] rows = {
             {"RATE AND RHYTHM", "", ""}, {"Heart rate / R-R", String.format(Locale.UK, "%.1f bpm / %.0f ms", hv.hr, hv.meanRr), "60 to 100 at rest"}, {"Irregularity (nRMSSD)", String.format(Locale.UK, "%.3f", r.nrmssdMedian), "sinus 0.03, AF 0.29"},
             {"INTERVALS (mean beat)", "", ""}, {"PR", ciTxt(v.pr, r.ci[1], "ms"), "120-200; P edge +-25"}, {"QRS", ciTxt(v.qrs, r.ci[0], "ms"), "<120; method based"}, {"QT", ciTxt(v.qt, r.ci[2], "ms"), "accuracy +-40 ms"},
-            {"QTc Fridericia", ciTxt(v.qtcF, r.ci[3], "ms"), "<450 M, <460 F"}, {"QTc Bazett", f0(v.qtcB) + " ms", ""},
+            {"QTc Fridericia", ciTxt(v.qtcF, r.ci[3], "ms"), "<450 M, <460 F"}, {"QTc Bazett", f0(v.qtcB) + " ms", ""}, {"QTc Framingham", f0(v.qtcFr) + " ms", "QT + 154 (1 - R-R)"},
             {"AMPLITUDES", "", ""}, {"P / R / T", f0(v.pAmp) + " / " + f0(v.rAmp) + " / " + f0(v.tAmp) + " uV", "scale unverified"}, {"ST at J+60 ms", f0(v.st) + " uV", "high-pass alters it"},
             {"VARIABILITY", "", ""}, {"SDNN / RMSSD", f1(hv.sdnnDetr) + " / " + f1(hv.rmssd) + " ms", "NSRDB med 40, p5 21"}, {"LF / HF, breathing", specOk(hv) ? f0(hv.lf) + " / " + f0(hv.hf) + " ms2, " + f0(hv.fpk * 60) + "/min" : "not computed", specOk(hv) ? "short reading" : "needs about 3 min"}};
         for (int i = 0; i < rows.length; i++) { double yy = ty + i * rowH; if (rows[i][1].isEmpty()) { p.text(rows[i][0], tx, yy, 8, BLUE, true, 0); p.line(tx, yy + 3, W - 36, yy + 3, 0.5, 0xC8D3DF); } else { p.text(rows[i][0], tx + 6, yy, 8, INK, false, 0); p.text(rows[i][1], tx + 104, yy, 8, INK, true, 0); p.text(rows[i][2], tx + 236, yy, 6.4, GREY, false, 0); } }
@@ -176,7 +178,7 @@ final class ProPdf {
             {"PR interval", ciTxt(v.pr, r.ci[1], "ms"), "120 to 200 ms", "P onset (15 % of the P height) to QRS onset; the P wave (" + f0(v.pAmp) + " uV) is small against " + f0(r.noiseSingle) + " uV of noise per beat."},
             {"QRS duration", ciTxt(v.qrs, r.ci[0], "ms"), "under 120 ms", "Slope threshold 5 % of the maximum (70 ms at 8 %); method dependent."},
             {"QT interval", ciTxt(v.qt, r.ci[2], "ms"), "depends on rate", "QRS onset to the tangent T end; repeatable, but absolute accuracy about 40 ms (QT Database test)."},
-            {"QTc Fridericia", ciTxt(v.qtcF, r.ci[3], "ms"), "under 450 men, 460 women", "QT / R-R^(1/3); Bazett " + f0(v.qtcB) + " ms."},
+            {"QTc Fridericia", ciTxt(v.qtcF, r.ci[3], "ms"), "under 450 men, 460 women", "QT / R-R^(1/3); Bazett " + f0(v.qtcB) + " ms, Framingham " + f0(v.qtcFr) + " ms (the heart-rate recovery of 29 Oct favoured Fridericia and Framingham over Bazett)."},
             {"ST at J+60 ms", f0(v.st) + " uV", "about 0", "Relative to the end of the PR segment; the 0.5 Hz high-pass alters ST levels."},
             {"P / R / T", f0(v.pAmp) + " / " + f0(v.rAmp) + " / " + f0(v.tAmp) + " uV", "wrist lead", "Scale is the design value, not checked with a calibrator."}};
         double ty = 410; double[] cx = {36, 150, 290, 420};
@@ -202,7 +204,7 @@ final class ProPdf {
         p.text(String.format(Locale.UK, "R-R spectrum: LF %.0f, HF %.0f ms2 (LF blue, HF red)", r.hrv.lf, r.hrv.hf), x, y - 4, 7.5, INK, true, 0);
     }
     static void pageHrv(Pen p, ProAnalysis.Result r, Info info) {
-        header(p, "Heart-rate variability", "From the " + r.hrv.n + " beat-to-beat intervals of the reading (artifact filter: within 20 % of the running median of 11).", info, 5);
+        header(p, "Heart-rate variability", "From the " + r.hrv.n + " beat-to-beat intervals of " + (r.rateStep ? "the steadiest stretch of the reading (the heart rate changed: see page 1)" : "the reading") + " (artifact filter: within 20 % of the running median of 11).", info, 5);
         p.text("R-R tachogram (blue: kept, red: removed)", 36, 96, 9, INK, true, 0); drawTach(p, r, 36, 245, 380, 130, false);
         drawPoincare(p, r, 450, 110, 140); drawPsd(p, r, 620, 120, 190, 120);
         String[][] rows = {{"Measure", "This reading", "Reference", "Source"},
@@ -240,12 +242,13 @@ final class ProPdf {
         para(p, "Reading: the energy above 40 Hz is beat-locked signal (C), strong after averaging (A) and weak on one beat (B). It carries the height and sharpness of the QRS (D). It does not improve beat timing or rhythm detection (see the H10 and database pages).", 36, y + 2, 770, 8.3, 10.5, GREY, false);
     }
 
+    static String dropTxt(double a, double b) { return Double.isNaN(a) || Double.isNaN(b) ? "-" : "-" + f0(a - b) + " bpm"; }
     static String secOrNone(int s) { return s < 0 ? "not reached" : s + " s"; }
     static String liftLens(ProAnalysis.Result r) { StringBuilder sb = new StringBuilder(); for (int i = 0; i < r.lifts && i < 3; i++) sb.append(i == 0 ? "" : ", ").append(String.format(Locale.UK, "%.0f s", r.liftLen[i])); if (r.lifts > 3) sb.append(", ..."); return sb.toString(); }
     static String liftText(ProAnalysis.Result r) { StringBuilder sb = new StringBuilder(); for (int i = 0; i < r.lifts && i < 3; i++) sb.append(i == 0 ? "" : ", ").append(String.format(Locale.UK, "%.0f s at %d:%02d", r.liftLen[i], (int) r.liftStart[i] / 60, (int) r.liftStart[i] % 60)); if (r.lifts > 3) sb.append(", ..."); return sb.toString(); }
     /** 0.24.0: the conditions of this reading against the six readings of 28 and 29 Oct, with a hint for each flag. */
     static void pageConditions(Pen p, ProAnalysis.Result r, Info info) {
-        header(p, "Signal conditions of this reading", "What limited this reading and what to change next time. Reference = the readings of 28 and 29 Oct on this strap (wrist to finger, at rest, H10 worn).", info, 0);
+        header(p, "Signal conditions of this reading", "What limited this reading and what to change next time. Reference = the readings of 28 and 29 Oct on this strap (wrist to finger, at rest, H10 worn)." + (r.tag != null && !r.tag.isEmpty() ? " Tag: " + r.tag + "." : ""), info, 0);
         double pn = (r.iv != null && !Double.isNaN(r.iv.pAmp) && r.noiseMean > 0) ? r.iv.pAmp / r.noiseMean : Double.NaN;
         double rn = (r.iv != null && r.noiseSingle > 0) ? r.iv.rAmp / r.noiseSingle : Double.NaN;
         String[][] rows = {
@@ -287,11 +290,20 @@ final class ProPdf {
         if (P == null || Double.isNaN(P.medianMs)) y = para(p, P == null ? "Not available." : P.note, 40, y, 760, 8.5, 11, GREY, false) + 4;
         else {
             double rrBreath = specOk(r.hrv) ? r.hrv.fpk * 60 : Double.NaN;
-            y = para(p, String.format(Locale.UK, "%d of %d beats have a pulse. Median %s ms, spread (SD) %s ms, typical deviation %s ms. Breathing from the pulse arrival series: %s a minute%s. Changes from beat to beat and between readings mean more than the absolute delay, which depends on the clocks of the two sensors.", P.withPulse, P.beats, f0(P.medianMs), f1(P.sdMs), f1(P.madMs), Double.isNaN(P.breathPerMin) ? "-" : f0(P.breathPerMin), Double.isNaN(rrBreath) ? "" : " (from the beat intervals: " + f0(rrBreath) + ")"), 40, y, 760, 8.5, 11, INK, false) + 6;
+            y = para(p, String.format(Locale.UK, "%d of %d beats have a pulse. Median %s ms, spread (SD) %s ms, typical deviation %s ms. Breathing from the pulse arrival series: %s%s. Changes from beat to beat and between readings mean more than the absolute delay, which depends on the clocks of the two sensors.", P.withPulse, P.beats, f0(P.medianMs), f1(P.sdMs), f1(P.madMs), Double.isNaN(P.breathPerMin) ? "not computed (it needs 2 minutes of data)" : f0(P.breathPerMin) + " a minute", Double.isNaN(rrBreath) ? "" : " (from the beat intervals: " + f0(rrBreath) + ")"), 40, y, 760, 8.5, 11, INK, false) + 6;
         }
         p.text("Early beats (an interval under 80 % of the local median, followed by one over 112 %)", 36, y, 10, INK, true, 0); y += 16;
         if (r.earlyT == null || r.earlyT.length == 0) y = para(p, "None found in the clean stretches of this reading.", 40, y, 760, 8.5, 11, INK, false) + 6;
         else { StringBuilder sb = new StringBuilder(r.earlyT.length + " found: "); for (int i = 0; i < r.earlyT.length && i < 8; i++) sb.append(String.format(Locale.UK, "%s at %.1f s (interval %.0f %%, next %.0f %%)", i == 0 ? "" : "; ", r.earlyT[i], 100 * r.earlyR1[i], 100 * r.earlyR2[i])); y = para(p, sb.toString() + ". The artifact filter removes such intervals from the heart-rate variability figures; they are listed here instead.", 40, y, 760, 8.5, 11, INK, false) + 6; }
+        p.text("Exercise before or during this reading (strap activity record; recovery taken from the ECG)", 36, y, 10, INK, true, 0); y += 16;
+        ProDetect.Ex X = r.ex;
+        if (X == null || !X.found) y = para(p, "None found in the 10 minutes before this reading or during it.", 40, y, 760, 8.5, 11, INK, false) + 6;
+        else {
+            String s = String.format(Locale.UK, "%.0f s of running or walking, %s (%.0f steps, %.0f a minute). Heart rate at rest before it %s bpm, peak %s bpm (optical). ", X.durS, X.startRel < 0 ? String.format(Locale.UK, "%.0f s before the reading", -X.startRel) : String.format(Locale.UK, "starting %.0f s into the reading", X.startRel), X.steps, X.cadence, f0(X.restHr), f0(X.peakHr));
+            if (X.ecgCovers) s += String.format(Locale.UK, "ECG heart rate after it: %s bpm at 3 to 13 s, %s at 30 s (%s), %s at 60 s (%s), %s at 90 s (%s). The optical rate reads low after exercise, so the recovery uses the ECG.", f0(X.hr0), f0(X.hr30), dropTxt(X.hr0, X.hr30), f0(X.hr60), dropTxt(X.hr0, X.hr60), f0(X.hr90), dropTxt(X.hr0, X.hr90));
+            else s += "The ECG did not cover the first seconds after it, so no recovery is given.";
+            y = para(p, s, 40, y, 760, 8.5, 11, INK, false) + 6;
+        }
         p.text("QT and ST per window of 20 beats (step 10 beats)", 36, y, 10, INK, true, 0); y += 14;
         int nw = r.qtWin == null ? 0 : r.qtWin.length;
         if (nw < 4 || Double.isNaN(r.qtSdAcross)) y = para(p, "Too few valid windows in this reading (" + nw + "): a reading of 90 s or more gives about 6 windows, 3 minutes about 18.", 40, y, 760, 8.5, 11, GREY, false) + 4;

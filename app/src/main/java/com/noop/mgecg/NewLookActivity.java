@@ -718,6 +718,13 @@ public class NewLookActivity extends Activity {
         ecgTips.setGravity(Gravity.CENTER);
         ecgTips.setPadding(dp(8), dp(4), dp(8), dp(10));
         col.addView(ecgTips, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
+        // 0.25.2: position or activity tag for the next reading (tap again to clear)
+        final String[] tagNames = {"Lying", "Sitting", "Standing", "After exercise"}; tagChips = new Button[4];
+        LinearLayout tagRow = new LinearLayout(this); tagRow.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < 4; i++) { final int k = i; Button c = pillButton(tagNames[i], CARD, MUTED); c.setTextSize(11); tagChips[i] = c;
+            c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { readingTag = readingTag.equals(tagNames[k]) ? "" : tagNames[k]; for (int j = 0; j < 4; j++) tagChips[j].setBackground(round(tagNames[j].equals(readingTag) ? PRIMARY : CARD, 22)); } });
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, dp(40), 1f); tlp.rightMargin = dp(4); tagRow.addView(c, tlp); }
+        col.addView(tagRow, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
 
         // markers folded away (still work when opened)
         markViews = new View[]{markLabel, markRow1, markRow2, cuff};
@@ -768,7 +775,7 @@ public class NewLookActivity extends Activity {
     }
 
     // 0.25.1: a short buzz and a note when the fingers come off the clasp during a reading, or when there is no contact after 14 s
-    private int lastWarnRun; private boolean warnedNoContact;
+    private int lastWarnRun; private boolean warnedNoContact; private String readingTag = ""; private Button[] tagChips;
     private void contactAlert(String m) { try { Toast.makeText(this, m, Toast.LENGTH_SHORT).show(); if (ecgStartBtn != null) ecgStartBtn.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { } }
     private final Runnable contactTick = new Runnable() {
         @Override public void run() {
@@ -839,9 +846,9 @@ public class NewLookActivity extends Activity {
         if (rs != lastRunningState) {                       // the old code resets the colour whenever it flips the button
             int prevRs = lastRunningState;
             lastRunningState = rs;
-            if (!running && prevRs == 1) ui.postDelayed(new Runnable() { @Override public void run() { maybeStopH10(); } }, 6000L);       // 0.23.0: the H10 stops a few seconds after the reading
+            if (!running && prevRs == 1) { FrameMonitor.captureWindow(System.currentTimeMillis() + 150000L); ui.postDelayed(new Runnable() { @Override public void run() { maybeStopH10(); } }, 6000L); }       // 0.23.0: the H10 stops a few seconds after the reading
             ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
-            if (running) { Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
+            if (running) { ReadingTag.note(getExternalFilesDir(null), readingTag); FrameMonitor.captureReset(); FrameMonitor.captureWindow(System.currentTimeMillis() + 20 * 60 * 1000L); Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
             if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
             if (running && packetsView != null && packetsView.getVisibility() != View.VISIBLE
                     && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_packets_open", true)) openPackets(true);

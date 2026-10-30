@@ -74,6 +74,9 @@ final class FrameMonitor {
     // 0.25.0: raw capture of frames that are not decoded yet (console log type 50 and the device-info channel 0007), to unknown_frames_<date>.hex
     private static volatile java.io.File capDir; private static int cap50, cap07; private static long capBytes;
     static void captureTo(java.io.File dir) { if (dir != null) capDir = dir; }
+    private static volatile long capUntil;                                       // 0.25.2: console (type 50) frames are kept only while a reading runs and for 150 s after it
+    static void captureWindow(long untilMs) { capUntil = untilMs; }
+    static void captureReset() { synchronized (LOCK) { cap50 = 0; } }
     private static void capture(long nowMs, String ch, byte[] f, boolean t50) {
         java.io.File dir = capDir; if (dir == null) return;
         synchronized (LOCK) {
@@ -87,7 +90,7 @@ final class FrameMonitor {
     static void note(long nowMs, String ch, byte[] f) {
         if (f == null || f.length == 0) return;
         int key = keyOf(f);
-        if (capDir != null && ch != null) { int ty = key >>> 24; if (ty == 50) capture(nowMs, ch, f, true); else if (ch.length() >= 8 && ch.substring(4, 8).equals("0007")) capture(nowMs, ch, f, false); }
+        if (capDir != null && ch != null) { int ty = key >>> 24; if (ty == 50) { if (nowMs <= capUntil) capture(nowMs, ch, f, true); } else if (ch.length() >= 8 && ch.substring(4, 8).equals("0007")) capture(nowMs, ch, f, false); }
         Entry e = new Entry(nowMs, ch, f.length, Arrays.copyOf(f, Math.min(f.length, HEAD)));
         int type = key >>> 24;
         synchronized (LOCK) {

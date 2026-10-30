@@ -9,6 +9,35 @@ import java.util.List;
 final class ProDetect {
     private ProDetect() {}
 
+    static final class Ex {
+        boolean found, ecgCovers; double startRel, durS, steps, cadence, peakHr = Double.NaN, restHr = Double.NaN, hr0 = Double.NaN, hr30 = Double.NaN, hr60 = Double.NaN, hr90 = Double.NaN;
+    }
+
+    private static double hrBetween(double[] bt, double a, double b) {
+        double sum = 0; int n = 0; for (int i = 1; i < bt.length; i++) { if (bt[i - 1] >= a && bt[i] <= b) { double d = bt[i] - bt[i - 1]; if (d > 0.35 && d < 1.6) { sum += d; n++; } } }
+        return n >= 4 ? 60.0 / (sum / n) : Double.NaN;
+    }
+
+    /** Exercise (activity class above 0 in the strap's per-second records) in the 10 minutes before or during the reading, with the heart-rate recovery taken from the ECG (the optical rate reads low after exercise). */
+    static Ex exercise(ProAnalysis.Result R, List<byte[]> r18) {
+        Ex E = new Ex(); if (R == null || r18 == null || r18.size() < 60 || R.beatTimes == null || R.recT == null) return E;
+        java.util.TreeMap<Long, int[]> m = new java.util.TreeMap<>(); for (byte[] f : r18) m.put(ProAnalysis.u32(f, 15), new int[] {f[22] & 0xFF, ProAnalysis.u16(f, 57), f[63] & 0xFF});
+        long[] ks = new long[m.size()]; int c = 0; for (Long k : m.keySet()) ks[c++] = k;
+        List<long[]> runs = new ArrayList<>(); long rs = -1, re = -1;
+        for (long t : ks) { if (m.get(t)[2] > 0) { if (rs < 0) { rs = t; re = t; } else if (t - re <= 5) re = t; else { runs.add(new long[] {rs, re}); rs = t; re = t; } } }
+        if (rs >= 0) runs.add(new long[] {rs, re});
+        long[] best = null; double lim = R.t0 + R.seconds;
+        for (long[] r : runs) { int st = (m.get(r[1])[1] - m.get(r[0])[1]) & 0xFFFF; if (r[1] - r[0] >= 20 && st >= 30 && r[1] <= lim && r[0] >= R.t0 - 600) best = r; }
+        if (best == null) return E;
+        long a = best[0], b = best[1]; E.found = true; E.startRel = a - R.t0; E.durS = b - a + 1; E.steps = (m.get(b)[1] - m.get(a)[1]) & 0xFFFF; E.cadence = E.steps * 60.0 / E.durS;
+        double pk = 0; for (long t : ks) if (t >= a && t <= b + 5) pk = Math.max(pk, m.get(t)[0]); E.peakHr = pk;
+        List<Double> rest = new ArrayList<>(); for (long t : ks) if (t >= a - 90 && t <= a - 10 && m.get(t)[0] > 30) rest.add((double) m.get(t)[0]);
+        if (rest.size() >= 30) { double[] x = new double[rest.size()]; for (int i = 0; i < x.length; i++) x[i] = rest.get(i); E.restHr = ProDsp.median(x); }
+        double[] bt = new double[R.beatTimes.length]; for (int i = 0; i < bt.length; i++) { int s = (int) Math.floor(R.beatTimes[i]); s = Math.max(0, Math.min(R.recT.length - 1, s)); bt[i] = R.recT[s] + (R.beatTimes[i] - s); }
+        E.hr0 = hrBetween(bt, b + 3, b + 13); E.hr30 = hrBetween(bt, b + 25, b + 35); E.hr60 = hrBetween(bt, b + 55, b + 65); E.hr90 = hrBetween(bt, b + 85, b + 95); E.ecgCovers = !Double.isNaN(E.hr0);
+        return E;
+    }
+
     static final class Pat {
         int beats, withPulse; double medianMs = Double.NaN, sdMs = Double.NaN, madMs = Double.NaN, breathPerMin = Double.NaN; double[] ms = new double[0]; double[] t = new double[0]; String note = "";
     }
@@ -57,7 +86,7 @@ final class ProDetect {
         double[] dev = new double[P.ms.length]; for (int i = 0; i < dev.length; i++) dev[i] = Math.abs(P.ms[i] - P.medianMs); P.madMs = ProDsp.median(dev);
         // breathing: spectral peak of the pulse arrival series between 0.1 and 0.4 Hz (4 Hz grid)
         if (P.ms.length >= 30) {
-            double t0 = P.t[0], t1 = P.t[P.t.length - 1]; int G = (int) ((t1 - t0) * 4); if (G >= 64) {
+            double t0 = P.t[0], t1 = P.t[P.t.length - 1]; int G = (int) ((t1 - t0) * 4); if (t1 - t0 >= 120 && G >= 64) {      // 0.25.2: breathing from this series needs 2 minutes or more
                 double[] g = new double[G]; int k = 0;
                 for (int i = 0; i < G; i++) { double tg = t0 + i * 0.25; while (k < P.t.length - 2 && P.t[k + 1] < tg) k++; double a = P.t[k], b = P.t[k + 1]; double w = b > a ? (tg - a) / (b - a) : 0; w = Math.max(0, Math.min(1, w)); g[i] = P.ms[k] * (1 - w) + P.ms[k + 1] * w - P.medianMs; }
                 double mx = 0, my = 0, sxx = 0, sxy = 0; for (int i = 0; i < G; i++) { mx += i; my += g[i]; } mx /= G; my /= G; for (int i = 0; i < G; i++) { sxx += (i - mx) * (i - mx); sxy += (i - mx) * (g[i] - my); } double slope = sxx > 0 ? sxy / sxx : 0; for (int i = 0; i < G; i++) g[i] -= my + slope * (i - mx);

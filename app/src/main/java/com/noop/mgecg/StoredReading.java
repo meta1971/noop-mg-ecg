@@ -64,11 +64,12 @@ final class StoredReading {
             String msg = null;
             try {
                 ReadingFrames.Sets S = ReadingFrames.collect(dir, s.start, s.stop);
-                if (S.r16.size() < 30) msg = "The strap has only " + S.r16.size() + " stored seconds for this reading (30 are needed): the records may already be trimmed.";
+                int have = 0; for (byte[] f : S.r16) { long u = ProAnalysis.u32(f, 15); if (u >= s.start && u <= s.stop + 5) have++; }
+                if (have < 30) msg = "The strap has only " + have + " stored seconds for this reading (30 are needed): the records may already be trimmed.";
                 else {
-                    ByteArrayOutputStream bo = new ByteArrayOutputStream(); for (byte[] f : S.r16) bo.write(f);
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream(); int keepN = 0; for (byte[] f : S.r16) { long u = ProAnalysis.u32(f, 15); if (u >= s.start && u <= s.stop + 5) { bo.write(f); keepN++; } }      // 0.25.2: not the seconds of the session before
                     File bin = new File(dir, "realtime_ecg_bin_" + s.start + ".bin"); try (FileOutputStream os = new FileOutputStream(bin)) { os.write(bo.toByteArray()); }
-                    final File html = new File(dir, "ecg_report_" + s.start + ".html"); final int secs = S.r16.size();
+                    final File html = new File(dir, "ecg_report_" + s.start + ".html"); final int secs = keepN;
                     a.runOnUiThread(new Runnable() { @Override public void run() { Toast.makeText(a, "Rebuilt from " + secs + " stored seconds. Making the Pro PDF and the Full pull...", Toast.LENGTH_LONG).show(); ProReportMaker.make(a, html); ReadingPull.make(a, html); } });
                 }
             } catch (Throwable t) { msg = "Could not rebuild: " + t; }
