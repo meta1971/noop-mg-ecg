@@ -199,6 +199,28 @@ final class Trends {
         redraw[0].run();
     }
 
+    /** Slopes (y per x) of a monotone cubic through the points: no overshoot between neighbours. */
+    static float[] tangents(float[] xs, float[] ys, int n) {
+        float[] m = new float[n]; if (n < 2) return m;
+        float[] d = new float[n - 1]; for (int i = 0; i < n - 1; i++) d[i] = (ys[i + 1] - ys[i]) / Math.max(1e-6f, xs[i + 1] - xs[i]);
+        m[0] = d[0]; m[n - 1] = d[n - 2];
+        for (int i = 1; i < n - 1; i++) m[i] = (d[i - 1] * d[i] <= 0f) ? 0f : 0.5f * (d[i - 1] + d[i]);
+        for (int i = 0; i < n - 1; i++) {
+            if (d[i] == 0f) { m[i] = 0f; m[i + 1] = 0f; continue; }
+            float a = m[i] / d[i], b = m[i + 1] / d[i], q = a * a + b * b;
+            if (q > 9f) { float t = 3f / (float) Math.sqrt(q); m[i] = t * a * d[i]; m[i + 1] = t * b * d[i]; }
+        }
+        return m;
+    }
+
+    /** Adds a smooth monotone-cubic curve through the points to the path (starts with moveTo). */
+    static void smoothPath(android.graphics.Path p, float[] xs, float[] ys, int n) {
+        if (n <= 0) return; p.moveTo(xs[0], ys[0]); if (n == 1) { p.lineTo(xs[0] + 0.1f, ys[0]); return; }
+        if (n == 2) { p.lineTo(xs[1], ys[1]); return; }
+        float[] m = tangents(xs, ys, n);
+        for (int i = 0; i < n - 1; i++) { float h = xs[i + 1] - xs[i]; p.cubicTo(xs[i] + h / 3f, ys[i] + m[i] * h / 3f, xs[i + 1] - h / 3f, ys[i + 1] - m[i + 1] * h / 3f, xs[i + 1], ys[i + 1]); }
+    }
+
     interface Readout2 { void show(String s); }
 
     // ------------------------------------------------------------------ the chart
@@ -261,17 +283,27 @@ final class Trends {
             Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
             ln.setStyle(Paint.Style.STROKE); ln.setStrokeCap(Paint.Cap.ROUND); ln.setStrokeJoin(Paint.Join.ROUND); ln.setStrokeWidth(dp(c, 2.2f)); ln.setColor(COL[m]);
             android.graphics.Path path = new android.graphics.Path();
-            boolean pen = false;
-            for (int i = from; i < to; i++) {
-                if (Double.isNaN(v[i])) { pen = false; continue; }
-                float x = xOf(i), y = (float) (ch * (1 - (v[i] - flo) / (fhi - flo)));
-                if (!pen) { path.moveTo(x, y); pen = true; } else path.lineTo(x, y);
+            // 0.29.1: smooth curve instead of straight peak-to-peak lines. Monotone cubic (Fritsch-Carlson): the curve never rises above or falls below the nights it joins.
+            // Over more than 10 nights the line also uses a light 1-2-1 average of neighbouring nights; the dots stay on the true values.
+            boolean avg = to - from > 10;
+            int i0 = from;
+            while (i0 < to) {
+                if (Double.isNaN(v[i0])) { i0++; continue; }
+                int i1 = i0; while (i1 < to && !Double.isNaN(v[i1])) i1++;
+                int n = i1 - i0; float[] xs = new float[n], ys = new float[n];
+                for (int k = 0; k < n; k++) {
+                    double val = v[i0 + k];
+                    if (avg && n > 2) { double l = v[i0 + Math.max(0, k - 1)], r = v[i0 + Math.min(n - 1, k + 1)]; val = 0.25 * l + 0.5 * val + 0.25 * r; }
+                    xs[k] = xOf(i0 + k); ys[k] = (float) (ch * (1 - (val - flo) / (fhi - flo)));
+                }
+                smoothPath(path, xs, ys, n);
+                i0 = i1;
             }
             cv.drawPath(path, ln);
             for (int i = from; i < to; i++) {
                 if (Double.isNaN(v[i])) continue;
                 float x = xOf(i), y = (float) (ch * (1 - (v[i] - flo) / (fhi - flo)));
-                cv.drawCircle(x, y, dp(c, to - from > 40 ? 2.2f : 4f), paint(COL[m]));
+                cv.drawCircle(x, y, dp(c, to - from > 40 ? 2.2f : 4f), paint(avg ? alpha(COL[m], 0.6f) : COL[m]));
             }
             tx.setTextAlign(Paint.Align.LEFT);
             SimpleDateFormat f = new SimpleDateFormat("d MMM", Locale.UK);
