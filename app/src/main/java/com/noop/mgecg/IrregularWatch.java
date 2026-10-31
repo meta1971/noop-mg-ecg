@@ -157,6 +157,20 @@ final class IrregularWatch {
         return new int[] { chk, rest, irr, mx };
     }
 
+    /** Last 48 hours of stored windows grouped by local clock hour: {median RMSSD in ms, count} per hour (optical, relative: about 1.5 to 2 times an ECG value). RMSSD = score x mean interval, mean interval = 60000 / heart rate. */
+    static double[][] hourly(Context c) {
+        List<List<Double>> g = new ArrayList<List<Double>>(); for (int i = 0; i < 24; i++) g.add(new ArrayList<Double>());
+        long lim = System.currentTimeMillis() / 1000L - 48L * 3600L; java.util.Calendar cal = java.util.Calendar.getInstance();
+        for (String ln : sp(c).getString("wins", "").split("\n")) {
+            String[] q = ln.split(","); if (q.length != 5) continue;
+            try { long st = Long.parseLong(q[0]); if (st < lim) continue; double nr = Integer.parseInt(q[1]) / 1000.0; int hr = Integer.parseInt(q[3]); if (hr < 30) continue;
+                cal.setTimeInMillis(st * 1000L); g.get(cal.get(java.util.Calendar.HOUR_OF_DAY)).add(nr * 60000.0 / hr); } catch (Exception ignored) { }
+        }
+        double[][] out = new double[24][2];
+        for (int h = 0; h < 24; h++) { List<Double> v = g.get(h); out[h][1] = v.size(); if (v.isEmpty()) { out[h][0] = Double.NaN; continue; } java.util.Collections.sort(v); out[h][0] = v.size() % 2 == 1 ? v.get(v.size() / 2) : 0.5 * (v.get(v.size() / 2 - 1) + v.get(v.size() / 2)); }
+        return out;
+    }
+
     static String statusLine(Context c) {
         if (!on(c)) return "Off";
         int[] k = last24(c);
@@ -194,7 +208,7 @@ final class IrregularWatch {
             + "A 5-minute window with at least 100 intervals, heart rate 100 or less and little movement counts as irregular when RMSSD divided by the mean interval is above 0.12 (about 0.02 on your normal days). Three irregular windows in a row (15 minutes) raise one notification, at most one every 6 hours. It says: take an ECG.\n\n"
             + "WHAT IS MEASURED\n"
             + "Public AF database, 23 recordings, 5-minute windows from ECG R-R with the same rule: atrial fibrillation windows flagged 99 % (429 windows); windows of other rhythms flagged 40 % (2,063 windows, many with frequent early beats). So an alert means irregular, not necessarily atrial fibrillation.\n"
-            + "Your strap, 10 days (20 to 31 Oct): 1,247 windows, 6 above 0.12 (single windows, never 3 in a row), largest 0.141, so no alert. Without the signal-level gate the same days give 156 windows above 0.12: the gate is what makes it usable; it drops about 12 % of windows (those with motion).\n"
+            + "Your strap, 24 hours 30 to 31 Oct: 154 windows, none above 0.10, largest 0.087.\n"
             + "Not measured: the strap has never recorded atrial fibrillation, so the sensitivity of the optical pulse is unknown. Pulse intervals arrive with each pull (every 30 minutes), so an alert can be up to about 45 minutes late.\n\n"
             + "Research only. Not a medical device. If you feel unwell, get help; do not wait for this.", 13, MUT, 400);
         how.setLineSpacing(0, 1.25f); col.addView(how, HeartGraph.lp(a, -1, -2, 16));

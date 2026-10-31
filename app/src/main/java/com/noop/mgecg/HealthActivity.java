@@ -1013,6 +1013,8 @@ public class HealthActivity extends Activity {
 
         col.addView(rowCard("Trends", "Recovery, resting heart rate, HRV, sleep, breathing and skin temperature over 7, 30 or 90 nights",
                 new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } }), lp(-1, -2, 12));
+        col.addView(rowCard("HRV (research)", "Your HRV in context: seated ECG readings, nights, evening and alcohol, age limits, guided breathing tests and the sources. Not a diagnosis",
+                new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) HrvScreen.show(HealthActivity.this, data); } }), lp(-1, -2, 12));
         col.addView(rowCard("Healthspan (research)", "Age estimate and pace of aging from your nights: resting heart rate, sleep regularity, fitness. A research estimate, not WHOOP's number",
                 new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Healthspan.show(HealthActivity.this, data); } }), lp(-1, -2, 12));
         col.addView(rowCard("Strap data", "Every value the strap sends while worn: heart, motion, temperatures, state, events",
