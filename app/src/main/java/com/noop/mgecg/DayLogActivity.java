@@ -62,6 +62,7 @@ public class DayLogActivity extends Activity {
     private Button toggle;
     private TextView h10Status;
     private Button h10Toggle;
+    private Button h10Mode;
     private Button h10Preview;
     private H10TraceView h10Trace;
     private boolean pendingPreview = false;
@@ -94,6 +95,8 @@ public class DayLogActivity extends Activity {
         col.addView(h10Trace, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(190)));
         h10Toggle = btn("", new View.OnClickListener() { @Override public void onClick(View v) { toggleH10(); } });
         col.addView(h10Toggle);
+        h10Mode = btn("", new View.OnClickListener() { @Override public void onClick(View v) { PolarH10.setReadingsOnly(DayLogActivity.this, !PolarH10.readingsOnlyPref(DayLogActivity.this)); refresh(); } });
+        col.addView(h10Mode);
         col.addView(btn("OVERNIGHT: BATTERY SETTINGS", new View.OnClickListener() { @Override public void onClick(View v) {
             toast("Tap Battery, then choose Unrestricted");
             try { startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))); } catch (Throwable t) { toast("Open Settings > Apps > this app > Battery"); }
@@ -314,6 +317,7 @@ public class DayLogActivity extends Activity {
         status.setText(DayLog.statusLine(this) + "\npull interval " + DayLog.intervalMin(this) + " min");
         boolean prev = PolarH10.wanted && !PolarH10.recordToFile;
         h10Toggle.setText(PolarH10.wanted ? (prev ? "START RECORDING (preview is on)" : "H10 IS RECORDING (tap to stop)") : "START H10 RECORDING");
+        h10Mode.setText(PolarH10.readingsOnlyPref(this) ? "H10 ECG FILES: ONLY DURING READINGS, R-R all day (tap for always)" : "H10 ECG FILES: ALWAYS, about 390 MB a day (tap for readings only)");
         h10Preview.setText(prev ? "STOP PREVIEW" : (PolarH10.wanted ? "(recording)" : "H10 LIVE PREVIEW (nothing is saved)"));
         h10Preview.setEnabled(!(PolarH10.wanted && PolarH10.recordToFile));
         String hs = PolarH10.status();
@@ -501,6 +505,11 @@ final class PolarH10 {
     private static final ArrayDeque<String> tail = new ArrayDeque<String>();
 
     static volatile boolean wanted = false;          // START pressed and STOP not yet pressed
+    static volatile boolean readingsOnly = false;     // 0.30.0: R-R all day, ECG samples written only while the ECG screen is open (and 45 s after)
+    static volatile long ecgUntilMs = 0L;
+    static void keepEcgFor(long ms) { ecgUntilMs = System.currentTimeMillis() + ms; }
+    static boolean readingsOnlyPref(Context c) { return c.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("readings_only", false); }
+    static void setReadingsOnly(Context c, boolean v) { c.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("readings_only", v).apply(); readingsOnly = v; }
     static volatile boolean recordToFile = true;     // false = live preview only: the trace is shown, nothing is written
     private static final int RING = 130 * 12;        // the last 12 s of ECG, for the live trace
     private static final int[] ring = new int[RING];
@@ -560,6 +569,7 @@ final class PolarH10 {
     public static synchronized void start(Context c, boolean record) {
         if (wanted) return;
         app = c.getApplicationContext();
+        readingsOnly = readingsOnlyPref(app);
         recordToFile = record; ringCount = 0L;
         wanted = true; everConnected = false; attempts = 0; samples = 0L; frames = 0L; lastHr = 0; lastP2p = 0; unknownLogged = 0; recording = false;
         sessionStamp = System.currentTimeMillis() / 1000L; cpOkMs = 0L; lastKickMs = 0L; kickPending = false;
@@ -1011,6 +1021,7 @@ final class PolarH10 {
         frames++; lastFrameMs = now; lastP2p = hi - lo; lastKickMs = 0L; kickPending = false;
         if (frames == 1) log("first ECG frame: " + n + " samples, sensor time " + e.tsNs + " ns, first values " + e.uv[0] + " " + (n > 1 ? e.uv[1] : 0) + " " + (n > 2 ? e.uv[2] : 0));
         if (!recordToFile) return;
+        if (readingsOnly && now > ecgUntilMs) { if (ecgW != null) closeEcgFile(); return; }
         try {
             if (ecgW != null && now - segStartMs > 30L * 60L * 1000L) { log("rolling to a new ECG file (30 min)"); closeEcgFile(); }
             if (ecgW == null) {

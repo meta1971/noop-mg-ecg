@@ -111,6 +111,16 @@ final class HrvScreen {
         if (!nr.isEmpty()) c1.addView(body(a, String.format(Locale.UK, "Nights (strap, last %d): RMSSD median %.0f ms, lowest 5-minute heart rate %.0f, breathing %.1f a minute. The strap's pulse intervals read about 1.5 to 2 times higher than an ECG in matched daytime windows (18 windows, 26 to 29 Oct), so treat night values as an upper estimate.", nr.size(), med(nr), med(nl), med(nb))), HeartGraph.lp(a, -1, -2, 8));
         col.addView(c1, HeartGraph.lp(a, -1, -2, 14));
 
+        // ---- your day, hour by hour (computed from the day logger, off the main thread)
+        final LinearLayout dayCard = card(a); dayCard.addView(head(a, "YOUR DAY, HOUR BY HOUR (median of the last 10 days, local time)"));
+        final TextView cdStatus = body(a, "Reading the last 10 days..."); dayCard.addView(cdStatus, HeartGraph.lp(a, -1, -2, 8)); col.addView(dayCard, HeartGraph.lp(a, -1, -2, 12));
+        final List<TodayModel.NightStat> nightsCopy = new ArrayList<TodayModel.NightStat>(d.nights);
+        new Thread(new Runnable() { @Override public void run() {
+            DayTimeline.Result r0 = null; try { r0 = DayTimeline.load(a, nightsCopy, 10); } catch (Throwable ignored) { }
+            final DayTimeline.Result r = r0;
+            a.runOnUiThread(new Runnable() { @Override public void run() { try { fillDay(a, dayCard, cdStatus, r); } catch (Throwable ignored) { } } });
+        } }, "day-timeline").start();
+
         // ---- by hour, last 48 h
         LinearLayout c2 = card(a); c2.addView(head(a, "BY CLOCK HOUR, LAST 48 HOURS (strap, still windows only, relative)"));
         HourBars hb = new HourBars(a); double[][] hv = IrregularWatch.hourly(a); hb.set(hv); c2.addView(hb, HeartGraph.lp(a, -1, Math.round(dp(a, 96)), 8));
@@ -209,6 +219,29 @@ final class HrvScreen {
             + "Autonomic and perceptual responses to induction of a ketogenic diet in free-living endurance athletes: a randomized, crossover trial. Int J Sports Physiol Perform 2021;16:1603-9.\n"
             + "On this strap: 31 Oct 2026 analysis of 24 saved ECG readings, 9 raw readings, 10 days of per-second records and 5 H10 recordings; see the decode log, section 101."), HeartGraph.lp(a, -1, -2, 8));
         col.addView(c7, HeartGraph.lp(a, -1, -2, 12));
+    }
+
+    private static void fillDay(Activity a, LinearLayout cd, TextView status, DayTimeline.Result r) {
+        if (r == null || r.days < 2) { status.setText("Needs at least 2 days of day-logger data."); return; }
+        cd.removeView(status);
+        DayTimeline.HourChart c1 = new DayTimeline.HourChart(a); c1.set(r.steps, r.hr, ""); cd.addView(c1, HeartGraph.lp(a, -1, Math.round(dp(a, 130)), 6));
+        cd.addView(small(a, "Blue bars: steps an hour. Rose line: heart rate in seconds the strap calls STILL, pulse locked (axis shows its highest and lowest hour)."), HeartGraph.lp(a, -1, -2, 4));
+        DayTimeline.HourChart c2 = new DayTimeline.HourChart(a); c2.set(null, r.skin, ""); cd.addView(c2, HeartGraph.lp(a, -1, Math.round(dp(a, 80)), 10));
+        cd.addView(small(a, "Skin temperature by hour."), HeartGraph.lp(a, -1, -2, 4));
+        StringBuilder sb = new StringBuilder(String.format(Locale.UK, "%d days of data. ", r.days));
+        sb.append(r.workWindow.length() == 0 ? "No hour averages 800 steps or more. " : "Active hours (800 or more steps an hour): " + r.workWindow + ". ");
+        if (!Double.isNaN(r.lockWork)) sb.append(String.format(Locale.UK, "The optical pulse was locked %.0f %% of the time then, so daytime optical heart rate and HRV understate hard work.", r.lockWork));
+        cd.addView(body(a, sb.toString()), HeartGraph.lp(a, -1, -2, 10));
+        if (!Double.isNaN(r.hrDay) && !Double.isNaN(r.hrEve) && !Double.isNaN(r.hrNight))
+            cd.addView(body(a, String.format(Locale.UK, "Still heart rate: day (07 to 17) %.0f, evening (19 to 22) %.0f, night (00 to 05) %.0f. The evening is %+.0f bpm against the night and %+.0f against the day.", r.hrDay, r.hrEve, r.hrNight, r.hrEve - r.hrNight, r.hrEve - r.hrDay)), HeartGraph.lp(a, -1, -2, 8));
+        if (!Double.isNaN(r.skEve) && !Double.isNaN(r.skNight))
+            cd.addView(body(a, String.format(Locale.UK, "Skin: %s evening %.1f, night %.1f degrees.", Double.isNaN(r.skWork) ? "" : String.format(Locale.UK, "active hours %.1f, ", r.skWork), r.skEve, r.skNight)), HeartGraph.lp(a, -1, -2, 8));
+        if (!r.nights.isEmpty()) {
+            StringBuilder nl = new StringBuilder("EVENING TO NIGHT (still heart rate 19:00 to 30 minutes before bed, first 3 hours of the night, lowest 5 minutes)\n"); SimpleDateFormat f = new SimpleDateFormat("EEE d MMM", Locale.UK);
+            for (double[] x : r.nights) nl.append(f.format(new Date((long) x[0] * 1000L))).append(":  ").append(Double.isNaN(x[1]) ? "-" : String.format(Locale.UK, "%.0f", x[1])).append("  ").append(Double.isNaN(x[2]) ? "-" : String.format(Locale.UK, "%.0f", x[2])).append("  ").append(Double.isNaN(x[3]) ? "-" : String.format(Locale.UK, "%.0f", x[3])).append('\n');
+            cd.addView(small(a, nl.toString().trim()), HeartGraph.lp(a, -1, -2, 10));
+            if (r.rhoN >= 6 && !Double.isNaN(r.rho)) cd.addView(body(a, String.format(Locale.UK, "Across %d nights, a higher evening still heart rate %s the first 3 hours of the night (rank correlation %+.2f). Small numbers, so a pointer rather than a proof. Evening heart rate reflects food, drink, stress and tiredness; the strap cannot tell which, so log the A drink and No alcohol today buttons below.", r.rhoN, r.rho >= 0.5 ? "went with a higher heart rate in" : r.rho <= -0.5 ? "went with a lower heart rate in" : "showed no clear link with", r.rho)), HeartGraph.lp(a, -1, -2, 8));
+        }
     }
 
     /** Reads marker times (phone ms) of one kind from the day logger database. */

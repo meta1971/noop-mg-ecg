@@ -170,6 +170,7 @@ final class StrapData {
             r.add(row(H, "SpO2 channels", R18Codec.spo2Window(f) ? "measuring (red and infrared on)" : "idle", "gain words 2 and 3; they switch on only in the overnight SpO2 windows"));
         }
         r.add(row(H, "Signal-quality value", String.format(L, "%.3f", R18Codec.f32(f, 113)), "bytes 113 to 116 (float); about -5.3 when clean, moves toward -2 with motion"));
+        r.add(row(H, "Pulse-search counter", String.valueOf(R18Codec.u8(f, 36) & 15), "byte 36 low nibble: steps about every 5 s while the pulse is not locked, almost never when it is (INFERRED)"));
         r.add(row(H, "Cardiac flags", String.valueOf(R18Codec.u8(f, 33)), "byte 33: bits 4-6 = pulse signal level (0 clean; 32, 96, 112 increasingly poor), bit 7 an independent flag, bit 0 = beat-interval irregularity (INFERRED), bits 1-3 never set"));
         r.add(row(H, "Heart-rate quality flags", String.valueOf(R18Codec.u8(f, 36)), "byte 36: bit 7 is set in almost every second (OpenStrap: the two heart-rate estimates agree), bit 4 = infrared source (never set in 88,209 s); other bits open"));
         String M = "MOTION";
@@ -186,7 +187,7 @@ final class StrapData {
         r.add(row(T, "Strap battery cell", String.format(L, "%.1f \u00b0C", R18Codec.i16(f, 69) / 10.0), "bytes 69 and 70"));
         r.add(row(T, "Ambient (inside the strap)", String.format(L, "%.1f \u00b0C", R18Codec.i16(f, 71) / 10.0), "bytes 71 and 72"));
         String S = "STATE";
-        r.add(row(S, "Sleep state", state(R18Codec.state(f)), "byte 81 bits 4 and 5: awake, still, sleep or up; an envelope, not a stage"));
+        r.add(row(S, "Sleep state", state(R18Codec.state(f)), "byte 81 bits 4 and 5: awake, still, sleep or up; an envelope, not a stage. Awake and still are the firmware's own wake/still flag (still after motion stays under 1 to 5 parts in 150)"));
         r.add(row(S, "Byte 81 bits 0-1", String.valueOf(R18Codec.u8(f, 81) & 0x03), "a flags snapshot, meaning open; always 0 or 1. Bits 2-3 are the strap fit check (Heart section); bits 4-5 the sleep state"));
         int b82 = R18Codec.u8(f, 82);
         r.add(row(S, "Blood-oxygen byte", b82 == 0 ? "no window" : String.valueOf(b82), "byte 82; a percentage only inside the sleep-only window (about every 20 minutes), other values are status codes"));

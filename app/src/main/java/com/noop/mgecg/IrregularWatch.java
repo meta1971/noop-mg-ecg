@@ -1,9 +1,9 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.28.0 (31 Oct 2026): irregular rhythm watch. Runs after every history ingest of the day logger. Research only, not a medical device.
+// FILE VERSION 0.30.0 (31 Oct 2026): irregular rhythm watch (rest gate = the strap's own STILL flag). Runs after every history ingest of the day logger. Research only, not a medical device.
 // Rule (settled on the public AF database and on 24 h of this strap, see the screen text): per-second records whose pulse lock is lost or whose byte 33 high nibble
 // is not 0 are dropped; beat intervals (R18 bytes 23-31, milliseconds) outside 300-2000 ms or more than 40 % from the median of the previous 11 are dropped;
-// a 5-minute window with at least 100 intervals, heart rate 100 or less and little movement is "irregular" when RMSSD / mean interval is above 0.12;
+// a 5-minute window with at least 100 intervals, heart rate 100 or less and the strap's sleep state (byte 81 bits 4-5) STILL, sleep or up in at least 80 % of its seconds is "irregular" when RMSSD / mean interval is above 0.12;
 // the alert needs 3 irregular windows in a row (15 minutes), and at most one alert per 6 hours. The alert says: take an ECG.
 
 import android.app.Activity;
@@ -38,7 +38,7 @@ final class IrregularWatch {
     private IrregularWatch() {}
 
     static final int WIN_S = 300, MIN_INTERVALS = 100, NEED = 3, MAX_REST_HR = 100;
-    static final double THR = 0.12, FILTER = 0.40, MAX_MOVE_FRAC = 0.10;
+    static final double THR = 0.12, FILTER = 0.40, MIN_STILL = 0.80;
     private static final String PREFS = "irrwatch", CH = "irregular_watch";
 
     static final class Win { long start; int n; double nr; int hr; boolean rest, flag; }
@@ -53,13 +53,14 @@ final class IrregularWatch {
         List<Win> out = new ArrayList<Win>();
         int cap = recs.size() * 4 + 4, m = 0, s = 0;
         long[] its = new long[cap]; double[] irr = new double[cap];
-        long[] sts = new long[recs.size() + 1]; int[] shr = new int[recs.size() + 1]; int[] sact = new int[recs.size() + 1];
+        long[] sts = new long[recs.size() + 1]; int[] shr = new int[recs.size() + 1]; long[] ats = new long[recs.size() + 1]; boolean[] ast = new boolean[recs.size() + 1]; int a = 0;
         long first = Long.MAX_VALUE, last = 0;
         for (byte[] f : recs) {
             if (!R18Codec.isR18(f)) continue;
             long t = R18Codec.ts(f); if (t < first) first = t; if (t > last) last = t;
+            ats[a] = t; ast[a] = R18Codec.state(f) >= 1; a++;                                         // every second: still share of a window
             if ((R18Codec.u8(f, 33) & 0xF0) != 0 || (byte) R18Codec.u8(f, 108) == -128) continue;     // pulse lock lost or byte 33 level above 0
-            sts[s] = t; shr[s] = R18Codec.hr(f); sact[s] = R18Codec.u8(f, 63); s++;
+            sts[s] = t; shr[s] = R18Codec.hr(f); s++;
             int n = Math.min(R18Codec.u8(f, 23), 4);
             for (int k = 0; k < n; k++) { int v = R18Codec.u16(f, 24 + 2 * k); if (v >= 300 && v <= 2000) { its[m] = t; irr[m] = v; m++; } }
         }
@@ -77,11 +78,12 @@ final class IrregularWatch {
             double sum = 0, sq = 0; for (int i = 0; i < c; i++) sum += x[i]; double mean = sum / c;
             for (int i = 1; i < c; i++) { double d = x[i] - x[i - 1]; sq += d * d; }
             Win w1 = new Win(); w1.start = w; w1.n = c; w1.nr = Math.sqrt(sq / (c - 1)) / mean;
-            List<Double> hrs = new ArrayList<Double>(); int mv = 0, ns = 0;
-            for (int i = 0; i < s; i++) if (sts[i] >= w && sts[i] < w + WIN_S) { ns++; if (shr[i] > 0) hrs.add((double) shr[i]); if (sact[i] > 0) mv++; }
+            List<Double> hrs = new ArrayList<Double>();
+            for (int i = 0; i < s; i++) if (sts[i] >= w && sts[i] < w + WIN_S && shr[i] > 0) hrs.add((double) shr[i]);
+            int tot = 0, still = 0; for (int i = 0; i < a; i++) if (ats[i] >= w && ats[i] < w + WIN_S) { tot++; if (ast[i]) still++; }
             double[] h = new double[hrs.size()]; for (int i = 0; i < h.length; i++) h[i] = hrs.get(i);
             w1.hr = h.length == 0 ? 0 : (int) Math.round(median(h, 0, h.length));
-            w1.rest = ns > 0 && w1.hr > 0 && w1.hr <= MAX_REST_HR && mv <= MAX_MOVE_FRAC * ns;
+            w1.rest = tot >= 150 && still >= MIN_STILL * tot && w1.hr > 0 && w1.hr <= MAX_REST_HR;
             w1.flag = w1.rest && w1.nr > THR;
             out.add(w1);
         }
@@ -157,13 +159,13 @@ final class IrregularWatch {
         return new int[] { chk, rest, irr, mx };
     }
 
-    /** Last 48 hours of stored windows grouped by local clock hour: {median RMSSD in ms, count} per hour (optical, relative: about 1.5 to 2 times an ECG value). RMSSD = score x mean interval, mean interval = 60000 / heart rate. */
+    /** Last 48 hours of stored rest (STILL) windows grouped by local clock hour: {median RMSSD in ms, count} per hour (optical, relative: about 1.5 to 2 times an ECG value). RMSSD = score x mean interval, mean interval = 60000 / heart rate. */
     static double[][] hourly(Context c) {
         List<List<Double>> g = new ArrayList<List<Double>>(); for (int i = 0; i < 24; i++) g.add(new ArrayList<Double>());
         long lim = System.currentTimeMillis() / 1000L - 48L * 3600L; java.util.Calendar cal = java.util.Calendar.getInstance();
         for (String ln : sp(c).getString("wins", "").split("\n")) {
             String[] q = ln.split(","); if (q.length != 5) continue;
-            try { long st = Long.parseLong(q[0]); if (st < lim) continue; double nr = Integer.parseInt(q[1]) / 1000.0; int hr = Integer.parseInt(q[3]); if (hr < 30) continue;
+            try { long st = Long.parseLong(q[0]); if (st < lim) continue; if ((Integer.parseInt(q[4]) & 1) == 0) continue; double nr = Integer.parseInt(q[1]) / 1000.0; int hr = Integer.parseInt(q[3]); if (hr < 30) continue;
                 cal.setTimeInMillis(st * 1000L); g.get(cal.get(java.util.Calendar.HOUR_OF_DAY)).add(nr * 60000.0 / hr); } catch (Exception ignored) { }
         }
         double[][] out = new double[24][2];
@@ -205,10 +207,10 @@ final class IrregularWatch {
         TextView how = HeartGraph.label(a,
             "HOW IT WORKS\n"
             + "After each history pull from the strap the app takes the last 6 hours of per-second records. It drops seconds where the strap's pulse lock is lost or its signal level (byte 33) is not clean, and any beat interval more than 40 % away from the recent median.\n\n"
-            + "A 5-minute window with at least 100 intervals, heart rate 100 or less and little movement counts as irregular when RMSSD divided by the mean interval is above 0.12 (about 0.02 on your normal days). Three irregular windows in a row (15 minutes) raise one notification, at most one every 6 hours. It says: take an ECG.\n\n"
+            + "A 5-minute window with at least 100 intervals, heart rate 100 or less and the strap's own STILL flag in at least 80 % of its seconds counts as irregular when RMSSD divided by the mean interval is above 0.12 (about 0.02 on your normal days). Three irregular windows in a row (15 minutes) raise one notification, at most one every 6 hours. It says: take an ECG.\n\n"
             + "WHAT IS MEASURED\n"
             + "Public AF database, 23 recordings, 5-minute windows from ECG R-R with the same rule: atrial fibrillation windows flagged 99 % (429 windows); windows of other rhythms flagged 40 % (2,063 windows, many with frequent early beats). So an alert means irregular, not necessarily atrial fibrillation.\n"
-            + "Your strap, 24 hours 30 to 31 Oct: 154 windows, none above 0.10, largest 0.087.\n"
+            + "Your strap, 10 days (20 to 31 Oct): 1,013 still windows of 1,320 with enough intervals: median 0.019, 99th percentile 0.081, none above 0.12, so no alert. The 307 windows where the strap was not still gave median 0.050, and the 6 windows above 0.12 under the older movement rule were all of that kind. Without the signal-level gate the same days give 156 windows above 0.12: the gates are what make it usable; together they drop about 23 % of windows.\n"
             + "Not measured: the strap has never recorded atrial fibrillation, so the sensitivity of the optical pulse is unknown. Pulse intervals arrive with each pull (every 30 minutes), so an alert can be up to about 45 minutes late.\n\n"
             + "Research only. Not a medical device. If you feel unwell, get help; do not wait for this.", 13, MUT, 400);
         how.setLineSpacing(0, 1.25f); col.addView(how, HeartGraph.lp(a, -1, -2, 16));

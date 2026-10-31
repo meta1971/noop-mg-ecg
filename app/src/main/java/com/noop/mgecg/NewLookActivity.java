@@ -319,6 +319,7 @@ public class NewLookActivity extends Activity {
     }
 
     void onTick() {
+        if (state == ST_ECG || state == ST_START) PolarH10.keepEcgFor(45000L);      // 0.30.0: lets the H10 write ECG samples only around readings when that option is on
         updateNav();
         updateConnection();
         if (state == ST_ECG) {
