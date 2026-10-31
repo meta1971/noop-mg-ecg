@@ -1284,6 +1284,14 @@ public class HealthActivity extends Activity {
         col.addView(pillButton("Save the analysis code (Python and Java) to Downloads", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.saveCode(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.23.1
         col.addView(pillButton("Recover readings from the strap's stored data", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { StoredReading.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.25.1
         col.addView(pillButton("Blood pressure research capture", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { BpCapture.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.26.0
+        col.addView(pillButton("Read strap settings (read-only)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) {      // 0.27.1
+            if (!MainActivity.requestDeviceSettings()) { android.widget.Toast.makeText(HealthActivity.this, "The strap is not connected.", android.widget.Toast.LENGTH_SHORT).show(); return; }
+            android.widget.Toast.makeText(HealthActivity.this, "Reading 8 strap settings (about 6 s)...", android.widget.Toast.LENGTH_SHORT).show();
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() { @Override public void run() {
+                if (isFinishing()) return;
+                new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("Strap settings").setMessage(MainActivity.deviceSettingsText()).setPositiveButton("OK", null).show();
+            } }, 6500L);
+        } }), lp(-1, dpi(44), 8));
         LinearLayout mc = explainerCard("HOW THE REPORT IS MADE AND CHECKED", "Method, agreement with the Python reference, and the database tests");
         expandable("e_method", mc, new Filler() { @Override public void fill(LinearLayout p) { rows(p, Explain.reportMethod()); } });
         col.addView(mc, lp(-1, -2, 10));
@@ -1291,7 +1299,35 @@ public class HealthActivity extends Activity {
         expandable("e_ecg", egt, new Filler() { @Override public void fill(LinearLayout p) { fillEcgPanel(p); } });
         col.addView(egt, lp(-1, -2, 12));
         if (d != null) {
-            for (final HealthModel.Reading r : d.readings) {
+            // 0.27.0: readings grouped by day, newest first. Today and yesterday open; older days folded (tap a day to open or close it).
+            java.text.SimpleDateFormat dk = new java.text.SimpleDateFormat("yyyy-MM-dd", Locale.UK), dl = new java.text.SimpleDateFormat("EEE d MMM", Locale.UK);
+            String today = dk.format(new java.util.Date()), yest = dk.format(new java.util.Date(System.currentTimeMillis() - 86400000L));
+            java.util.LinkedHashMap<String, java.util.List<HealthModel.Reading>> days = new java.util.LinkedHashMap<>();
+            for (HealthModel.Reading r : d.readings) { long u = readingUnix(r); String k = u > 0 ? dk.format(new java.util.Date(u * 1000L)) : "undated"; java.util.List<HealthModel.Reading> l = days.get(k); if (l == null) { l = new java.util.ArrayList<>(); days.put(k, l); } l.add(r); }
+            for (java.util.Map.Entry<String, java.util.List<HealthModel.Reading>> e : days.entrySet()) {
+                final String k = e.getKey(); java.util.List<HealthModel.Reading> rs = e.getValue();
+                String label = k.equals(today) ? "Today" : k.equals(yest) ? "Yesterday" : k.equals("undated") ? "Undated" : k;
+                if (!k.equals(today) && !k.equals(yest) && !k.equals("undated")) try { label = dl.format(dk.parse(k)); } catch (Exception ignored) { }
+                String best = null; for (HealthModel.Reading r : rs) if (r.grade != null && !"-".equals(r.grade)) { String g = r.grade.toUpperCase(Locale.UK); if (best == null || g.compareTo(best) < 0) best = g; }
+                boolean open = openDays.contains(k) || (!closedDays.contains(k) && (k.equals(today) || k.equals(yest)));
+                final String head = label + "  \u00b7  " + rs.size() + (rs.size() == 1 ? " reading" : " readings") + (best != null ? "  \u00b7  best grade " + best : "");
+                final TextView ht = tv(head + (open ? "   \u25be" : "   \u25b8"), 13, INK, 600); ht.setPadding(dpi(4), dpi(10), dpi(4), dpi(6));
+                final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setVisibility(open ? View.VISIBLE : View.GONE);
+                for (final HealthModel.Reading r : rs) box.addView(readingCard(r), lp(-1, -2, 12));
+                ht.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { boolean nowOpen = box.getVisibility() != View.VISIBLE; box.setVisibility(nowOpen ? View.VISIBLE : View.GONE); ht.setText(head + (nowOpen ? "   \u25be" : "   \u25b8")); if (nowOpen) { openDays.add(k); closedDays.remove(k); } else { closedDays.add(k); openDays.remove(k); } } });
+                col.addView(ht, lp(-1, -2, 2)); col.addView(box, lp(-1, -2, 4));
+            }
+        }
+        col.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 16));
+        col.addView(tv("Research only: not a diagnosis. Reports show how reliable each measurement was.", 11, MUT, 400), lp(-2, -2, 16));
+        return wrap(col);
+    }
+
+
+    // 0.27.0: which days the reader opened or closed in this session
+    private static final java.util.Set<String> openDays = new java.util.HashSet<>(), closedDays = new java.util.HashSet<>();
+    private static long readingUnix(HealthModel.Reading r) { try { String n = r.file.getName(); java.util.regex.Matcher m = java.util.regex.Pattern.compile("(1[6-9][0-9]{8})").matcher(n); if (m.find()) return Long.parseLong(m.group(1)); return r.file.lastModified() / 1000L; } catch (Throwable t) { return 0; } }
+    private View readingCard(final HealthModel.Reading r) {
                 LinearLayout c = card(16);
                 LinearLayout h = hrow();
                 h.addView(tv(r.when, 15, INK, 600));
@@ -1309,12 +1345,7 @@ public class HealthActivity extends Activity {
                 s.setPadding(0, dpi(4), 0, 0);
                 c.addView(s);
                 c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openReport(r.file); } });
-                col.addView(c, lp(-1, -2, 12));
-            }
-        }
-        col.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 16));
-        col.addView(tv("Research only: not a diagnosis. Reports show how reliable each measurement was.", 11, MUT, 400), lp(-2, -2, 16));
-        return wrap(col);
+                return c;
     }
 
     private View chipSmall(String s, int color) {

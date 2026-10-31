@@ -161,6 +161,14 @@ final class StrapData {
         r.add(row(H, "Pulse signal-to-noise", (byte) R18Codec.u8(f, 108) + " / " + (byte) R18Codec.u8(f, 109), "bytes 108 and 109 (int8); -128 means the pulse lock is lost"));
         r.add(row(H, "Detector level", String.valueOf(R18Codec.u16(f, 106)), "bytes 106 and 107"));
         r.add(row(H, "Pulse-lock-lost value", String.valueOf(R18Codec.u8(f, 105)), "byte 105; non-zero almost only when the pulse lock is lost; the number itself is not decoded"));
+        {   int w1 = R18Codec.u8(f, 75) | (R18Codec.u8(f, 76) << 8), led = (w1 >> 8) & 15, sat = (w1 >> 12) & 15;      // 0.27.1: gain word 1 (OpenStrap layout, checked on 438,764 s)
+            String ledTxt = led == 12 ? "green paused" : led == 8 ? "17.5 mA" : led == 9 ? "22.0 mA" : led == 10 ? "27.5 mA" : led == 11 ? "33.5 mA" : "step " + led;
+            r.add(row(H, "Green LED and offsets", ledTxt + ", offsets " + 8 * ((w1 >> 4) & 3) + " / " + 8 * ((w1 >> 6) & 3) + " uA" + (sat != 0 ? ", SATURATED (flags " + sat + ")" : ""), "bytes 75-76: LED current step, photodiode offset steps (8 uA each), saturation flags"));
+            int fit = (R18Codec.u8(f, 81) >> 2) & 3;
+            r.add(row(H, "Strap fit check", fit == 0 ? "settled" : "flag " + fit, "byte 81 bits 2-3, the strap's passive fit classifier; non-zero with movement and a lost pulse lock"));
+            r.add(row(H, "Heart-rate source", (R18Codec.u8(f, 36) & 0x10) != 0 ? "infrared" : "green", "byte 36 bit 4"));
+            r.add(row(H, "SpO2 channels", R18Codec.spo2Window(f) ? "measuring (red and infrared on)" : "idle", "gain words 2 and 3; they switch on only in the overnight SpO2 windows"));
+        }
         r.add(row(H, "Signal-quality value", String.format(L, "%.3f", R18Codec.f32(f, 113)), "bytes 113 to 116 (float); about -5.3 when clean, moves toward -2 with motion"));
         r.add(row(H, "Cardiac flags", String.valueOf(R18Codec.u8(f, 33)), "byte 33; not decoded"));
         r.add(row(H, "Heart-rate quality flags", String.valueOf(R18Codec.u8(f, 36)), "byte 36; not decoded"));
@@ -411,6 +419,10 @@ final class StrapData {
                         if (bt != null) st.add(Math.min(5, st.size()), row("STATUS", "Strap battery", bt, "From the strap's own condition report, every 10 minutes. The rate is the fall over the last 24 hours without charging; it includes ECG readings and the live stream."));
                     }
                     android.content.SharedPreferences bl = a.getSharedPreferences("backlog", Context.MODE_PRIVATE);
+                    {   String b3 = StrapEvents.lastDec(a, 3), b63 = StrapEvents.lastDec(a, 63);      // 0.27.1
+                        if (b3 != null) st.add(Math.min(5, st.size()), row("STATUS", "Strap battery detail", b3, "Event 3: level, voltage and charger flag."));
+                        if (b63 != null) st.add(Math.min(6, st.size()), row("STATUS", "Strap battery current", b63, "Event 63: average and present current (negative on the wrist, about +137 mA on the charger), cell and ambient temperature, remaining capacity."));
+                    }
                     String cond = StrapEvents.lastDec(a, 29);
                     if (bl.getLong("ring", 0L) > 0 || cond != null) {
                         long ring = bl.getLong("ring", 0L), beh = bl.getLong("behind", 0L);

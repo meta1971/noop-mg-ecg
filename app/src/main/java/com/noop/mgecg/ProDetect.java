@@ -49,14 +49,89 @@ final class ProDetect {
         return out;
     }
 
-    static final class Opt { int seconds; double greenPi = Double.NaN, greenDc = Double.NaN, irNear = Double.NaN, irFar = Double.NaN, irRatio = Double.NaN, irRatioMin = Double.NaN, irRatioMax = Double.NaN; }
+    // 0.27.1 ----------------------------------------------------------------------------------------------------------------
+    /** The heartbeat seen by the wrist motion sensors (a wrist ballistocardiogram): the stored 100 Hz gyroscope and accelerometer, band-passed 1 to 15 Hz,
+     *  averaged around every ECG R wave from -200 to +800 ms. snr = variance of the average against the residual variance per beat / beats
+     *  (random timing gives about 1). Found on 27, 28 and 29 Oct with SNR 18 to 409; gyroscope peak 190 to 230 ms after R. */
+    static final class Bcg { int beats; double gyroOnsetMs = Double.NaN, gyroPeakMs = Double.NaN, gyroPeakDps = Double.NaN, gyroSnr = Double.NaN, accPeakMs = Double.NaN, accPeakMg = Double.NaN, accSnr = Double.NaN; }
+
+    static Bcg bcg(ProAnalysis.Result R, List<byte[]> r21) {
+        Bcg B = new Bcg(); if (R == null || R.beatTimes == null || R.recT == null || r21 == null || r21.size() < 30) return B;
+        List<byte[]> fr = new ArrayList<>(r21); fr.sort((a, b) -> Double.compare(ProAnalysis.u32(a, 15) + ProAnalysis.u16(a, 19) / 32768.0, ProAnalysis.u32(b, 15) + ProAnalysis.u16(b, 19) / 32768.0));
+        int n = fr.size() * 100; double[] t = new double[n]; double[][] x = new double[6][n]; int m = 0;
+        for (byte[] f : fr) {
+            if (f.length < 1240 || ProAnalysis.u16(f, 24) < 100 || ProAnalysis.u16(f, 630) < 100) continue;
+            double t0 = ProAnalysis.u32(f, 15) + ProAnalysis.u16(f, 19) / 32768.0;
+            for (int k = 0; k < 100; k++) {
+                t[m] = t0 + k / 100.0;
+                for (int a = 0; a < 3; a++) x[a][m] = (short) ((f[640 + 200 * a + 2 * k] & 0xFF) | ((f[641 + 200 * a + 2 * k] & 0xFF) << 8)) / 16.384;      // gyroscope, deg/s
+                for (int a = 0; a < 3; a++) x[3 + a][m] = (short) ((f[28 + 200 * a + 2 * k] & 0xFF) | ((f[29 + 200 * a + 2 * k] & 0xFF) << 8)) / 4096.0 * 1000.0;   // accelerometer, mg
+                m++;
+            }
+        }
+        if (m < 3000) return B;
+        double[][] bp = ProDsp.bandPass(1, 15, 100);
+        double[][] y = new double[6][m];
+        int c0 = 0;
+        for (int i = 1; i <= m; i++) {      // filter each contiguous chunk on its own
+            if (i == m || t[i] - t[i - 1] > 0.05) {
+                if (i - c0 >= 200) for (int a = 0; a < 6; a++) { double[] seg = new double[i - c0]; double mean = 0; for (int k = c0; k < i; k++) mean += x[a][k]; mean /= (i - c0); for (int k = c0; k < i; k++) seg[k - c0] = x[a][k] - mean; double[] f = ProDsp.filtfilt(seg, bp); System.arraycopy(f, 0, y[a], c0, f.length); }
+                c0 = i;
+            }
+        }
+        double[] tt = java.util.Arrays.copyOf(t, m);
+        List<Integer> starts = new ArrayList<>();
+        for (double tb : R.beatTimes) {
+            int s = (int) Math.floor(tb); if (s < 0 || s >= R.recT.length) continue; double abs = R.recT[s] + (tb - s);
+            int j = java.util.Arrays.binarySearch(tt, abs); if (j < 0) j = -j - 1;
+            if (j - 20 < 0 || j + 80 > m) continue; if (tt[j + 79] - tt[j - 20] > 1.05) continue; starts.add(j - 20);
+        }
+        int N = starts.size(); B.beats = N; if (N < 40) return B;
+        double[][] avg = new double[6][100]; double[] snr = new double[6];
+        for (int a = 0; a < 6; a++) {
+            for (int s0 : starts) for (int k = 0; k < 100; k++) avg[a][k] += y[a][s0 + k] / N;
+            double va = 0, ma = 0; for (int k = 0; k < 100; k++) ma += avg[a][k] / 100; for (int k = 0; k < 100; k++) va += (avg[a][k] - ma) * (avg[a][k] - ma) / 100;
+            double vr = 0; for (int s0 : starts) { double mr = 0; for (int k = 0; k < 100; k++) mr += (y[a][s0 + k] - avg[a][k]) / 100; double v = 0; for (int k = 0; k < 100; k++) { double d = y[a][s0 + k] - avg[a][k] - mr; v += d * d / 100; } vr += v / N; }
+            snr[a] = vr > 0 ? va / (vr / N) : Double.NaN;
+        }
+        double[] mag = new double[100]; for (int k = 0; k < 100; k++) mag[k] = Math.sqrt(avg[0][k] * avg[0][k] + avg[1][k] * avg[1][k] + avg[2][k] * avg[2][k]);
+        double bm = 0, bs = 0; for (int k = 0; k < 20; k++) bm += mag[k] / 20; for (int k = 0; k < 20; k++) bs += (mag[k] - bm) * (mag[k] - bm) / 20; bs = Math.sqrt(bs);
+        int pk = 20; for (int k = 20; k < 100; k++) if (mag[k] > mag[pk]) pk = k;
+        int on = -1; for (int k = 20; k <= pk; k++) if (mag[k] > bm + 4 * bs) { on = k; break; }
+        B.gyroPeakMs = (pk - 20) * 10.0; B.gyroPeakDps = mag[pk]; B.gyroOnsetMs = on < 0 ? Double.NaN : (on - 20) * 10.0; B.gyroSnr = Math.max(snr[0], Math.max(snr[1], snr[2]));
+        int ba = 3; for (int a = 4; a < 6; a++) if (snr[a] > snr[ba]) ba = a;
+        int pa = 20; for (int k = 20; k < 100; k++) if (Math.abs(avg[ba][k]) > Math.abs(avg[ba][pa])) pa = k;
+        B.accPeakMs = (pa - 20) * 10.0; B.accPeakMg = Math.abs(avg[ba][pa]); B.accSnr = snr[ba];
+        return B;
+    }
+
+    /** The strap's own per-second quality flags during the reading (R18): optical saturation (gain word bits 12-15), strap-fit classifier (byte 81 bits 2-3),
+     *  infrared chosen as the heart-rate source (byte 36 bit 4) and the optical log-variance (float at 113; lower is cleaner). Layouts from OpenStrap gen5_records.dart,
+     *  checked on 438,764 seconds of this strap. */
+    static final class Gates { int seconds, saturated, fitFlag, irSource; double logVar = Double.NaN; }
+
+    static Gates gates(List<byte[]> r18, double t0, double t1) {
+        Gates G = new Gates(); if (r18 == null) return G; List<Double> lv = new ArrayList<>();
+        for (byte[] f : r18) {
+            if (f.length < 124) continue; double t = ProAnalysis.u32(f, 15); if (t < t0 || t > t1) continue; G.seconds++;
+            int w1 = (f[75] & 0xFF) | ((f[76] & 0xFF) << 8); if ((w1 & 0xF000) != 0) G.saturated++;
+            if ((((f[81] & 0xFF) >> 2) & 3) != 0) G.fitFlag++;
+            if ((f[36] & 0x10) != 0) G.irSource++;
+            float v = Float.intBitsToFloat((int) ProAnalysis.u32(f, 113)); if (!Float.isNaN(v) && !Float.isInfinite(v) && v > -20 && v < 20) lv.add((double) v);
+        }
+        if (!lv.isEmpty()) G.logVar = med(lv);
+        return G;
+    }
+
+    static final class Opt { String settings = ""; int settingChanges; int seconds; double greenPi = Double.NaN, greenDc = Double.NaN, irNear = Double.NaN, irFar = Double.NaN, irRatio = Double.NaN, irRatioMin = Double.NaN, irRatioMax = Double.NaN; }
 
     /** 0.25.3: green perfusion (median pulse peak-to-peak per second against the steady level, %) and the infrared near/far photodiode ratio (block 4, slot A over slot B) per 20 s, from the stored 50 Hz optical records of the reading. */
     static Opt optics(List<byte[]> r20, double t0, double t1) {
-        Opt O = new Opt(); if (r20 == null) return O;
+        Opt O = new Opt(); if (r20 == null) return O; String lastSet = "";
         List<double[]> g = new ArrayList<>(); List<Double> pp = new ArrayList<>(), dc = new ArrayList<>(), na = new ArrayList<>(), fa = new ArrayList<>(); java.util.TreeMap<Integer, List<Double>> rw = new java.util.TreeMap<>();
         for (byte[] f : r20) {
             double t = ProAnalysis.u32(f, 15); if (t < t0 || t > t1) continue; O.seconds++;
+            { String st = String.format(java.util.Locale.UK, "LED %.1f mA, offsets %.0f / %.0f uA", ProAnalysis.u16(f, 28) / 100.0, (short) ProAnalysis.u16(f, 38) / 100.0, (short) ProAnalysis.u16(f, 45) / 100.0); if (!st.equals(lastSet)) { if (!lastSet.isEmpty()) O.settingChanges++; lastSet = st; if (!O.settings.contains(st)) O.settings += (O.settings.isEmpty() ? "" : "; ") + st; } }      // 0.27.1
             int n = f[26] & 0xFF; if (n >= 40 && n <= 50) { double[] x = new double[n]; double mx = -1e18, mn = 1e18, s = 0; for (int k = 0; k < n; k++) { int o = 26 + 21 + 4 * k; int r = (f[o] & 0xFF) | ((f[o + 1] & 0xFF) << 8) | ((f[o + 2] & 0xFF) << 16); if ((r & 0x800000) != 0) r -= 0x1000000; x[k] = r; s += r; mx = Math.max(mx, r); mn = Math.min(mn, r); } pp.add(mx - mn); dc.add(s / n); }
             int ob = 26 + 422 * 4, m = f[ob] & 0xFF; if (m >= 40 && m <= 50) { double sa = 0, sb = 0; for (int k = 0; k < m; k++) { int oa = ob + 21 + 4 * k, obb = ob + 221 + 4 * k; int ra = (f[oa] & 0xFF) | ((f[oa + 1] & 0xFF) << 8) | ((f[oa + 2] & 0xFF) << 16), rb = (f[obb] & 0xFF) | ((f[obb + 1] & 0xFF) << 8) | ((f[obb + 2] & 0xFF) << 16); if ((ra & 0x800000) != 0) ra -= 0x1000000; if ((rb & 0x800000) != 0) rb -= 0x1000000; sa += ra; sb += rb; }
                 sa /= m; sb /= m; na.add(sa); fa.add(sb); if (sb > 100) { int w = (int) ((t - t0) / 20); rw.computeIfAbsent(w, kk -> new ArrayList<>()).add(sa / sb); } }
@@ -69,6 +144,7 @@ final class ProDetect {
     private static double med(List<Double> v) { double[] a = new double[v.size()]; for (int i = 0; i < a.length; i++) a[i] = v.get(i); return ProDsp.median(a); }
 
     static final class Pat {
+        int covered, confirmed, ivChecked, ivDisagree, earlyTotal, earlyNoPulse; List<Double> unconfirmedT = new ArrayList<>();      // 0.27.0 pulse-confirmed beats
         int beats, withPulse; double medianMs = Double.NaN, sdMs = Double.NaN, madMs = Double.NaN, breathPerMin = Double.NaN; double[] ms = new double[0]; double[] t = new double[0]; String note = "";
     }
 
@@ -114,6 +190,19 @@ final class ProDetect {
         P.ms = new double[pat.size()]; P.t = new double[pat.size()]; for (int i = 0; i < P.ms.length; i++) { P.ms[i] = pat.get(i); P.t[i] = at.get(i); }
         P.medianMs = ProDsp.median(P.ms); double m = 0, q = 0; for (double v : P.ms) m += v; m /= P.ms.length; for (double v : P.ms) q += (v - m) * (v - m); P.sdMs = Math.sqrt(q / P.ms.length);
         double[] dev = new double[P.ms.length]; for (int i = 0; i < dev.length; i++) dev[i] = Math.abs(P.ms[i] - P.medianMs); P.madMs = ProDsp.median(dev);
+        // 0.27.0 pulse-confirmed beats: confirmed when a pulse peak lies within 120 ms of this reading's usual delay; beats with no optical data within 1.5 s are not counted.
+        {   int nb = R.beatTimes.length; double[] absB = new double[nb], pk = new double[nb]; Arrays.fill(pk, Double.NaN);
+            for (int i = 0; i < nb; i++) {
+                double tb = R.beatTimes[i]; int s = (int) Math.floor(tb); if (s < 0 || s >= R.recT.length) { absB[i] = Double.NaN; continue; } double abs = R.recT[s] + (tb - s); absB[i] = abs;
+                double want = abs + P.medianMs / 1000.0; int j = Arrays.binarySearch(pt, want); if (j < 0) j = -j - 1; double best = Double.NaN, bd = 1e9;
+                for (int c = Math.max(0, j - 1); c <= Math.min(pt.length - 1, j); c++) { double dd = Math.abs(pt[c] - want); if (dd < bd) { bd = dd; best = pt[c]; } }
+                if (bd > 1.5) continue;
+                P.covered++; if (bd <= 0.12) { P.confirmed++; pk[i] = best; } else P.unconfirmedT.add(tb);
+            }
+            for (int i = 1; i < nb; i++) if (!Double.isNaN(pk[i]) && !Double.isNaN(pk[i - 1])) { double rr = absB[i] - absB[i - 1], pp = pk[i] - pk[i - 1]; if (rr > 0.3 && rr < 2.0) { P.ivChecked++; if (Math.abs(rr - pp) > 0.06) P.ivDisagree++; } }
+            if (R.earlyT != null) for (double te : R.earlyT) { int bi = -1; double bd2 = 1e9; for (int i = 0; i < nb; i++) { double dd = Math.abs(R.beatTimes[i] - te); if (dd < bd2) { bd2 = dd; bi = i; } }
+                if (bi >= 0 && bd2 < 0.05) { P.earlyTotal++; if (Double.isNaN(pk[bi])) P.earlyNoPulse++; } }
+        }
         // breathing: spectral peak of the pulse arrival series between 0.1 and 0.4 Hz (4 Hz grid)
         if (P.ms.length >= 30) {
             double t0 = P.t[0], t1 = P.t[P.t.length - 1]; int G = (int) ((t1 - t0) * 4); if (t1 - t0 >= 120 && G >= 64) {      // 0.25.2: breathing from this series needs 2 minutes or more

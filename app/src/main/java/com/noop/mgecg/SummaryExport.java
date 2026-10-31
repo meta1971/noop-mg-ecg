@@ -421,7 +421,7 @@ final class SummaryExport {
                 rawHistory ? rawBins(app, since) : null);
     }
 
-    static final String[] LOG_TOKENS = {"HEADLESS", "LINK_WATCHDOG", "LINK_HOST", "MAIN_DESTROY", "DAYLOG_", "BT_WATCHDOG", "BT_STUCK", "EASY_CONNECT", "RECONNECT", "ERROR", "Exception", "REALTIME_HR", "PULL_"};
+    static final String[] LOG_TOKENS = {"HEADLESS", "LINK_WATCHDOG", "LINK_HOST", "MAIN_DESTROY", "DAYLOG_", "BT_WATCHDOG", "BT_STUCK", "EASY_CONNECT", "RECONNECT", "ERROR", "Exception", "REALTIME_HR", "PULL_", "KEY_LIST", "GET_FF", "DEVICE_CONFIG_VALUE", "DEVICE_SETTINGS", "EVENT id=117", "EVENT id=123", "EVENT id=124"};      // 0.27.1
 
     /** Pure: is this log line about the strap link? */
     static boolean isLinkLine(String line) {

@@ -106,7 +106,30 @@ final class Live500 {
 
     // 0.25.1: electrode contact seen in the live frames (about one frame a second)
     static volatile int openRun; static volatile boolean everOn; static volatile long startMs;
-    static void resetContact() { openRun = 0; everOn = false; startMs = System.currentTimeMillis(); }
+    static void resetContact() { openRun = 0; everOn = false; startMs = System.currentTimeMillis(); synchronized (NQ) { lastNoiseUv = Double.NaN; cleanSec = 0; nq.clear(); frames0 = frames; beats0 = pkCount; } lastCode = 0; lastState = 0; lastProgress = 255; lastMask = 0; lastAvgHr = 0; }
+    // 0.27.0: live signal quality. Per frame (one second): white-noise estimate from the sample-to-sample differences (median absolute deviation / 0.6745 / sqrt 2),
+    // lead-on samples only. Against the report's noise per beat over 20 readings: r 0.86, report = 1.30 x this (1.11 to 1.75).
+    private static final Object NQ = new Object(); static volatile double lastNoiseUv = Double.NaN; static volatile int cleanSec; private static final java.util.ArrayList<Double> nq = new java.util.ArrayList<>(); private static long frames0, beats0;
+    static final double REPORT_PER_LIVE = 1.30;
+    static volatile int lastCode, lastState, lastProgress = 255, lastMask, lastAvgHr;      // 0.27.1: status bytes 23 to 27 of the newest live frame
+    private static void noteNoise(byte[] f, int n) {
+        int q = f[21] & 0xFF; double[] v = new double[n]; int m = 0;
+        for (int i = 0; i < n; i++) { int b0 = f[34 + 3 * i] & 0xFF; if ((b0 & 0x80) == 0 || (b0 & 0x40) != 0) continue; int r = ((b0 & 3) << 16) | ((f[35 + 3 * i] & 0xFF) << 8) | (f[36 + 3 * i] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; v[m++] = r * UV_PER_COUNT; }
+        if (m < 400) { lastNoiseUv = Double.NaN; return; }
+        double[] d = new double[m - 1]; for (int i = 1; i < m; i++) d[i - 1] = v[i] - v[i - 1];
+        double md = med(d); double[] a = new double[d.length]; for (int i = 0; i < d.length; i++) a[i] = Math.abs(d[i] - md);
+        double nz = med(a) / 0.6745 / Math.sqrt(2); lastNoiseUv = nz;
+        if (q == 3) synchronized (NQ) { cleanSec++; nq.add(nz); }
+    }
+    private static double med(double[] x) { double[] c = x.clone(); java.util.Arrays.sort(c); int k = c.length; return k == 0 ? Double.NaN : (k % 2 == 1 ? c[k / 2] : (c[k / 2 - 1] + c[k / 2]) / 2); }
+    /** Median live noise over the last k clean seconds. */
+    static double recentNoise(int k) { synchronized (NQ) { int s = nq.size(); if (s == 0) return Double.NaN; double[] x = new double[Math.min(k, s)]; for (int i = 0; i < x.length; i++) x[i] = nq.get(s - 1 - i); return med(x); } }
+    /** Expected noise on the report's mean beat if the reading stopped now (uV): 1.30 x median live noise / sqrt(beats in clean seconds). */
+    static double meanBeatNoiseEstimate() {
+        synchronized (NQ) { int s = nq.size(); if (s < 10) return Double.NaN; double[] x = new double[s]; for (int i = 0; i < s; i++) x[i] = nq.get(i);
+            double rate; synchronized (LOCK) { long fr = frames - frames0, bt = pkCount - beats0; rate = fr > 5 ? (double) bt / fr : 1.1; } rate = Math.max(0.6, Math.min(2.5, rate));
+            return REPORT_PER_LIVE * med(x) / Math.sqrt(cleanSec * rate); }
+    }
     static void reset() {
         synchronized (LOCK) {
             nAbs = 0; procUpTo = 0; primed = false; haveOffset = false; frames = 0; lastFrameMs = 0; lastCounter = -1; nextDue = Double.NaN; lastDueMs = 0;
@@ -222,6 +245,8 @@ final class Live500 {
         int n = (f[32] & 0xFF) | ((f[33] & 0xFF) << 8);
         if (n < 1 || n > 500) return 0;
         { int off = 0, tot = 0; for (int k = 0; k < n; k += 10) { tot++; if ((f[34 + 3 * k] & 0x80) == 0) off++; } if (tot > 0) { if (off * 10 >= tot * 9) openRun++; else { openRun = 0; if (off == 0) everOn = true; } } }
+        try { noteNoise(f, n); } catch (Throwable ignored) { }      // 0.27.0
+        lastCode = f[23] & 0xFF; lastState = f[24] & 0xFF; lastProgress = f[25] & 0xFF; lastMask = f[26] & 0xFF; lastAvgHr = f[27] & 0xFF;      // 0.27.1
         long ctr = u32(f, 11);
         double recMs = (u32(f, 15) + (((f[19] & 0xFF) | ((f[20] & 0xFF) << 8)) / 32768.0)) * 1000.0;
         synchronized (LOCK) {

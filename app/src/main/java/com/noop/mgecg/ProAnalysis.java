@@ -34,8 +34,10 @@ final class ProAnalysis {
         double qtSdAcross = Double.NaN, qtSigMean = Double.NaN, stSdAcross = Double.NaN, stSigMean = Double.NaN;
         ProDetect.Pat pat;       // set by the report maker from the stored optical records
         int motionDropped; boolean weighted; double nEff = Double.NaN;      // 0.26.1: seconds left out for wrist movement; noise-weighted mean beat and its effective beat count
-        int strapHr = -1, strapHrv = -1;   // 0.26.0: the strap's own average heart rate at the verdict (frame byte 27) and its HRV field at the end (bytes 29-30, a rolling RMSSD in ms)
-        ProDetect.Opt opt;      // 0.25.3: green perfusion and the infrared near/far ratio
+        int strapHr = -1, strapHrv = -1, strapCode = -1, strapMask = 0;      // 0.27.1: + the strap's result code (byte 23) and unreadable reasons (byte 26) at its verdict
+        double twaRms = Double.NaN, twaFloor = Double.NaN, twa95 = Double.NaN;      // 0.27.1: T-wave alternans (odd against even beats, ST-T) and its random-split noise floor   // 0.26.0: the strap's own average heart rate at the verdict (frame byte 27) and its HRV field at the end (bytes 29-30, a rolling RMSSD in ms)
+        ProDetect.Opt opt;
+        ProDetect.Bcg bcg; ProDetect.Gates gates;      // 0.27.1: wrist heartbeat in the motion sensors; the strap's per-second quality flags      // 0.25.3: green perfusion and the infrared near/far ratio
         String tag = "", hrvNote = ""; double[] rrT = new double[0]; Hrv hrvAll; boolean rateStep; ProDetect.Ex ex;      // 0.25.2: reading tag, steady-phase note, R-R times, the whole-reading variability when a steady phase is used, exercise
         int lifts; double[] liftStart = new double[0], liftLen = new double[0];      // 0.25.1: runs of 2 s or more with the electrodes open after the first contact (start second, length in s)
         double[] rrMs; Hrv hrv; Iv iv; double[][] ci = new double[10][];       // lo, hi per key (see CI_KEYS)
@@ -98,7 +100,7 @@ final class ProAnalysis {
             }
         }
         R.cleanSeconds = R.qcount[3];
-        { int vIdx = -1; for (int s = 0; s < sec; s++) { byte[] f = fr.get(s); if (vIdx < 0 && (f[25] & 0xFF) == 100) { vIdx = s; int h = f[27] & 0xFF; if (h >= 30 && h <= 220) R.strapHr = h; } int v = (f[29] & 0xFF) | ((f[30] & 0xFF) << 8); if (v >= 3 && v <= 300) R.strapHrv = v; } }
+        { int vIdx = -1; for (int s = 0; s < sec; s++) { byte[] f = fr.get(s); if (vIdx < 0 && (f[25] & 0xFF) == 100) { vIdx = s; int h = f[27] & 0xFF; if (h >= 30 && h <= 220) R.strapHr = h; R.strapCode = f[23] & 0xFF; R.strapMask = f[26] & 0xFF; } int v = (f[29] & 0xFF) | ((f[30] & 0xFF) << 8); if (v >= 3 && v <= 300) R.strapHrv = v; } }
         for (int s = 0; s < sec; s++) { byte[] f = fr.get(s); if (R.firstQ3 < 0 && q[s] == 3) R.firstQ3 = s; if (R.settleEnd < 0 && (f[22] & 0xFF) == 8) R.settleEnd = s; }
         if (R.firstQ3 > 0) for (int s = 0; s < R.firstQ3; s++) { if (q[s] != 1 && q[s] != 2) continue; boolean fin = true; for (int k = 0; k < 500; k++) if (Double.isNaN(x[s * 500 + k])) { fin = false; break; } if (fin) R.earlyUsable++; }
         {   // 0.25.1 finger lifts: runs of at least 2 seconds with 90 % of the sampled points flagged lead-off, after the first contact
@@ -171,8 +173,14 @@ final class ProAnalysis {
         for (double[] b : Bal) for (int i = 0; i < L; i++) sd[i] += (b[i] - avg[i]) * (b[i] - avg[i]);
         for (int i = 0; i < L; i++) sd[i] = Math.sqrt(sd[i] / N);
         R.meanFull = avg; R.sd = sd; R.meanLp40 = ProDsp.filtfilt(avg, ProDsp.butterLow(4, 40, FS));
+        if (N >= 60) {   // 0.27.1: T-wave alternans, R+100 to R+400 ms, even against odd beats; noise floor from 200 random half-splits
+            int a0 = PRE + 50, a1 = Math.min(L - 1, PRE + 200); R.twaRms = twa(Bal, null, a0, a1);
+            Random rp = new Random(7); double[] nul = new double[200]; int[] idx = new int[N]; for (int i = 0; i < N; i++) idx[i] = i;
+            for (int p = 0; p < nul.length; p++) { for (int i = N - 1; i > 0; i--) { int j = rp.nextInt(i + 1); int tmp = idx[i]; idx[i] = idx[j]; idx[j] = tmp; } nul[p] = twa(Bal, idx, a0, a1); }
+            Arrays.sort(nul); R.twaFloor = nul[nul.length / 2]; R.twa95 = nul[(int) (nul.length * 0.95)];
+        }
         // variability
-        R.hrv = hrv(R.rrMs); double rrS = ProDsp.median(R.rrMs) / 1000.0;
+        R.hrv = hrv(R.rrMs, R.rrT); double rrS = ProDsp.median(R.rrMs) / 1000.0;
         R.hrvAll = R.hrv; steadyPhase(R);
         R.iv = intervals(avg, rrS);
         {   // 0.25.0 QT and ST per 20-beat window (step 10) with a bootstrap uncertainty for each window
@@ -331,32 +339,49 @@ final class ProAnalysis {
         if (bestD > 0) { cuts.add(bestT); if (bestD > stepD) { stepD = bestD; stepA = bestA; stepB = bestB; } }
         if (!step) return;
         java.util.Collections.sort(cuts); List<double[]> spans = new ArrayList<>(); double prev = -1e9; for (double c : cuts) { spans.add(new double[] {prev, c}); prev = c; } spans.add(new double[] {prev, 1e9});
-        int bestN = 0; double[] bestRr = null; double[] bestSpan = null; StringBuilder all = new StringBuilder();
+        int bestN = 0; double[] bestRr = null, bestRrT = null; double[] bestSpan = null; StringBuilder all = new StringBuilder();
         for (double[] sp : spans) {
-            List<Double> v = new ArrayList<>(); for (int i = 0; i < n; i++) if (R.rrT[i] > sp[0] && R.rrT[i] - R.rrMs[i] / 1000.0 >= sp[0] && R.rrT[i] <= sp[1]) v.add(R.rrMs[i]);
-            if (v.size() < 30) continue; double[] x = new double[v.size()]; for (int i = 0; i < x.length; i++) x[i] = v.get(i); Hrv h = hrv(x);
+            List<Double> v = new ArrayList<>(), vt = new ArrayList<>(); for (int i = 0; i < n; i++) if (R.rrT[i] > sp[0] && R.rrT[i] - R.rrMs[i] / 1000.0 >= sp[0] && R.rrT[i] <= sp[1]) { v.add(R.rrMs[i]); vt.add(R.rrT[i]); }
+            if (v.size() < 30) continue; double[] x = new double[v.size()], xt = new double[v.size()]; for (int i = 0; i < x.length; i++) { x[i] = v.get(i); xt[i] = vt.get(i); } Hrv h = hrv(x, xt);
             double s0 = 1e9, s1 = -1; for (int i = 0; i < n; i++) if (R.rrT[i] > sp[0] && R.rrT[i] <= sp[1]) { s0 = Math.min(s0, R.rrT[i]); s1 = Math.max(s1, R.rrT[i]); }
             all.append(String.format(java.util.Locale.UK, "%d:%02d to %d:%02d, %.0f bpm, RMSSD %.1f ms (%d beats); ", (int) s0 / 60, (int) s0 % 60, (int) s1 / 60, (int) s1 % 60, h.hr, h.rmssd, v.size()));
-            if (v.size() > bestN) { bestN = v.size(); bestRr = x; bestSpan = new double[] {s0, s1}; }
+            if (v.size() > bestN) { bestN = v.size(); bestRr = x; bestRrT = xt; bestSpan = new double[] {s0, s1}; }
         }
         if (bestRr == null) return;
-        R.rateStep = true; R.hrv = hrv(bestRr);
+        R.rateStep = true; R.hrv = hrv(bestRr, bestRrT);
         R.hrvNote = String.format(java.util.Locale.UK, "The heart rate changed by %.0f bpm during this reading (%.0f to %.0f). The variability figures use its steadiest stretch, %d:%02d to %d:%02d (%d beats). All stretches: %s", stepD, stepA, stepB, (int) bestSpan[0] / 60, (int) bestSpan[0] % 60, (int) bestSpan[1] / 60, (int) bestSpan[1] % 60, bestN, all.toString().trim());
     }
 
-    static Hrv hrv(double[] rrIn) {
+    /** Half the difference between the means of two halves of the beats, RMS over samples a0..a1. order == null: even against odd beats. */
+    static double twa(double[][] B, int[] order, int a0, int a1) {
+        int N = B.length, h = N / 2; double[] ma = new double[a1 - a0 + 1], mb = new double[a1 - a0 + 1]; int na = 0, nb = 0;
+        for (int k = 0; k < N; k++) {
+            if (order != null && k >= 2 * h) continue;
+            int ix = order == null ? k : order[k]; boolean first = order == null ? (k % 2 == 0) : (k < h);
+            double[] b = B[ix];
+            if (first) { for (int s = a0; s <= a1; s++) ma[s - a0] += b[s]; na++; } else { for (int s = a0; s <= a1; s++) mb[s - a0] += b[s]; nb++; }
+        }
+        double ss = 0; for (int s = 0; s < ma.length; s++) { double d = (ma[s] / na - mb[s] / nb) / 2; ss += d * d; }
+        return Math.sqrt(ss / ma.length);
+    }
+
+    static Hrv hrv(double[] rrIn) { return hrv(rrIn, null); }
+
+    /** 0.27.1: gap-aware. t[i] = time (s) of the beat that ends interval i; a successive difference is used only when the two intervals touch
+     *  (no contact gap or dropped stretch between them). In the 29 Oct 23:03 reading one cross-gap pair had lifted RMSSD from 12.7 to 24.3 ms. */
+    static Hrv hrv(double[] rrIn, double[] t) {
         Hrv h = new Hrv(); int n = rrIn.length; double[] med = ProDsp.runMedian(rrIn, 11); boolean[] keep = new boolean[n]; int kn = 0;
         for (int i = 0; i < n; i++) { keep[i] = Math.abs(rrIn[i] - med[i]) < 0.2 * med[i]; if (keep[i]) kn++; }
         double[] rr = new double[kn]; int c = 0; for (int i = 0; i < n; i++) if (keep[i]) rr[c++] = rrIn[i];
-        List<Double> dl = new ArrayList<>(); for (int i = 0; i + 1 < n; i++) if (keep[i] && keep[i + 1]) dl.add(rrIn[i + 1] - rrIn[i]);
+        List<Double> dl = new ArrayList<>(); for (int i = 0; i + 1 < n; i++) if (keep[i] && keep[i + 1] && (t == null || Math.abs((t[i + 1] - t[i]) * 1000.0 - rrIn[i + 1]) < 50.0)) dl.add(rrIn[i + 1] - rrIn[i]);
         double[] d = new double[dl.size()]; for (int i = 0; i < d.length; i++) d[i] = dl.get(i);
         h.rrAll = rrIn; h.keep = keep; h.n = kn + 1; h.removed = n - kn; h.meanRr = ProDsp.mean(rr); h.hr = 60000 / h.meanRr; h.sdnn = ProDsp.std(rr, 1);
         double ss = 0; int p50 = 0; for (double v : d) { ss += v * v; if (Math.abs(v) > 50) p50++; } h.rmssd = Math.sqrt(ss / d.length); h.pnn50 = 100.0 * p50 / d.length;
         double vd = Math.pow(ProDsp.std(d, 1), 2), vr = Math.pow(h.sdnn, 2); h.sd1 = Math.sqrt(0.5) * ProDsp.std(d, 1); h.sd2 = Math.sqrt(Math.max(0, 2 * vr - 0.5 * vd));
         double[] md = ProDsp.runMedian(rrIn, 41); double[] dt = new double[kn]; c = 0; for (int i = 0; i < n; i++) if (keep[i]) dt[c++] = rrIn[i] - md[i]; h.sdnnDetr = ProDsp.std(dt, 1);
-        double[] t = new double[kn]; double acc = 0; for (int i = 0; i < kn; i++) { acc += rr[i] / 1000.0; t[i] = acc; } for (int i = kn - 1; i >= 0; i--) t[i] -= t[0];
-        int m = (int) Math.floor(t[kn - 1] / 0.25); double[] ti = new double[m]; for (int i = 0; i < m; i++) ti[i] = i * 0.25;
-        double[] ri = ProDsp.detrend(ProDsp.spline(t, rr, ti)); double[][] w = ProDsp.welch(ri, 4.0, 256); h.psdF = w[0]; h.psdP = w[1]; double df = w[0][1] - w[0][0];
+        double[] tc = new double[kn]; double acc = 0; for (int i = 0; i < kn; i++) { acc += rr[i] / 1000.0; tc[i] = acc; } for (int i = kn - 1; i >= 0; i--) tc[i] -= tc[0];
+        int m = (int) Math.floor(tc[kn - 1] / 0.25); double[] ti = new double[m]; for (int i = 0; i < m; i++) ti[i] = i * 0.25;
+        double[] ri = ProDsp.detrend(ProDsp.spline(tc, rr, ti)); double[][] w = ProDsp.welch(ri, 4.0, 256); h.psdF = w[0]; h.psdP = w[1]; double df = w[0][1] - w[0][0];
         for (int k = 0; k < w[0].length; k++) { double f = w[0][k]; if (f >= 0.04 && f < 0.15) h.lf += w[1][k] * df; if (f >= 0.15 && f < 0.40) h.hf += w[1][k] * df; if (f >= 0.003 && f < 0.04) h.vlf += w[1][k] * df; }
         double bp = -1; for (int k = 0; k < w[0].length; k++) if (w[0][k] >= 0.1 && w[0][k] <= 0.4 && w[1][k] > bp) { bp = w[1][k]; h.fpk = w[0][k]; }
         return h;

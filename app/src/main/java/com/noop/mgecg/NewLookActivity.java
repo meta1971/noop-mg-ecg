@@ -273,7 +273,7 @@ public class NewLookActivity extends Activity {
             case ST_ECG: {
                 View c = ecgContainer();
                 View back = ecgBackBtn != null ? ecgBackBtn : (c == null ? null : findText(c, BACK_TEXT));
-                if (back != null) back.performClick();      // the old handler hides its screen; the tick brings Home back
+                if (back != null) { back.performClick(); if (fromNew) leaveToNewApp(); else showHome(); }      // 0.27.0: switch at once, not on the next tick (the old screen showed for a moment)
                 else showHome();
                 return;
             }
@@ -558,6 +558,7 @@ public class NewLookActivity extends Activity {
         HealthActivity.pendingTab = 2;
         startActivity(new android.content.Intent(this, HealthActivity.class).putExtra("tab", 2)
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP));
+        overridePendingTransition(0, 0);      // 0.27.0: no slide that shows the screen underneath
     }
 
     private void connectOnly() {
@@ -725,6 +726,14 @@ public class NewLookActivity extends Activity {
             c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { readingTag = readingTag.equals(tagNames[k]) ? "" : tagNames[k]; for (int j = 0; j < 4; j++) tagChips[j].setBackground(round(tagNames[j].equals(readingTag) ? PRIMARY : CARD, 22)); } });
             LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, dp(40), 1f); tlp.rightMargin = dp(4); tagRow.addView(c, tlp); }
         col.addView(tagRow, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
+        // 0.27.0: live signal light and auto-stop
+        qualityView = tv("", 13, MUTED, true); qualityView.setGravity(Gravity.CENTER); qualityView.setPadding(dp(10), dp(8), dp(10), dp(8)); qualityView.setVisibility(View.GONE);
+        col.addView(qualityView, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
+        final android.content.SharedPreferences ecp = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
+        autoChip = pillButton(autoLabel(ecp.getBoolean("auto_stop", true)), CARD, MUTED); autoChip.setTextSize(11);
+        autoChip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ecp.getBoolean("auto_stop", true); ecp.edit().putBoolean("auto_stop", on).apply(); autoChip.setText(autoLabel(on)); } });
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(-1, dp(40)); alp.topMargin = dp(4); alp.bottomMargin = dp(4);
+        col.addView(autoChip, col.indexOfChild(ecgStartBtn), alp);
 
         // markers folded away (still work when opened)
         markViews = new View[]{markLabel, markRow1, markRow2, cuff};
@@ -776,12 +785,41 @@ public class NewLookActivity extends Activity {
 
     // 0.25.1: a short buzz and a note when the fingers come off the clasp during a reading, or when there is no contact after 14 s
     private int lastWarnRun; private boolean warnedNoContact; private String readingTag = ""; private Button[] tagChips;
+    private TextView qualityView; private Button autoChip; private boolean autoStopped;
+    static final double AUTO_TARGET_UV = 3.0; static final long AUTO_MIN_MS = 60000L, AUTO_MAX_MS = 300000L;
+    private static String autoLabel(boolean on) { return on ? "Auto-stop ON: stops when report quality is reached (3 uV, 1 to 5 min)" : "Auto-stop OFF: you stop the reading"; }
+    /** 0.27.0: the signal light. Thresholds from 20 readings: live noise 13 to 52 uV (report noise per beat 19 to 63). */
+    private void updateQuality(boolean running, boolean live) {
+        if (qualityView == null) return;
+        if (!running || !live) { qualityView.setVisibility(View.GONE); return; }
+        qualityView.setVisibility(View.VISIBLE);
+        String txt; int col;
+        double nz = Live500.recentNoise(3), est = Live500.meanBeatNoiseEstimate(); long el = System.currentTimeMillis() - Live500.startMs;
+        if (!Live500.everOn || Live500.openRun >= 1) { txt = "\u25cf  Contact: two fingertips resting lightly on the clasp"; col = 0xFFE5534B; }
+        else if (Double.isNaN(nz)) { txt = "\u25cf  Settling (the strap needs about 12 s)"; col = 0xFFD4A72C; }
+        else if (nz <= 25) { txt = "\u25cf  Signal good: stay as you are"; col = 0xFF3FB950; }
+        else if (nz <= 38) { txt = "\u25cf  Signal fair: relax your hand, keep still"; col = 0xFFD4A72C; }
+        else { txt = "\u25cf  Signal noisy: rest your forearm on the table, keep still"; col = 0xFFE5534B; }
+        if (!Double.isNaN(est)) txt += String.format(java.util.Locale.UK, "\nReport quality so far %.1f uV (aim 3.0 or lower)  \u00b7  %d clean s", est, Live500.cleanSec);
+        {   int pr = Live500.lastProgress, cd = Live500.lastCode;      // 0.27.1: the strap's own classifier, as it runs
+            if (cd != 0 && pr == 100) txt += "\nStrap's own check (research): " + StrapVerdict.describe(cd, Live500.lastAvgHr, Live500.lastMask);
+            else if (pr <= 100) txt += "\nStrap's own check: analysing " + pr + " %" + (Live500.lastMask != 0 ? " (" + StrapVerdict.reasons(Live500.lastMask) + ")" : "");
+        }
+        qualityView.setText(txt); qualityView.setTextColor(col);
+        boolean auto = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("auto_stop", true);
+        if (auto && !autoStopped && el > AUTO_MIN_MS && ((!Double.isNaN(est) && est <= AUTO_TARGET_UV) || el > AUTO_MAX_MS)) {
+            autoStopped = true;
+            try { Toast.makeText(this, el > AUTO_MAX_MS && (Double.isNaN(est) || est > AUTO_TARGET_UV) ? "Stopped at 5 minutes (report quality " + (Double.isNaN(est) ? "-" : String.format(java.util.Locale.UK, "%.1f", est)) + " uV)" : "Report quality reached: reading stopped", Toast.LENGTH_LONG).show(); ecgStartBtn.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { }
+            if (ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP")) ecgStartBtn.performClick();
+        }
+    }
     private void contactAlert(String m) { try { Toast.makeText(this, m, Toast.LENGTH_SHORT).show(); if (ecgStartBtn != null) ecgStartBtn.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { } }
     private final Runnable contactTick = new Runnable() {
         @Override public void run() {
             boolean running = ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP");
-            if (!running || isFinishing()) { warnedNoContact = false; lastWarnRun = 0; return; }
+            if (!running || isFinishing()) { warnedNoContact = false; lastWarnRun = 0; updateQuality(false, false); return; }
             boolean live = Live500.isLive(System.currentTimeMillis());          // 0.25.3: no alerts when live raw frames are not coming (live raw switched off)
+            updateQuality(true, live);      // 0.27.0
             int run = live ? Live500.openRun : 0;
             if (live && run >= 3 && lastWarnRun < 3) contactAlert("Fingers are off the clasp: put them back");
             lastWarnRun = run;
@@ -849,7 +887,7 @@ public class NewLookActivity extends Activity {
             lastRunningState = rs;
             if (!running && prevRs == 1) { FrameMonitor.captureWindow(System.currentTimeMillis() + 150000L); ui.postDelayed(new Runnable() { @Override public void run() { maybeStopH10(); } }, 6000L); }       // 0.23.0: the H10 stops a few seconds after the reading
             ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
-            if (running) { ReadingTag.note(getExternalFilesDir(null), readingTag); FrameMonitor.captureReset(); FrameMonitor.captureWindow(System.currentTimeMillis() + 20 * 60 * 1000L); Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
+            if (running) { ReadingTag.note(getExternalFilesDir(null), readingTag); FrameMonitor.captureReset(); FrameMonitor.captureWindow(System.currentTimeMillis() + 20 * 60 * 1000L); Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; autoStopped = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
             if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
             if (running && packetsView != null && packetsView.getVisibility() != View.VISIBLE
                     && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_packets_open", true)) openPackets(true);

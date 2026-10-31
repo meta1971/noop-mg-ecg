@@ -1467,6 +1467,7 @@ public class MainActivity extends NewLookActivity {
                             " key=" + dcKeyEchoed +
                             " storedValue=" + dcValueStr +
                             " raw=" + Protocol.hex(value));
+                    if (envCmd == 121 && !dcKeyEchoed.isEmpty()) deviceSettings.put(dcKeyEchoed, dcValueStr.isEmpty() ? "(empty)" : dcValueStr);      // 0.27.1
 
                 } else if (!dcResultIsSuccess &&
                         value.length >= 13 + 1 + 32 && value[13] == 0x01) {
@@ -1487,6 +1488,7 @@ public class MainActivity extends NewLookActivity {
                             "SUCCESS, this is a REFUSED/FAILED read, " +
                             "NOT a real stored value ***");
 
+                    if (envCmd == 121 && !dcKeyEchoed.isEmpty()) deviceSettings.put(dcKeyEchoed, "refused (result " + dcResultCode + ")");      // 0.27.1
                     logRaw("DEVICE_CONFIG_VALUE_REFUSED cmd=" + envCmd +
                             " key=" + dcKeyEchoed +
                             " resultCode=" + dcResultCode +
@@ -10766,6 +10768,41 @@ public class MainActivity extends NewLookActivity {
         if (m == null || !m.pullAckActive) return null;
         long s = Math.max(0L, (System.currentTimeMillis() - m.pullStartMs) / 1000L);
         return s + " s" + (m.historyEndsAcked > 0 ? ", " + m.historyEndsAcked + " chunks" : "");
+    }
+
+    // 0.27.1: read the strap's eight named device settings, READ-ONLY (GET_DEVICE_CONFIG_VALUE 121: revision 1 + the key, NUL-padded to 32 bytes).
+    // Key list and meanings from NOOP docs/PROTOCOL_CONFIGURATION.md; cont_collection_mode = 1 would store optical and motion data continuously.
+    static final String[] DEVICE_KEYS = {"sigproc_wear_detect", "enable_rfid", "max_collection_backlog", "cont_collection_mode",
+            "whoop_live_hr_in_adv_ind_pkt", "whoop_live_2_hrm_devices", "enable_raw_data_w_ecg", "dorset_detection_period_min"};
+    static final java.util.Map<String, String> deviceSettings = new java.util.concurrent.ConcurrentHashMap<>();
+    static volatile long deviceSettingsAskedMs;
+
+    void readDeviceSettings() {
+        if (gatt == null || cmdWrite == null) { logRaw("DEVICE_SETTINGS_READ not connected"); return; }
+        deviceSettings.clear(); deviceSettingsAskedMs = System.currentTimeMillis();
+        logRaw("DEVICE_SETTINGS_READ_BEGIN keys=" + DEVICE_KEYS.length + " (read-only, command 121)");
+        for (int i = 0; i < DEVICE_KEYS.length; i++) {
+            final String key = DEVICE_KEYS[i];
+            mainH.postDelayed(() -> {
+                byte[] p = new byte[33]; p[0] = 0x01; byte[] k = key.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                System.arraycopy(k, 0, p, 1, Math.min(31, k.length));
+                sendPuffinPayload(121, p, "GET_DEVICE_CONFIG_VALUE(" + key + ")");
+            }, 700L * i);
+        }
+    }
+
+    static boolean requestDeviceSettings() {
+        final MainActivity m = instance != null ? instance : headless;
+        if (m == null || m.gatt == null || m.cmdWrite == null) return false;
+        m.mainH.post(new Runnable() { @Override public void run() { m.readDeviceSettings(); } });
+        return true;
+    }
+
+    static String deviceSettingsText() {
+        StringBuilder s = new StringBuilder();
+        for (String k : DEVICE_KEYS) { String v = deviceSettings.get(k); s.append(k).append(" = ").append(v == null ? "no reply" : v).append('\n'); }
+        s.append("\nRead only, nothing was changed. cont_collection_mode: 0 = off, 1 = store optical and motion data continuously. enable_raw_data_w_ecg: 0 or 1 = on, 2 = off.");
+        return s.toString();
     }
 
     static void requestPull() {

@@ -59,7 +59,7 @@ final class ProReportMaker {
                     ProAnalysis.Result r = ProAnalysis.analyse(binBytes, rej);
                     if (r == null) msg = "The report cannot be made: " + ProAnalysis.why + ". It needs 20 seconds of frames, a stretch of 8 clean seconds and at least 30 clean beats.";
                     else {
-                        try { r.tag = ReadingTag.forReading(dir, r.t0); ReadingFrames.Sets stored = ReadingFrames.collect(dir, r.t0 - 600, r.t0 + r.seconds); r.pat = ProDetect.pat(r, stored.r20); r.ex = ProDetect.exercise(r, stored.r18); r.opt = ProDetect.optics(stored.r20, r.t0, r.t0 + r.seconds); } catch (Throwable ignored) { r.pat = null; }
+                        try { r.tag = ReadingTag.forReading(dir, r.t0); ReadingFrames.Sets stored = ReadingFrames.collect(dir, r.t0 - 600, r.t0 + r.seconds); r.pat = ProDetect.pat(r, stored.r20); r.ex = ProDetect.exercise(r, stored.r18); r.opt = ProDetect.optics(stored.r20, r.t0, r.t0 + r.seconds); r.bcg = ProDetect.bcg(r, stored.r21); r.gates = ProDetect.gates(stored.r18, r.t0, r.t0 + r.seconds); } catch (Throwable ignored) { r.pat = null; }
                         H10Compare.Result h = null; File hf = findH10(dir, r.t0, r.seconds);
                         if (hf != null) { try { h = H10Compare.compare(r, H10Compare.read(hf)); } catch (Throwable ignored) { h = null; } }
                         ProPdf.Info info = new ProPdf.Info(); info.when = ProPdf.whenText(r.t0); info.fileName = html.getName();

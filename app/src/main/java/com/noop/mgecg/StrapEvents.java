@@ -41,8 +41,8 @@ final class StrapEvents {
             case 46: return "Raw data on"; case 47: return "Raw data off"; case 60: return "Haptics fired"; case 63: return "Extended battery";
             case 96: return "Fast sync prompt"; case 97: return "Fast sync on"; case 98: return "Fast sync off"; case 108: return "Session parameter";
             case 109: return "Battery pack identity"; case 110: return "Ten-minute report"; case 113: return "ECG session start"; case 114: return "ECG session stop";
-            case 115: return "ECG record start"; case 116: return "ECG record stop"; case 117: return "Event 117"; case 118: return "ECG end result A";
-            case 119: return "ECG end result B"; case 120: return "Minute report"; case 123: return "Firmware event"; case 124: return "ECG state";
+            case 115: return "ECG record start"; case 116: return "ECG record stop"; case 117: return "Charging state (inferred)"; case 118: return "ECG end result A";
+            case 119: return "ECG end result B"; case 120: return "Two-hour report"; case 123: return "Firmware event"; case 124: return "Collection policy change";
             default: return "Event " + id;
         }
     }
@@ -76,6 +76,20 @@ final class StrapEvents {
         // 0.16.0: from the vendor app's own parsers (WHOOP 5.469.0), checked on 188 logged reports
         if (id == 29 && in.length >= 11)
             return String.format(L, "backlog %d pages (%.1f %%), battery %.1f %%, flash status %d, charging %d, wrist %d", u32(in, 0), u16(in, 4) / 10.0, u16(in, 6) / 10.0, u8(in, 8), u8(in, 9), u8(in, 10));
+        // 0.27.1: battery level (OpenStrap control.dart: level u32/10 at 1, millivolts u32 at 5, charger flag at 9), extended battery (checked on 221 events:
+        // currents in 0.01 mA follow a charge taper of 136 to 49 mA; the temperatures equal the per-second cell and ambient temperatures exactly), firmware sub-ids
+        if (id == 3 && in.length >= 10)
+            return String.format(L, "battery %.1f %%, %d mV, charger %d", u32(in, 1) / 10.0, u32(in, 5), u8(in, 9));
+        if (id == 63 && in.length >= 11)
+            return String.format(L, "current %.2f mA average, %.2f mA now (positive = charging); temperatures %.1f and %.1f C; remaining %d (x0.1 mAh, inferred)",
+                    (short) u16(in, 1) / 100.0, (short) u16(in, 3) / 100.0, (short) u16(in, 5) / 10.0, (short) u16(in, 7) / 10.0, u16(in, 9));
+        if (id == 123 && in.length >= 3) {
+            int sid = u16(in, 1);
+            String nm = sid == 1 ? "Bluetooth link " + (in.length > 4 && u8(in, 4) == 1 ? "up" : "down") : sid == 4 ? "sensor mode change" : sid == 6 ? "power pack detected" : sid == 7 && in.length >= 8 ? String.format(L, "value %.1f", f32(in, 4)) : "";
+            return "sub-id " + sid + (nm.isEmpty() ? "" : ": " + nm);
+        }
+        if (id == 124 && in.length >= 5) return "phase " + u8(in, 1) + " (1 = ECG start, 2 = stop), transition " + u8(in, 3) + ", value " + u8(in, 4);
+        if (id == 117 && in.length >= 2) return "state " + u8(in, 1);
         if (id == 109 && in.length >= 27)
             return String.format(L, "battery pack: battery %.1f %%, colourway %d, type %d (its address and name are not shown)", u16(in, 23) / 10.0, u8(in, 25), u8(in, 26));
         return "";
