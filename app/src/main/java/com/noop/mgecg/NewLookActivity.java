@@ -238,6 +238,7 @@ public class NewLookActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        View root = findViewById(android.R.id.content); if (root != null) root.setAlpha(1f);      // 0.27.2
         consumePending();
     }
 
@@ -273,7 +274,8 @@ public class NewLookActivity extends Activity {
             case ST_ECG: {
                 View c = ecgContainer();
                 View back = ecgBackBtn != null ? ecgBackBtn : (c == null ? null : findText(c, BACK_TEXT));
-                if (back != null) { back.performClick(); if (fromNew) leaveToNewApp(); else showHome(); }      // 0.27.0: switch at once, not on the next tick (the old screen showed for a moment)
+                View root = findViewById(android.R.id.content);      // 0.27.2: the old screen still flashed for a frame: hide the window first
+                if (back != null) { if (root != null && fromNew) root.setAlpha(0f); back.performClick(); if (fromNew) leaveToNewApp(); else showHome(); }
                 else showHome();
                 return;
             }
@@ -720,12 +722,15 @@ public class NewLookActivity extends Activity {
         ecgTips.setPadding(dp(8), dp(4), dp(8), dp(10));
         col.addView(ecgTips, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
         // 0.25.2: position or activity tag for the next reading (tap again to clear)
-        final String[] tagNames = {"Lying", "Sitting", "Standing", "After exercise"}; tagChips = new Button[4];
+        // 0.27.2: position tags. Table readings (31 Oct 12:28: R 500 uV) against the couch (30 Oct evening: R 939-980 uV); tags let the report compare like with like
+        final String[] tagNames = {"Table", "Couch", "Lying", "Standing", "After exercise"}; tagChips = new Button[tagNames.length];
         LinearLayout tagRow = new LinearLayout(this); tagRow.setOrientation(LinearLayout.HORIZONTAL);
-        for (int i = 0; i < 4; i++) { final int k = i; Button c = pillButton(tagNames[i], CARD, MUTED); c.setTextSize(11); tagChips[i] = c;
-            c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { readingTag = readingTag.equals(tagNames[k]) ? "" : tagNames[k]; for (int j = 0; j < 4; j++) tagChips[j].setBackground(round(tagNames[j].equals(readingTag) ? PRIMARY : CARD, 22)); } });
-            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, dp(40), 1f); tlp.rightMargin = dp(4); tagRow.addView(c, tlp); }
+        LinearLayout tagRow2 = new LinearLayout(this); tagRow2.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < tagNames.length; i++) { final int k = i; Button c = pillButton(tagNames[i], CARD, MUTED); c.setTextSize(11); tagChips[i] = c;
+            c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { readingTag = readingTag.equals(tagNames[k]) ? "" : tagNames[k]; for (int j = 0; j < tagChips.length; j++) tagChips[j].setBackground(round(tagNames[j].equals(readingTag) ? PRIMARY : CARD, 22)); } });
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, dp(40), 1f); tlp.rightMargin = dp(4); tlp.bottomMargin = dp(4); (i < 3 ? tagRow : tagRow2).addView(c, tlp); }
         col.addView(tagRow, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
+        col.addView(tagRow2, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
         // 0.27.0: live signal light and auto-stop
         qualityView = tv("", 13, MUTED, true); qualityView.setGravity(Gravity.CENTER); qualityView.setPadding(dp(10), dp(8), dp(10), dp(8)); qualityView.setVisibility(View.GONE);
         col.addView(qualityView, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
@@ -887,6 +892,7 @@ public class NewLookActivity extends Activity {
             lastRunningState = rs;
             if (!running && prevRs == 1) { FrameMonitor.captureWindow(System.currentTimeMillis() + 150000L); ui.postDelayed(new Runnable() { @Override public void run() { maybeStopH10(); } }, 6000L); }       // 0.23.0: the H10 stops a few seconds after the reading
             ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
+            if (running && readingTag.isEmpty()) toast("Tip: tag where you sit (Table, Couch, ...). Position changes the height of your R wave, so tagged readings compare fairly.");      // 0.27.2
             if (running) { ReadingTag.note(getExternalFilesDir(null), readingTag); FrameMonitor.captureReset(); FrameMonitor.captureWindow(System.currentTimeMillis() + 20 * 60 * 1000L); Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; autoStopped = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
             if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
             if (running && packetsView != null && packetsView.getVisibility() != View.VISIBLE

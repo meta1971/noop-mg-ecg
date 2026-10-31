@@ -88,6 +88,8 @@ final class Live500 {
     private static double peakLevel, initMax;
     private static boolean inited;
     private static final long[] pk = new long[64];
+    private static final long[] pend = new long[64]; private static int pendHead, pendTail;      // 0.27.2: beats waiting for their noise window
+    private static final java.util.ArrayList<Double> bnoise = new java.util.ArrayList<>();      // 0.27.2: per-beat noise (uV), as the report measures it
     private static int pkCount;
     private static long firstPeak = -1;
     // smoothing
@@ -106,7 +108,7 @@ final class Live500 {
 
     // 0.25.1: electrode contact seen in the live frames (about one frame a second)
     static volatile int openRun; static volatile boolean everOn; static volatile long startMs;
-    static void resetContact() { openRun = 0; everOn = false; startMs = System.currentTimeMillis(); synchronized (NQ) { lastNoiseUv = Double.NaN; cleanSec = 0; nq.clear(); frames0 = frames; beats0 = pkCount; } lastCode = 0; lastState = 0; lastProgress = 255; lastMask = 0; lastAvgHr = 0; }
+    static void resetContact() { openRun = 0; everOn = false; startMs = System.currentTimeMillis(); synchronized (NQ) { lastNoiseUv = Double.NaN; cleanSec = 0; nq.clear(); frames0 = frames; beats0 = pkCount; } lastCode = 0; lastState = 0; lastProgress = 255; lastMask = 0; lastAvgHr = 0; synchronized (LOCK) { pendHead = pendTail; } synchronized (NQ) { bnoise.clear(); } }
     // 0.27.0: live signal quality. Per frame (one second): white-noise estimate from the sample-to-sample differences (median absolute deviation / 0.6745 / sqrt 2),
     // lead-on samples only. Against the report's noise per beat over 20 readings: r 0.86, report = 1.30 x this (1.11 to 1.75).
     private static final Object NQ = new Object(); static volatile double lastNoiseUv = Double.NaN; static volatile int cleanSec; private static final java.util.ArrayList<Double> nq = new java.util.ArrayList<>(); private static long frames0, beats0;
@@ -121,11 +123,31 @@ final class Live500 {
         double nz = med(a) / 0.6745 / Math.sqrt(2); lastNoiseUv = nz;
         if (q == 3) synchronized (NQ) { cleanSec++; nq.add(nz); }
     }
+    /** 0.27.2: for each detected beat whose window is complete, the SD of the detrended samples 450-550 ms after it (front-end output), as the report's
+     *  noise per beat does. Called under LOCK after each frame. */
+    private static void drainBeatNoise() {
+        while (pendHead < pendTail) {
+            long q = pend[pendHead & 63];
+            if (nAbs <= q + 280) break;
+            pendHead++;
+            if (nAbs - (q + 225) > CAP - 64) continue;
+            double[] w = new double[51]; boolean ok = true;
+            for (int k = 0; k <= 50; k++) { double v = xin[p(q + 225 + k)]; if (Double.isNaN(v)) { ok = false; break; } w[k] = v; }
+            if (!ok) continue;
+            double mx = 25.0, sy = 0, sxy = 0, sxx = 0; for (int k = 0; k <= 50; k++) sy += w[k]; double my = sy / 51.0;
+            for (int k = 0; k <= 50; k++) { sxy += (k - mx) * (w[k] - my); sxx += (k - mx) * (k - mx); }
+            double b = sxy / sxx, ss = 0; for (int k = 0; k <= 50; k++) { double r = w[k] - (my + b * (k - mx)); ss += r * r; }
+            double sd = Math.sqrt(ss / 50.0);
+            if (sd > 0 && sd < 2000) synchronized (NQ) { bnoise.add(sd); }
+        }
+    }
+
     private static double med(double[] x) { double[] c = x.clone(); java.util.Arrays.sort(c); int k = c.length; return k == 0 ? Double.NaN : (k % 2 == 1 ? c[k / 2] : (c[k / 2 - 1] + c[k / 2]) / 2); }
     /** Median live noise over the last k clean seconds. */
     static double recentNoise(int k) { synchronized (NQ) { int s = nq.size(); if (s == 0) return Double.NaN; double[] x = new double[Math.min(k, s)]; for (int i = 0; i < x.length; i++) x[i] = nq.get(s - 1 - i); return med(x); } }
     /** Expected noise on the report's mean beat if the reading stopped now (uV): 1.30 x median live noise / sqrt(beats in clean seconds). */
     static double meanBeatNoiseEstimate() {
+        synchronized (NQ) { int nb = bnoise.size(); if (nb >= 20) { double[] x = new double[nb]; for (int i = 0; i < nb; i++) x[i] = bnoise.get(i); return 1.10 * med(x) / Math.sqrt(nb); } }      // 0.27.2: measured per beat, like the report; x1.10 keeps it on the safe side (replays: -13 to +9 % before the factor)
         synchronized (NQ) { int s = nq.size(); if (s < 10) return Double.NaN; double[] x = new double[s]; for (int i = 0; i < s; i++) x[i] = nq.get(i);
             double rate; synchronized (LOCK) { long fr = frames - frames0, bt = pkCount - beats0; rate = fr > 5 ? (double) bt / fr : 1.1; } rate = Math.max(0.6, Math.min(2.5, rate));
             return REPORT_PER_LIVE * med(x) / Math.sqrt(cleanSec * rate); }
@@ -192,6 +214,7 @@ final class Live500 {
     }
 
     private static void addPeak(long q) {
+        pend[pendTail & 63] = q; pendTail++;      // 0.27.2: queue the beat for its noise window
         pk[pkCount & 63] = q; pkCount++; if (firstPeak < 0) firstPeak = q; if (testPeakSink != null) testPeakSink.add(q);
         lastPeak = q;
     }
@@ -246,6 +269,7 @@ final class Live500 {
         if (n < 1 || n > 500) return 0;
         { int off = 0, tot = 0; for (int k = 0; k < n; k += 10) { tot++; if ((f[34 + 3 * k] & 0x80) == 0) off++; } if (tot > 0) { if (off * 10 >= tot * 9) openRun++; else { openRun = 0; if (off == 0) everOn = true; } } }
         try { noteNoise(f, n); } catch (Throwable ignored) { }      // 0.27.0
+        try { synchronized (LOCK) { drainBeatNoise(); } } catch (Throwable ignored) { }      // 0.27.2
         lastCode = f[23] & 0xFF; lastState = f[24] & 0xFF; lastProgress = f[25] & 0xFF; lastMask = f[26] & 0xFF; lastAvgHr = f[27] & 0xFF;      // 0.27.1
         long ctr = u32(f, 11);
         double recMs = (u32(f, 15) + (((f[19] & 0xFF) | ((f[20] & 0xFF) << 8)) / 32768.0)) * 1000.0;
