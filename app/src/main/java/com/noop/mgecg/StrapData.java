@@ -160,7 +160,7 @@ final class StrapData {
         r.add(row(H, "Optical quality", R18Codec.u8(f, 40) + " of 255", "byte 40"));
         r.add(row(H, "Pulse signal-to-noise", (byte) R18Codec.u8(f, 108) + " / " + (byte) R18Codec.u8(f, 109), "bytes 108 and 109 (int8); -128 means the pulse lock is lost"));
         r.add(row(H, "Detector level", String.valueOf(R18Codec.u16(f, 106)), "bytes 106 and 107"));
-        r.add(row(H, "Pulse-lock-lost value", String.valueOf(R18Codec.u8(f, 105)), "byte 105; non-zero almost only when the pulse lock is lost; the number itself is not decoded"));
+        r.add(row(H, "Lock-loss value", String.valueOf(R18Codec.u8(f, 105)), "byte 105; non-zero almost only when the pulse lock is lost; meaning of the number open"));
         {   int w1 = R18Codec.u8(f, 75) | (R18Codec.u8(f, 76) << 8), led = (w1 >> 8) & 15, sat = (w1 >> 12) & 15;      // 0.27.1: gain word 1 (OpenStrap layout, checked on 438,764 s)
             String ledTxt = led == 12 ? "green paused" : led == 8 ? "17.5 mA" : led == 9 ? "22.0 mA" : led == 10 ? "27.5 mA" : led == 11 ? "33.5 mA" : "step " + led;
             r.add(row(H, "Green LED and offsets", ledTxt + ", offsets " + 8 * ((w1 >> 4) & 3) + " / " + 8 * ((w1 >> 6) & 3) + " uA" + (sat != 0 ? ", SATURATED (flags " + sat + ")" : ""), "bytes 75-76: LED current step, photodiode offset steps (8 uA each), saturation flags"));
@@ -171,7 +171,7 @@ final class StrapData {
         }
         r.add(row(H, "Signal-quality value", String.format(L, "%.3f", R18Codec.f32(f, 113)), "bytes 113 to 116 (float); about -5.3 when clean, moves toward -2 with motion"));
         r.add(row(H, "Cardiac flags", String.valueOf(R18Codec.u8(f, 33)), "byte 33; not decoded"));
-        r.add(row(H, "Heart-rate quality flags", String.valueOf(R18Codec.u8(f, 36)), "byte 36; not decoded"));
+        r.add(row(H, "Heart-rate quality flags", String.valueOf(R18Codec.u8(f, 36)), "byte 36: bit 7 = the two heart-rate estimates agree, bit 4 = infrared source (shown above); other bits open"));
         String M = "MOTION";
         double gx = R18Codec.f32(f, 45), gy = R18Codec.f32(f, 49), gz = R18Codec.f32(f, 53);
         r.add(row(M, "Largest acceleration step", String.format(L, "%.4f g", R18Codec.f32(f, 41)), "bytes 41 to 44; about 0.002 at rest, 0.3 jogging"));
@@ -187,11 +187,11 @@ final class StrapData {
         r.add(row(T, "Ambient (inside the strap)", String.format(L, "%.1f \u00b0C", R18Codec.i16(f, 71) / 10.0), "bytes 71 and 72"));
         String S = "STATE";
         r.add(row(S, "Sleep state", state(R18Codec.state(f)), "byte 81 bits 4 and 5: awake, still, sleep or up; an envelope, not a stage"));
-        r.add(row(S, "Byte 81 low bits", String.valueOf(R18Codec.u8(f, 81) & 0x0f), "not decoded; 0 or 1 in 96% of seconds"));
+        r.add(row(S, "Byte 81 bits 0-1", String.valueOf(R18Codec.u8(f, 81) & 0x03), "a flags snapshot, meaning open; always 0 or 1. Bits 2-3 are the strap fit check (Heart section); bits 4-5 the sleep state"));
         int b82 = R18Codec.u8(f, 82);
         r.add(row(S, "Blood-oxygen byte", b82 == 0 ? "no window" : String.valueOf(b82), "byte 82; a percentage only inside the sleep-only window (about every 20 minutes), other values are status codes"));
         r.add(row(S, "Optical sampling", (R18Codec.u8(f, 10) & 0x80) != 0 ? "25 Hz" : "50 Hz", "byte 10 bit 7; 50 Hz only while an ECG runs"));
-        r.add(row(S, "Optical gain word", String.format("0x%04X", R18Codec.u16(f, 75)), "bytes 75 and 76; the only live one of three; not decoded"));
+        r.add(row(S, "Optical gain word", String.format("0x%04X", R18Codec.u16(f, 75)), "bytes 75 and 76, the only live one of three: bits 4-7 photodiode offsets, 8-11 green LED step, 12-15 saturation flags (decoded in the Heart section)"));
         String R = "THIS RECORD";
         r.add(row(R, "Strap time", clock(R18Codec.ts(f)), "bytes 15 to 18"));
         r.add(row(R, "Record counter", String.valueOf(R18Codec.u32(f, 11)), "bytes 11 to 14; +1 per second"));

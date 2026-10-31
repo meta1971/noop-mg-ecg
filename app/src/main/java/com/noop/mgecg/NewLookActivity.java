@@ -90,6 +90,7 @@ public class NewLookActivity extends Activity {
     private long waitStart, connectedSince;
     private View ecgContainerCache, statusViewCache;
     private int tickCount;
+    private boolean ecgClosing;                                 // 0.27.3: the old ECG screen was closed by its own on-screen back arrow; the window is hidden before the next frame
 
     // restyled ECG screen
     private boolean ecgStyled;
@@ -188,6 +189,18 @@ public class NewLookActivity extends Activity {
         nbp.setMargins(dp(14), 0, dp(14), dp(18));
         root.addView(navBar, nbp);
         updateNav();
+        root.getViewTreeObserver().addOnPreDrawListener(() -> {      // 0.27.3: any way the old ECG screen closes (on-screen arrow too) is caught before the frame that would show the old page
+            if (state == ST_ECG && !ecgClosing && ecgContainerCache != null && ecgContainerCache.getVisibility() != View.VISIBLE) {
+                ecgClosing = true;
+                if (fromNew) {
+                    View content = findViewById(android.R.id.content);
+                    if (content != null) content.setAlpha(0f);
+                    ui.post(() -> { try { onTick(); } catch (Throwable ignored) { } });
+                } else showHome();
+                return false;
+            }
+            return true;
+        });
         super.setContentView(root);
         android.content.Intent li0 = getIntent();
         if (li0 != null && li0.getBooleanExtra("start_ecg", false) || pendingEcg) { fromNew = true; showStarting("Getting your strap ready\u2026", ""); }
@@ -457,6 +470,7 @@ public class NewLookActivity extends Activity {
             return;
         }
         state = ST_ECG;
+        ecgClosing = false;
         restyleEcgOnce();
         fontAll(ecgContainer());
         updateEcgExtras();
