@@ -215,7 +215,8 @@ final class Healthspan {
             }
             if (Double.isNaN(vo)) { voBig.setText("--"); voSub.setText("Needs 3 nights, or enter it"); fitBig.setText("--"); fitSub.setText(""); }
             else {
-                voBig.setText(String.format(Locale.UK, "%.1f", vo)); fitBig.setText(String.format(Locale.UK, "%.0f", fitnessAge(vo, male))); fitSub.setText(String.format(Locale.UK, "years, against your %.0f", ag));
+                voBig.setText(String.format(Locale.UK, "%.1f", vo)); if (!Double.isNaN(v)) { fitBig.setText(String.format(Locale.UK, "%.0f", fitnessAge(vo, male))); fitSub.setText(String.format(Locale.UK, "years, against your %.0f", ag)); }
+                else { fitBig.setText(String.format(Locale.UK, "%.0f-%.0f", fitnessAge(vo, male), fitnessAge(0.8 * vo, male))); fitSub.setText(String.format(Locale.UK, "years, crude: the heart-rate estimate may be 20 %% too high. Take the Rockport test (you are %.0f)", ag)); }
                 String src = !Double.isNaN(v) ? sp.getString("vo2_src", "Entered by you") : "Estimated from resting heart rate (crude, about 20 % too high at most)";
                 long when = sp.getLong("vo2_date", 0L); if (!Double.isNaN(v) && when > 0) src += ", " + new java.text.SimpleDateFormat("d MMM yyyy", Locale.UK).format(new java.util.Date(when));
                 voSub.setText(src);

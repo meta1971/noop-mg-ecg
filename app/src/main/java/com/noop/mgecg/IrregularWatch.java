@@ -194,7 +194,7 @@ final class IrregularWatch {
             + "A 5-minute window with at least 100 intervals, heart rate 100 or less and little movement counts as irregular when RMSSD divided by the mean interval is above 0.12 (about 0.02 on your normal days). Three irregular windows in a row (15 minutes) raise one notification, at most one every 6 hours. It says: take an ECG.\n\n"
             + "WHAT IS MEASURED\n"
             + "Public AF database, 23 recordings, 5-minute windows from ECG R-R with the same rule: atrial fibrillation windows flagged 99 % (429 windows); windows of other rhythms flagged 40 % (2,063 windows, many with frequent early beats). So an alert means irregular, not necessarily atrial fibrillation.\n"
-            + "Your strap, 24 hours 30 to 31 Oct: 154 windows, none above 0.10, largest 0.087.\n"
+            + "Your strap, 10 days (20 to 31 Oct): 1,247 windows, 6 above 0.12 (single windows, never 3 in a row), largest 0.141, so no alert. Without the signal-level gate the same days give 156 windows above 0.12: the gate is what makes it usable; it drops about 12 % of windows (those with motion).\n"
             + "Not measured: the strap has never recorded atrial fibrillation, so the sensitivity of the optical pulse is unknown. Pulse intervals arrive with each pull (every 30 minutes), so an alert can be up to about 45 minutes late.\n\n"
             + "Research only. Not a medical device. If you feel unwell, get help; do not wait for this.", 13, MUT, 400);
         how.setLineSpacing(0, 1.25f); col.addView(how, HeartGraph.lp(a, -1, -2, 16));
