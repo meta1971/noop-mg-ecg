@@ -159,6 +159,7 @@ final class DayLog {
                         lastIngestNote = n + ": " + r[0] + " new per-second records, " + r[1] + " other records";
                         addEvent(app, "ingest", lastIngestNote);
                     }
+                    try { IrregularWatch.evaluate(app); } catch (Throwable ignored) { }      // 0.28.0: irregular rhythm watch after every ingest
                 } catch (Throwable t) { lastIngestNote = "ingest error: " + t; }
             }
         });

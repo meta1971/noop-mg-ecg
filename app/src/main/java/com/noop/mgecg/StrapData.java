@@ -170,8 +170,8 @@ final class StrapData {
             r.add(row(H, "SpO2 channels", R18Codec.spo2Window(f) ? "measuring (red and infrared on)" : "idle", "gain words 2 and 3; they switch on only in the overnight SpO2 windows"));
         }
         r.add(row(H, "Signal-quality value", String.format(L, "%.3f", R18Codec.f32(f, 113)), "bytes 113 to 116 (float); about -5.3 when clean, moves toward -2 with motion"));
-        r.add(row(H, "Cardiac flags", String.valueOf(R18Codec.u8(f, 33)), "byte 33; not decoded"));
-        r.add(row(H, "Heart-rate quality flags", String.valueOf(R18Codec.u8(f, 36)), "byte 36: bit 7 = the two heart-rate estimates agree, bit 4 = infrared source (shown above); other bits open"));
+        r.add(row(H, "Cardiac flags", String.valueOf(R18Codec.u8(f, 33)), "byte 33: bits 4-6 = pulse signal level (0 clean; 32, 96, 112 increasingly poor), bit 7 an independent flag, bit 0 = beat-interval irregularity (INFERRED), bits 1-3 never set"));
+        r.add(row(H, "Heart-rate quality flags", String.valueOf(R18Codec.u8(f, 36)), "byte 36: bit 7 is set in almost every second (OpenStrap: the two heart-rate estimates agree), bit 4 = infrared source (never set in 88,209 s); other bits open"));
         String M = "MOTION";
         double gx = R18Codec.f32(f, 45), gy = R18Codec.f32(f, 49), gz = R18Codec.f32(f, 53);
         r.add(row(M, "Largest acceleration step", String.format(L, "%.4f g", R18Codec.f32(f, 41)), "bytes 41 to 44; about 0.002 at rest, 0.3 jogging"));
