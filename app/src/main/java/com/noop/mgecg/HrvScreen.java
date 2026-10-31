@@ -172,6 +172,18 @@ final class HrvScreen {
         c5.addView(small(a, "A fair two-week check: alternate evenings with and without, log each one, and read the comparison above. This is your own data, not medical advice."), HeartGraph.lp(a, -1, -2, 8));
         col.addView(c5, HeartGraph.lp(a, -1, -2, 12));
 
+        // ---- nights and workload (dated analysis)
+        LinearLayout c5b = card(a); c5b.addView(head(a, "YOUR NIGHTS AND WORKLOAD (20 to 31 Oct analysis, 8 nights)"));
+        c5b.addView(body(a,
+            "HEART RATE. In the first 30 minutes of sleep it is 50 to 63 bpm. Three to four hours in it is on average 8 bpm higher (7 of 8 nights, range -1 to +16) and stays higher.\n\n"
+            + "HRV. Strap RMSSD is lowest in the first 3 hours (about 18 ms on average) and roughly doubles by the last 3 hours (about 34 ms). Relative values; the strap reads high.\n\n"
+            + "EVENING BEFORE BED. RMSSD 82 and 71 ms on 21 and 22 Oct against 28 to 47 ms from 24 Oct; heart rate 61 against 62 to 70.\n\n"
+            + "WORKLOAD. Steps went from 8 to 12 thousand a day (24 to 26 Oct) to 24 to 27 thousand (27 to 30 Oct). Over the 6 days with step counts, more steps went with a lower mid-night RMSSD (rank correlation -0.89, p 0.02, 6 days only) and a shorter night."), HeartGraph.lp(a, -1, -2, 8));
+        c5b.addView(body(a,
+            "WHAT THE LITERATURE SAYS. Evening alcohol lowers HRV in the first hours of sleep in a dose-dependent way, even at low intake (Pietilä 2018). A higher heart rate during manual work goes with lower HRV the following night, day by day, after adjusting for alcohol, in 959 blue-collar workers (Korshøj 2021); long work hours without enough recovery are a proposed reason manual work lacks the benefit of exercise (Holtermann 2018). In 8 trained runners a 31-day ketogenic diet lowered morning RMSSD by about 10 ms (randomised crossover, 2021).\n\n"
+            + "WHAT THIS CANNOT SPLIT. Heavy workdays, evening beer and a low-carbohydrate day overlap on your data, and no alcohol-free evening has been logged. The heart-rate rise and low early-night HRV fit an evening drink, but they also fit a heavy day or a late meal. A fair test: 3 alcohol-free evenings in a row with a similar workload, logged with the No alcohol pill, then compare the first 3 hours of the night (heart rate and RMSSD) with your usual."), HeartGraph.lp(a, -1, -2, 10));
+        col.addView(c5b, HeartGraph.lp(a, -1, -2, 12));
+
         // ---- tests
         LinearLayout c6 = card(a); c6.addView(head(a, "TESTS TO TRY"));
         c6.addView(body(a,
@@ -192,6 +204,9 @@ final class HrvScreen {
             + "Parasympathetic function during deep breathing in the general population: relation to coronary risk factors and normal range. J Intern Med 1999;245:287-94.\n"
             + "O'Brien IAD, O'Hare P, Corrall RJ. Heart rate variability in healthy subjects: effect of age and the derivation of normal ranges for tests of autonomic function. Br Heart J 1986;55:348-54.\n"
             + "Pietilä J et al. Acute effect of alcohol intake on cardiovascular autonomic regulation during the first hours of sleep in a large real-world sample of Finnish employees. JMIR Ment Health 2018;5:e23.\n"
+            + "Korshøj M, Lund Rasmussen C, de Oliveira Sato T, Holtermann A, Hallman D. Heart rate during work and heart rate variability during the following night: a day-by-day investigation on the physical activity paradox among blue-collar workers. Scand J Work Environ Health 2021, doi:10.5271/sjweh.3965.\n"
+            + "Holtermann A et al. The physical activity paradox: six reasons why occupational physical activity does not confer the cardiovascular health benefits that leisure time physical activity does. Br J Sports Med 2018;52:149-50.\n"
+            + "Autonomic and perceptual responses to induction of a ketogenic diet in free-living endurance athletes: a randomized, crossover trial. Int J Sports Physiol Perform 2021;16:1603-9.\n"
             + "On this strap: 31 Oct 2026 analysis of 24 saved ECG readings, 9 raw readings, 10 days of per-second records and 5 H10 recordings; see the decode log, section 101."), HeartGraph.lp(a, -1, -2, 8));
         col.addView(c7, HeartGraph.lp(a, -1, -2, 12));
     }
