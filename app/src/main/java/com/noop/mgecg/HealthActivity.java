@@ -1459,6 +1459,16 @@ public class HealthActivity extends Activity {
             wn.addView(note);
             expandable("r_night", wn, new Filler() { @Override public void fill(LinearLayout p) { fillWholeNightPanel(p); } });
             col.addView(wn, lp(-1, -2, 12));
+            // 0.34.0: stage confidence and age check, architecture, and the by-night screen
+            final double ageF = getSharedPreferences("healthspan", MODE_PRIVATE).getFloat("age", 53f);
+            LinearLayout cf = card(16); cf.addView(caps("STAGE CONFIDENCE AND AGE CHECK"));
+            for (String[] row : SleepArch.confidenceRows(d, ageF)) { if (row[0].equals("Reading")) note(cf, row[1]); else kv(cf, row[0], row[1]); }
+            note(cf, "Totals are the app's estimate from heart rate and movement. Sure minutes are where a second pass using the strap's beat intervals agrees. Usual ranges: Ohayon 2004 (slow-wave share falls about 3 points a decade from 40; the age values are from a secondary summary) and Ebrahim 2013 for REM. On this strap the staging tends to over-call deep and REM, so read changes between nights rather than totals.");
+            col.addView(cf, lp(-1, -2, 12));
+            LinearLayout ar = card(16); ar.addView(caps("ARCHITECTURE: LAST NIGHT"));
+            for (String[] row : SleepArch.architectureRows(d, n.bedTs, n.endTs)) { if (row[0].equals("Read with care")) note(ar, row[1]); else kv(ar, row[0], row[1]); }
+            col.addView(ar, lp(-1, -2, 12));
+            col.addView(pillButton("Sleep architecture by night and alcohol check", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) SleepArch.show(HealthActivity.this, data); } }), lp(-1, dpi(44), 8));
         }
         if (d.day.spo2 != null && d.day.spo2.validWindows > 0) {
             LinearLayout so = card(16);

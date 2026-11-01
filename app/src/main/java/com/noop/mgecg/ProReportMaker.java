@@ -40,6 +40,17 @@ final class ProReportMaker {
         }
         return best;
     }
+    /** 0.34.1: every H10 ECG file that overlaps the reading: the one running at its start and any that began (after a reconnect) before it ended, oldest first. */
+    static java.util.List<File> findH10All(File dir, double readingStart, double readingSeconds) {
+        java.util.List<File> out = new java.util.ArrayList<File>(); File first = null; long fs0 = -1; File[] all = dir.listFiles(); if (all == null) return out;
+        for (File f : all) {
+            String n = f.getName(); if (!n.startsWith("h10_ecg_") || !n.endsWith(".csv")) continue;
+            try { long st = Long.parseLong(n.substring(8, n.length() - 4)); if (st <= readingStart + 5 && st >= readingStart - 1800 && st > fs0) { fs0 = st; first = f; } else if (st > readingStart + 5 && st <= readingStart + readingSeconds + 5) out.add(f); } catch (NumberFormatException ignored) { }
+        }
+        if (first != null) out.add(first);
+        java.util.Collections.sort(out, new java.util.Comparator<File>() { @Override public int compare(File a, File b) { return a.getName().compareTo(b.getName()); } });
+        return out;
+    }
     static long unixOf(File html) { String d = html.getName().replaceAll("[^0-9]", ""); try { return Long.parseLong(d.length() > 10 ? d.substring(0, 10) : d); } catch (Exception e) { return 0L; } }
 
     static void make(final Activity a, final File html) {

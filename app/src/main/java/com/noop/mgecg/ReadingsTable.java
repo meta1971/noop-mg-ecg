@@ -97,13 +97,14 @@ final class ReadingsTable {
 
     private static double h10R(File dir, long startSec, double durSec) {
         try {
-            File best = null; long bs = 0; File[] all = dir.listFiles(); if (all == null) return Double.NaN;
-            for (File f : all) { String n = f.getName(); if (!n.startsWith("h10_ecg_") || !n.endsWith(".csv")) continue; long st; try { st = Long.parseLong(n.substring(8, n.length() - 4)); } catch (Exception e) { continue; } if (st <= startSec + 5 && st > bs && f.lastModified() >= startSec * 1000L) { bs = st; best = f; } }
-            if (best == null) return Double.NaN;
+            List<File> files = ProReportMaker.findH10All(dir, startSec, durSec); if (files.isEmpty()) return Double.NaN;
             long a = startSec * 1000L - 1500L, b = (long) ((startSec + durSec) * 1000L); double[] buf = new double[(int) (durSec * 140) + 400]; int c = 0;
-            try (BufferedReader br = new BufferedReader(new FileReader(best), 1 << 16)) {
-                String ln = br.readLine();
-                while ((ln = br.readLine()) != null) { int i1 = ln.indexOf(','); if (i1 < 0) continue; long ms; try { ms = Long.parseLong(ln.substring(0, i1)); } catch (Exception e) { continue; } if (ms < a) continue; if (ms > b) break; int i2 = ln.lastIndexOf(','); if (c < buf.length) buf[c++] = Double.parseDouble(ln.substring(i2 + 1)); }
+            for (File best : files) {
+                if (best.lastModified() < startSec * 1000L) continue;
+                try (BufferedReader br = new BufferedReader(new FileReader(best), 1 << 16)) {
+                    String ln = br.readLine();
+                    while ((ln = br.readLine()) != null) { int i1 = ln.indexOf(','); if (i1 < 0) continue; long ms; try { ms = Long.parseLong(ln.substring(0, i1)); } catch (Exception e) { continue; } if (ms < a) continue; if (ms > b) break; int i2 = ln.lastIndexOf(','); if (c < buf.length) buf[c++] = Double.parseDouble(ln.substring(i2 + 1)); }
+                }
             }
             return h10Amp(Arrays.copyOf(buf, c));
         } catch (Throwable t) { return Double.NaN; }

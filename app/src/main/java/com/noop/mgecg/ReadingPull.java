@@ -81,7 +81,7 @@ final class ReadingPull {
         // the report, strip, H10 and unknown-frame captures
         if (html != null && html.exists() && html.length() < 5000000) out.put(html.getName(), Files.readAllBytes(html.toPath()));
         String stamp = html == null ? "" : html.getName().replaceAll("[^0-9]", ""); File png = new File(dir, "ecg_strip_" + stamp + ".png"); if (png.exists() && png.length() < 5000000) out.put(png.getName(), Files.readAllBytes(png.toPath()));
-        File hf = ProReportMaker.findH10(dir, t0, (int) (t1 - t0) + 1); if (hf != null && hf.length() < 40000000) out.put(hf.getName(), Files.readAllBytes(hf.toPath()));
+        for (File hf : ProReportMaker.findH10All(dir, t0, (int) (t1 - t0) + 1)) if (hf.length() < 40000000) out.put(hf.getName(), Files.readAllBytes(hf.toPath()));      // 0.34.1: every H10 file that overlaps the reading
         StringBuilder con = new StringBuilder(); int lastC = -1;
         java.text.SimpleDateFormat dayF = new java.text.SimpleDateFormat("yyyyMMdd", Locale.UK); String day0 = dayF.format(new java.util.Date((long) (t0 * 1000))), day1 = dayF.format(new java.util.Date((long) (t1 * 1000 + 600000)));      // 0.25.3: the capture files of the reading's day only
         if (fs != null) for (File f : fs) { String n = f.getName(); if (n.startsWith("unknown_frames_") && n.endsWith(".hex") && f.length() < 6000000 && (n.contains(day0) || n.contains(day1))) {
