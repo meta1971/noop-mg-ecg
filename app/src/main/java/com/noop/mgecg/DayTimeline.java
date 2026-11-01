@@ -30,6 +30,7 @@ final class DayTimeline {
         int days; double lockWork = Double.NaN; String workWindow = "";
         final List<double[]> nights = new ArrayList<double[]>();         // {bed, evening still HR, first-3-hour HR, lowest 5-minute HR}
         double rho = Double.NaN; int rhoN;
+        double rhoBump = Double.NaN; int rhoBumpN;                      // evening bump (evening minus afternoon still heart rate) against the first 3 hours of the night
         double hrDay = Double.NaN, hrEve = Double.NaN, hrNight = Double.NaN, skWork = Double.NaN, skEve = Double.NaN, skNight = Double.NaN;
     }
 
@@ -80,10 +81,13 @@ final class DayTimeline {
         for (int k = 0; k < beds.length; k++) {
             long bed = beds[k], o = tz.getOffset(bed * 1000L) / 1000L, lb = bed + o; long dayL = Math.floorDiv(lb, 86400L); if (Math.floorMod(lb, 86400L) < 12 * 3600L) dayL--;
             long e0 = dayL * 86400L + 19 * 3600L - o, e1 = bed - 1800L; double eve = rangeHr(t, hr, st, lk, n, e0, e1, true, 900), f3 = rangeHr(t, hr, st, lk, n, bed, bed + 3 * 3600L, false, 3000);
-            if (!Double.isNaN(eve) || !Double.isNaN(f3)) R.nights.add(new double[] { bed, eve, f3, low5[k] });
+            double aft = rangeHr(t, hr, st, lk, n, dayL * 86400L + 12 * 3600L - o, dayL * 86400L + 18 * 3600L - o, true, 300);
+            if (!Double.isNaN(eve) || !Double.isNaN(f3)) R.nights.add(new double[] { bed, eve, f3, low5[k], aft, Double.NaN, 0, 0 });   // {bed, evening, first 3 h, lowest 5 min, afternoon, first-3-hour RMSSD, drinks logged, alcohol-free marks}
             if (!Double.isNaN(eve) && !Double.isNaN(f3)) { xe.add(eve); xn.add(f3); }
         }
         R.rhoN = xe.size(); if (R.rhoN >= 6) { double[] a = new double[R.rhoN], b = new double[R.rhoN]; for (int i = 0; i < a.length; i++) { a[i] = xe.get(i); b[i] = xn.get(i); } R.rho = spearman(a, b); }
+        List<Double> xb = new ArrayList<Double>(), xf = new ArrayList<Double>(); for (double[] x : R.nights) if (!Double.isNaN(x[1]) && !Double.isNaN(x[4]) && !Double.isNaN(x[2])) { xb.add(x[1] - x[4]); xf.add(x[2]); }
+        R.rhoBumpN = xb.size(); if (R.rhoBumpN >= 6) { double[] a = new double[R.rhoBumpN], b = new double[R.rhoBumpN]; for (int i = 0; i < a.length; i++) { a[i] = xb.get(i); b[i] = xf.get(i); } R.rhoBump = spearman(a, b); }
         return R;
     }
 
@@ -106,7 +110,21 @@ final class DayTimeline {
             while (cu.moveToNext() && n < cap) { t[n] = cu.getLong(0); hr[n] = (short) cu.getInt(1); st[n] = (byte) cu.getInt(2); sk[n] = (float) cu.getDouble(3); sp[n] = cu.getInt(4); byte[] bl = cu.getBlob(5); lk[n] = bl != null && bl.length == 1 && bl[0] != (byte) 0x80; n++; }
             List<TodayModel.NightStat> ns = new ArrayList<TodayModel.NightStat>(); for (TodayModel.NightStat x : nights) if (x.bed >= since) ns.add(x);
             long[] beds = new long[ns.size()]; double[] low = new double[ns.size()]; for (int i = 0; i < beds.length; i++) { beds[i] = ns.get(i).bed; low[i] = ns.get(i).hrLow5; }
-            return analyse(t, hr, st, lk, sk, sp, n, beds, low, TimeZone.getDefault());
+            Result res = analyse(t, hr, st, lk, sk, sp, n, beds, low, TimeZone.getDefault());
+            try {
+                List<Long> drinks = new ArrayList<Long>(), dry = new ArrayList<Long>(); HrvScreen.SQLiteHelper.markers(c, "alcohol", drinks); HrvScreen.SQLiteHelper.markers(c, "no_alcohol", dry);
+                for (double[] x : res.nights) {
+                    long bed = (long) x[0]; int dn = 0, yn = 0;
+                    for (long m : drinks) if (m / 1000L >= bed - 10L * 3600L && m / 1000L <= bed + 3600L) dn++;
+                    for (long m : dry) if (m / 1000L >= bed - 10L * 3600L && m / 1000L <= bed + 3600L) yn++;
+                    x[6] = dn; x[7] = yn;
+                    Cursor rc = DayLog.db(c).rawQuery("SELECT rec FROM r18 WHERE ts BETWEEN ? AND ? ORDER BY ts", new String[] { String.valueOf(bed), String.valueOf(bed + 3 * 3600L) });
+                    List<byte[]> recs = new ArrayList<byte[]>(); try { while (rc.moveToNext()) { byte[] b = rc.getBlob(0); if (b != null) recs.add(b); } } finally { rc.close(); }
+                    List<IrregularWatch.Win> ws = IrregularWatch.windows(recs); List<Double> v = new ArrayList<Double>(); for (IrregularWatch.Win w : ws) if (w.rest && w.hr > 0) v.add(w.nr * 60000.0 / w.hr);
+                    x[5] = v.size() >= 3 ? median(v) : Double.NaN;
+                }
+            } catch (Throwable ignored) { }
+            return res;
         } finally { cu.close(); }
     }
 

@@ -127,6 +127,21 @@ final class HrvScreen {
         c2.addView(small(a, "Each bar is the median RMSSD of that hour; evening and night in blue. Hours with fewer than 2 windows are left empty (the strap is only read while still). On your 20 to 31 Oct data: about 37 ms at 18:00 falling to about 21 at 23:00, 13 to 14 from midnight to 03:00, about 22 at 05:00 and 31 at 06:00, with heart rate 66 at 18:00 to 21:00 and 59 to 62 overnight."), HeartGraph.lp(a, -1, -2, 6));
         col.addView(c2, HeartGraph.lp(a, -1, -2, 12));
 
+        // ---- H10 ECG-grade HRV by hour (read off the main thread)
+        final LinearLayout h10Card = card(a); h10Card.addView(head(a, "H10 (ECG-GRADE) HRV BY CLOCK HOUR, LAST 3 DAYS"));
+        final TextView h10Status = body(a, "Reading the H10 files..."); h10Card.addView(h10Status, HeartGraph.lp(a, -1, -2, 8)); col.addView(h10Card, HeartGraph.lp(a, -1, -2, 12));
+        new Thread(new Runnable() { @Override public void run() {
+            H10Hrv.Result r0 = null; try { r0 = H10Hrv.load(a); } catch (Throwable ignored) { }
+            final H10Hrv.Result r = r0;
+            a.runOnUiThread(new Runnable() { @Override public void run() { try { fillH10(a, h10Card, h10Status, r); } catch (Throwable ignored) { } } });
+        } }, "h10-hrv").start();
+
+        // ---- readings table entry
+        LinearLayout rc = card(a); rc.addView(head(a, "YOUR READINGS"));
+        rc.addView(small(a, "Every saved ECG reading with R, T, P, QRS, QTc, ST, the strap's own amplitude, and what the strap recorded around it, plotted against the clock hour. One CSV export."), HeartGraph.lp(a, -1, -2, 6));
+        TextView ro = HeartGraph.pill(a, "Open the readings table", BLUE, 0xFF05131E); ro.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { ReadingsTable.show(a, d); } }); rc.addView(ro, HeartGraph.lp(a, -2, -2, 10));
+        col.addView(rc, HeartGraph.lp(a, -1, -2, 12));
+
         // ---- how you compare
         double lim = eiLimit(age), rl = ratioLimit(age); float ei = hp.getFloat("ei", 5.2f), er = hp.getFloat("ratio", 1.08f); String when = hp.getString("eidate", "31 Oct 2026, seated, evening");
         LinearLayout c3 = card(a); c3.addView(head(a, "HOW YOU COMPARE"));
@@ -221,6 +236,18 @@ final class HrvScreen {
         col.addView(c7, HeartGraph.lp(a, -1, -2, 12));
     }
 
+    private static void fillH10(Activity a, LinearLayout card, TextView status, H10Hrv.Result r) {
+        if (r == null || r.windows < 3) { status.setText("No H10 R-R recorded in the last 3 days (day logger > START H10 RECORDING). It gives ECG-grade HRV here and a way to check the strap's optical value."); return; }
+        card.removeView(status);
+        HourBars hb = new HourBars(a); hb.set(r.hours); card.addView(hb, HeartGraph.lp(a, -1, Math.round(dp(a, 96)), 8));
+        card.addView(small(a, "Median RMSSD of each hour in ms (H10 beat intervals, 5-minute windows of 200 or more beats). Evening and night in blue."), HeartGraph.lp(a, -1, -2, 4));
+        StringBuilder sb = new StringBuilder(String.format(Locale.UK, "%d windows from %d H10 file%s. ", r.windows, r.files, r.files == 1 ? "" : "s"));
+        if (!Double.isNaN(r.nightRmssd)) sb.append(String.format(Locale.UK, "Night hours 00:00 to 06:59: RMSSD %.0f ms at heart rate %.0f (%d windows). ", r.nightRmssd, r.nightHr, r.nightWindows));
+        if (!Double.isNaN(r.opticalRatio)) sb.append(String.format(Locale.UK, "In the same hours the strap's optical RMSSD reads %.1f times the H10's (%d hours compared), so use the H10 for absolute values.", r.opticalRatio, r.ratioHours));
+        card.addView(body(a, sb.toString()), HeartGraph.lp(a, -1, -2, 8));
+        card.addView(small(a, String.format(Locale.UK, "H10 link, last 24 hours: %d gaps of more than 20 s (%.0f minutes in all), %d link losses, %d silent-stream restarts.", r.gaps, r.gapMin, r.lost, r.silent)), HeartGraph.lp(a, -1, -2, 8));
+    }
+
     private static void fillDay(Activity a, LinearLayout cd, TextView status, DayTimeline.Result r) {
         if (r == null || r.days < 2) { status.setText("Needs at least 2 days of day-logger data."); return; }
         cd.removeView(status);
@@ -237,12 +264,18 @@ final class HrvScreen {
         if (!Double.isNaN(r.skEve) && !Double.isNaN(r.skNight))
             cd.addView(body(a, String.format(Locale.UK, "Skin: %s evening %.1f, night %.1f degrees.", Double.isNaN(r.skWork) ? "" : String.format(Locale.UK, "active hours %.1f, ", r.skWork), r.skEve, r.skNight)), HeartGraph.lp(a, -1, -2, 8));
         if (!r.nights.isEmpty()) {
-            StringBuilder nl = new StringBuilder("EVENING TO NIGHT (still heart rate 19:00 to 30 minutes before bed, first 3 hours of the night, lowest 5 minutes)\n"); SimpleDateFormat f = new SimpleDateFormat("EEE d MMM", Locale.UK);
-            for (double[] x : r.nights) nl.append(f.format(new Date((long) x[0] * 1000L))).append(":  ").append(Double.isNaN(x[1]) ? "-" : String.format(Locale.UK, "%.0f", x[1])).append("  ").append(Double.isNaN(x[2]) ? "-" : String.format(Locale.UK, "%.0f", x[2])).append("  ").append(Double.isNaN(x[3]) ? "-" : String.format(Locale.UK, "%.0f", x[3])).append('\n');
+            StringBuilder nl = new StringBuilder("EVENING BUMP AND THE NIGHT AFTER (still heart rate: afternoon 12:00-17:59, evening 19:00 to 30 minutes before bed, bump = evening minus afternoon; then the first 3 hours of the night: heart rate, lowest 5 minutes, optical RMSSD; drinks you logged)\n"); SimpleDateFormat f = new SimpleDateFormat("EEE d MMM", Locale.UK);
+            for (double[] x : r.nights) {
+                nl.append(f.format(new Date((long) x[0] * 1000L))).append(":  aft ").append(fmt0(x[4])).append("  eve ").append(fmt0(x[1])).append("  bump ").append(Double.isNaN(x[1]) || Double.isNaN(x[4]) ? "-" : String.format(Locale.UK, "%+.0f", x[1] - x[4]))
+                  .append("  |  3h ").append(fmt0(x[2])).append("  low ").append(fmt0(x[3])).append("  HRV ").append(fmt0(x[5])).append("  |  drinks ").append(x[7] > 0 && x[6] == 0 ? "none (marked)" : x[6] > 0 ? String.valueOf((int) x[6]) : "-").append('\n');
+            }
             cd.addView(small(a, nl.toString().trim()), HeartGraph.lp(a, -1, -2, 10));
-            if (r.rhoN >= 6 && !Double.isNaN(r.rho)) cd.addView(body(a, String.format(Locale.UK, "Across %d nights, a higher evening still heart rate %s the first 3 hours of the night (rank correlation %+.2f). Small numbers, so a pointer rather than a proof. Evening heart rate reflects food, drink, stress and tiredness; the strap cannot tell which, so log the A drink and No alcohol today buttons below.", r.rhoN, r.rho >= 0.5 ? "went with a higher heart rate in" : r.rho <= -0.5 ? "went with a lower heart rate in" : "showed no clear link with", r.rho)), HeartGraph.lp(a, -1, -2, 8));
+            if (r.rhoBumpN >= 6 && !Double.isNaN(r.rhoBump)) cd.addView(body(a, String.format(Locale.UK, "Across %d evenings, a bigger evening bump %s the first 3 hours of the night (rank correlation %+.2f). The bump is a rough, objective stand-in for how much of the evening was drink, food and stress together; the buttons below keep your own log beside it.", r.rhoBumpN, r.rhoBump >= 0.5 ? "went with a higher heart rate in" : r.rhoBump <= -0.5 ? "went with a lower heart rate in" : "showed no clear link with", r.rhoBump)), HeartGraph.lp(a, -1, -2, 8));
+            if (r.rhoN >= 6 && !Double.isNaN(r.rho)) cd.addView(body(a, String.format(Locale.UK, "Evening still heart rate itself against the first 3 hours: rank correlation %+.2f (%d nights). Small numbers, a pointer rather than a proof.", r.rho, r.rhoN)), HeartGraph.lp(a, -1, -2, 8));
         }
     }
+
+    private static String fmt0(double v) { return Double.isNaN(v) ? "-" : String.format(Locale.UK, "%.0f", v); }
 
     /** Reads marker times (phone ms) of one kind from the day logger database. */
     static final class SQLiteHelper {

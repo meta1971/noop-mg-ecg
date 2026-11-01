@@ -2,6 +2,7 @@ package com.noop.mgecg;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -31,6 +32,7 @@ final class SleepNight {
         double coveragePct = 100.0;                           // records present over the seconds between bed and end
         double minStill, minWake, minUp;                      // minutes between bed and end in each non-SLEEP band state
         double[] hrByHour = new double[0];
+        double hrFirst3 = Double.NaN, hrLast3 = Double.NaN, rmFirst3 = Double.NaN, rmLast3 = Double.NaN;   // 0.33.0: heart rate (bpm) and optical RMSSD (ms) over the first and last 3 hours in bed
         double brMedian = Double.NaN;                         // breaths per minute, median of the clear 5-minute windows
         int brWindows;
         double[] brByHour = new double[0];
@@ -65,6 +67,19 @@ final class SleepNight {
         return a.length % 2 == 1 ? a[m] : (a[m - 1] + a[m]) / 2.0;
     }
 
+    private static double meanHr(List<byte[]> recs, long[] ts, int bed, int end, long from, long to) {
+        double sum = 0; int c = 0; for (int q = bed; q <= end; q++) { if (ts[q] < from || ts[q] >= to) continue; int h = R18Codec.hr(recs.get(q)); if (h > 30 && h < 200) { sum += h; c++; } }
+        return c >= 600 ? sum / c : Double.NaN;
+    }
+
+    /** Median optical RMSSD (ms) of the still 5-minute windows in [from, to), from the watch's window rule; NaN with fewer than 3 windows. */
+    private static double windowRmssd(List<byte[]> recs, long[] ts, int bed, int end, long from, long to) {
+        List<byte[]> sub = new ArrayList<>(); for (int q = bed; q <= end; q++) if (ts[q] >= from && ts[q] < to) sub.add(recs.get(q));
+        List<IrregularWatch.Win> w = IrregularWatch.windows(sub); List<Double> v = new ArrayList<>();
+        for (IrregularWatch.Win x : w) if (x.rest && x.hr > 0) v.add(x.nr * 60000.0 / x.hr);
+        if (v.size() < 3) return Double.NaN; Collections.sort(v); int m = v.size(); return m % 2 == 1 ? v.get(m / 2) : 0.5 * (v.get(m / 2 - 1) + v.get(m / 2));
+    }
+
     /** Records must be sorted by time and cover the night with a little margin either side. */
     static Night analyse(List<byte[]> recs) { return analyse(recs, 0L, 0L); }
 
@@ -96,6 +111,28 @@ final class SleepNight {
         nt.tibH = (ts[end] - ts[bed] + 1) / 3600.0;
         int asleep = 0;
         for (int k = bed; k <= end; k++) if (st[k] == 2) asleep++;
+        // 0.32.0: the band's SLEEP state alone undercounts (on 1 Nov it gave 7.25 h of a 9.11 h night although the only real wake was about 30 minutes at 02:30). A stretch of STILL or UP seconds
+        // between the first and the last SLEEP second counts as sleep when it is at most 30 minutes long, the wrist is quiet (5 % or less of its seconds moving) and its heart rate is within 6 bpm of
+        // the night's SLEEP median. Settling before the first SLEEP second and the last minutes are never credited.
+        double[] sh = new double[asleep]; int sc = 0;
+        for (int k = bed; k <= end && sc < sh.length; k++) if (st[k] == 2) { int h0 = R18Codec.hr(recs.get(k)); if (h0 > 0) sh[sc++] = h0; }
+        if (sc >= 600) {
+            double hrSleep = median(sh, 0, sc); int credit = 0;
+            int k2 = first;
+            while (k2 <= last) {
+                if (st[k2] != 2) {
+                    int j = k2; while (j + 1 <= last && st[j + 1] != 2) j++;
+                    int rl = j - k2 + 1;
+                    if (rl <= 1800 && ts[j] - ts[k2] <= 1800) {
+                        int mv = 0, nh = 0; double[] hh = new double[rl];
+                        for (int q = k2; q <= j; q++) { if (R18Codec.u8(recs.get(q), 63) > 0) mv++; int h1 = R18Codec.hr(recs.get(q)); if (h1 > 0) hh[nh++] = h1; }
+                        if (nh >= rl / 2 && mv <= 0.05 * rl && median(hh, 0, nh) <= hrSleep + 6.0) credit += rl;
+                    }
+                    k2 = j + 1;
+                } else k2++;
+            }
+            asleep += credit;
+        }
         nt.tstH = asleep / 3600.0;
         nt.effPct = 100.0 * nt.tstH / nt.tibH;
         nt.settleMin = (ts[first] - ts[bed]) / 60.0;
@@ -194,6 +231,11 @@ final class SleepNight {
             for (int q = 0; q < v.length; q++) { v[q] = vals.get(q); mn = Math.min(mn, vals.get(q)); }
             nt.b82Median = (int) Math.round(median(v, 0, v.length)); nt.b82Min = mn;
         }
+        try {                                                                // 0.33.0: first and last 3 hours of the night
+            long b3 = nt.bedTs + 3 * 3600L, e3 = nt.endTs - 3 * 3600L;
+            nt.hrFirst3 = meanHr(recs, ts, bed, end, nt.bedTs, b3); nt.hrLast3 = meanHr(recs, ts, bed, end, e3, nt.endTs + 1);
+            nt.rmFirst3 = windowRmssd(recs, ts, bed, end, nt.bedTs, b3); nt.rmLast3 = windowRmssd(recs, ts, bed, end, e3, nt.endTs + 1);
+        } catch (Throwable ignored) { }
         return nt;
     }
 

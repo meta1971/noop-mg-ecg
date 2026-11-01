@@ -578,6 +578,7 @@ final class PolarH10 {
         openLog();
         log("START pressed (" + (recordToFile ? "recording" : "preview only") + "), Android " + Build.VERSION.SDK_INT + ", saved address " + addr);
         DayLogService.start(app);
+        try { if (!btReceiverOn) { app.registerReceiver(btReceiver, new android.content.IntentFilter(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED)); btReceiverOn = true; } } catch (Throwable ignored) { }
         H.postDelayed(notifyTick, 15000L);
         H.postDelayed(watchdog, 2000L);
         set("starting: looking for your H10 (strap on skin, electrodes wet)");
@@ -1054,6 +1055,36 @@ final class PolarH10 {
         H.postDelayed(reconnect, status == 133 ? Math.min(30000L, 3000L + 4000L * attempts) : 3000L);
     }
 
+    // ------------------------------------------------------------------ 0.32.0: liveness check and Bluetooth state log
+    private static boolean btReceiverOn = false;
+    private static final android.content.BroadcastReceiver btReceiver = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(Context c, android.content.Intent i) {
+            try {
+                int s = i.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1), p = i.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_PREVIOUS_STATE, -1);
+                log("BLUETOOTH adapter state " + p + " -> " + s + " (10 off, 11 turning on, 12 on, 13 turning off, 14 BLE turning on, 15 BLE on, 16 BLE turning off)");
+                if (s == android.bluetooth.BluetoothAdapter.STATE_ON) {
+                    H.post(new Runnable() { @Override public void run() { synchronized (PolarH10.class) { if (wanted) { log("BLUETOOTH is back on: reconnecting"); onLost(-3); } } } });
+                }
+            } catch (Throwable ignored) { }
+        }
+    };
+
+    /** Called after every strap history pull (and by the user): when the H10 has been silent for 60 s or more while recording, drop the link and reconnect. Logs every check, with Doze state. */
+    public static void ensureAlive(final String why) {
+        H.post(new Runnable() { @Override public void run() {
+            synchronized (PolarH10.class) {
+                if (!wanted) return;
+                try {
+                    long now = System.currentTimeMillis(), since = lastFrameMs > 0 ? now - lastFrameMs : -1L; boolean idle = false;
+                    try { idle = ((android.os.PowerManager) app.getSystemService(Context.POWER_SERVICE)).isDeviceIdleMode(); } catch (Throwable ignored) { }
+                    String st = "ALIVE-CHECK (" + why + ") recording=" + recording + " last data " + (since < 0 ? "none yet" : (since / 1000) + " s ago") + " doze=" + idle;
+                    if (recording && gatt != null && since > 60000L) { log(st + ": silent, reconnecting"); lastKickMs = 0L; kickPending = false; onLost(-2); }
+                    else log(st);
+                } catch (Throwable t) { log("alive check error " + t); }
+            }
+        } });
+    }
+
     private static void failStop(String msg) {
         log("FAIL " + msg);
         wanted = false;
@@ -1066,6 +1097,7 @@ final class PolarH10 {
     private static void finishStop() {
         synchronized (PolarH10.class) {
             wanted = false; recording = false;
+            try { if (btReceiverOn && app != null) { app.unregisterReceiver(btReceiver); } } catch (Throwable ignored) { } btReceiverOn = false;
             closeGatt();
             closeEcgFile();
             try { if (rrW != null) { rrW.close(); } } catch (Throwable ignored) { } rrW = null;

@@ -160,6 +160,7 @@ final class DayLog {
                         addEvent(app, "ingest", lastIngestNote);
                     }
                     try { IrregularWatch.evaluate(app); } catch (Throwable ignored) { }      // 0.28.0: irregular rhythm watch after every ingest
+                    try { PolarH10.ensureAlive("strap history ingest"); } catch (Throwable ignored) { }      // 0.32.0: restart a silent H10 link after every pull
                 } catch (Throwable t) { lastIngestNote = "ingest error: " + t; }
             }
         });
@@ -227,6 +228,7 @@ final class DayLog {
         List<TodayModel.NightStat> out = new ArrayList<>();
         try {
             SQLiteDatabase d = db(c);
+            try { android.content.SharedPreferences mp = c.getApplicationContext().getSharedPreferences("daylog_meta", Context.MODE_PRIVATE); if (mp.getInt("night_rule", 0) < 2) { d.execSQL("DELETE FROM night_stats"); mp.edit().putInt("night_rule", 2).apply(); } } catch (Throwable ignored) { }     // 0.33.0: cached nights are rebuilt once with the new sleep-time rule
             Cursor q = d.rawQuery("SELECT ts FROM r18 WHERE state = 2 ORDER BY ts", null);
             List<Long> tl = new ArrayList<>();
             while (q.moveToNext()) tl.add(q.getLong(0));

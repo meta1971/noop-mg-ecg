@@ -868,6 +868,10 @@ public class HealthActivity extends Activity {
         kv(c, "In bed", hhmm(n.bedTs) + " to " + hhmm(n.endTs) + "  (" + HealthModel.hm(n.tibH) + ")");
         kv(c, "Asleep", HealthModel.hm(n.tstH) + (Double.isNaN(day.sleepPct) ? "" : "  (" + Math.round(day.sleepPct) + " % of your " + Math.round(day.sleepGoalH) + " h goal)"));
         kv(c, "Efficiency", Math.round(n.effPct) + " %");
+        kv(c, "Awake in bed (not counted as sleep)", HealthModel.hm(Math.max(0.0, n.tibH - n.tstH)) + "  (settling " + Math.round(n.settleMin) + " min, " + n.restless.size() + " restless spells)");        // 0.33.0
+        if (!Double.isNaN(n.hrFirst3) || !Double.isNaN(n.hrLast3)) kv(c, "Heart rate, first 3 h / last 3 h", (Double.isNaN(n.hrFirst3) ? "-" : String.valueOf(Math.round(n.hrFirst3))) + " / " + (Double.isNaN(n.hrLast3) ? "-" : String.valueOf(Math.round(n.hrLast3))) + " bpm");
+        if (!Double.isNaN(n.rmFirst3) || !Double.isNaN(n.rmLast3)) kv(c, "HRV (optical RMSSD), first 3 h / last 3 h", (Double.isNaN(n.rmFirst3) ? "-" : String.valueOf(Math.round(n.rmFirst3))) + " / " + (Double.isNaN(n.rmLast3) ? "-" : String.valueOf(Math.round(n.rmLast3))) + " ms");
+        note(c, "Asleep counts the strap's SLEEP state plus quiet STILL or UP stretches of 30 minutes or less inside the night (wrist still, heart rate within 6 bpm of your sleep rate). The stages below are a separate estimate and can differ by 20 to 30 minutes.");
         kv(c, "Time to settle", Math.round(n.settleMin) + " min");
         kv(c, "In bed but still / awake / up", Math.round(n.minStill) + " / " + Math.round(n.minWake) + " / " + Math.round(n.minUp) + " min");
         kv(c, "Restless spells", String.valueOf(n.restless.size()));
@@ -1283,6 +1287,7 @@ public class HealthActivity extends Activity {
             final java.io.File newest = d.readings.get(0).file;
             col.addView(pillButton("Professional PDF of the newest reading", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.make(HealthActivity.this, newest); } }), lp(-1, dpi(44), 12));        // 0.23.0
         }
+        col.addView(pillButton("Readings table: R, T, QTc and context", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) ReadingsTable.show(HealthActivity.this, data); } }), lp(-1, dpi(44), 8));      // 0.33.0
         col.addView(pillButton("Save the analysis code (Python and Java) to Downloads", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.saveCode(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.23.1
         col.addView(pillButton("Recover readings from the strap's stored data", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { StoredReading.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.25.1
         col.addView(pillButton("Blood pressure research capture", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { BpCapture.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.26.0
@@ -1413,6 +1418,8 @@ public class HealthActivity extends Activity {
             TextView lg = tv("Deep " + HealthModel.hmShort(d.stageSecs[HealthModel.DEEP]) + " \u00b7 REM " + HealthModel.hmShort(d.stageSecs[HealthModel.REM]) + " \u00b7 Light " + HealthModel.hmShort(d.stageSecs[HealthModel.LIGHT]) + " \u00b7 estimate", 12, MUT, 400);
             lg.setPadding(0, dpi(8), 0, 0);
             sh.addView(lg);
+            TextView sn = tv("Stages are an estimate from heart rate, movement and beat intervals. The asleep time above uses the strap's sleep state with quiet stretches credited, so the two can differ by 20 to 30 minutes.", 11.5f, MUT, 400);
+            sh.addView(sn, lp(-1, -2, 8));
         } else {
             sh.addView(tv("The night was too short to stage.", 13, MUT, 400), lp(-2, -2, 10));
         }
