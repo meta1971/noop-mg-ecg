@@ -163,6 +163,7 @@ final class Healthspan {
         LinearLayout btns = new LinearLayout(a); btns.setOrientation(LinearLayout.HORIZONTAL);
         TextView enter = HeartGraph.pill(a, "Enter VO2 max", 0x1AFFFFFF, INK), rock = HeartGraph.pill(a, "Rockport walk test", BLUE, 0xFF05131E);
         btns.addView(enter); LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-2, -2); rp.leftMargin = Math.round(dp(a, 10)); btns.addView(rock, rp);
+        TextView stepB = HeartGraph.pill(a, "Step test", 0x1AFFFFFF, INK); stepB.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { StepTest.show(a); } }); LinearLayout.LayoutParams sp2 = new LinearLayout.LayoutParams(-2, -2); sp2.leftMargin = Math.round(dp(a, 10)); btns.addView(stepB, sp2);
         col.addView(btns, HeartGraph.lp(a, -2, -2, 10));
 
         // what moves it

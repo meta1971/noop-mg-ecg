@@ -352,6 +352,9 @@ final class Backup {
     }
 
     /** Keeps the newest `keep` database and settings snapshots. */
+    /** 0.36.0: prune the database and settings snapshots to the chosen number now. */
+    static int pruneNow(Context c) { return prune(c, keep(c)); }
+
     private static int prune(Context c, int keep) {
         int n = 0;
         n += pruneSub(c, "db", keep);
@@ -383,7 +386,7 @@ final class Backup {
     // ================================================================ files (Android)
 
     /** Download/MGbackup/<sub>/<name> through MediaStore (survives an uninstall); the app's own folder before Android 10. */
-    private static Uri create(Context c, String sub, String name, String mime) throws Exception {
+    static Uri create(Context c, String sub, String name, String mime) throws Exception {
         if (Build.VERSION.SDK_INT >= 29) {
             ContentValues v = new ContentValues();
             v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
@@ -399,21 +402,21 @@ final class Backup {
         return Uri.fromFile(new File(dir, name));
     }
 
-    private static OutputStream open(Context c, Uri u, boolean truncate) throws Exception {
+    static OutputStream open(Context c, Uri u, boolean truncate) throws Exception {
         if ("file".equals(u.getScheme())) return new FileOutputStream(new File(u.getPath()), false);
         OutputStream os = c.getContentResolver().openOutputStream(u, truncate ? "wt" : "w");
         if (os == null) throw new Exception("could not open " + u);
         return os;
     }
 
-    private static void finish(Context c, Uri u) {
+    static void finish(Context c, Uri u) {
         if (!"content".equals(u.getScheme()) || Build.VERSION.SDK_INT < 29) return;
         ContentValues done = new ContentValues();
         done.put(MediaStore.MediaColumns.IS_PENDING, 0);
         try { c.getContentResolver().update(u, done, null, null); } catch (Throwable ignored) { }
     }
 
-    private static long sizeOf(Context c, Uri u) {
+    static long sizeOf(Context c, Uri u) {
         try {
             if ("file".equals(u.getScheme())) return new File(u.getPath()).length();
             Cursor q = c.getContentResolver().query(u, new String[] {MediaStore.MediaColumns.SIZE}, null, null, null);

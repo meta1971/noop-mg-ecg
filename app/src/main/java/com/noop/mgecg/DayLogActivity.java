@@ -1057,6 +1057,7 @@ final class PolarH10 {
 
     // ------------------------------------------------------------------ 0.32.0: liveness check and Bluetooth state log
     private static boolean btReceiverOn = false;
+    private static long aliveLogMs = 0L;
     private static final android.content.BroadcastReceiver btReceiver = new android.content.BroadcastReceiver() {
         @Override public void onReceive(Context c, android.content.Intent i) {
             try {
@@ -1079,7 +1080,7 @@ final class PolarH10 {
                     try { idle = ((android.os.PowerManager) app.getSystemService(Context.POWER_SERVICE)).isDeviceIdleMode(); } catch (Throwable ignored) { }
                     String st = "ALIVE-CHECK (" + why + ") recording=" + recording + " last data " + (since < 0 ? "none yet" : (since / 1000) + " s ago") + " doze=" + idle;
                     if (recording && gatt != null && since > 60000L) { log(st + ": silent, reconnecting"); lastKickMs = 0L; kickPending = false; onLost(-2); }
-                    else log(st);
+                    else if (now - aliveLogMs >= 600000L) { aliveLogMs = now; log(st); }           // 0.36.0: an ok check is logged at most every 10 minutes
                 } catch (Throwable t) { log("alive check error " + t); }
             }
         } });

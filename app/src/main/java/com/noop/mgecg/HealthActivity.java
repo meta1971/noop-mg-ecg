@@ -303,6 +303,7 @@ public class HealthActivity extends Activity {
 
     @Override protected void onActivityResult(int req, int res, final Intent data2) {
         super.onActivityResult(req, res, data2);
+        if (req == StorageScreen.REQ_RESTORE) { StorageScreen.onPicked(this, res, data2); return; }      // 0.36.0
         if (req != REQ_ZIP || res != RESULT_OK || data2 == null || data2.getData() == null) return;
         final android.net.Uri uri = data2.getData();
         final Context app = getApplicationContext();
@@ -1633,6 +1634,7 @@ public class HealthActivity extends Activity {
         exNote.setPadding(0, dpi(6), 0, 0);
         dt.addView(exNote);
         dt.addView(pillButton("Daily backup", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { BackupScreen.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));
+        dt.addView(pillButton("Storage: sizes, trim, one backup zip, restore", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { StorageScreen.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));      // 0.36.0
         TextView bkNote = tv("Copies all the app's data every day at a time you choose into Download/MGbackup.  Backup: " + Backup.shortStatus(this), 11.5f, MUT, 400);
         bkNote.setPadding(0, dpi(6), 0, 0);
         dt.addView(bkNote);

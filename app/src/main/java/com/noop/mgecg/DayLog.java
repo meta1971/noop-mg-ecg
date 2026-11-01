@@ -76,6 +76,9 @@ final class DayLog {
         }
     }
 
+    /** 0.36.0: closes the database handle (used before a restore replaces the file). */
+    static synchronized void closeDb() { try { if (helper != null) helper.close(); } catch (Throwable ignored) { } helper = null; }
+
     static synchronized SQLiteDatabase db(Context c) {
         if (helper == null) helper = new Helper(c);
         return helper.getWritableDatabase();
@@ -160,7 +163,8 @@ final class DayLog {
                         addEvent(app, "ingest", lastIngestNote);
                     }
                     try { IrregularWatch.evaluate(app); } catch (Throwable ignored) { }      // 0.28.0: irregular rhythm watch after every ingest
-                    try { PolarH10.ensureAlive("strap history ingest"); } catch (Throwable ignored) { }      // 0.32.0: restart a silent H10 link after every pull
+                    try { PolarH10.ensureAlive("strap history ingest"); } catch (Throwable ignored) { }
+                    try { StorageScreen.autoTrim(app); } catch (Throwable ignored) { }      // 0.36.0: optional nightly trim of old H10 ECG files      // 0.32.0: restart a silent H10 link after every pull
                 } catch (Throwable t) { lastIngestNote = "ingest error: " + t; }
             }
         });
