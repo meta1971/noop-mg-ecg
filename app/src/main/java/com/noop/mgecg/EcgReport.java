@@ -738,7 +738,7 @@ public final class EcgReport {
         b.append(prow("P wave", s.pPresent ? String.format(Locale.US, "%s &micro;V (%s)", sgn(s.pAmpUv), s.pAmpUv >= 0 ? "upright" : "inverted") : "not clear",
                 "presence and height only; start and end are approximate, duration is not reported (error 26 ms)"));
         b.append(prow("Q wave depth", f0(Math.abs(s.qUv)) + " &micro;V", "not checked"));
-        b.append(prow("R wave height", f0(s.rUv) + " &micro;V", "not checked; depends on the lead and on contact"));
+        b.append(prow("R wave height", f0(s.rUv) + " &micro;V", "not checked; depends on the lead and on contact. A wrist lead reads about 0.4 of the chest-lead R wave (middle half 0.3-0.5 in 51 healthy adults), and in one person it rose by about 30 microvolts for every hour since waking"));
         b.append(prow("S wave depth", f0(Math.abs(s.sUv)) + " &micro;V", "not checked"));
         b.append(prow("T wave", Double.isNaN(s.tAmpUv) ? no : String.format(Locale.US, "%s &micro;V (%s), %.0f%% of R", sgn(s.tAmpUv), s.tAmpUv >= 0 ? "upright" : "inverted", 100.0 * Math.abs(s.tOverR)),
                 "height not checked; peak time checked: typical error 8 ms"));
@@ -763,7 +763,7 @@ public final class EcgReport {
         b.append(prow("PR interval", s.prOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.prMs, s.prHwMs) : no, "typical error 10 ms, but about one in four values is off by more than 20 ms"));
         b.append(prow("QT interval", s.qtOk ? String.format(Locale.US, "%.0f ms (&plusmn;%.0f)", s.qtMs, s.qtHwMs) : no, qtBasis));
         if (s.qtOk) {
-            b.append(prow("QTc Fridericia", f0(s.qtcFMs) + " ms (&plusmn;" + f0(s.qtcFHwMs) + ")", "the most reliable across heart rates in a study of 22,000 healthy people"));
+            b.append(prow("QTc Fridericia", f0(s.qtcFMs) + " ms (&plusmn;" + f0(s.qtcFHwMs) + ")", "the most reliable across heart rates in a study of 22,000 healthy people. In 51 healthy adults measured with this same code, lead I (what a wrist gives) has a median of 400 ms, middle half 390-412 ms"));
             b.append(prow("QTc Bazett", f0(s.qtcBMs) + " ms", "over-corrects at higher heart rates"));
             b.append(prow("QTc Framingham", f0(s.qtcFraminghamMs) + " ms", "QT + 154 x (1 - RR in s)"));
             b.append(prow("QTc Hodges", f0(s.qtcHodgesMs) + " ms", "QT + 1.75 x (heart rate - 60)"));

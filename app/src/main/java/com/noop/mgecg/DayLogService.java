@@ -90,6 +90,7 @@ public class DayLogService extends Service {
         alive = true;
         bump(this, i == null ? "svc_restart" : "svc_start");
         ensureChannel(this);
+        try { IntakeNotifier.refresh(this); } catch (Throwable ignored) { }      // 0.38.0: the intake buttons come back after a restart
         Notification n = build(this);
         if (Build.VERSION.SDK_INT >= 29) startForeground(ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
         else startForeground(ID, n);

@@ -46,9 +46,13 @@ import static com.noop.mgecg.HealthViews.*;
 final class ReadingsTable {
     private ReadingsTable() {}
 
+    /** Your own R line from 23 flat-wrist readings (1 Nov 2026): R (uV) = LINE_A + LINE_B x hours since waking; leave-one-out error 61 uV. Personal to this person and this strap. */
+    static final double LINE_A = 450.0, LINE_B = 31.0;
+
     static final class Row {
         long ts; String grade = "-"; double hr = Double.NaN, rmssd = Double.NaN, dur = Double.NaN, R = Double.NaN, T = Double.NaN, P = Double.NaN, QRS = Double.NaN, QT = Double.NaN, QTcF = Double.NaN, ST = Double.NaN;
         double E = Double.NaN, steps1h = Double.NaN, still30 = Double.NaN, skin = Double.NaN, gravZ = Double.NaN, h10R = Double.NaN, clock = Double.NaN;
+        String tag = ""; double hoursAwake = Double.NaN, expectedR = Double.NaN, rVsLine = Double.NaN;      // 0.37.0: posture and strap position tag, hours since the last sleep second, your own line R = 450 + 31 x hours awake, the percent difference from it
     }
 
     // ------------------------------------------------------------------ report text
@@ -126,6 +130,9 @@ final class ReadingsTable {
                 }
             } finally { cu.close(); }
             r.steps1h = st1; r.still30 = tot > 300 ? (double) still / tot : Double.NaN; r.skin = median(sk); r.gravZ = median(gz);
+            try { Cursor sc = DayLog.db(c).rawQuery("SELECT MAX(ts) FROM r18 WHERE state = 2 AND ts BETWEEN ? AND ?", new String[] { String.valueOf(r.ts - 30L * 3600L), String.valueOf(r.ts) });
+                try { if (sc.moveToFirst() && !sc.isNull(0)) { double h = (r.ts - sc.getLong(0)) / 3600.0; if (h >= 0 && h <= 30) r.hoursAwake = h; } } finally { sc.close(); } } catch (Throwable ignored) { }
+            if (!Double.isNaN(r.hoursAwake)) { r.expectedR = LINE_A + LINE_B * r.hoursAwake; if (!Double.isNaN(r.R)) r.rVsLine = 100.0 * (r.R / r.expectedR - 1.0); }
             Cursor ec = DayLog.db(c).rawQuery("SELECT inner FROM strap_events WHERE id = 118 AND ts BETWEEN ? AND ? ORDER BY ts LIMIT 1", new String[] { String.valueOf(r.ts), String.valueOf(r.ts + 900L) });
             try { if (ec.moveToFirst()) { String hex = ec.getString(0); if (hex != null && hex.length() >= 80) { int e = Integer.parseInt(hex.substring(34, 36), 16) | (Integer.parseInt(hex.substring(36, 38), 16) << 8); if (e > 0 && e < 5000) r.E = e; } } } finally { ec.close(); }
         } catch (Throwable ignored) { }
@@ -139,7 +146,7 @@ final class ReadingsTable {
             String n = rd.file.getName(); long ts; try { ts = Long.parseLong(n.substring("ecg_report_".length(), n.length() - ".html".length())); } catch (Exception e) { continue; }
             Row r = new Row(); r.ts = ts; fromText(r, plain(rd.file)); if (Double.isNaN(r.hr)) { r.hr = parse(rd.hr); } if (Double.isNaN(r.rmssd)) { r.rmssd = parse(rd.hrv); } if (r.grade.equals("-")) r.grade = rd.grade;
             cal.setTimeInMillis(ts * 1000L); r.clock = cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60.0;
-            context(c, r); if (dir != null) r.h10R = h10R(dir, ts, Double.isNaN(r.dur) ? 120 : r.dur);
+            context(c, r); if (dir != null) { r.h10R = h10R(dir, ts, Double.isNaN(r.dur) ? 120 : r.dur); r.tag = ReadingTag.forReading(dir, ts); }
             out.add(r);
         }
         return out;
@@ -147,9 +154,9 @@ final class ReadingsTable {
     private static double parse(String s) { return grab(s == null ? "" : s, "(\\d+(?:\\.\\d+)?)"); }
 
     static String csv(List<Row> rows) {
-        StringBuilder sb = new StringBuilder("time_local,grade,duration_s,hr,rmssd_ms,R_uV,T_uV,P_uV,QRS_ms,QT_ms,QTc_fridericia_ms,ST_uV,strap_E_uV,steps_previous_hour,still_share_previous_30min,skin_c,gravity_z,h10_R_uV,strap_over_h10\n");
+        StringBuilder sb = new StringBuilder("time_local,grade,duration_s,hr,rmssd_ms,R_uV,T_uV,P_uV,QRS_ms,QT_ms,QTc_fridericia_ms,ST_uV,strap_E_uV,steps_previous_hour,still_share_previous_30min,skin_c,gravity_z,h10_R_uV,strap_over_h10,tag,hours_awake,expected_R_uV_your_line,R_vs_line_pct\n");
         SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.UK);
-        for (Row r : rows) sb.append(f.format(new Date(r.ts * 1000L))).append(',').append(r.grade).append(',').append(c0(r.dur)).append(',').append(c0(r.hr)).append(',').append(c0(r.rmssd)).append(',').append(c0(r.R)).append(',').append(c0(r.T)).append(',').append(c0(r.P)).append(',').append(c0(r.QRS)).append(',').append(c0(r.QT)).append(',').append(c0(r.QTcF)).append(',').append(c0(r.ST)).append(',').append(c0(r.E)).append(',').append(c0(r.steps1h)).append(',').append(c2(r.still30)).append(',').append(c1(r.skin)).append(',').append(c2(r.gravZ)).append(',').append(c0(r.h10R)).append(',').append(Double.isNaN(r.R) || Double.isNaN(r.h10R) ? "" : String.format(Locale.US, "%.2f", r.R / r.h10R)).append('\n');
+        for (Row r : rows) sb.append(f.format(new Date(r.ts * 1000L))).append(',').append(r.grade).append(',').append(c0(r.dur)).append(',').append(c0(r.hr)).append(',').append(c0(r.rmssd)).append(',').append(c0(r.R)).append(',').append(c0(r.T)).append(',').append(c0(r.P)).append(',').append(c0(r.QRS)).append(',').append(c0(r.QT)).append(',').append(c0(r.QTcF)).append(',').append(c0(r.ST)).append(',').append(c0(r.E)).append(',').append(c0(r.steps1h)).append(',').append(c2(r.still30)).append(',').append(c1(r.skin)).append(',').append(c2(r.gravZ)).append(',').append(c0(r.h10R)).append(',').append(Double.isNaN(r.R) || Double.isNaN(r.h10R) ? "" : String.format(Locale.US, "%.2f", r.R / r.h10R)).append(',').append(r.tag.replace(',', ' ')).append(',').append(c1(r.hoursAwake)).append(',').append(c0(r.expectedR)).append(',').append(c1(r.rVsLine)).append('\n');
         return sb.toString();
     }
     private static String c0(double v) { return Double.isNaN(v) ? "" : String.format(Locale.US, "%.0f", v); }
@@ -193,6 +200,9 @@ final class ReadingsTable {
         double[] x = new double[n], rr = new double[n], ee = new double[n], tt = new double[n]; for (int i = 0; i < n; i++) { Row r = rows.get(i); x[i] = r.clock; rr[i] = r.R; ee[i] = r.E; tt[i] = r.T; }
         Scatter s1 = new Scatter(a); s1.set(x, new double[][] { rr, ee, tt }, new int[] { ROSE, BLUE, GOLD }); col.addView(s1, HeartGraph.lp(a, -1, Math.round(dp(a, 150)), 12));
         col.addView(HeartGraph.label(a, "Rose: R (report). Blue: E (strap). Gold: T wave. By clock hour, uV.", 12, MUT, 400), HeartGraph.lp(a, -1, -2, 4));
+        double[] ha = new double[n]; for (int i = 0; i < n; i++) ha[i] = rows.get(i).hoursAwake; int nh2 = 0; for (double v : ha) if (!Double.isNaN(v)) nh2++;
+        if (nh2 >= 5) { double[] line = new double[n]; for (int i = 0; i < n; i++) line[i] = Double.isNaN(ha[i]) ? Double.NaN : LINE_A + LINE_B * ha[i]; Scatter s4 = new Scatter(a); s4.set(ha, new double[][] { rr, line }, new int[] { ROSE, GREEN }); col.addView(s4, HeartGraph.lp(a, -1, Math.round(dp(a, 130)), 12));
+            col.addView(HeartGraph.label(a, "Rose: R against hours since you last slept (x axis 0-24 h). Green: your line, R = 450 + 31 x hours awake.", 12, MUT, 400), HeartGraph.lp(a, -1, -2, 4)); }
         double[] hx = new double[n], hy = new double[n], hr = new double[n]; int nh = 0; for (int i = 0; i < n; i++) { Row r = rows.get(i); hx[i] = r.clock; hy[i] = r.h10R; hr[i] = (Double.isNaN(r.R) || Double.isNaN(r.h10R)) ? Double.NaN : 1000.0 * r.R / r.h10R; if (!Double.isNaN(r.h10R)) nh++; }
         if (nh >= 3) { Scatter s2 = new Scatter(a); s2.set(hx, new double[][] { hy, hr }, new int[] { GREEN, ROSE }); col.addView(s2, HeartGraph.lp(a, -1, Math.round(dp(a, 120)), 12));
             col.addView(HeartGraph.label(a, "Green: H10 chest R (uV). Rose: strap R divided by H10 R, x1000. " + nh + " readings with an H10 file.", 12, MUT, 400), HeartGraph.lp(a, -1, -2, 4)); }
@@ -203,10 +213,10 @@ final class ReadingsTable {
         // the rows
         SimpleDateFormat f = new SimpleDateFormat("EEE d MMM HH:mm", Locale.UK); StringBuilder sb = new StringBuilder();
         for (Row r : rows) {
-            sb.append(f.format(new Date(r.ts * 1000L))).append("  ").append(r.grade).append("  HR ").append(fmt(r.hr, "%.0f")).append("  RMSSD ").append(fmt(r.rmssd, "%.0f")).append('\n')
+            sb.append(f.format(new Date(r.ts * 1000L))).append("  ").append(r.grade).append(r.tag.length() > 0 ? "  [" + r.tag + "]" : "").append("  HR ").append(fmt(r.hr, "%.0f")).append("  RMSSD ").append(fmt(r.rmssd, "%.0f")).append('\n')
               .append("   R ").append(fmt(r.R, "%.0f")).append("  T ").append(fmt(r.T, "%.0f")).append("  P ").append(fmt(r.P, "%.0f")).append("  QRS ").append(fmt(r.QRS, "%.0f")).append("  QTc ").append(fmt(r.QTcF, "%.0f")).append("  ST ").append(fmt(r.ST, "%+.0f"))
               .append("  E ").append(fmt(r.E, "%.0f")).append("  H10 R ").append(fmt(r.h10R, "%.0f")).append(Double.isNaN(r.R) || Double.isNaN(r.h10R) ? "" : String.format(Locale.UK, " (%.2f)", r.R / r.h10R)).append('\n')
-              .append("   steps 1 h ").append(fmt(r.steps1h, "%.0f")).append("  still ").append(fmt(r.still30, "%.2f")).append("  skin ").append(fmt(r.skin, "%.1f")).append("  gz ").append(fmt(r.gravZ, "%.2f")).append("\n\n");
+              .append("   steps 1 h ").append(fmt(r.steps1h, "%.0f")).append("  still ").append(fmt(r.still30, "%.2f")).append("  skin ").append(fmt(r.skin, "%.1f")).append("  gz ").append(fmt(r.gravZ, "%.2f")).append("\n   awake ").append(fmt(r.hoursAwake, "%.1f")).append(" h  your line ").append(fmt(r.expectedR, "%.0f")).append("  R vs line ").append(fmt(r.rVsLine, "%+.0f")).append(" %\n\n");
         }
         TextView tv = HeartGraph.label(a, sb.toString().trim(), 11, MUT, 400); tv.setTypeface(android.graphics.Typeface.MONOSPACE); tv.setLineSpacing(0, 1.1f); col.addView(tv, HeartGraph.lp(a, -1, -2, 6));
         TextView ex = HeartGraph.pill(a, "Export the table as a CSV (Download/MGreports)", BLUE, 0xFF05131E);

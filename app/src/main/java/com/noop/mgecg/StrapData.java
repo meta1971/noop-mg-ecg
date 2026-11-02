@@ -386,6 +386,7 @@ final class StrapData {
                     st.add(Math.min(2, st.size()), row("STATUS", "Logger service", DayLogService.alive ? "running" : (DayLog.enabled(a) ? "NOT running" : "off"),
                             "The foreground service (the \"MG day logger\" notification) is what stops Android ending the app when you swipe it away. After an app update or a restart it must be started again; the app now does that when it opens."));
                     st.add(Math.min(3, st.size()), row("STATUS", "Daily backup", Backup.shortStatus(a), Backup.statusText(a)));
+                    try { String[] ch = ChargeLog.summary(a); st.add(Math.min(4, st.size()), row("STATUS", "Charging", ch[0], ch[1])); } catch (Throwable ignored) { }      // 0.38.0: charge sessions from events 7, 8 and 117
                     {   // 0.19.3: out of range summary from the strap's own connection events
                         long nowS = System.currentTimeMillis() / 1000L;
                         java.util.List<long[]> evs = new java.util.ArrayList<>();

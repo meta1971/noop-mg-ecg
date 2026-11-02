@@ -746,14 +746,25 @@ public class NewLookActivity extends Activity {
             LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, dp(40), 1f); tlp.rightMargin = dp(4); tlp.bottomMargin = dp(4); (i < 3 ? tagRow : tagRow2).addView(c, tlp); }
         col.addView(tagRow, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
         col.addView(tagRow2, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
+        // 0.37.0: where the strap is (leave all off for the wrist); noted with the posture tag as "Table @ Chest V5"
+        final String[] posNames = {"Chest V2", "Chest V4", "Chest V5", "Chest V6", "Bicep L", "Bicep R"}; posChips = new Button[posNames.length];
+        TextView posLabel = tv("Strap position (all off = wrist)", 11, MUTED, true); posLabel.setGravity(Gravity.CENTER); col.addView(posLabel, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout posRow = new LinearLayout(this); posRow.setOrientation(LinearLayout.HORIZONTAL); LinearLayout posRow2 = new LinearLayout(this); posRow2.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < posNames.length; i++) { final int k = i; Button c = pillButton(posNames[i], CARD, MUTED); c.setTextSize(11); posChips[i] = c;
+            c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { positionTag = positionTag.equals(posNames[k]) ? "" : posNames[k]; for (int j = 0; j < posChips.length; j++) posChips[j].setBackground(round(posNames[j].equals(positionTag) ? PRIMARY : CARD, 22)); } });
+            LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, dp(40), 1f); plp.rightMargin = dp(4); plp.bottomMargin = dp(4); (i < 3 ? posRow : posRow2).addView(c, plp); }
+        col.addView(posRow, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2)); col.addView(posRow2, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
         // 0.27.0: live signal light and auto-stop
         qualityView = tv("", 13, MUTED, true); qualityView.setGravity(Gravity.CENTER); qualityView.setPadding(dp(10), dp(8), dp(10), dp(8)); qualityView.setVisibility(View.GONE);
         col.addView(qualityView, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
         final android.content.SharedPreferences ecp = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
-        autoChip = pillButton(autoLabel(ecp.getBoolean("auto_stop", true)), CARD, MUTED); autoChip.setTextSize(11);
-        autoChip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ecp.getBoolean("auto_stop", true); ecp.edit().putBoolean("auto_stop", on).apply(); autoChip.setText(autoLabel(on)); } });
+        autoChip = pillButton(autoLabel(ecp.getBoolean("auto_stop", true), autoTarget()), CARD, MUTED); autoChip.setTextSize(11);
+        autoChip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ecp.getBoolean("auto_stop", true); ecp.edit().putBoolean("auto_stop", on).apply(); autoChip.setText(autoLabel(on, autoTarget())); } });
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(-1, dp(40)); alp.topMargin = dp(4); alp.bottomMargin = dp(4);
         col.addView(autoChip, col.indexOfChild(ecgStartBtn), alp);
+        targetChip = pillButton("Report quality target: " + String.format(java.util.Locale.UK, "%.0f", autoTarget()) + " uV (tap: 3, 4, 5)", CARD, MUTED); targetChip.setTextSize(11);
+        targetChip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { double t = autoTarget(); double nt = t < 3.5 ? 4.0 : t < 4.5 ? 5.0 : 3.0; ecp.edit().putFloat("auto_target", (float) nt).apply(); targetChip.setText("Report quality target: " + String.format(java.util.Locale.UK, "%.0f", nt) + " uV (tap: 3, 4, 5)"); autoChip.setText(autoLabel(ecp.getBoolean("auto_stop", true), nt)); } });
+        LinearLayout.LayoutParams tcp = new LinearLayout.LayoutParams(-1, dp(40)); tcp.bottomMargin = dp(4); col.addView(targetChip, col.indexOfChild(ecgStartBtn), tcp);
 
         // markers folded away (still work when opened)
         markViews = new View[]{markLabel, markRow1, markRow2, cuff};
@@ -806,8 +817,10 @@ public class NewLookActivity extends Activity {
     // 0.25.1: a short buzz and a note when the fingers come off the clasp during a reading, or when there is no contact after 14 s
     private int lastWarnRun; private boolean warnedNoContact; private String readingTag = ""; private Button[] tagChips;
     private TextView qualityView; private Button autoChip; private boolean autoStopped;
-    static final double AUTO_TARGET_UV = 3.0; static final long AUTO_MIN_MS = 60000L, AUTO_MAX_MS = 300000L;
-    private static String autoLabel(boolean on) { return on ? "Auto-stop ON: stops when report quality is reached (3 uV, 1 to 5 min)" : "Auto-stop OFF: you stop the reading"; }
+    static final double AUTO_TARGET_DEFAULT = 4.0; static final long AUTO_MIN_MS = 60000L, AUTO_MAX_MS = 300000L;      // 0.37.0: the target is a setting (3, 4 or 5 uV; default 4: from 38 reports it halves the sitting time and the ST / QT spread grows from +/-3 to +/-4 uV and +/-3 to +/-5 ms)
+    private double autoTarget() { double t = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getFloat("auto_target", (float) AUTO_TARGET_DEFAULT); return t < 2.5 ? 3.0 : t > 4.5 ? 5.0 : t > 3.5 ? 4.0 : 3.0; }
+    private static String autoLabel(boolean on, double tgt) { return on ? String.format(java.util.Locale.UK, "Auto-stop ON: stops when report quality reaches %.0f uV (1 to 5 min). Tap the next button to change the target", tgt) : "Auto-stop OFF: you stop the reading"; }
+    private Button targetChip; private String positionTag = ""; private Button[] posChips;
     /** 0.27.0: the signal light. Thresholds from 20 readings: live noise 13 to 52 uV (report noise per beat 19 to 63). */
     private void updateQuality(boolean running, boolean live) {
         if (qualityView == null) return;
@@ -820,16 +833,16 @@ public class NewLookActivity extends Activity {
         else if (nz <= 25) { txt = "\u25cf  Signal good: stay as you are"; col = 0xFF3FB950; }
         else if (nz <= 38) { txt = "\u25cf  Signal fair: relax your hand, keep still"; col = 0xFFD4A72C; }
         else { txt = "\u25cf  Signal noisy: rest your forearm on the table, keep still"; col = 0xFFE5534B; }
-        if (!Double.isNaN(est)) txt += String.format(java.util.Locale.UK, "\nReport quality so far %.1f uV (aim 3.0 or lower)  \u00b7  %d clean s", est, Live500.cleanSec);
+        if (!Double.isNaN(est)) txt += String.format(java.util.Locale.UK, "\nReport quality so far %.1f uV (aim %.0f or lower)  \u00b7  %d clean s", est, autoTarget(), Live500.cleanSec);
         {   int pr = Live500.lastProgress, cd = Live500.lastCode;      // 0.27.1: the strap's own classifier, as it runs
             if (cd != 0 && pr == 100) txt += "\nStrap's own check (research): " + StrapVerdict.describe(cd, Live500.lastAvgHr, Live500.lastMask);
             else if (pr <= 100) txt += "\nStrap's own check: analysing " + pr + " %" + (Live500.lastMask != 0 ? " (" + StrapVerdict.reasons(Live500.lastMask) + ")" : "");
         }
         qualityView.setText(txt); qualityView.setTextColor(col);
         boolean auto = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("auto_stop", true);
-        if (auto && !autoStopped && el > AUTO_MIN_MS && ((!Double.isNaN(est) && est <= AUTO_TARGET_UV) || el > AUTO_MAX_MS)) {
+        if (auto && !autoStopped && el > AUTO_MIN_MS && ((!Double.isNaN(est) && est <= autoTarget()) || el > AUTO_MAX_MS)) {
             autoStopped = true;
-            try { Toast.makeText(this, el > AUTO_MAX_MS && (Double.isNaN(est) || est > AUTO_TARGET_UV) ? "Stopped at 5 minutes (report quality " + (Double.isNaN(est) ? "-" : String.format(java.util.Locale.UK, "%.1f", est)) + " uV)" : "Report quality reached: reading stopped", Toast.LENGTH_LONG).show(); ecgStartBtn.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { }
+            try { Toast.makeText(this, el > AUTO_MAX_MS && (Double.isNaN(est) || est > autoTarget()) ? "Stopped at 5 minutes (report quality " + (Double.isNaN(est) ? "-" : String.format(java.util.Locale.UK, "%.1f", est)) + " uV)" : "Report quality reached: reading stopped", Toast.LENGTH_LONG).show(); ecgStartBtn.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { }
             if (ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP")) ecgStartBtn.performClick();
         }
     }
@@ -908,7 +921,7 @@ public class NewLookActivity extends Activity {
             if (!running && prevRs == 1) { FrameMonitor.captureWindow(System.currentTimeMillis() + 150000L); ui.postDelayed(new Runnable() { @Override public void run() { maybeStopH10(); } }, 6000L); }       // 0.23.0: the H10 stops a few seconds after the reading
             ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
             if (running && readingTag.isEmpty()) toast("Tip: tag where you sit (Table, Couch, ...). Position changes the height of your R wave, so tagged readings compare fairly.");      // 0.27.2
-            if (running) { ReadingTag.note(getExternalFilesDir(null), readingTag); FrameMonitor.captureReset(); FrameMonitor.captureWindow(System.currentTimeMillis() + 20 * 60 * 1000L); Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; autoStopped = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
+            if (running) { ReadingTag.note(getExternalFilesDir(null), readingTag + (positionTag.isEmpty() ? "" : (readingTag.isEmpty() ? "" : " ") + "@ " + positionTag)); FrameMonitor.captureReset(); FrameMonitor.captureWindow(System.currentTimeMillis() + 20 * 60 * 1000L); Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; autoStopped = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
             if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
             if (running && packetsView != null && packetsView.getVisibility() != View.VISIBLE
                     && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_packets_open", true)) openPackets(true);

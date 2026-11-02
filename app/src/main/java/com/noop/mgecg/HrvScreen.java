@@ -136,6 +136,16 @@ final class HrvScreen {
             a.runOnUiThread(new Runnable() { @Override public void run() { try { fillH10(a, h10Card, h10Status, r); } catch (Throwable ignored) { } } });
         } }, "h10-hrv").start();
 
+        // ---- MG calibrations from the other devices (read off the main thread)
+        final LinearLayout mcCard = card(a); mcCard.addView(head(a, "MG CALIBRATIONS (fitted against Helio, WHOOP 5 and the H10)"));
+        final TextView mcStatus = body(a, "Reading the last week..."); mcCard.addView(mcStatus, HeartGraph.lp(a, -1, -2, 8)); col.addView(mcCard, HeartGraph.lp(a, -1, -2, 12));
+        final List<TodayModel.NightStat> mcNights = new ArrayList<TodayModel.NightStat>(d.nights);
+        new Thread(new Runnable() { @Override public void run() {
+            MgCalibrations.Result r0 = null; try { r0 = MgCalibrations.compute(a, mcNights); } catch (Throwable ignored) { }
+            final MgCalibrations.Result r = r0;
+            a.runOnUiThread(new Runnable() { @Override public void run() { try { fillCal(a, mcCard, mcStatus, r); } catch (Throwable ignored) { } } });
+        } }, "mg-calibrations").start();
+
         // ---- readings table entry
         LinearLayout rc = card(a); rc.addView(head(a, "YOUR READINGS"));
         rc.addView(small(a, "Every saved ECG reading with R, T, P, QRS, QTc, ST, the strap's own amplitude, and what the strap recorded around it, plotted against the clock hour. One CSV export."), HeartGraph.lp(a, -1, -2, 6));
@@ -194,6 +204,14 @@ final class HrvScreen {
         pa.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { DayLog.addEvent(a, "marker", "alcohol"); Toast.makeText(a, "Drink logged", Toast.LENGTH_SHORT).show(); rebuild.run(); } });
         pn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { DayLog.addEvent(a, "marker", "no_alcohol"); Toast.makeText(a, "Alcohol-free day logged", Toast.LENGTH_SHORT).show(); rebuild.run(); } });
         pr.addView(pa); LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-2, -2); pp.leftMargin = Math.round(dp(a, 10)); pr.addView(pn, pp); c5.addView(pr, HeartGraph.lp(a, -2, -2, 12));
+        LinearLayout pr2 = new LinearLayout(a); pr2.setOrientation(LinearLayout.HORIZONTAL);        // 0.38.0: carbohydrate meals and caffeine, with the time, beside the drinks
+        TextView pc = HeartGraph.pill(a, "Carb meal", 0x1AFFFFFF, INK), pf = HeartGraph.pill(a, "Caffeine", 0x1AFFFFFF, INK);
+        pc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { DayLog.addEvent(a, "marker", "carb_meal"); Toast.makeText(a, "Carb meal logged", Toast.LENGTH_SHORT).show(); IntakeNotifier.refresh(a); rebuild.run(); } });
+        pf.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { DayLog.addEvent(a, "marker", "caffeine"); Toast.makeText(a, "Caffeine logged", Toast.LENGTH_SHORT).show(); IntakeNotifier.refresh(a); rebuild.run(); } });
+        pr2.addView(pc); pr2.addView(pf, pp); c5.addView(pr2, HeartGraph.lp(a, -2, -2, 10));
+        c5.addView(small(a, IntakeNotifier.todayLine(a)), HeartGraph.lp(a, -1, -2, 6));
+        final TextView pt = HeartGraph.pill(a, IntakeNotifier.on(a) ? "Notification buttons: ON (tap to turn off)" : "Notification buttons: off (tap to turn on)", 0x1AFFFFFF, INK);
+        pt.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { IntakeNotifier.set(a, !IntakeNotifier.on(a)); rebuild.run(); } }); c5.addView(pt, HeartGraph.lp(a, -2, -2, 8));
         c5.addView(small(a, "A fair two-week check: alternate evenings with and without, log each one, and read the comparison above. This is your own data, not medical advice."), HeartGraph.lp(a, -1, -2, 8));
         col.addView(c5, HeartGraph.lp(a, -1, -2, 12));
 
@@ -234,6 +252,19 @@ final class HrvScreen {
             + "Autonomic and perceptual responses to induction of a ketogenic diet in free-living endurance athletes: a randomized, crossover trial. Int J Sports Physiol Perform 2021;16:1603-9.\n"
             + "On this strap: 31 Oct 2026 analysis of 24 saved ECG readings, 9 raw readings, 10 days of per-second records and 5 H10 recordings; see the decode log, section 101."), HeartGraph.lp(a, -1, -2, 8));
         col.addView(c7, HeartGraph.lp(a, -1, -2, 12));
+    }
+
+    private static void fillCal(Activity a, LinearLayout card, TextView status, MgCalibrations.Result r) {
+        if (r == null) { status.setText("Could not read the records."); return; } card.removeView(status); SimpleDateFormat f = new SimpleDateFormat("EEE d MMM", Locale.UK);
+        StringBuilder st = new StringBuilder("STEPS A DAY: the wrist counter, then weighted by how steady the walking was (the Helio and the WHOOP 5 on your arms agree with the weighted figure within about 15 %)\n");
+        for (MgCalibrations.Day dy : r.days) st.append(f.format(new Date(dy.dayStart * 1000L))).append(":  ").append(String.format(Locale.UK, "%,.0f", dy.raw)).append(" -> ").append(String.format(Locale.UK, "%,.0f", dy.corrected)).append('\n');
+        card.addView(small(a, st.toString().trim()), HeartGraph.lp(a, -1, -2, 8));
+        StringBuilder hv = new StringBuilder("NIGHTS, HRV: optical RMSSD in the first 3 h, then the ECG-equivalent estimate (still, pulse-locked windows; error about 11 % against the H10), and the ECG-equivalent in the last 3 h\n");
+        for (MgCalibrations.NightH h : r.nights) hv.append(f.format(new Date(h.bed * 1000L))).append(":  ").append(Double.isNaN(h.rawFirst3) ? "-" : String.format(Locale.UK, "%.0f", h.rawFirst3)).append(" -> ").append(Double.isNaN(h.eqFirst3) ? "-" : String.format(Locale.UK, "%.0f", h.eqFirst3)).append("  |  ").append(Double.isNaN(h.eqLast3) ? "-" : String.format(Locale.UK, "%.0f", h.eqLast3)).append(" ms\n");
+        card.addView(small(a, hv.toString().trim()), HeartGraph.lp(a, -1, -2, 8));
+        String hr = r.sustainedMin24 == 0 ? "HEART RATE: no sustained walking (100 or more steps a minute) in the last 24 hours." : String.format(Locale.UK, "HEART RATE: %d minutes of sustained walking in the last 24 hours; the pulse lock was lost in %d of them and the strap read a median of %.0f bpm there. In sustained walking the strap read about 24 bpm too high against the H10 (1 Nov), so use the H10 for those minutes.", r.sustainedMin24, r.sustainedLost24, r.sustainedHr24);
+        card.addView(body(a, hr), HeartGraph.lp(a, -1, -2, 6));
+        card.addView(small(a, "Personal to this strap and this week of data; a second opinion beside the raw numbers, not a replacement."), HeartGraph.lp(a, -1, -2, 4));
     }
 
     private static void fillH10(Activity a, LinearLayout card, TextView status, H10Hrv.Result r) {

@@ -13,6 +13,8 @@ public class DayLogReceiver extends BroadcastReceiver {
             DayLogService.refresh(c);
         } else if (DayLogService.ACTION_PULL.equals(a)) {
             MainActivity.requestPull();
+        } else if (IntakeNotifier.kindOf(a) != null) {          // 0.38.0: Drink, Carb meal, Caffeine from the intake notification
+            IntakeNotifier.onAction(c, a);
         }
     }
 }
