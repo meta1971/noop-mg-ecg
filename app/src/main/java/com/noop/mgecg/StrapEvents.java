@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.13.0 (26 Oct): every strap event kept in the day-log database, and the ECG end-of-reading events decoded as they arrive. Research only.
+// FILE VERSION 0.39.0 (3 Nov): event 63 (extended battery) now kept for the Strap data screen; raw 118 / 119 bodies read back for the ECG report. 0.13.0 (26 Oct): every strap event kept in the day-log database, and the ECG end-of-reading events decoded as they arrive. Research only.
 
 import android.content.Context;
 import android.database.Cursor;
@@ -48,7 +48,7 @@ final class StrapEvents {
     }
 
     /** Events too frequent to keep (they stay in the text log). */
-    static boolean skip(int id) { return id == 3 || id == 63 || id == 110 || id == 120 || id == 124; }          // 0.16.0: 29 (condition report, every 10 min) and 109 (battery pack) are now decoded and kept
+    static boolean skip(int id) { return id == 3 || id == 110 || id == 120 || id == 124; }          // 0.16.0: 29 (condition report, every 10 min) and 109 (battery pack) are now decoded and kept
 
     static int u8(byte[] b, int o) { return b[o] & 0xff; }
     static int u16(byte[] b, int o) { return (b[o] & 0xff) | ((b[o + 1] & 0xff) << 8); }
@@ -154,6 +154,36 @@ final class StrapEvents {
             q.close();
         } catch (Throwable ignored) { }
         return out;
+    }
+
+    /** 0.39.0: inner bodies of one event id with strap time in [fromSec, toSec], oldest first. Each entry {ts} plus the bytes. */
+    static final class Raw { long ts; byte[] in; }
+    static List<Raw> raw(Context c, int id, long fromSec, long toSec, int limit) {
+        List<Raw> out = new ArrayList<>();
+        try {
+            SQLiteDatabase d = DayLog.db(c);
+            ensure(d);
+            Cursor q = d.rawQuery("SELECT ts, inner FROM strap_events WHERE id = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT " + limit,
+                    new String[] {String.valueOf(id), String.valueOf(fromSec), String.valueOf(toSec)});
+            try { while (q.moveToNext()) { Raw r = new Raw(); r.ts = q.getLong(0); r.in = unhex(q.getString(1)); out.add(r); } } finally { q.close(); }
+        } catch (Throwable ignored) { }
+        return out;
+    }
+    /** 0.39.0: the newest stored body of one event id, or null. */
+    static Raw newest(Context c, int id) {
+        try {
+            SQLiteDatabase d = DayLog.db(c);
+            ensure(d);
+            Cursor q = d.rawQuery("SELECT ts, inner FROM strap_events WHERE id = ? ORDER BY ts DESC LIMIT 1", new String[] {String.valueOf(id)});
+            try { if (q.moveToFirst()) { Raw r = new Raw(); r.ts = q.getLong(0); r.in = unhex(q.getString(1)); return r; } } finally { q.close(); }
+        } catch (Throwable ignored) { }
+        return null;
+    }
+    static byte[] unhex(String h) {
+        if (h == null) return new byte[0];
+        byte[] b = new byte[h.length() / 2];
+        for (int i = 0; i < b.length; i++) b[i] = (byte) Integer.parseInt(h.substring(2 * i, 2 * i + 2), 16);
+        return b;
     }
 
     /** Newest first: {ts, id, name, decoded}. */

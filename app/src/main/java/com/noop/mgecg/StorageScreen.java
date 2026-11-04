@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.36.0 (1 Nov 2026): Storage. What takes the space (the app's folder by kind, the database, the backup folder), buttons that trim the H10 ECG files (keeping the minutes around
+// FILE VERSION 0.39.0 (3 Nov 2026): ARCHIVE card: files older than 3 / 7 / 14 days packed into files/archive zips (each entry verified by size and CRC32 before the original goes), and put back. 0.36.0 (1 Nov 2026): Storage. What takes the space (the app's folder by kind, the database, the backup folder), buttons that trim the H10 ECG files (keeping the minutes around
 // readings) and old raw history in the app and in the backup copies, a shorter run of database snapshots, an optional nightly auto-trim, ONE backup zip of everything (compact or full), and a Restore from
 // such a zip. Deleting is irreversible, so every button first says what it will remove and asks. The per-second records stay in the database whatever is trimmed.
 
@@ -136,6 +136,109 @@ final class StorageScreen {
         } catch (Throwable ignored) { }
     }
 
+    // ------------------------------------------------------------------ 0.39.0 archive (organise the flat folder)
+    static final String ARCHIVE_DIR = "archive";
+    static final String[] ARCH_PREFIX = { "h10_ecg_", "h10_rr_", "h10_log_", "historical_bin_", "labrador_log_", "reconstructed_waveform", "unknown_frames_" };
+
+    static boolean archivable(String n) { for (String p : ARCH_PREFIX) if (n.startsWith(p)) return true; return false; }
+
+    /**
+     * Pure: should this file stay in the flat folder? Per-reading files are never archivable (not in ARCH_PREFIX). Younger than the cut-off stays.
+     * h10_* files follow keepH10, historical_bin_ follows keepRaw (same rules as the trims), and a labrador_log_ file stays when a reading started
+     * between its stamp and the next log's stamp (it holds that reading's log lines, read by StoredReading, SummaryExport and ReadingPull).
+     */
+    static boolean archiveKeep(String n, long st, long nextLogSt, long nowSec, int days, long[] readings) {
+        if (!archivable(n) || st == 0) return true;
+        if (st >= nowSec - days * 86400L) return true;
+        if (n.startsWith("h10_")) return keepH10(st, nowSec, readings);
+        if (n.startsWith("historical_bin_")) return keepRaw(st, nowSec, days, readings);
+        if (n.startsWith("labrador_log_")) { if (nextLogSt <= st) return true; long end = nextLogSt;      // the newest log may still be open
+            for (long r : readings) if (r >= st - 60 && r < end) return true; return false; }
+        return false;
+    }
+
+    static final class ArchPlan { final java.util.TreeMap<String, List<File>> byDay = new java.util.TreeMap<String, List<File>>(); long bytes; int files; }
+
+    static ArchPlan archPlan(Context c, int days) {
+        ArchPlan p = new ArchPlan(); File root = c.getExternalFilesDir(null); if (root == null) return p;
+        long now = System.currentTimeMillis() / 1000L; long[] rd = readingTimes(root); File[] fs = root.listFiles(); if (fs == null) return p;
+        List<Long> logs = new ArrayList<Long>(); for (File f : fs) if (f.isFile() && f.getName().startsWith("labrador_log_")) { long st = stamp(f.getName()); if (st > 0) logs.add(st); }
+        java.util.Collections.sort(logs);
+        SimpleDateFormat day = new SimpleDateFormat("yyyy-MM-dd", Locale.UK);
+        for (File f : fs) {
+            if (!f.isFile()) continue; String n = f.getName(); long st = stamp(n);
+            long next = 0; if (n.startsWith("labrador_log_")) for (long l : logs) if (l > st) { next = l; break; }
+            if (archiveKeep(n, st, next, now, days, rd)) continue;
+            String k = day.format(new Date(st * 1000L)); List<File> l = p.byDay.get(k); if (l == null) { l = new ArrayList<File>(); p.byDay.put(k, l); }
+            l.add(f); p.bytes += f.length(); p.files++;
+        }
+        return p;
+    }
+
+    static long crcOf(InputStream in) throws Exception { java.util.zip.CRC32 c = new java.util.zip.CRC32(); try { byte[] b = new byte[65536]; int k; while ((k = in.read(b)) > 0) c.update(b, 0, k); } finally { in.close(); } return c.getValue(); }
+
+    /** Packs, verifies every entry (size and CRC32 against the original), then deletes the originals and their backup-mirror copies. Returns {moved, failed}. */
+    static int[] archApply(Context c, ArchPlan p, Say say) {
+        File root = c.getExternalFilesDir(null); File ad = new File(root, ARCHIVE_DIR); ad.mkdirs();
+        String run = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.UK).format(new Date());
+        int moved = 0, failed = 0; List<String> gone = new ArrayList<String>();
+        for (java.util.Map.Entry<String, List<File>> e : p.byDay.entrySet()) {
+            File zf = new File(ad, "MG_archive_" + e.getKey() + "_" + run + ".zip");
+            try {
+                java.util.Map<String, long[]> want = new java.util.HashMap<String, long[]>();
+                ZipOutputStream z = new ZipOutputStream(new FileOutputStream(zf));
+                try { for (File f : e.getValue()) { z.putNextEntry(new ZipEntry(f.getName())); pump(new FileInputStream(f), z); z.closeEntry(); want.put(f.getName(), new long[] { f.length(), crcOf(new FileInputStream(f)) }); } } finally { z.close(); }
+                java.util.Map<String, long[]> got = new java.util.HashMap<String, long[]>();
+                ZipInputStream zi = new ZipInputStream(new FileInputStream(zf)); ZipEntry ze; byte[] b = new byte[65536];
+                try { while ((ze = zi.getNextEntry()) != null) { java.util.zip.CRC32 cr = new java.util.zip.CRC32(); long len = 0; int k; while ((k = zi.read(b)) > 0) { cr.update(b, 0, k); len += k; } got.put(ze.getName(), new long[] { len, cr.getValue() }); } } finally { zi.close(); }
+                for (File f : e.getValue()) {
+                    long[] w = want.get(f.getName()), g = got.get(f.getName());
+                    if (w != null && g != null && w[0] == g[0] && w[1] == g[1] && f.length() == w[0]) { if (f.delete()) { moved++; gone.add(f.getName()); } else failed++; } else failed++;
+                }
+            } catch (Throwable t) { failed += e.getValue().size(); }
+            if (say != null) say.on("Archived " + moved + " of " + p.files + " files...");
+        }
+        removeMirror(c, gone);
+        return new int[] { moved, failed };
+    }
+
+    /** Deletes the backup-mirror copies of these file names (Download/MGbackup/files/...) and their backup_files rows, as the trims do. */
+    static void removeMirror(Context c, List<String> names) {
+        if (names.isEmpty()) return; java.util.Set<String> set = new java.util.HashSet<String>(names);
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                List<Long> ids = new ArrayList<Long>();
+                Cursor q = c.getContentResolver().query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, new String[] { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME },
+                    MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?", new String[] { "Download/" + Backup.ROOT + "/files/%" }, null);
+                try { while (q != null && q.moveToNext()) if (set.contains(q.getString(1))) ids.add(q.getLong(0)); } finally { if (q != null) q.close(); }
+                Plan p = new Plan(); p.mirrorIds.addAll(ids); p.names.addAll(names); apply(c, p);
+            } else { Plan p = new Plan(); p.names.addAll(names); apply(c, p); }
+        } catch (Throwable ignored) { }
+    }
+
+    /** Unpacks every archive zip into the flat folder (a file of the same size already there is skipped); a zip whose entries are all back is then removed. Returns {put back, skipped, zips removed}. */
+    static int[] archRestore(Context c, Say say) {
+        File root = c.getExternalFilesDir(null); File ad = new File(root, ARCHIVE_DIR); File[] zs = ad.listFiles(); int back = 0, skip = 0, zipsGone = 0; List<String> goneZips = new ArrayList<String>();
+        if (zs == null) return new int[] { 0, 0, 0 };
+        byte[] b = new byte[65536];
+        for (File zf : zs) {
+            if (!zf.getName().endsWith(".zip")) continue; boolean all = true;
+            try {
+                ZipInputStream zi = new ZipInputStream(new FileInputStream(zf)); ZipEntry ze;
+                try { while ((ze = zi.getNextEntry()) != null) {
+                    String nm = ze.getName(); if (ze.isDirectory() || nm.contains("/") || nm.contains("..")) continue;
+                    File t = new File(root, nm); File tmp = new File(root, nm + ".part"); long len = 0;
+                    try (FileOutputStream fo = new FileOutputStream(tmp)) { int k; while ((k = zi.read(b)) > 0) { fo.write(b, 0, k); len += k; } }
+                    if (t.exists() && t.length() == len) { tmp.delete(); skip++; } else { t.delete(); if (tmp.renameTo(t)) back++; else { tmp.delete(); all = false; } }
+                } } finally { zi.close(); }
+            } catch (Throwable t) { all = false; }
+            if (all && zf.delete()) { zipsGone++; goneZips.add(zf.getName()); }
+            if (say != null) say.on("Put back " + back + " files...");
+        }
+        removeMirror(c, goneZips);
+        return new int[] { back, skip, zipsGone };
+    }
+
     // ------------------------------------------------------------------ one backup zip, and restore (pure parts)
     interface Say { void on(String s); }
 
@@ -222,6 +325,17 @@ final class StorageScreen {
         String an = sp.getString("auto_note", ""); if (an.length() > 0) c2.addView(text(a, "Last automatic trim: " + an, 11, MUT), HeartGraph.lp(a, -1, -2, 4));
         col.addView(c2, HeartGraph.lp(a, -1, -2, 12));
 
+        LinearLayout ca = card(a); ca.addView(HeartGraph.label(a, "ARCHIVE", 11, MUT, 400));      // 0.39.0
+        ca.addView(text(a, "Packs H10 files, raw history, app logs, reconstructed waveforms and unknown frames older than N days into one zip per day in the app folder's archive sub-folder. "
+            + "Every file a reading needs stays (the same rules as the trims, and the log of each reading's app session), and every per-reading file stays. Each entry is read back and checked (size and CRC32) before the original is removed. "
+            + "Nothing is deleted for good: Put archived files back unpacks them.", 12, MUT), HeartGraph.lp(a, -1, -2, 6));
+        for (final int dd : new int[] { 3, 7, 14 }) {
+            TextView ab = HeartGraph.pill(a, "Archive files older than " + dd + " days", dd == 7 ? BLUE : 0x1AFFFFFF, dd == 7 ? 0xFF05131E : INK);
+            ab.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { confirmArchive(a, ui, dd, reload); } }); ca.addView(ab, HeartGraph.lp(a, -2, -2, 10));
+        }
+        TextView ar = HeartGraph.pill(a, "Put archived files back", 0x1AFFFFFF, INK); ar.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { confirmUnarchive(a, ui, reload); } }); ca.addView(ar, HeartGraph.lp(a, -2, -2, 10));
+        col.addView(ca, HeartGraph.lp(a, -1, -2, 12));
+
         LinearLayout c3 = card(a); c3.addView(HeartGraph.label(a, "ONE BACKUP FILE", 11, MUT, 400));
         c3.addView(text(a, "Compact: the database, your settings, every reading (reports, strips, live frames), H10 R-R and logs. Full: also the H10 ECG files and the raw history (can be several GB, takes minutes). Saved as a zip in Download/MGbackup/zip; copy it to a computer or the cloud.", 12, MUT), HeartGraph.lp(a, -1, -2, 6));
         TextView z1 = HeartGraph.pill(a, "Make a compact backup zip", BLUE, 0xFF05131E); z1.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { makeZip(a, ui, false, reload); } }); c3.addView(z1, HeartGraph.lp(a, -2, -2, 12));
@@ -245,6 +359,38 @@ final class StorageScreen {
                     .setPositiveButton("Remove", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface di, int w) {
                         new Thread(new Runnable() { @Override public void run() { final int n = apply(a, p); ui.post(new Runnable() { @Override public void run() { Toast.makeText(a, "Removed " + n + " files.", Toast.LENGTH_LONG).show(); reload.run(); } }); } }, "storage-trim").start(); } })
                     .setNegativeButton("Cancel", null).show(); } }); } }, "storage-plan").start();
+    }
+
+    private static void confirmArchive(final Activity a, final Handler ui, final int days, final Runnable reload) {
+        Toast.makeText(a, "Working out what to archive...", Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() { @Override public void run() {
+            final ArchPlan p = archPlan(a, days);
+            ui.post(new Runnable() { @Override public void run() {
+                if (p.files == 0) { Toast.makeText(a, "Nothing older than " + days + " days to archive.", Toast.LENGTH_LONG).show(); return; }
+                StringBuilder sb = new StringBuilder("Moves " + p.files + " files (" + Backup.sizeText(p.bytes) + ") into " + p.byDay.size() + " zips, one per day:\n");
+                int shown = 0; for (java.util.Map.Entry<String, List<File>> e : p.byDay.entrySet()) { if (shown++ < 12) sb.append(e.getKey()).append(": ").append(e.getValue().size()).append(" files\n"); }
+                if (p.byDay.size() > 12) sb.append("...\n");
+                sb.append("\nTheir backup-folder copies are removed too (the zips get mirrored instead). Readings keep every file they need.");
+                new AlertDialog.Builder(a).setTitle("Archive files older than " + days + " days").setMessage(sb.toString())
+                    .setPositiveButton("Archive", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface di, int w) { runLong(a, ui, "Archive", new Job() { @Override public String run(Say say) { int[] r = archApply(a, p, say); return "Archived " + r[0] + " files" + (r[1] > 0 ? "; " + r[1] + " left in place (check failed or could not delete)" : "") + "."; } }, reload); } })
+                    .setNegativeButton("Cancel", null).show(); } }); } }, "storage-arch-plan").start();
+    }
+
+    private static void confirmUnarchive(final Activity a, final Handler ui, final Runnable reload) {
+        File ad = new File(a.getExternalFilesDir(null), ARCHIVE_DIR); File[] zs = ad.listFiles(); int n = 0; long bytes = 0; if (zs != null) for (File f : zs) if (f.getName().endsWith(".zip")) { n++; bytes += f.length(); }
+        if (n == 0) { Toast.makeText(a, "No archive zips.", Toast.LENGTH_LONG).show(); return; }
+        new AlertDialog.Builder(a).setTitle("Put archived files back").setMessage("Unpacks " + n + " archive zips (" + Backup.sizeText(bytes) + ") into the app folder. Files of the same size already there are skipped. Each zip is removed once all its files are back.")
+            .setPositiveButton("Put back", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface di, int w) { runLong(a, ui, "Put back", new Job() { @Override public String run(Say say) { int[] r = archRestore(a, say); return "Put back " + r[0] + " files, " + r[1] + " already there; " + r[2] + " zips removed."; } }, reload); } })
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    interface Job { String run(Say say) throws Exception; }
+    private static void runLong(final Activity a, final Handler ui, String title, final Job job, final Runnable reload) {
+        final AlertDialog[] dlg = new AlertDialog[1]; final TextView msg = new TextView(a); msg.setPadding(48, 32, 48, 8); msg.setText("Working... keep the app open."); msg.setTextSize(15);
+        dlg[0] = new AlertDialog.Builder(a).setTitle(title).setView(msg).setCancelable(false).create(); dlg[0].show();
+        new Thread(new Runnable() { @Override public void run() {
+            String out; try { out = job.run(new Say() { @Override public void on(final String s) { ui.post(new Runnable() { @Override public void run() { msg.setText(s); } }); } }); } catch (Throwable t) { out = "Failed: " + t; }
+            final String o = out; ui.post(new Runnable() { @Override public void run() { dlg[0].dismiss(); new AlertDialog.Builder(a).setMessage(o).setPositiveButton("OK", null).show(); reload.run(); } }); } }, "storage-long").start();
     }
 
     private static void makeZip(final Activity a, final Handler ui, final boolean everything, final Runnable reload) {

@@ -7492,6 +7492,9 @@ public class MainActivity extends NewLookActivity {
             return;
         }
 
+        // 0.39.0: off by default (nothing reads these files); Settings switch "Write reconstructed_waveform files (old pulse-packet rebuild)"
+        if (!getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("write_reconstructed", false)) return;
+
         java.io.File dir = getExternalFilesDir(null);
 
         if (dir == null) {
@@ -7720,6 +7723,9 @@ public class MainActivity extends NewLookActivity {
 
             return;
         }
+
+        // 0.39.0: off by default (nothing reads these files)
+        if (!getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("write_reconstructed", false)) return;
 
         java.io.File dir = getExternalFilesDir(null);
 
@@ -12407,6 +12413,7 @@ public class MainActivity extends NewLookActivity {
             }
         }
         logRaw("STORED_ECG_ANALYSIS start=" + startUnix + " stop=" + stopUnix + " records=" + mine.size() + " aux=" + mineAux.size() + (clearAll ? " final" : " segment"));
+        EcgReport.appCtx = getApplicationContext();                    // 0.39.0: strap beat-analysis block and settling switch
         new Thread(() -> {
             EcgR16Analyzer.Result r = EcgR16Analyzer.analyse(mine);
             saveEcgHistoryEntry(r);

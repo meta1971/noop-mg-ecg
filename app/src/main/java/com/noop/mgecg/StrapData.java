@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.13.0 (26 Oct): everything the strap sends while it is simply worn, on one page. Research only.
+// FILE VERSION 0.39.0 (3 Nov): STRAP BATTERY block from event 63 (capacity, currents, temperatures). 0.13.0 (26 Oct): everything the strap sends while it is simply worn, on one page. Research only.
 
 import android.app.Activity;
 import android.app.Dialog;
@@ -283,8 +283,32 @@ final class StrapData {
         return r;
     }
 
+    /**
+     * 0.39.0: event 63 (extended battery) body, layout checked on 11 MG and 221 WHOOP 5 events (decode log 102.4): 00 | average current s16 (0.01 mA) |
+     * present current s16 (0.01 mA) | cell temperature s16 (0.1 C) | ambient temperature s16 (0.1 C) | remaining u16. remaining = 21.93-21.95 x the event 3
+     * battery level % in 11 of 11 (unit INFERRED 0.1 mAh, so about 220 mAh at 100 %). Pure.
+     */
+    static List<String[]> battery63Rows(byte[] in, long ts, long nowSec) {
+        List<String[]> r = new ArrayList<>();
+        String G = "STRAP BATTERY (EVENT 63)";
+        if (in == null || in.length < 11) { r.add(row(G, "Extended battery", "none stored yet", "kept from 0.39.0 on; the strap sends event 63 now and then while connected")); return r; }
+        int rem = StrapEvents.u16(in, 9);
+        double avg = (short) StrapEvents.u16(in, 1) / 100.0, now = (short) StrapEvents.u16(in, 3) / 100.0;
+        double cell = (short) StrapEvents.u16(in, 5) / 10.0, amb = (short) StrapEvents.u16(in, 7) / 10.0;
+        r.add(row(G, "Received", clock(ts), ageText(Math.max(0, nowSec - ts)) + " ago"));
+        r.add(row(G, "Remaining capacity", String.format(Locale.UK, "%d (about %.1f mAh)", rem, rem / 10.0), "bytes 9-10; unit INFERRED 0.1 mAh"));
+        r.add(row(G, "Battery level implied", String.format(Locale.UK, "%.1f %%", rem / 21.95), "remaining / 21.95 (= event 3 level in 11 of 11, OBSERVED)"));
+        r.add(row(G, "Average current", String.format(Locale.UK, "%+.2f mA", avg), "bytes 1-2, 0.01 mA; negative = draining, positive = charging"));
+        r.add(row(G, "Present current", String.format(Locale.UK, "%+.2f mA", now), "bytes 3-4, 0.01 mA"));
+        r.add(row(G, "Cell temperature", String.format(Locale.UK, "%.1f C", cell), "bytes 5-6, 0.1 C; equals the per-second cell temperature"));
+        r.add(row(G, "Ambient temperature", String.format(Locale.UK, "%.1f C", amb), "bytes 7-8, 0.1 C; 0.9-2.2 C below R18 skin on the MG"));
+        return r;
+    }
+
     static List<String[]> eventRows(Context c, long nowSec) {
         List<String[]> r = new ArrayList<>();
+        StrapEvents.Raw e63 = StrapEvents.newest(c, 63);                  // 0.39.0
+        r.addAll(battery63Rows(e63 == null ? null : e63.in, e63 == null ? 0 : e63.ts, nowSec));
         String G = "STRAP EVENTS";
         List<String[]> ev = StrapEvents.recent(c, nowSec - 86400L, 5000);
         if (ev.isEmpty()) { r.add(row(G, "Events in the last 24 hours", "none stored yet", "kept from this version on; the strap sends them while the app is connected")); return r; }

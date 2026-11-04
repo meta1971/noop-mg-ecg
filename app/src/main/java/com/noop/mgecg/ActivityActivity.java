@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.0 (23 Oct 2026): the Activity screen, day by day. Research only.
+// FILE VERSION 0.39.0 (3 Nov 2026): STEPS card (raw, corrected, sustained walking flagged); periods show flagged minutes. 0.2.0 (23 Oct 2026): the Activity screen, day by day. Research only.
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -299,6 +299,17 @@ public class ActivityActivity extends Activity {
             ic.addView(tv("Raised but still: " + hm(r.elevatedStillMin) + " with a raised heart rate and almost no wrist movement. Not counted as activity.", 11, STILL, false), lp(-1, -2, 8));
         addCard(ic);
 
+        // ---- 0.39.0: steps, raw and corrected, and the sustained-walking flag
+        LinearLayout stc = card("STEPS");
+        stc.addView(statRow(new String[] {"STRAP COUNTER", "CORRECTED", "WALKING FLAGGED"}, new String[] {String.format(Locale.UK, "%,d", r.stepsRaw),
+                String.format(Locale.UK, "%,.0f", r.stepsCorrected), hm(r.walkFlagMin)}), lp(-1, -2, 8));
+        stc.addView(tv("Corrected = each minute's wrist count times the cadence factor fitted against the Helio on 26 Oct to 1 Nov (0.27 below 20 a minute up to 0.80 at 100 or more); "
+                + "within -11 to +13 % of the Helio on 6 days. The strap counter stays the raw number.", 11, DIM, false), lp(-1, -2, 8));
+        if (r.walkFlagMin > 0)
+            stc.addView(tv(hm(r.walkFlagMin) + " of sustained walking (100 or more steps a minute), " + hm(r.walkFlagActiveMin) + " of it active. In such minutes the strap read 24 bpm higher than the chest H10 on 1 Nov, "
+                    + "so their intensity is scored at the strap rate minus 24 bpm, not at face value. Heart rates shown stay the strap's own.", 11, STILL, false), lp(-1, -2, 8));
+        addCard(stc);
+
         // ---- periods
         LinearLayout pc = card("ACTIVITY PERIODS");
         if (r.bouts.isEmpty()) {
@@ -388,7 +399,8 @@ public class ActivityActivity extends Activity {
         det.addView(tv(String.format(Locale.UK,
                 "Heart rate averaged %.0f bpm and peaked near %.0f \u2014 about %.0f%% of the way from your resting to your maximum rate.\n"
                         + "Wrist movement %.2f g on average, %.0f steps a minute. %d of the %d minutes were active; the rest were short pauses.\nLoad %.0f.",
-                b.avgHr, b.peakHr, b.avgPct * 100, b.motion, b.stepsPerMin, b.activeMin, b.durationMin, b.load), 12, MUTED, false));
+                b.avgHr, b.peakHr, b.avgPct * 100, b.motion, b.stepsPerMin, b.activeMin, b.durationMin, b.load)
+                + (b.walkFlagMin > 0 ? "\n" + b.walkFlagMin + " min of sustained walking: intensity scored at the strap rate minus 24 bpm (strap reads high there against the H10)." : ""), 12, MUTED, false));
         LinearLayout acts = new LinearLayout(this);
         acts.setOrientation(LinearLayout.HORIZONTAL);
         TextView name = chipButton("Name it");

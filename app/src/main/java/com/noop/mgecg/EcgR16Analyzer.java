@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.5.10 (11 Oct): own-validity gate v2 (a short noisy reading is no longer erased by the second pass); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
+// FILE VERSION 0.39.0 (3 Nov): settling switch (first 12.8 s left out, rounded up to 13 stored seconds), strip keeps the raw uV trace, the strap RMSSD (bytes 29-30) and result code (byte 23) for the report. 0.5.10 (11 Oct): own-validity gate v2 (a short noisy reading is no longer erased by the second pass); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -126,6 +126,8 @@ public final class EcgR16Analyzer {
          *  short, 2 measured, 3 contact lost or amplifier recovering. */
         public byte[] secondStates = new byte[0];
         public String note = "";
+        /** 0.39.0: stored seconds left out at the start by the settling switch (0 = off). */
+        public int settleDroppedS;
 
         public String toLog() {
             return String.format(Locale.US,
@@ -492,7 +494,36 @@ public final class EcgR16Analyzer {
      * 0.5.5: two passes. The first finds quality 1-2 seconds holding a misshapen beat; the second
      * analyses again without them. Quality-3 seconds are treated exactly as before.
      */
+    /** 0.39.0: Settings switch "ecg_settle128" (research): leave out the first 12.8 s after the first sample; read through EcgReport.appCtx. */
+    static boolean settleOn() {
+        try {
+            android.content.Context c = EcgReport.appCtx;
+            return c != null && c.getSharedPreferences("labrador_ecg_control", android.content.Context.MODE_PRIVATE).getBoolean("ecg_settle128", false);
+        } catch (Throwable t) { return false; }
+    }
+
+    /** 0.39.0: the first stored record that holds samples is second 0; records 0-12 go, so analysis starts at 13.0 s (12.8 s rounded up to a whole stored second). Pure. */
+    static final int SETTLE_RECORDS = 13;
+    static List<byte[]> dropSettling(List<byte[]> records, int nRec) {
+        long first = Long.MAX_VALUE;
+        for (byte[] f : records) if (f.length == 1584 && EcgWhoopSpec.r16Count(f) > 0) first = Math.min(first, u32(f, 11) & 0xffffffffL);
+        if (first == Long.MAX_VALUE) return records;
+        List<byte[]> out = new ArrayList<>();
+        for (byte[] f : records) if (f.length != 1584 || (u32(f, 11) & 0xffffffffL) >= first + nRec) out.add(f);
+        return out;
+    }
+
     public static Result analyse(List<byte[]> records) {
+        boolean settle = settleOn();
+        List<byte[]> all = records;
+        if (settle) records = dropSettling(records, SETTLE_RECORDS);
+        Result res = analyseAll(records);
+        if (settle) { res.settleDroppedS = all.size() - records.size(); res.recordsIn = all.size(); }      // recordsIn stays the full count so strip() still matches it
+        lastResult = res;
+        return res;
+    }
+
+    private static Result analyseAll(List<byte[]> records) {
         java.util.Set<Long> suspect = new java.util.HashSet<>();
         Result r = analyse0(records, java.util.Collections.<Long>emptySet(), suspect, true);
         if (!suspect.isEmpty()) {
@@ -509,7 +540,6 @@ public final class EcgR16Analyzer {
             }
             r.ownGateDroppedS = suspect.size();
         }
-        lastResult = r;
         return r;
     }
 
@@ -875,6 +905,14 @@ public final class EcgR16Analyzer {
         public int[] pulseShow = new int[0];
         /** Wrist motion, 100 Hz, mg of acceleration change within each second; NaN = none. See EcgAux. */
         public double[] motionMg = new double[0];
+        /** 0.39.0: unfiltered trace in uV on the same sample grid as mv (NaN = rail, fast recovery or no sample). */
+        public double[] rawUv = new double[0];
+        /** 0.39.0: sample index of the first stored record that holds samples (the event 118 anchor is this + 1.01 s). */
+        public int firstSampleIdx;
+        /** 0.39.0: strap RMSSD in ms (R16 bytes 29-30, u16 LE) from the last record where it is not 65535; -1 = never released. */
+        public int strapRmssd = -1;
+        /** 0.39.0: strap result code (R16 byte 23) of the last record where it is not 0; 0 = no verdict. */
+        public int strapResult;
     }
 
     /** @param records stored R16 frames (1584 bytes each), any order */
@@ -932,6 +970,16 @@ public final class EcgR16Analyzer {
         }
         s.mv = mv;
         s.quality = q;
+        s.rawUv = new double[n];
+        for (int k = 0; k < n; k++) s.rawUv[k] = Double.isNaN(raw[k]) ? Double.NaN : raw[k] * EcgWhoopSpec.R16_UV_PER_COUNT;
+        long firstWithSamples = -1;
+        for (byte[] f : recs) {
+            if (EcgWhoopSpec.r16Count(f) > 0 && firstWithSamples < 0) firstWithSamples = (u32(f, 11) & 0xffffffffL) - first;
+            int hv = (f[29] & 0xff) | ((f[30] & 0xff) << 8);
+            if (hv != 0xFFFF && hv > 0) s.strapRmssd = hv;
+            if ((f[23] & 0xff) != 0) s.strapResult = f[23] & 0xff;
+        }
+        s.firstSampleIdx = (int) Math.max(0, firstWithSamples) * FS;
         s.beats = new int[beats.size()];
         for (int k = 0; k < s.beats.length; k++) s.beats[k] = beats.get(k);
         s.startUnix = u32(recs.get(0), 15) & 0xffffffffL;

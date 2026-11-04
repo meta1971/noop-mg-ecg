@@ -1,6 +1,8 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.1.0 (23 Oct 2026): first version. Pure Java, no Android, so it can be tested off the phone.
+// FILE VERSION 0.39.0 (3 Nov 2026): corrected steps (MgCalibrations cadence factors) beside the raw counter, and sustained-walking minutes (100 or more steps a
+// minute, where the strap read 24 bpm high against the H10 on 1 Nov) flagged and scored for intensity at heart rate minus 24, not at face value.
+// 0.1.0 (23 Oct 2026): first version. Pure Java, no Android, so it can be tested off the phone.
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -62,11 +64,14 @@ public final class ActivityDetector {
         public int mergeGapMin = 3;             // pauses up to this long stay inside a bout
         public int sustainedMin = 20;           // a bout this long is called sustained
         public double shortEffortPct = 0.30;
+        public int walkSteps = 100;             // 0.39.0: sustained walking, steps a minute (decode log 101, MgCalibrations)
+        public double walkHrBias = 24;          // 0.39.0: strap HR minus H10 HR in sustained walking, 1 Nov
     }
 
     public static final class Epoch {
         public long start;                      // unix seconds, minute aligned
         public int kind = NO_DATA, level = L_REST, validSeconds, steps;
+        public boolean walkFlag;                // 0.39.0: sustained walking (steps >= Params.walkSteps); intensity scored at hr - Params.walkHrBias
         public double hr = Double.NaN, hrP90 = Double.NaN, motion = Double.NaN, pct = Double.NaN;
     }
 
@@ -77,6 +82,7 @@ public final class ActivityDetector {
         public int[] levelMin = new int[4];     // minutes of ACTIVE epochs per level
         public String label = "";
         public boolean sustained;
+        public int walkFlagMin;                 // 0.39.0
         @Override public String toString() {
             return String.format(Locale.US, "%s-%s %3d min (active %3d)  HR avg %.0f peak %.0f  %%res %.0f  motion %.2f g  steps/min %.0f  load %.0f  [L%d M%d H%d]  %s%s",
                     hhmm(start), hhmm(end), durationMin, activeMin, avgHr, peakHr, avgPct * 100, motion, stepsPerMin, load,
@@ -93,12 +99,15 @@ public final class ActivityDetector {
         public int validMin, activeMin, elevatedStillMin, noDataMin, boutMin, longestBoutMin;
         public int[] levelMin = new int[4];
         public double load;
+        public int stepsRaw, walkFlagMin, walkFlagActiveMin;      // 0.39.0
+        public double stepsCorrected;                             // 0.39.0: MgCalibrations.stepFactor per minute
 
         public String toText() {
             StringBuilder b = new StringBuilder();
             b.append(String.format(Locale.US, "resting HR %.0f%s, HRmax %.0f, reserve %.0f\n", restHr, restEstimated ? " (estimated from still minutes)" : "", hrMax, hrMax - restHr));
             b.append(String.format(Locale.US, "minutes: valid %d, active %d (light %d, moderate %d, hard %d), elevated-but-still %d, no data %d\n",
                     validMin, activeMin, levelMin[1], levelMin[2], levelMin[3], elevatedStillMin, noDataMin));
+            b.append(String.format(Locale.US, "steps raw %d, corrected %.0f; sustained-walking minutes %d (%d active), scored at HR - %.0f\n", stepsRaw, stepsCorrected, walkFlagMin, walkFlagActiveMin, 24.0));
             b.append(String.format(Locale.US, "bouts: %d totalling %d min, longest %d min, load %.0f\n", bouts.size(), boutMin, longestBoutMin, load));
             for (Bout x : bouts) b.append("  ").append(x).append('\n');
             for (Bout x : shortEfforts) b.append("  short effort: ").append(x).append('\n');
@@ -127,10 +136,11 @@ public final class ActivityDetector {
         // ---- 1. epochs
         int i = 0;
         double[] hbuf = new double[60];
+        int prevSteps = -1;                      // 0.39.0: carried across minutes (contiguous seconds) so the step at each minute boundary is not lost
         while (i < n) {
             int e = (int) ((ts[i] - first) / 60);
             int j = i, c = 0;
-            double msum = 0; int mc = 0, stp = 0, prevSteps = -1;
+            double msum = 0; int mc = 0, stp = 0;
             while (j < n && (int) ((ts[j] - first) / 60) == e) {
                 if (hr[j] >= 35 && hr[j] <= 220 && c < 60) {
                     hbuf[c++] = hr[j];
@@ -138,13 +148,15 @@ public final class ActivityDetector {
                     if (!Double.isNaN(m)) { msum += m; mc++; }
                 }
                 if (steps != null) {
-                    if (prevSteps >= 0) { int d = steps[j] - prevSteps; if (d < 0) d += 65536; if (d >= 0 && d <= 30) stp += d; }
+                    if (prevSteps >= 0 && j > 0 && ts[j] == ts[j - 1] + 1) { int d = steps[j] - prevSteps; if (d < 0) d += 65536; if (d >= 0 && d <= 30) stp += d; }
                     prevSteps = steps[j];
                 }
                 j++;
             }
             Epoch x = ep[e];
             x.validSeconds = c;
+            r.stepsRaw += stp; r.stepsCorrected += stp * MgCalibrations.stepFactor(stp);       // 0.39.0: every minute, valid or not
+            x.walkFlag = stp >= p.walkSteps;
             if (c >= p.minEpochSeconds && mc >= p.minEpochSeconds) {
                 double[] s = Arrays.copyOf(hbuf, c);
                 Arrays.sort(s);
@@ -175,10 +187,11 @@ public final class ActivityDetector {
         for (Epoch x : ep) {
             if (Double.isNaN(x.hr)) { x.kind = NO_DATA; r.noDataMin++; continue; }
             r.validMin++;
-            x.pct = (x.hr - r.restHr) / reserve;
+            x.pct = ((x.walkFlag ? x.hr - p.walkHrBias : x.hr) - r.restHr) / reserve;      // 0.39.0
+            if (x.walkFlag) r.walkFlagMin++;
             x.level = x.pct >= p.levelHard ? L_HARD : x.pct >= p.levelModerate ? L_MODERATE : x.pct >= p.levelLight ? L_LIGHT : L_REST;
             boolean active = (x.pct >= p.activePct && x.motion >= p.stillMotion) || (x.motion >= p.clearMotion && x.pct >= 0.05);
-            if (active) { x.kind = ACTIVE; r.activeMin++; r.levelMin[x.level]++; }
+            if (active) { x.kind = ACTIVE; r.activeMin++; r.levelMin[x.level]++; if (x.walkFlag) r.walkFlagActiveMin++; }
             else if (x.pct >= p.elevatedStillPct && x.motion < p.stillMotion) { x.kind = ELEVATED_STILL; r.elevatedStillMin++; }
             else x.kind = REST;
             if (x.pct > 0) r.load += trimp(x.pct);
@@ -238,6 +251,7 @@ public final class ActivityDetector {
             cnt++; hsum += x.hr; psum += x.pct; msum += x.motion; stp += x.steps;
             peak = Math.max(peak, x.hrP90);
             if (x.kind == ACTIVE) { b.activeMin++; b.levelMin[x.level]++; }
+            if (x.walkFlag) b.walkFlagMin++;
             b.load += trimp(Math.max(0, x.pct));
         }
         if (cnt > 0) { b.avgHr = hsum / cnt; b.avgPct = psum / cnt; b.motion = msum / cnt; b.stepsPerMin = stp / (double) cnt; }

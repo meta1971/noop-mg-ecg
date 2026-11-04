@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.1 (3 Oct): restyled ECG screen
+// FILE VERSION 0.39.0 (3 Nov): posture tag remembered (a reading is never saved untagged once a tag was used), position chip "H10 in hands". 0.2.1 (3 Oct): restyled ECG screen
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -114,6 +114,7 @@ public class NewLookActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         EcgReport.reportDir = getExternalFilesDir(null);
+        EcgReport.appCtx = getApplicationContext();                    // 0.39.0
         try {
             getWindow().setStatusBarColor(BG);
         } catch (Throwable ignored) {
@@ -739,20 +740,23 @@ public class NewLookActivity extends Activity {
         // 0.25.2: position or activity tag for the next reading (tap again to clear)
         // 0.27.2: position tags. Table readings (31 Oct 12:28: R 500 uV) against the couch (30 Oct evening: R 939-980 uV); tags let the report compare like with like
         final String[] tagNames = {"Table", "Couch", "Lying", "Standing", "After exercise"}; tagChips = new Button[tagNames.length];
+        // 0.39.0: the posture tag is remembered (21:29 on 3 Nov was saved untagged); a reading started with no tag takes the last one used
+        final android.content.SharedPreferences tagPrefs = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
+        readingTag = tagPrefs.getString("reading_tag", "");
         LinearLayout tagRow = new LinearLayout(this); tagRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout tagRow2 = new LinearLayout(this); tagRow2.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < tagNames.length; i++) { final int k = i; Button c = pillButton(tagNames[i], CARD, MUTED); c.setTextSize(11); tagChips[i] = c;
-            c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { readingTag = readingTag.equals(tagNames[k]) ? "" : tagNames[k]; for (int j = 0; j < tagChips.length; j++) tagChips[j].setBackground(round(tagNames[j].equals(readingTag) ? PRIMARY : CARD, 22)); } });
-            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, dp(40), 1f); tlp.rightMargin = dp(4); tlp.bottomMargin = dp(4); (i < 3 ? tagRow : tagRow2).addView(c, tlp); }
+            c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { readingTag = readingTag.equals(tagNames[k]) ? "" : tagNames[k]; tagPrefs.edit().putString("reading_tag", readingTag).putString("reading_tag_last", readingTag.isEmpty() ? tagPrefs.getString("reading_tag_last", "") : readingTag).apply(); for (int j = 0; j < tagChips.length; j++) tagChips[j].setBackground(round(tagNames[j].equals(readingTag) ? PRIMARY : CARD, 22)); } });
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, dp(40), 1f); tlp.rightMargin = dp(4); tlp.bottomMargin = dp(4); (i < 3 ? tagRow : tagRow2).addView(c, tlp); c.setBackground(round(tagNames[i].equals(readingTag) ? PRIMARY : CARD, 22)); }
         col.addView(tagRow, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
         col.addView(tagRow2, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
         // 0.37.0: where the strap is (leave all off for the wrist); noted with the posture tag as "Table @ Chest V5"
-        final String[] posNames = {"Chest V2", "Chest V4", "Chest V5", "Chest V6", "Bicep L", "Bicep R"}; posChips = new Button[posNames.length];
+        final String[] posNames = {"Chest V2", "Chest V4", "Chest V5", "Chest V6", "Bicep L", "Bicep R", "H10 in hands"};      // 0.39.0: "H10 in hands" = same-lead runs (H10 pads in the palms, MG on the wrist) posChips = new Button[posNames.length];
         TextView posLabel = tv("Strap position (all off = wrist)", 11, MUTED, true); posLabel.setGravity(Gravity.CENTER); col.addView(posLabel, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
         LinearLayout posRow = new LinearLayout(this); posRow.setOrientation(LinearLayout.HORIZONTAL); LinearLayout posRow2 = new LinearLayout(this); posRow2.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < posNames.length; i++) { final int k = i; Button c = pillButton(posNames[i], CARD, MUTED); c.setTextSize(11); posChips[i] = c;
             c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { positionTag = positionTag.equals(posNames[k]) ? "" : posNames[k]; for (int j = 0; j < posChips.length; j++) posChips[j].setBackground(round(posNames[j].equals(positionTag) ? PRIMARY : CARD, 22)); } });
-            LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, dp(40), 1f); plp.rightMargin = dp(4); plp.bottomMargin = dp(4); (i < 3 ? posRow : posRow2).addView(c, plp); }
+            LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, dp(40), 1f); plp.rightMargin = dp(4); plp.bottomMargin = dp(4); (i < 4 ? posRow : posRow2).addView(c, plp); }
         col.addView(posRow, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2)); col.addView(posRow2, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
         // 0.27.0: live signal light and auto-stop
         qualityView = tv("", 13, MUTED, true); qualityView.setGravity(Gravity.CENTER); qualityView.setPadding(dp(10), dp(8), dp(10), dp(8)); qualityView.setVisibility(View.GONE);
@@ -920,7 +924,11 @@ public class NewLookActivity extends Activity {
             lastRunningState = rs;
             if (!running && prevRs == 1) { FrameMonitor.captureWindow(System.currentTimeMillis() + 150000L); ui.postDelayed(new Runnable() { @Override public void run() { maybeStopH10(); } }, 6000L); }       // 0.23.0: the H10 stops a few seconds after the reading
             ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
-            if (running && readingTag.isEmpty()) toast("Tip: tag where you sit (Table, Couch, ...). Position changes the height of your R wave, so tagged readings compare fairly.");      // 0.27.2
+            if (running && readingTag.isEmpty()) {      // 0.39.0: never save a reading untagged when a tag was used before
+                String last = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getString("reading_tag_last", "");
+                if (!last.isEmpty() && tagChips != null) { readingTag = last; for (Button tc : tagChips) tc.setBackground(round(tc.getText().toString().equals(readingTag) ? PRIMARY : CARD, 22)); toast("Tagged " + last + " (your last tag). Tap another tag to change it."); }
+                else toast("Tip: tag where you sit (Table, Couch, ...). Position changes the height of your R wave, so tagged readings compare fairly.");      // 0.27.2
+            }
             if (running) { ReadingTag.note(getExternalFilesDir(null), readingTag + (positionTag.isEmpty() ? "" : (readingTag.isEmpty() ? "" : " ") + "@ " + positionTag)); FrameMonitor.captureReset(); FrameMonitor.captureWindow(System.currentTimeMillis() + 20 * 60 * 1000L); Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; autoStopped = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
             if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
             if (running && packetsView != null && packetsView.getVisibility() != View.VISIBLE

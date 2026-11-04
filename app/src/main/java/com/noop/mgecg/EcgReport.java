@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
+// FILE VERSION 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
 
 import java.util.List;
 import java.text.SimpleDateFormat;
@@ -22,6 +22,8 @@ public final class EcgReport {
 
     /** Where saved reports go (set by the app at start-up). Null = do not save. */
     public static volatile java.io.File reportDir;
+    /** 0.39.0: application context, for the strap events and the settling switch. Null = the strap card says it cannot read the events. */
+    public static volatile android.content.Context appCtx;
 
     /**
      * Writes the report for a finished stored-ECG analysis as ecg_report_&lt;strap unix time&gt;.html in
@@ -84,6 +86,23 @@ public final class EcgReport {
      * A: at least 80% of seconds measured and under 3% odd-shaped beats. B: 60% and 6%. C: 30% (or 25 s).
      * D: anything else, including too noisy (over 10% odd-shaped beats) or too few beats.
      */
+    /** 0.39.0: the strap's own beat analysis beside ours, and the verdict check. Never throws. Research only. */
+    static String strapCard(EcgR16Analyzer.Strip strip) {
+        if (strip == null) return "";
+        try {
+            StrapBeatCheck.Result c = StrapBeatCheck.compute(appCtx, strip);
+            StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><h2>The strap's own beat analysis</h2><span class=\"pill\">Research</span></div>");
+            b.append("<p class=\"hint\">What the strap reported at the end of its 30 s window (events 118 and 119), beside the same numbers measured here.</p>");
+            for (String[] rw : StrapBeatCheck.rows(c)) b.append(row(esc(rw[0]), esc(rw[1])));
+            b.append("<h2>Verdict check</h2><p class=\"hint\">Measures that separated the strap's results on 51 earlier readings (sinus 1, inconclusive 6, unreadable 2).</p>");
+            for (String[] rw : StrapBeatCheck.checkRows(c)) b.append(row(esc(rw[0]), esc(rw[1])));
+            b.append("<p class=\"cap\">Amplitudes use the design scale of 0.0621 uV per count; the absolute scale is not yet calibrated. Not a diagnosis.</p></section>");
+            return b.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     public static Grade grade(EcgR16Analyzer.Result r) {
         int total = Math.max(1, r.secondStates.length > 0 ? r.secondStates.length : r.recordsIn);
         double frac = r.usableSeconds / (double) total;
@@ -203,7 +222,9 @@ public final class EcgReport {
         if (meta.strapCategory != null) {
             b.append(row("Band's own check", esc(meta.strapCategory) + (meta.strapReasons != null && !meta.strapReasons.isEmpty() ? " (" + esc(meta.strapReasons) + ")" : "")));
         }
+        if (r.settleDroppedS > 0) b.append(row("Settling", "first " + r.settleDroppedS + " stored seconds left out (research switch: averaged beat, QT and HRV from 12.8 s, rounded up to 13 s)"));
         b.append("</section>");
+        b.append(strapCard(strip));
 
         b.append("<section class=\"card\"><h2>For a better reading next time</h2><ul><li>Rest your forearm on a table and keep still.</li>")
                 .append("<li>Hold steady, even contact with both fingers.</li><li>Stay on for at least 60 seconds.</li><li>Breathe normally and avoid talking.</li></ul></section>");

@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.0 (23 Oct 2026): loads days from the day log (per-second rows and, for old days, the one-minute rows kept after compaction),
+// FILE VERSION 0.39.0 (3 Nov 2026): cache version 3 (new intensity rule for sustained walking). 0.2.0 (23 Oct 2026): loads days from the day log (per-second rows and, for old days, the one-minute rows kept after compaction),
 // keeps the Activity settings and your edits, caches finished days, compacts old days safely (archive first, then keep one row a minute),
 // and exports a day for tuning. Research only.
 
@@ -34,7 +34,7 @@ final class ActivityStore {
     private ActivityStore() {}
 
     static final String PREFS = "activity";
-    static final String CACHE_VERSION = "2";
+    static final String CACHE_VERSION = "3";      // 0.39.0: sustained-walking minutes scored at HR - 24, so cached days are recomputed
     static final String EXPORT_FOLDER = "MGactivity";
 
     // ---- SQL, kept as constants so they can be checked against a real SQLite file off the phone
