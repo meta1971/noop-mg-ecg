@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// 0.39.0 (3 Nov): Settings switches "Research: averaged beat, QT and HRV from 12.8 s" and "Write reconstructed_waveform files". FILE VERSION 0.9.0 (23 Oct): the heart-first personal health app. Research only.
+// 0.42.1 (5 Nov 2026): the ECG tab shows this week and the streak, with a Reminders button under it (Sync now on the Today tab is the pull; no second button). 0.39.0 (3 Nov): Settings switches "Research: averaged beat, QT and HRV from 12.8 s" and "Write reconstructed_waveform files". FILE VERSION 0.9.0 (23 Oct): the heart-first personal health app. Research only.
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -762,9 +762,7 @@ public class HealthActivity extends Activity {
         r.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView btn = HeartGraph.pill(this, "Sync now", 0x1A2EE6A8, 0xFF2EE6A8);
         btn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
-            if (!MainActivity.linkRunning()) MainActivity.startLinkHost(HealthActivity.this);
-            MainActivity.requestPull();
-            android.widget.Toast.makeText(HealthActivity.this, "Syncing the strap", android.widget.Toast.LENGTH_SHORT).show();
+            PullNow.request(HealthActivity.this);      // 0.42.2: opens the link first if needed and says what happened
             if (syncTitleTv != null) syncTitleTv.setText("Syncing\u2026");
         } });
         r.addView(btn);
@@ -1280,6 +1278,13 @@ public class HealthActivity extends Activity {
         top.addView(pillButton("Start", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), new LinearLayout.LayoutParams(dpi(110), dpi(38)));
         col.addView(top, lp(-1, -2, 8));
         col.addView(tv(n == 0 ? "None saved yet. Two fingers on the clasp, about three minutes." : "Newest first. Tap one to open its full report.", 12.5f, MUT, 400), lp(-2, -2, 4));
+        try {                                                              // 0.42.1: this week, the streak and reminders (they were only on the older Home screen in 0.42.0)
+            long[] st = new long[n]; for (int i = 0; i < n; i++) st[i] = d.readings.get(i).timeMs / 1000L;
+            EcgStreak.Out so = EcgStreak.compute(st, System.currentTimeMillis(), java.util.TimeZone.getDefault());
+            col.addView(rowCard("This week", EcgStreak.strip(so) + "\n" + EcgStreak.summary(so) + "\nTap for how this is worked out.", new View.OnClickListener() { @Override public void onClick(View v) {
+                new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("This week and the streak").setMessage(Explain.asText(Explain.streakCard())).setPositiveButton("OK", null).show(); } }), lp(-1, -2, 12));
+            col.addView(pillButton("Reminders: set the times for work days and days off", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgReminder.showDialog(HealthActivity.this); } }), lp(-1, dpi(44), 8));
+        } catch (Throwable ignored) { }
         long lastEnd = NewLookActivity.lastReadingEndMs;                   // 0.22.0: a reading just ended: the report takes 1 to 3 minutes
         if (lastEnd > 0 && System.currentTimeMillis() - lastEnd < 6 * 60000L && (n == 0 || d.readings.get(0).timeMs < lastEnd - 300000L)) {
             col.addView(rowCard("Preparing your report\u2026", "The stored ECG is fetched and analysed, 1 to 3 minutes. This list fills in by itself.", null), lp(-1, -2, 12));

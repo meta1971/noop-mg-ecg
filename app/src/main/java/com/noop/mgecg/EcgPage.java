@@ -21,7 +21,7 @@ import java.io.File;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.42.0-pro";
+    static final String VERSION = "0.42.2-pro";
     private final NewLookActivity a;
     private final SharedPreferences pr;
     private final Handler h = new Handler(Looper.getMainLooper());

@@ -166,6 +166,8 @@ final class Live500 {
     }
 
     static long frames() { synchronized (LOCK) { return frames; } }
+    /** Milliseconds since the last live frame arrived (Long.MAX_VALUE when none came in this session). */
+    static long sinceLastFrameMs(long nowMs) { synchronized (LOCK) { return frames > 0 ? nowMs - lastFrameMs : Long.MAX_VALUE; } }
     static boolean isLive(long nowMs) { synchronized (LOCK) { return frames > 0 && nowMs - lastFrameMs < 3000; } }
     /** Seconds from a heartbeat at the strap to the same heartbeat on the screen. A live record is stamped at its END and holds the second before it (history time = live time - 1.01 s, decode log 50.4), so the samples are 0.15 to 1.16 s old when the frame arrives; the display adds bufferMs on top. Up to 0.41.0 the label left out the 1.01 s. */
     static double delaySeconds() { synchronized (LOCK) { return haveOffset ? (offsetMs + 1010.0 + bufferMs) / 1000.0 : 0.0; } }

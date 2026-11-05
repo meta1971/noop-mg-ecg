@@ -222,7 +222,7 @@ public class NewLookActivity extends Activity {
         }
         if (in.getBooleanExtra("pull_now", false)) {      // 0.42.0: the "Pull now" app shortcut
             in.removeExtra("pull_now");
-            ui.postDelayed(() -> { if (!MainActivity.linkRunning()) MainActivity.startLinkHost(this); MainActivity.requestPull(); toast("Pull requested"); }, 1500);
+            ui.postDelayed(() -> PullNow.request(this), 1500);
         }
         final String rp = in.getStringExtra("open_report");
         if (rp != null || in.getBooleanExtra("start_ecg", false)) { pendingReport = null; pendingEcg = false; }   // one path handles it, not two
@@ -1083,7 +1083,7 @@ public class NewLookActivity extends Activity {
         dlp.topMargin = dp(12);
         col.addView(dayLog, dlp);
         Button pullNow = pillButton("Pull now", CARD, TEXT);      // 0.41.0: the same handler as the Strap data screen
-        pullNow.setOnClickListener(v -> { if (!MainActivity.linkRunning()) MainActivity.startLinkHost(this); MainActivity.requestPull(); toast("Pull requested"); });
+        pullNow.setOnClickListener(v -> PullNow.request(this));
         LinearLayout.LayoutParams pnp = new LinearLayout.LayoutParams(-1, dp(56));
         pnp.topMargin = dp(12);
         col.addView(pullNow, pnp);

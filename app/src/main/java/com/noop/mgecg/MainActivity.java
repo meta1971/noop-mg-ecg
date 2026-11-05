@@ -10813,7 +10813,13 @@ public class MainActivity extends NewLookActivity {
 
     static void requestPull() {
         final MainActivity m = instance != null ? instance : headless;
-        if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNowUser(); } });      // 0.26.0: clears a stalled pull first
+        if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNowUser(false); } });      // 0.26.0: clears a stalled pull first
+    }
+
+    /** 0.42.2: the same pull for a button the person pressed (Sync now, Pull now): it says what happened, so a pull that could not start is not silent. */
+    static void requestPullUser() {
+        final MainActivity m = instance != null ? instance : headless;
+        if (m != null) m.mainH.post(new Runnable() { @Override public void run() { m.dayLogPullNowUser(true); } });
     }
 
     /** 0.14.1: what happened at each open and swipe-away, kept in preferences so it survives the process being killed (shown on Strap data). */
@@ -10962,11 +10968,13 @@ public class MainActivity extends NewLookActivity {
     }
 
     /** 0.26.0: "Pull now" from the notification: clear stale flags first (never during a reading with live frames). */
-    void dayLogPullNowUser() {
-        if (gatt == null || cmdWrite == null) return;
+    void dayLogPullNowUser(boolean say) {
+        if (gatt == null || cmdWrite == null) { if (say) android.widget.Toast.makeText(this, "The strap link is not up yet, so nothing was pulled. Try again in a few seconds.", android.widget.Toast.LENGTH_LONG).show(); return; }
         logRaw("DAYLOG_PULL_REQUESTED pull=" + pullAckActive + " ecg=" + ecgSessionRunning + " pendingStored=" + pendingEcgStoredAnalysis);
         pullWatchdog(System.currentTimeMillis(), true);
+        String why = pullAckActive ? "a pull is already running" : ecgSessionRunning ? "a reading is still marked as running" : pendingEcgStoredAnalysis ? "the last reading's stored ECG is still being fetched" : null;      // 0.42.2: logs showed pulls blocked for 30 min by these flags (30 Oct 21:54, 1 Nov 11:22)
         dayLogPullNow();
+        if (say) android.widget.Toast.makeText(this, why == null ? "Pull started" : "Pull not started: " + why + ". It is checked again each time you tap.", android.widget.Toast.LENGTH_LONG).show();
     }
 
     /** 0.26.0: ends a pull that stopped moving and clears flags left on, each with a log line; then the normal schedule can pull again. */
@@ -10984,6 +10992,10 @@ public class MainActivity extends NewLookActivity {
                     pullAckActive = false; pullGeneration++;
                     try { recordPullOutcomeAndSummarize(); } catch (Throwable t) { logRaw("PULL_WATCHDOG summary failed " + t); }
                 }
+            }
+            if (userAsked && ecgSessionRunning && Live500.sinceLastFrameMs(now) > 20000L && now - ecgSessionStartMs > 20000L) {      // 0.42.2: you asked for a pull and no live ECG frame has come for 20 s: the reading is over, the flag is stale
+                logRaw("PULL_WATCHDOG user asked: clearing an ECG-session flag with no live ECG frame for " + Math.min(Live500.sinceLastFrameMs(now), 99999999L) / 1000L + " s");
+                ecgSessionRunning = false; ecgRunningSinceMs = 0L;
             }
             if (ecgSessionRunning && !liveEcg && ecgRunningSinceMs > 0L && now - ecgRunningSinceMs > 12L * 60000L) {
                 logRaw("PULL_WATCHDOG clearing an ECG-session flag left on for " + (now - ecgRunningSinceMs) / 1000L + " s with no live ECG frames");
