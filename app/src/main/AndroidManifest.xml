@@ -162,6 +162,18 @@
             </intent-filter>
         </receiver>
 
+        <!-- 0.42.0: home-screen widget (latest reading, this week, Take an ECG) -->
+        <receiver
+            android:name=".EcgWidget"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/ecg_widget_info" />
+        </receiver>
+
     </application>
 
 </manifest>
