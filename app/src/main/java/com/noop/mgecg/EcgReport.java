@@ -103,6 +103,28 @@ public final class EcgReport {
         }
     }
 
+    /** 0.40.0: segments from the average beat of all readings together (PooledSegments). Never throws. Research only. */
+    static String pooledCard(EcgR16Analyzer.Strip strip) {
+        try {
+            if (appCtx == null) return "";
+            java.util.List<PooledSegments.Reading> stored = PooledSegments.load(appCtx);
+            PooledSegments.Reading cur = PooledSegments.extract(strip);
+            double rRef = cur != null ? cur.rUv : 0;
+            PooledSegments.Summary sm = PooledSegments.summarize(stored, "", rRef);
+            boolean like = rRef > 0;
+            if (sm.readings < PooledSegments.MIN_READINGS) { sm = PooledSegments.summarize(stored, "", 0); like = false; }
+            String[][] rows = PooledSegments.rows(sm);
+            if (rows.length == 0) return "";
+            StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><h2>All readings together</h2><span class=\"pill\">Research</span></div>");
+            b.append("<p class=\"hint\">One short reading has too few clean beats for the intervals. The average beats of readings with a similar R wave height (within 25%) are pooled here, each reading once, with 95% ranges from resampling the readings, so these numbers firm up as you take more readings." + (like ? "" : " Too few similar readings yet: all readings are pooled instead.") + "</p>");
+            for (String[] rw : rows) b.append(row(esc(rw[0]), esc(rw[1])));
+            b.append("<p class=\"cap\">Wrist lead. On 4 Nov the S dip was about 100 uV in readings with a small R wave (before 17:00) and almost none with a large R wave (after 17:00); a chest placement shows about 220 uV. The PR interval is a lower bound. Amplitudes use the design scale of 0.0621 uV per count; the absolute scale is not yet calibrated. Not a diagnosis.</p></section>");
+            return b.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     public static Grade grade(EcgR16Analyzer.Result r) {
         int total = Math.max(1, r.secondStates.length > 0 ? r.secondStates.length : r.recordsIn);
         double frac = r.usableSeconds / (double) total;
@@ -225,6 +247,7 @@ public final class EcgReport {
         if (r.settleDroppedS > 0) b.append(row("Settling", "first " + r.settleDroppedS + " stored seconds left out (research switch: averaged beat, QT and HRV from 12.8 s, rounded up to 13 s)"));
         b.append("</section>");
         b.append(strapCard(strip));
+        b.append(pooledCard(strip));                                                                  // 0.40.0
 
         b.append("<section class=\"card\"><h2>For a better reading next time</h2><ul><li>Rest your forearm on a table and keep still.</li>")
                 .append("<li>Hold steady, even contact with both fingers.</li><li>Stay on for at least 60 seconds.</li><li>Breathe normally and avoid talking.</li></ul></section>");

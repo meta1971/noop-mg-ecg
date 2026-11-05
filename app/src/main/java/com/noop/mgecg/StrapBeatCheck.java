@@ -15,7 +15,7 @@ final class StrapBeatCheck {
 
     static final int FS = 500;
     /** The first live sample is 1.01 s after the stored-record start (decode log 50.4 / 102.1). */
-    static final int ANCHOR_SAMPLES = 505;
+    static final int ANCHOR_SAMPLES = 0;      // 0.40.0: B counts from the start of the first record with samples (4 Nov data); 0.39.0 added 505 (1.01 s) too much
     /** The strap's amplitude statistics stop about 29.1 s after B (N rule, 102.1). */
     static final double WINDOW_S = 29.1;
 

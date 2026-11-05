@@ -985,7 +985,7 @@ public final class EcgR16Analyzer {
         s.startUnix = u32(recs.get(0), 15) & 0xffffffffL;
         s.firstSeq = first;
         Result analysed = lastResult;
-        if (analysed != null && analysed.recordsIn == records.size()) EcgReport.saveReportFile(analysed, s);
+        if (analysed != null && analysed.recordsIn == records.size()) { PooledSegments.addReading(EcgReport.appCtx, s); EcgReport.saveReportFile(analysed, s); }   // 0.40.0: pool the beats
         return s;
     }
 

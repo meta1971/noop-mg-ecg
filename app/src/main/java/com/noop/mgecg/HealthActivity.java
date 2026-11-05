@@ -1583,7 +1583,7 @@ public class HealthActivity extends Activity {
         st.addView(toggleRow("Start the ECG reading by itself after a 5 second countdown", ctl, "ecg_autostart"), lp(-1, dpi(52), 6));
         st.addView(toggleRow("Show the packet counters on the screen during a reading", ctl, "ecg_packets_open"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Record the H10 with each ECG reading (adds a PDF page)", ctl, "h10_with_reading", false), lp(-1, dpi(52), 0));
-        st.addView(toggleRow("Research: averaged beat, QT and HRV from 12.8 s (leave out the strap's settling)", ctl, "ecg_settle128", false), lp(-1, dpi(52), 0));      // 0.39.0
+        st.addView(toggleRow("Research: averaged beat, QT and HRV from 12.8 s (leave out the strap's settling)", ctl, "ecg_settle128", false), lp(-1, -2, 0));      // 0.39.0
         st.addView(toggleRow("Write reconstructed_waveform files (old pulse-packet rebuild, unused)", ctl, "write_reconstructed", false), lp(-1, dpi(52), 0));      // 0.39.0
         st.addView(toggleRow("Near-live 500 Hz during readings", ctl, "ecg_tail"), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
