@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.18.0 (27 Oct): the 500 Hz live graph data, with QRS-aware smoothing. Pure Java (no Android), tested off the phone against a scipy reference.
+// FILE VERSION 0.41.0 (5 Nov 2026): pro display (PR-point spline baseline, beat windows, averaged beat, live noise by band, verdict timing, contact value); 0.18.0 (27 Oct): the 500 Hz live graph data, with QRS-aware smoothing. Pure Java (no Android), tested off the phone against a scipy reference.
 
 /**
  * Turns the live raw ECG frames (type 43, layout 16, command 126) into a display trace.
@@ -24,7 +24,10 @@ final class Live500 {
     static final int FS = 500;
     static final int CAP = 8192;                   // samples kept (16 s); a power of two
     static final int RAIL = 126900;                // the clamp is at +-126,976 counts
-    static final double BUFFER_MS = 500.0;
+    static final double BUFFER_MS = 300.0;          // 0.41.1: was 500; the frames arrive every 1.00 s +- 0.03 s (p5-p95), so 0.3 s is enough margin
+    static final double PRO_BUFFER_MS = 800.0;      // 0.41.1: was 1500; at the right edge 800 ms gave the flattest baseline (robust PR spread 10 / 13 / 0.3 uV against 22 / 37 / 18.5 uV without the spline)
+    static volatile boolean pro = true;              // 0.41.0: set from the ECG page before a reading; read at reset()
+    static volatile double bufferMs = BUFFER_MS;
     static final double EMA = 0.05;                // the delivery delay follows the arrival times slowly
     static final double MAX_PULL_MS = 20.0;        // at most this much correction of the timeline per frame
     static final int REL = 100;                    // release delay in samples (0.2 s)
@@ -157,16 +160,20 @@ final class Live500 {
             nAbs = 0; procUpTo = 0; primed = false; haveOffset = false; frames = 0; lastFrameMs = 0; lastCounter = -1; nextDue = Double.NaN; lastDueMs = 0;
             front.clear(); band.clear(); z1 = 0; z2 = 0; java.util.Arrays.fill(ebuf, 0); esum = 0; eidx = 0; ninit = 0; lastPeak = -1_000_000_000L; bigCount = 0;
             peakLevel = 0; initMax = 0; inited = false; pkCount = 0; firstPeak = -1;
+            bufferMs = pro ? PRO_BUFFER_MS : BUFFER_MS; proReset(); LiveBands.reset();
         }
+        sessionMs = System.currentTimeMillis(); verdictMs = 0; hrvMs = 0; hrvVal = 0; verdictCode = 0; verdictHr = 0; lastHrv = 65535; synchronized (ZL) { zList.clear(); }
     }
 
     static long frames() { synchronized (LOCK) { return frames; } }
     static boolean isLive(long nowMs) { synchronized (LOCK) { return frames > 0 && nowMs - lastFrameMs < 3000; } }
-    static double delaySeconds() { synchronized (LOCK) { return haveOffset ? (offsetMs + BUFFER_MS) / 1000.0 : 0.0; } }
+    /** Seconds from a heartbeat at the strap to the same heartbeat on the screen. A live record is stamped at its END and holds the second before it (history time = live time - 1.01 s, decode log 50.4), so the samples are 0.15 to 1.16 s old when the frame arrives; the display adds bufferMs on top. Up to 0.41.0 the label left out the 1.01 s. */
+    static double delaySeconds() { synchronized (LOCK) { return haveOffset ? (offsetMs + 1010.0 + bufferMs) / 1000.0 : 0.0; } }
     static int lastInvalid() { synchronized (LOCK) { return invalidInFrame; } }
     static int beatsSeen() { synchronized (LOCK) { return pkCount; } }
 
     static volatile java.util.function.DoubleConsumer testSink;      // off-phone tests only: every final output sample
+    static volatile java.util.List<double[]> testCandSink;           // off-phone tests only: every beat candidate (time s, height, signed height)
     static volatile java.util.List<Long> testPeakSink;               // off-phone tests only: every detected beat (sample index)
 
     private static int p(long gi) { return (int) (gi & (CAP - 1)); }
@@ -182,13 +189,13 @@ final class Live500 {
                 band.clear(); z1 = 0; z2 = 0; java.util.Arrays.fill(ebuf, 0); esum = 0; primed = true;
             }
             double y = front.step(uv);
-            xin[pi] = y;
+            xin[pi] = y; LiveBands.sample(gi, y, true);
             double z = band.step(y);
             double d = z - z2; z2 = z1; z1 = z;                       // z[i] - z[i-2]
             double d2 = d * d; double old = ebuf[eidx]; ebuf[eidx] = d2; eidx = (eidx + 1) % EWIN; esum += d2 - old;
             ei = esum / EWIN;
         } else {
-            primed = false; xin[pi] = Double.NaN; ei = 0.0;
+            primed = false; xin[pi] = Double.NaN; ei = 0.0; LiveBands.sample(gi, 0.0, false);
         }
         env[pi] = ei; due[pi] = dueMs; outv[pi] = Double.NaN; lastDueMs = dueMs;
         nAbs++;
@@ -260,6 +267,7 @@ final class Live500 {
             if (testSink != null) testSink.accept(y);
         }
         if (limit > procUpTo) procUpTo = limit;
+        try { proUpdate(); } catch (RuntimeException ignored) { }
     }
 
     /** Adds one live raw frame (the whole 1,584-byte frame). Returns the number of samples taken in, 0 if the frame was not usable. */
@@ -271,6 +279,10 @@ final class Live500 {
         try { noteNoise(f, n); } catch (Throwable ignored) { }      // 0.27.0
         try { synchronized (LOCK) { drainBeatNoise(); } } catch (Throwable ignored) { }      // 0.27.2
         lastCode = f[23] & 0xFF; lastState = f[24] & 0xFF; lastProgress = f[25] & 0xFF; lastMask = f[26] & 0xFF; lastAvgHr = f[27] & 0xFF;      // 0.27.1
+        lastHrv = (f[29] & 0xFF) | ((f[30] & 0xFF) << 8);
+        if (lastProgress == 100 && lastCode != 0 && verdictMs == 0) { verdictMs = arrivalMs; verdictCode = lastCode; verdictHr = lastAvgHr; }      // 0.41.0
+        if (lastHrv != 65535 && lastHrv != 0 && hrvMs == 0) { hrvMs = arrivalMs; hrvVal = lastHrv; }
+        try { noteZ(f); } catch (Throwable ignored) { }
         long ctr = u32(f, 11);
         double recMs = (u32(f, 15) + (((f[19] & 0xFF) | ((f[20] & 0xFF) << 8)) / 32768.0)) * 1000.0;
         synchronized (LOCK) {
@@ -282,7 +294,7 @@ final class Live500 {
                 nextDue = Double.NaN;
             }
             lastCounter = ctr;
-            double wanted = recMs + (500 - n) * 2.0 + offsetMs + BUFFER_MS;      // a short first record is the end of its second
+            double wanted = recMs + (500 - n) * 2.0 + offsetMs + bufferMs;      // a short first record is the end of its second
             double startMs, step = 2.0;
             if (Double.isNaN(nextDue)) startMs = Math.max(wanted, lastDueMs + 2.0);
             else {
@@ -320,9 +332,158 @@ final class Live500 {
                 if (d < nowMs - windowMs) continue;
                 outV[m] = (float) outv[pi]; outT[m] = d; m++;
             }
+            if (pro && m > 0) { try { applyBase(outV, outT, m); } catch (RuntimeException ex) { if (testCandSink != null) ex.printStackTrace(); } }
             return m;
         }
     }
+
+
+    // ======================================================================== 0.41.0 pro display
+    static final int PRE_W = 200, POST_W = 375;                      // beat window: 400 ms before the R apex, 750 ms after (as EcgIntervals)
+    static final double DIM_GATE = 0.65;                              // a beat whose shape correlates below this with the running template is drawn dim
+    private static final int NB = 128, MAXWIN = 150;
+    private static final long[] bApex = new long[NB];
+    private static final double[] bPr = new double[NB], bPrDue = new double[NB], bDue = new double[NB];
+    private static final float[] bAmp = new float[NB];
+    private static final boolean[] bOk = new boolean[NB];
+    private static int bN, pkDone, winNext;
+    private static final java.util.ArrayList<double[]> wins = new java.util.ArrayList<>();
+    static volatile long sessionMs, verdictMs, hrvMs; static volatile int lastHrv = 65535, hrvVal, verdictCode, verdictHr;
+    private static final Object ZL = new Object(); private static final java.util.ArrayList<Double> zList = new java.util.ArrayList<>();
+
+    private static final double[] candMag = new double[40]; private static int candN; private static long lastAccApex;
+    private static boolean havePend; private static long pendApex; private static double pendMag, pendAmp, pendPr;
+    static final int GROUP = 175;                                    // peaks within 0.35 s are one beat candidate (the largest wins)
+    private static void finishPending() {
+        if (!havePend) return; havePend = false;
+        candMag[candN % 40] = pendMag; candN++;
+        if (candN < 8) return;                                                                // the first groups only set the level
+        int k = Math.min(candN, 40); double[] t = java.util.Arrays.copyOf(candMag, k); java.util.Arrays.sort(t);
+        double ref = t[(9 * (k - 1)) / 10];                                                   // 90th percentile of the group heights: the true beats are the tall ones
+        if (pendMag < ACCEPT_FRAC * ref) return;                                              // a T wave, a noise burst
+        if (pendApex - lastAccApex < 150) return;                                             // closer than 0.3 s to the last beat
+        lastAccApex = pendApex;
+        int i = bN & (NB - 1);
+        bApex[i] = pendApex; bPr[i] = pendPr; bPrDue[i] = due[p(pendApex - 42)]; bDue[i] = due[p(pendApex)]; bAmp[i] = (float) pendAmp; bOk[i] = true;
+        bN++;
+        LiveBands.beat(pendApex + 18);
+    }
+    static final double ACCEPT_FRAC = 0.45;                          // a beat candidate counts as a beat when its height is at least this fraction of the 90th percentile of the last 40 candidate heights (as the offline detector of decode log 50.4)
+    private static void proReset() { bN = 0; pkDone = 0; winNext = 0; wins.clear(); candN = 0; havePend = false; lastAccApex = Long.MIN_VALUE / 2; }
+
+    /** Lead-off block of the live frame (decode log 2b): median magnitude of the valid slots, about 80 at good contact. */
+    private static void noteZ(byte[] f) {
+        if (f.length < 1580) return;
+        int n = f[1534] & 0xFF; if (n < 1 || n > 11) return;
+        double[] z = new double[n];
+        for (int k = 0; k < n; k++) { int i = (f[1535 + 2 * k] & 0xFF) | ((f[1536 + 2 * k] & 0xFF) << 8); int q = (short) ((f[1557 + 2 * k] & 0xFF) | ((f[1558 + 2 * k] & 0xFF) << 8)); z[k] = Math.sqrt((double) i * i + (double) q * q); }
+        double m = med(z); synchronized (ZL) { if (zList.size() < 1200) zList.add(m); }
+    }
+    /** Median lead-off magnitude over the reading (NaN when none). */
+    static double medianZ() { synchronized (ZL) { int s = zList.size(); if (s == 0) return Double.NaN; double[] x = new double[s]; for (int i = 0; i < s; i++) x[i] = zList.get(i); return med(x); } }
+
+    private static double medRange(double[] a, long from, long to) {
+        double[] t = new double[(int) (to - from)]; int k = 0;
+        for (long g = from; g < to; g++) { double v = a[p(g)]; if (!Double.isNaN(v)) t[k++] = v; }
+        if (k < 8) return Double.NaN; return med(java.util.Arrays.copyOf(t, k));
+    }
+
+    private static double corr(double[] a, double[] b, int from, int to) {
+        double ma = 0, mb = 0; int n = to - from; for (int i = from; i < to; i++) { ma += a[i]; mb += b[i]; } ma /= n; mb /= n;
+        double sab = 0, saa = 0, sbb = 0; for (int i = from; i < to; i++) { double x = a[i] - ma, y = b[i] - mb; sab += x * y; saa += x * x; sbb += y * y; }
+        return (saa > 0 && sbb > 0) ? sab / Math.sqrt(saa * sbb) : 0.0;
+    }
+
+    /** Called under LOCK after every frame: stage 1 finds the R apex, PR level and height of each new beat; stage 2 cuts the beat window once its 750 ms are final. */
+    private static void proUpdate() {
+        if (pkCount - pkDone > 60) pkDone = pkCount - 60;
+        while (pkDone < pkCount) {
+            long q = pk[pkDone & 63], c = q - 18;
+            if (procUpTo < c + 25) break;
+            long best = -1; double bv = -1;
+            for (long g = c - 20; g <= c + 20; g++) { if (g < nAbs - CAP + 64) continue; double v = outv[p(g)]; if (Double.isNaN(v)) continue; double a = Math.abs(v); if (a > bv) { bv = a; best = g; } }
+            pkDone++;
+            if (best < 0 || best - 60 < nAbs - CAP + 64) continue;
+            double pr = medRange(outv, best - 50, best - 35);
+            if (Double.isNaN(pr)) continue;
+            double amp = outv[p(best)] - pr, mag = Math.abs(amp);
+            if (testCandSink != null) testCandSink.add(new double[] { best / (double) FS, mag, amp });
+            if (havePend && best - pendApex < GROUP) { if (mag > pendMag) { pendApex = best; pendMag = mag; pendAmp = amp; pendPr = pr; } continue; }   // keep the largest peak within 0.35 s
+            finishPending();
+            havePend = true; pendApex = best; pendMag = mag; pendAmp = amp; pendPr = pr;
+        }
+        if (havePend && procUpTo >= pendApex + 100) finishPending();
+        while (winNext < bN) {
+            if (bN - winNext > NB - 8) winNext = bN - (NB - 8);
+            int i = winNext & (NB - 1); long apex = bApex[i];
+            if (procUpTo < apex + POST_W + 40) break;
+            winNext++;
+            if (apex - PRE_W < nAbs - CAP + 64) continue;
+            double[] w = new double[PRE_W + POST_W]; boolean ok = true;
+            for (int j = 0; j < w.length; j++) { double v = gconv(kFast, apex - PRE_W + j); if (Double.isNaN(v)) { ok = false; break; } w[j] = v; }
+            if (!ok) continue;
+            double[] seg = java.util.Arrays.copyOfRange(w, PRE_W - 50, PRE_W - 35); java.util.Arrays.sort(seg); double base = seg[seg.length / 2];
+            double mx = 0; for (int j = PRE_W - 6; j <= PRE_W + 6; j++) { double d = w[j] - base; if (Math.abs(d) > Math.abs(mx)) mx = d; }
+            double sign = mx >= 0 ? 1.0 : -1.0;
+            for (int j = 0; j < w.length; j++) w[j] = sign * (w[j] - base);
+            if (wins.size() >= 8) {
+                int n = Math.min(wins.size(), 40); double[] tm = new double[w.length], col = new double[n];
+                for (int j = 0; j < w.length; j++) { for (int g = 0; g < n; g++) col[g] = wins.get(wins.size() - n + g)[j]; tm[j] = med(col); }
+                bOk[i] = corr(w, tm, PRE_W - 50, PRE_W + 225) >= DIM_GATE;
+            }
+            wins.add(w); if (wins.size() > MAXWIN) wins.remove(0);
+        }
+    }
+
+    /** Subtracts the PR-point spline (cubic Hermite through the per-beat PR levels, 3-point median first) from the copied samples. Outside the known beats the baseline is held flat. */
+    private static void applyBase(float[] v, double[] t, int m) {
+        int cnt = Math.min(bN, NB), k = 0; double[] tt = new double[cnt], yy = new double[cnt];
+        for (int i = bN - cnt; i < bN; i++) { int q = i & (NB - 1); if (Double.isNaN(bPr[q]) || Double.isNaN(bPrDue[q]) || !bOk[q]) continue; if (k > 0 && bPrDue[q] <= tt[k - 1]) continue; tt[k] = bPrDue[q]; yy[k] = bPr[q]; k++; }
+        if (k < 2) return;
+        double[] ym = new double[k];
+        for (int j = 0; j < k; j++) { double a = yy[Math.max(0, j - 1)], b = yy[j], c = yy[Math.min(k - 1, j + 1)]; ym[j] = Math.max(Math.min(a, b), Math.min(Math.max(a, b), c)); }
+        for (int j = 0; j < k; j++) {                                    // a level more than 40 uV from the median of its 5 neighbours is a bad beat: use that median
+            int lo = Math.max(0, j - 2), hi = Math.min(k - 1, j + 2); double[] w5 = new double[hi - lo + 1]; for (int g = lo; g <= hi; g++) w5[g - lo] = ym[g];
+            double m5 = med(w5); if (Math.abs(ym[j] - m5) > 40.0) ym[j] = m5;
+        }
+        double[] mt = new double[k];
+        for (int j = 0; j < k; j++) { int a = Math.max(0, j - 1), b = Math.min(k - 1, j + 1); mt[j] = (b > a) ? (ym[b] - ym[a]) / (tt[b] - tt[a]) : 0.0; }
+        int seg = 0;
+        for (int i = 0; i < m; i++) {
+            if (Float.isNaN(v[i])) continue;
+            double x = t[i], base;
+            if (x <= tt[0]) base = ym[0]; else if (x >= tt[k - 1]) base = ym[k - 1];
+            else {
+                while (seg < k - 2 && x > tt[seg + 1]) seg++;
+                while (seg > 0 && x < tt[seg]) seg--;
+                double h = tt[seg + 1] - tt[seg], s = (x - tt[seg]) / h, s2 = s * s, s3 = s2 * s;
+                base = (2 * s3 - 3 * s2 + 1) * ym[seg] + (s3 - 2 * s2 + s) * h * mt[seg] + (-2 * s3 + 3 * s2) * ym[seg + 1] + (s3 - s2) * h * mt[seg + 1];
+            }
+            v[i] -= (float) base;
+        }
+    }
+
+    /** Beats (R apex time on the display timeline, signed height in uV against the PR level, shape ok) inside the window; returns how many were copied. */
+    static int proBeats(long nowMs, double windowMs, double[] tOut, float[] ampOut, boolean[] okOut) {
+        synchronized (LOCK) {
+            int cnt = Math.min(bN, NB), m = 0;
+            for (int i = bN - cnt; i < bN && m < tOut.length; i++) { int q = i & (NB - 1); double d = bDue[q]; if (d > nowMs || d < nowMs - windowMs) continue; tOut[m] = d; ampOut[m] = bAmp[q]; okOut[m] = bOk[q]; m++; }
+            return m;
+        }
+    }
+    /** The kept beat windows (PRE_W + POST_W samples, uV, baseline at the PR level, R up). Shared arrays: do not change them. */
+    static java.util.List<double[]> windowsCopy() { synchronized (LOCK) { return new java.util.ArrayList<>(wins); } }
+    static int beatCount() { synchronized (LOCK) { return bN; } }
+    /** Median R-R of the last beats in seconds (NaN with fewer than 4 beats). */
+    static double medianRrS() {
+        synchronized (LOCK) {
+            int cnt = Math.min(bN, 24); if (cnt < 4) return Double.NaN; double[] d = new double[cnt - 1];
+            for (int i = 0; i < cnt - 1; i++) { int a = (bN - cnt + i) & (NB - 1), b = (bN - cnt + i + 1) & (NB - 1); d[i] = (bApex[b] - bApex[a]) / (double) FS; }
+            return med(d);
+        }
+    }
+    /** Beats in the first seconds of the reading and the whole reading (for the notes file). */
+    static int beatsTotal() { synchronized (LOCK) { return pkCount; } }
 
     // ---- test hooks (used by the off-phone tests) ----
     static double[] testOutputs() { synchronized (LOCK) { int n = (int) Math.min(procUpTo, CAP - 64); double[] r = new double[n]; long s = procUpTo - n; for (int i = 0; i < n; i++) r[i] = outv[p(s + i)]; return r; } }

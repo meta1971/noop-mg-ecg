@@ -186,4 +186,53 @@ final class Explain {
             {WATCH, "The method was tested once, on 28 Oct 2026, against public PhysioNet databases: QRS onset and end within about 10 to 14 ms of cardiologists' marks, the T end (QT) within about 40 ms, AF detection from beat times unchanged down to about 50 Hz timing, and a healthy-rhythm reference for variability. Those results are fixed in the report; the app does not download or re-run them. The code (Python and Java) can be saved to Downloads with the button above."}
         };
     }
+
+    // ---- 0.42.0: the reading page, the readings table and the reminders ----
+    static String[][] avgBeatLive() {
+        return new String[][] {
+            {WHAT, "The average of your recent heartbeats, lined up on the R peak. Each beat's own baseline is its PR segment (100 to 70 ms before R). Beats whose shape does not match the typical beat (correlation under 0.6) are left out."},
+            {READ, "QRS is the width of the main spike, about 75 to 100 ms on this strap. The S/ST dip is the lowest point 20 to 120 ms after R. The line under the graph also gives the dip at 14 to 28 ms that your R height predicts (0.176 x R - 194 uV, from 44 earlier readings); on this wrist the dip is deep with a small R wave and almost gone with a large one."},
+            {HOW, "The same measuring code as the report (slope thresholds on the averaged beat). The plus-or-minus is the 95 % range from 200 resamples of the beats. Live, fewer beats are averaged, and QRS reads about 2 to 8 ms shorter than the report: the report is the reference."},
+            {WATCH, "A single wrist-to-finger lead has no sharp S wave. Research only, not a diagnosis."}
+        };
+    }
+
+    static String[][] noiseBands() {
+        return new String[][] {
+            {WHAT, "How much signal is left between the beats (each beat masked from 100 ms before to 400 ms after), in the strap's QRS band (8 to 25 Hz) and in neighbouring bands. It is noise, not heartbeat."},
+            {READ, "In 41 earlier readings the QRS-band noise had a median of 18 uV and a middle half of 15 to 27 uV; only 2 of 41 were above 40. 50 Hz above about 10 uV is mains hum. Drift above about 70 uV is slow movement."},
+            {HOW, "Causal band-pass filters on the live samples, the median over the last 24 gaps between beats. The report uses a zero-phase version of the same idea, so its number and its usual range (14 to 20 uV) are a little different."},
+            {WATCH, "Muscle tension in the hand or forearm, vibration and a charger close by all raise it. The noisiest readings so far were graded inconclusive by the strap (decode log 115)."}
+        };
+    }
+
+    static String[][] resultCard() {
+        return new String[][] {
+            {WHAT, "What the strap decided at the end of its own 30 s analysis, beside what the app measured while you were on the clasp."},
+            {READ, "Sinus rhythm, inconclusive and unreadable are the strap's classes. \"No verdict\" means the reading stopped before about 37 s of unbroken contact (a lift of 0.3 s or more starts its count again)."},
+            {HOW, "The heart rate here comes from the beats the app found. The strap's own average counts every detection it made, so it reads a few beats a minute high when it saw extra ones."},
+            {WATCH, "Research only, not a diagnosis. Inconclusive is not the same as abnormal: noise and extra detections can cause it."}
+        };
+    }
+
+    static String[][] streakCard() {
+        return new String[][] {
+            {WHAT, "The days this week (Monday to Sunday) with at least one saved reading, and your streak."},
+            {HOW, "A day counts when a report was saved for it. The streak is the run of days ending today, or ending yesterday if you have not read yet today. Morning is 04:00 to 12:00, evening 17:00 to 24:00."}
+        };
+    }
+
+    static String[][] typicalRange() {
+        return new String[][] {
+            {WHAT, "Your own typical range for each measure over your last 28 readings, and where the latest one sits."},
+            {HOW, "The range is the middle half of those readings (25th to 75th percentile) around the median. It is not a normal range for other people; time of day, posture and noise move these numbers."}
+        };
+    }
+
+    /** Plain text for a list of rows: heading, text, blank line. */
+    static String asText(String[][] rows) {
+        StringBuilder sb = new StringBuilder();
+        for (String[] r : rows) { if (sb.length() > 0) sb.append("\n\n"); sb.append(r[0]).append("\n").append(r[1]); }
+        return sb.toString();
+    }
 }

@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
+// FILE VERSION 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
 
 import java.util.List;
 import java.text.SimpleDateFormat;
@@ -41,9 +41,28 @@ public final class EcgReport {
         return lastStart > 0L && records < Math.max(20, lastRecords / 2) && t >= lastStart && t <= lastStart + lastRecords + 10L;
     }
 
+    static volatile EcgR16Analyzer.Result lastRes; static volatile EcgR16Analyzer.Strip lastStrip;      // 0.41.1: kept so the report can be written again
+
+    /**
+     * 0.41.1: the strap's end events (118 / 119) arrive with a pull that starts after the reading, so the first copy of a report says "Event 118 not received".
+     * Writes the newest report again once the events are stored. Returns true when it was written. Only for the reading that started within 120 s of sinceUnix. Never throws.
+     */
+    public static boolean refreshLast(long sinceUnix) {
+        try {
+            EcgR16Analyzer.Result r = lastRes; EcgR16Analyzer.Strip s = lastStrip;
+            if (r == null || s == null || appCtx == null || s.rawUv == null) return false;
+            if (sinceUnix > 0 && Math.abs(s.startUnix - sinceUnix) > 120L) return false;
+            long secs = s.rawUv.length / StrapBeatCheck.FS;
+            if (StrapEvents.raw(appCtx, 118, s.startUnix, s.startUnix + secs + 120, 1).isEmpty()) return false;
+            saveReportFile(r, s);
+            return true;
+        } catch (Throwable t) { return false; }
+    }
+
     public static void saveReportFile(EcgR16Analyzer.Result r, EcgR16Analyzer.Strip s) {
         java.io.File dir = reportDir;
         if (dir == null || r == null || s == null || r.recordsIn == 0 || s.mv.length == 0) return;
+        lastRes = r; lastStrip = s;
         try {
             long t = s.startUnix;
             if (t < 1672531200L || t > 1924992000L) t = System.currentTimeMillis() / 1000L;
@@ -59,6 +78,7 @@ public final class EcgReport {
             } finally {
                 out.close();
             }
+            try { EcgWidget.refreshAll(appCtx); } catch (Throwable ignored) { }      // 0.42.0: the widget shows the newest reading
         } catch (Throwable ignored) {
             // best effort only
         }
@@ -96,11 +116,42 @@ public final class EcgReport {
             for (String[] rw : StrapBeatCheck.rows(c)) b.append(row(esc(rw[0]), esc(rw[1])));
             b.append("<h2>Verdict check</h2><p class=\"hint\">Measures that separated the strap's results on 51 earlier readings (sinus 1, inconclusive 6, unreadable 2).</p>");
             for (String[] rw : StrapBeatCheck.checkRows(c)) b.append(row(esc(rw[0]), esc(rw[1])));
+            b.append("<p class=\"cap\">The strap's HRV is a sliding RMSSD over about 32 beats, refreshed about every 15 beats. It first appears once about 26 beats the strap accepted have gathered after its first beat B, so a noisy start only delays it (decode log 105.3, 115.2).</p>");
             b.append("<p class=\"cap\">Amplitudes use the design scale of 0.0621 uV per count; the absolute scale is not yet calibrated. Not a diagnosis.</p></section>");
             return b.toString();
         } catch (Throwable t) {
             return "";
         }
+    }
+
+    /**
+     * 0.41.1: noise in the strap's QRS band (8 to 25 Hz) between the beats (each beat masked from 100 ms before to 400 ms after), the median over the gaps. Grades from 41 readings (this filter reads about 20 % below scipy's):
+     * median 17 uV, middle half 14 to 20, 90 % below 25, noisiest 49. NaN when there are too few clean gaps. Research only.
+     */
+    static double noiseQrsBandUv(EcgR16Analyzer.Strip s) {
+        try {
+            if (s == null || s.rawUv == null || s.beats == null || s.beats.length < 10) return Double.NaN;
+            double[] raw = s.rawUv; int n = raw.length, fs = StrapBeatCheck.FS; if (n < 15 * fs) return Double.NaN;
+            double[] f = StrapBeatCheck.runs(raw, ProDsp.bandPass(8, 25, fs), null);
+            java.util.ArrayList<Double> g = new java.util.ArrayList<Double>();
+            for (int k = 0; k + 1 < s.beats.length; k++) {
+                int i0 = s.beats[k] + 200, i1 = s.beats[k + 1] - 50;
+                if (i0 < 10 * fs || i1 - i0 < 60 || i1 > n) continue;
+                double ss = 0; boolean ok = true; for (int i = i0; i < i1; i++) { if (Double.isNaN(f[i])) { ok = false; break; } ss += f[i] * f[i]; }
+                if (ok) g.add(Math.sqrt(ss / (i1 - i0)));
+            }
+            if (g.size() < 8) return Double.NaN;
+            java.util.Collections.sort(g); int m = g.size();
+            return m % 2 == 1 ? g.get(m / 2) : 0.5 * (g.get(m / 2 - 1) + g.get(m / 2));
+        } catch (Throwable t) { return Double.NaN; }
+    }
+
+    /** 0.41.1: the line under the reading quality sentence. The grade counts clean seconds only; this says how noisy those seconds were. */
+    static String noiseLine(EcgR16Analyzer.Strip s) {
+        double nz = noiseQrsBandUv(s);
+        if (Double.isNaN(nz)) return "";
+        String word = nz <= 20 ? "low" : nz <= 28 ? "moderate" : "high";
+        return "<p class=\"cap\">Noise in the strap's QRS band (8 to 25 Hz, between beats): " + Math.round(nz) + " &micro;V, " + word + " (usual 14 to 20 &micro;V, from 41 earlier readings). The grade above counts clean seconds only, so a reading can grade A and still be noisy; relaxing the hand and resting the forearm lowers it.</p>";
     }
 
     /** 0.40.0: segments from the average beat of all readings together (PooledSegments). Never throws. Research only. */
@@ -162,7 +213,7 @@ public final class EcgReport {
 
         // ---- quality
         b.append("<section class=\"card q\">").append(ring(g)).append("<div><div class=\"k\">Reading quality</div><div class=\"big\">")
-                .append(g.word).append("</div><p>").append(qualitySentence(r, g, secs, meta)).append("</p></div></section>");
+                .append(g.word).append("</div><p>").append(qualitySentence(r, g, secs, meta)).append("</p>").append(noiseLine(strip)).append("</div></section>");
 
         // ---- what we found
         b.append("<section class=\"card\"><h2>What we found</h2><p class=\"lead\">").append(foundSentence(r, g, usableReading)).append("</p></section>");

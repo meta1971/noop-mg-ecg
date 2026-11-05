@@ -1,0 +1,163 @@
+package com.noop.mgecg;
+
+// FILE VERSION 0.42.0 (5 Nov 2026): reading reminders with their own times for work days and days off (and a one-tap "today is a work day / day off" override). Decode log 50.6 items 1 and 2:
+// morning 08:00-10:00 and evening 19:00-21:00 on the same day were the planned Run E; shifts differ, so every time can be changed or switched off.
+// The alarm goes to DayLogReceiver (no manifest change). A reminder is skipped when a reading was taken in the last 3 hours.
+
+import android.app.Activity;
+import android.app.AlarmManager;
+import android.app.AlertDialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.TimePickerDialog;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.view.Gravity;
+import android.view.View;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.TimePicker;
+
+import java.io.File;
+import java.util.Calendar;
+import java.util.List;
+import java.util.Locale;
+import java.util.TimeZone;
+
+import static com.noop.mgecg.ReminderTime.*;
+
+final class EcgReminder {
+    private EcgReminder() {}
+
+    static final String A_FIRE = "com.noop.mgecg.ECG_REMIND", A_SNOOZE = "com.noop.mgecg.ECG_SNOOZE", CH = "ecg_reminder";
+    static final int ID = 4108, REQ = 7102, REQ_SNOOZE = 7103;
+    static final String[] SLOT = { "Work day, morning", "Work day, evening", "Day off, morning", "Day off, evening" };
+
+    static boolean isAction(String a) { return A_FIRE.equals(a) || A_SNOOZE.equals(a); }
+
+    // ------------------------------------------------------------------ settings
+    static Cfg load(Context c) {
+        SharedPreferences p = c.getApplicationContext().getSharedPreferences("ecg_reminder", Context.MODE_PRIVATE);
+        Cfg g = new Cfg(); g.on = p.getBoolean("on", false); g.workMask = p.getInt("mask", 31);
+        for (int i = 0; i < 4; i++) g.t[i] = p.getInt("t" + i, g.t[i]);
+        g.overrideDay = p.getInt("ovday", 0); g.overrideType = p.getInt("ovtype", 0);
+        return g;
+    }
+    static void save(Context c, Cfg g) {
+        SharedPreferences.Editor e = c.getApplicationContext().getSharedPreferences("ecg_reminder", Context.MODE_PRIVATE).edit().putBoolean("on", g.on).putInt("mask", g.workMask).putInt("ovday", g.overrideDay).putInt("ovtype", g.overrideType);
+        for (int i = 0; i < 4; i++) e.putInt("t" + i, g.t[i]);
+        e.apply();
+    }
+
+    // ------------------------------------------------------------------ alarm
+    /** Sets (or clears) the one alarm for the next reminder. Safe to call at any time. */
+    static void schedule(Context c0) {
+        try {
+            Context c = c0.getApplicationContext(); AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE); if (am == null) return;
+            PendingIntent pi = PendingIntent.getBroadcast(c, REQ, new Intent(c, DayLogReceiver.class).setAction(A_FIRE), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            long[] n = next(System.currentTimeMillis(), TimeZone.getDefault(), load(c));
+            if (n == null) { am.cancel(pi); return; }
+            if (Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, n[0], pi); else am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, n[0], pi);
+        } catch (Throwable ignored) { }
+    }
+
+    private static long newestReadingSec(Context c) {
+        try {
+            File dir = c.getExternalFilesDir(null); List<File> fs = NewLookActivity.listReportFiles(dir); long best = 0;
+            for (File f : fs) { String n = f.getName(); try { long t = Long.parseLong(n.substring("ecg_report_".length(), n.length() - ".html".length())); if (t > best) best = t; } catch (Exception ignored) { } }
+            return best;
+        } catch (Throwable t) { return 0; }
+    }
+
+    /** Called by DayLogReceiver. */
+    static void onAction(Context c0, String action) {
+        Context c = c0.getApplicationContext();
+        try {
+            if (A_SNOOZE.equals(action)) {
+                NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE); if (nm != null) nm.cancel(ID);
+                AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE); if (am == null) return;
+                PendingIntent pi = PendingIntent.getBroadcast(c, REQ_SNOOZE, new Intent(c, DayLogReceiver.class).setAction(A_FIRE).putExtra("snoozed", true), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                long at = System.currentTimeMillis() + 30L * 60000L;
+                if (Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi); else am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi);
+                return;
+            }
+            if (A_FIRE.equals(action)) {
+                Cfg g = load(c);
+                if (g.on) {
+                    long last = newestReadingSec(c);
+                    if (last == 0 || System.currentTimeMillis() / 1000L - last > 3L * 3600L) post(c, false);
+                }
+                schedule(c);
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    static void post(Context c, boolean test) {
+        NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE); if (nm == null) return;
+        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CH) == null) { NotificationChannel ch = new NotificationChannel(CH, "ECG reading reminders", NotificationManager.IMPORTANCE_DEFAULT); nm.createNotificationChannel(ch); }
+        Intent open = new Intent(c, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT).putExtra("stay", true).putExtra("start_ecg", true);
+        PendingIntent take = PendingIntent.getActivity(c, 7104, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent snooze = PendingIntent.getBroadcast(c, 7105, new Intent(c, DayLogReceiver.class).setAction(A_SNOOZE), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+        String part = hour < 12 ? "morning" : "evening";
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(c, CH) : new Notification.Builder(c);
+        b.setSmallIcon(android.R.drawable.ic_menu_recent_history).setContentTitle(test ? "Test: time for an ECG reading" : "Time for your " + part + " ECG reading")
+            .setContentText("Sit at the table, forearm supported, two fingertips on the clasp. 45 s is enough.").setAutoCancel(true).setContentIntent(take)
+            .addAction(new Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_edit), "Take ECG", take).build())
+            .addAction(new Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_recent_history), "Snooze 30 min", snooze).build());
+        nm.notify(ID, b.build());
+    }
+
+    // ------------------------------------------------------------------ settings screen (from Home)
+    static void showDialog(final Activity a) {
+        final Cfg g = load(a);
+        final LinearLayout col = new LinearLayout(a); col.setOrientation(LinearLayout.VERTICAL); int p = Math.round(14 * a.getResources().getDisplayMetrics().density); col.setPadding(p, p, p, p);
+        final AlertDialog[] dlg = new AlertDialog[1];
+        final Runnable[] rebuild = new Runnable[1];
+        rebuild[0] = new Runnable() { @Override public void run() {
+            col.removeAllViews();
+            col.addView(note(a, "Each time can be changed or switched off. Work days and days off have their own times; the override is for today only. A reminder is skipped when you took a reading in the last 3 hours.", 12));
+            col.addView(row(a, "Reminders", g.on ? "On" : "Off", new View.OnClickListener() { @Override public void onClick(View v) {
+                g.on = !g.on; save(a, g); schedule(a); if (g.on && Build.VERSION.SDK_INT >= 33) { try { a.requestPermissions(new String[] { "android.permission.POST_NOTIFICATIONS" }, 4108); } catch (Throwable ignored) { } } rebuild[0].run(); } }));
+            Calendar today = Calendar.getInstance(); final int ymd = ymd(today);
+            String ov = g.overrideDay == ymd && g.overrideType == 1 ? "Work day" : g.overrideDay == ymd && g.overrideType == 2 ? "Day off" : "Automatic (" + (workDay(g, today) ? "work day" : "day off") + ")";
+            col.addView(row(a, "Today counts as", ov, new View.OnClickListener() { @Override public void onClick(View v) {
+                new AlertDialog.Builder(a).setTitle("Today counts as").setItems(new String[] { "Automatic", "Work day", "Day off" }, new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) {
+                    g.overrideDay = w == 0 ? 0 : ymd; g.overrideType = w; save(a, g); schedule(a); rebuild[0].run(); } }).show(); } }));
+            StringBuilder wd = new StringBuilder(); for (int i = 0; i < 7; i++) if ((g.workMask & (1 << i)) != 0) wd.append(wd.length() > 0 ? " " : "").append(EcgStreak.DOW[i]);
+            col.addView(row(a, "Work days", wd.length() == 0 ? "none" : wd.toString(), new View.OnClickListener() { @Override public void onClick(View v) {
+                final boolean[] chk = new boolean[7]; for (int i = 0; i < 7; i++) chk[i] = (g.workMask & (1 << i)) != 0;
+                new AlertDialog.Builder(a).setTitle("Work days").setMultiChoiceItems(EcgStreak.DOW, chk, new android.content.DialogInterface.OnMultiChoiceClickListener() { @Override public void onClick(android.content.DialogInterface d, int w, boolean on) { chk[w] = on; } })
+                    .setPositiveButton("Save", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) { int m = 0; for (int i = 0; i < 7; i++) if (chk[i]) m |= 1 << i; g.workMask = m; save(a, g); schedule(a); rebuild[0].run(); } }).setNegativeButton("Cancel", null).show(); } }));
+            for (int s = 0; s < 4; s++) {
+                final int slot = s;
+                col.addView(row(a, SLOT[s], hhmm(g.t[s]), new View.OnClickListener() { @Override public void onClick(View v) {
+                    new AlertDialog.Builder(a).setTitle(SLOT[slot]).setItems(new String[] { "Change the time", g.t[slot] < 0 ? "Switch on" : "Switch off" }, new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) {
+                        if (w == 1) { g.t[slot] = g.t[slot] < 0 ? (slot % 2 == 0 ? 8 * 60 + 30 : 19 * 60 + 30) : -1; save(a, g); schedule(a); rebuild[0].run(); return; }
+                        int cur = g.t[slot] < 0 ? (slot % 2 == 0 ? 8 * 60 + 30 : 19 * 60 + 30) : g.t[slot];
+                        new TimePickerDialog(a, new TimePickerDialog.OnTimeSetListener() { @Override public void onTimeSet(TimePicker tp, int h, int m) { g.t[slot] = h * 60 + m; save(a, g); schedule(a); rebuild[0].run(); } }, cur / 60, cur % 60, true).show(); } }).show(); } }));
+            }
+            long[] n = next(System.currentTimeMillis(), TimeZone.getDefault(), g);
+            col.addView(note(a, n == null ? "Next reminder: none" : "Next reminder: " + new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(new java.util.Date(n[0])) + "  (" + SLOT[(int) n[1]] + ")", 13));
+            col.addView(row(a, "Send a test reminder now", "Test", new View.OnClickListener() { @Override public void onClick(View v) {
+                if (Build.VERSION.SDK_INT >= 33) { try { a.requestPermissions(new String[] { "android.permission.POST_NOTIFICATIONS" }, 4108); } catch (Throwable ignored) { } }
+                post(a.getApplicationContext(), true); } }));
+        } };
+        rebuild[0].run();
+        ScrollView sv = new ScrollView(a); sv.addView(col);
+        dlg[0] = new AlertDialog.Builder(a).setTitle("Reading reminders").setView(sv).setPositiveButton("Done", null).create(); dlg[0].show();
+    }
+
+    private static TextView note(Activity a, String s, int sp) { TextView t = new TextView(a); t.setText(s); t.setTextSize(sp); t.setPadding(0, 6, 0, 10); return t; }
+    private static LinearLayout row(Activity a, String label, String value, View.OnClickListener click) {
+        LinearLayout r = new LinearLayout(a); r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(Gravity.CENTER_VERTICAL); int p = Math.round(10 * a.getResources().getDisplayMetrics().density); r.setPadding(0, p, 0, p);
+        TextView l = new TextView(a); l.setText(label); l.setTextSize(15); r.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView v = new TextView(a); v.setText(value + "  \u25be"); v.setTextSize(15); v.setTypeface(null, android.graphics.Typeface.BOLD); r.addView(v, new LinearLayout.LayoutParams(-2, -2));
+        r.setOnClickListener(click); r.setContentDescription(label + ", " + value + ", double tap to change"); return r;
+    }
+}

@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.39.0 (3 Nov): posture tag remembered (a reading is never saved untagged once a tag was used), position chip "H10 in hands". 0.2.1 (3 Oct): restyled ECG screen
+// FILE VERSION 0.42.0 (5 Nov 2026): Home shows this week and the streak, a Reminders button (own times for work days and days off), app shortcuts (Take an ECG, Pull now), the widget refresh. 0.41.0 (5 Nov 2026): the reading page is built by EcgPage (dropdown setup, pinned START / STOP, live noise, averaged beat, guided runs, result card); the posChips line that crashed the restyle since 0.39.0 is fixed; Pull now on Home. 0.39.0 (3 Nov): posture tag remembered (a reading is never saved untagged once a tag was used), position chip "H10 in hands". 0.2.1 (3 Oct): restyled ECG screen
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -80,7 +80,7 @@ public class NewLookActivity extends Activity {
 
     private FrameLayout homeLayer, reportsLayer, reportLayer;
     private LinearLayout reportsList, homeLatestCard;
-    private TextView homeConn, homeLatestTitle, homeLatestBody, reportTitle, banner;
+    private TextView homeConn, homeLatestTitle, homeLatestBody, reportTitle, banner, homeStreakTitle, homeStreakBody;
     private Button devPill;
 
     private File bannerFile, openFile, latestFile;
@@ -105,7 +105,7 @@ public class NewLookActivity extends Activity {
     /** When the last reading from the new tabs ended (0 when none ran); HealthActivity shows "Preparing your report" for a few minutes after it. */
     static volatile long lastReadingEndMs;
     private TextView ecgTips, ecgPrep, ecgStoredView;
-    private View[] markViews, detailViews;
+    View[] markViews; private View[] detailViews; private EcgPage ecgPage;
     private int lastRunningState = -1;
 
     // ------------------------------------------------------------------ lifecycle
@@ -115,6 +115,7 @@ public class NewLookActivity extends Activity {
         super.onCreate(b);
         EcgReport.reportDir = getExternalFilesDir(null);
         EcgReport.appCtx = getApplicationContext();                    // 0.39.0
+        try { EcgReminder.schedule(getApplicationContext()); EcgWidget.refreshAll(getApplicationContext()); publishShortcuts(); } catch (Throwable ignored) { }      // 0.42.0
         try {
             getWindow().setStatusBarColor(BG);
         } catch (Throwable ignored) {
@@ -218,6 +219,10 @@ public class NewLookActivity extends Activity {
             in.removeExtra(KeepAlive.EXTRA_RESUME);
             KeepAlive.cancel(this);
             ui.postDelayed(() -> connectOnly(), 1500);
+        }
+        if (in.getBooleanExtra("pull_now", false)) {      // 0.42.0: the "Pull now" app shortcut
+            in.removeExtra("pull_now");
+            ui.postDelayed(() -> { if (!MainActivity.linkRunning()) MainActivity.startLinkHost(this); MainActivity.requestPull(); toast("Pull requested"); }, 1500);
         }
         final String rp = in.getStringExtra("open_report");
         if (rp != null || in.getBooleanExtra("start_ecg", false)) { pendingReport = null; pendingEcg = false; }   // one path handles it, not two
@@ -587,7 +592,7 @@ public class NewLookActivity extends Activity {
         if (!pressOld(SCAN_BUTTON_TEXT)) toast("Could not find the connect button.");
     }
 
-    private void toast(String s) {
+    void toast(String s) {
         Toast.makeText(this, s, Toast.LENGTH_LONG).show();
     }
 
@@ -660,6 +665,7 @@ public class NewLookActivity extends Activity {
     }
 
     private void styleEcgColumn(View container, LinearLayout col) {
+        ecgStyled = true;      // 0.41.0: set first: a failure half way must never make the next opening add the rows again
         container.setBackgroundColor(BG);
         col.setPadding(dp(18), dp(36), dp(18), dp(24));
 
@@ -731,44 +737,11 @@ public class NewLookActivity extends Activity {
         ecgStartBtn.setBackground(round(PRIMARY, 34));
         lastRunningState = -1;
 
-        // tips card above the button (idle only)
-        ecgTips = tv("Sit at a table, forearm supported at heart level, hand relaxed  \u00b7  two fingertips resting lightly on the clasp  \u00b7  stay still and quiet for 3 minutes without lifting",
-                13, MUTED, false);
-        ecgTips.setGravity(Gravity.CENTER);
-        ecgTips.setPadding(dp(8), dp(4), dp(8), dp(10));
-        col.addView(ecgTips, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
-        // 0.25.2: position or activity tag for the next reading (tap again to clear)
-        // 0.27.2: position tags. Table readings (31 Oct 12:28: R 500 uV) against the couch (30 Oct evening: R 939-980 uV); tags let the report compare like with like
-        final String[] tagNames = {"Table", "Couch", "Lying", "Standing", "After exercise"}; tagChips = new Button[tagNames.length];
-        // 0.39.0: the posture tag is remembered (21:29 on 3 Nov was saved untagged); a reading started with no tag takes the last one used
-        final android.content.SharedPreferences tagPrefs = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
-        readingTag = tagPrefs.getString("reading_tag", "");
-        LinearLayout tagRow = new LinearLayout(this); tagRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout tagRow2 = new LinearLayout(this); tagRow2.setOrientation(LinearLayout.HORIZONTAL);
-        for (int i = 0; i < tagNames.length; i++) { final int k = i; Button c = pillButton(tagNames[i], CARD, MUTED); c.setTextSize(11); tagChips[i] = c;
-            c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { readingTag = readingTag.equals(tagNames[k]) ? "" : tagNames[k]; tagPrefs.edit().putString("reading_tag", readingTag).putString("reading_tag_last", readingTag.isEmpty() ? tagPrefs.getString("reading_tag_last", "") : readingTag).apply(); for (int j = 0; j < tagChips.length; j++) tagChips[j].setBackground(round(tagNames[j].equals(readingTag) ? PRIMARY : CARD, 22)); } });
-            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, dp(40), 1f); tlp.rightMargin = dp(4); tlp.bottomMargin = dp(4); (i < 3 ? tagRow : tagRow2).addView(c, tlp); c.setBackground(round(tagNames[i].equals(readingTag) ? PRIMARY : CARD, 22)); }
-        col.addView(tagRow, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
-        col.addView(tagRow2, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
-        // 0.37.0: where the strap is (leave all off for the wrist); noted with the posture tag as "Table @ Chest V5"
-        final String[] posNames = {"Chest V2", "Chest V4", "Chest V5", "Chest V6", "Bicep L", "Bicep R", "H10 in hands"};      // 0.39.0: "H10 in hands" = same-lead runs (H10 pads in the palms, MG on the wrist) posChips = new Button[posNames.length];
-        TextView posLabel = tv("Strap position (all off = wrist)", 11, MUTED, true); posLabel.setGravity(Gravity.CENTER); col.addView(posLabel, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
-        LinearLayout posRow = new LinearLayout(this); posRow.setOrientation(LinearLayout.HORIZONTAL); LinearLayout posRow2 = new LinearLayout(this); posRow2.setOrientation(LinearLayout.HORIZONTAL);
-        for (int i = 0; i < posNames.length; i++) { final int k = i; Button c = pillButton(posNames[i], CARD, MUTED); c.setTextSize(11); posChips[i] = c;
-            c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { positionTag = positionTag.equals(posNames[k]) ? "" : posNames[k]; for (int j = 0; j < posChips.length; j++) posChips[j].setBackground(round(posNames[j].equals(positionTag) ? PRIMARY : CARD, 22)); } });
-            LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, dp(40), 1f); plp.rightMargin = dp(4); plp.bottomMargin = dp(4); (i < 4 ? posRow : posRow2).addView(c, plp); }
-        col.addView(posRow, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2)); col.addView(posRow2, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
-        // 0.27.0: live signal light and auto-stop
-        qualityView = tv("", 13, MUTED, true); qualityView.setGravity(Gravity.CENTER); qualityView.setPadding(dp(10), dp(8), dp(10), dp(8)); qualityView.setVisibility(View.GONE);
-        col.addView(qualityView, col.indexOfChild(ecgStartBtn), new LinearLayout.LayoutParams(-1, -2));
-        final android.content.SharedPreferences ecp = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
-        autoChip = pillButton(autoLabel(ecp.getBoolean("auto_stop", true), autoTarget()), CARD, MUTED); autoChip.setTextSize(11);
-        autoChip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ecp.getBoolean("auto_stop", true); ecp.edit().putBoolean("auto_stop", on).apply(); autoChip.setText(autoLabel(on, autoTarget())); } });
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(-1, dp(40)); alp.topMargin = dp(4); alp.bottomMargin = dp(4);
-        col.addView(autoChip, col.indexOfChild(ecgStartBtn), alp);
-        targetChip = pillButton("Report quality target: " + String.format(java.util.Locale.UK, "%.0f", autoTarget()) + " uV (tap: 3, 4, 5)", CARD, MUTED); targetChip.setTextSize(11);
-        targetChip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { double t = autoTarget(); double nt = t < 3.5 ? 4.0 : t < 4.5 ? 5.0 : 3.0; ecp.edit().putFloat("auto_target", (float) nt).apply(); targetChip.setText("Report quality target: " + String.format(java.util.Locale.UK, "%.0f", nt) + " uV (tap: 3, 4, 5)"); autoChip.setText(autoLabel(ecp.getBoolean("auto_stop", true), nt)); } });
-        LinearLayout.LayoutParams tcp = new LinearLayout.LayoutParams(-1, dp(40)); tcp.bottomMargin = dp(4); col.addView(targetChip, col.indexOfChild(ecgStartBtn), tcp);
+        // 0.41.0: tips, tags, strap position, signal light, auto-stop and the 3 / 4 / 5 target are now built by EcgPage (dropdown setup, pinned START / STOP, live noise, averaged beat, guided runs, result card)
+        ecgTips = null;
+        ecgPage = new EcgPage(this);
+        try { ecgPage.build((FrameLayout) container, col, top, status, verdict, waveCard, stats, ecgStartBtn); }
+        catch (Throwable t) { toast("Reading page: " + t.getClass().getSimpleName() + " (the rest works)"); }
 
         // markers folded away (still work when opened)
         markViews = new View[]{markLabel, markRow1, markRow2, cuff};
@@ -819,14 +792,16 @@ public class NewLookActivity extends Activity {
     }
 
     // 0.25.1: a short buzz and a note when the fingers come off the clasp during a reading, or when there is no contact after 14 s
-    private int lastWarnRun; private boolean warnedNoContact; private String readingTag = ""; private Button[] tagChips;
+    private int lastWarnRun; private boolean warnedNoContact; String readingTag = ""; private Button[] tagChips;
     private TextView qualityView; private Button autoChip; private boolean autoStopped;
     static final double AUTO_TARGET_DEFAULT = 4.0; static final long AUTO_MIN_MS = 60000L, AUTO_MAX_MS = 300000L;      // 0.37.0: the target is a setting (3, 4 or 5 uV; default 4: from 38 reports it halves the sitting time and the ST / QT spread grows from +/-3 to +/-4 uV and +/-3 to +/-5 ms)
     private double autoTarget() { double t = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getFloat("auto_target", (float) AUTO_TARGET_DEFAULT); return t < 2.5 ? 3.0 : t > 4.5 ? 5.0 : t > 3.5 ? 4.0 : 3.0; }
     private static String autoLabel(boolean on, double tgt) { return on ? String.format(java.util.Locale.UK, "Auto-stop ON: stops when report quality reaches %.0f uV (1 to 5 min). Tap the next button to change the target", tgt) : "Auto-stop OFF: you stop the reading"; }
-    private Button targetChip; private String positionTag = ""; private Button[] posChips;
+    double autoTargetValue() { return autoTarget(); }
+    private Button targetChip; String positionTag = ""; private Button[] posChips;
     /** 0.27.0: the signal light. Thresholds from 20 readings: live noise 13 to 52 uV (report noise per beat 19 to 63). */
     private void updateQuality(boolean running, boolean live) {
+        if (ecgPage != null) { ecgPage.update(running, live); return; }      // 0.41.0
         if (qualityView == null) return;
         if (!running || !live) { qualityView.setVisibility(View.GONE); return; }
         qualityView.setVisibility(View.VISIBLE);
@@ -926,13 +901,14 @@ public class NewLookActivity extends Activity {
             ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
             if (running && readingTag.isEmpty()) {      // 0.39.0: never save a reading untagged when a tag was used before
                 String last = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getString("reading_tag_last", "");
-                if (!last.isEmpty() && tagChips != null) { readingTag = last; for (Button tc : tagChips) tc.setBackground(round(tc.getText().toString().equals(readingTag) ? PRIMARY : CARD, 22)); toast("Tagged " + last + " (your last tag). Tap another tag to change it."); }
-                else toast("Tip: tag where you sit (Table, Couch, ...). Position changes the height of your R wave, so tagged readings compare fairly.");      // 0.27.2
+                if (!last.isEmpty()) { readingTag = last; if (ecgPage != null) ecgPage.refreshSummary(); toast("Tagged " + last + " (your last tag). Change it in Reading setup."); }
+                else toast("Tip: set where you sit in Reading setup (Table, Couch, ...). Position changes the height of your R wave, so tagged readings compare fairly.");      // 0.27.2
             }
             if (running) { ReadingTag.note(getExternalFilesDir(null), readingTag + (positionTag.isEmpty() ? "" : (readingTag.isEmpty() ? "" : " ") + "@ " + positionTag)); FrameMonitor.captureReset(); FrameMonitor.captureWindow(System.currentTimeMillis() + 20 * 60 * 1000L); Live500.resetContact(); lastWarnRun = 0; warnedNoContact = false; autoStopped = false; ui.removeCallbacks(contactTick); ui.postDelayed(contactTick, 1000L); }
+            if (ecgPage != null) ecgPage.onRunning(running);      // 0.41.0
             if (ecgTips != null) ecgTips.setVisibility(running ? View.GONE : View.VISIBLE);
             if (running && packetsView != null && packetsView.getVisibility() != View.VISIBLE
-                    && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_packets_open", true)) openPackets(true);
+                    && getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_packets_open", false)) openPackets(true);
         }
         if (ecgPrep != null && ecgStoredView != null) {
             boolean fetching = ecgStoredView.getText().toString().contains("Fetching the stored");
@@ -1032,6 +1008,27 @@ public class NewLookActivity extends Activity {
         lp.topMargin = dp(28);
         col.addView(homeLatestCard, lp);
 
+        LinearLayout streakCard = new LinearLayout(this);          // 0.42.0: this week and the streak
+        streakCard.setOrientation(LinearLayout.VERTICAL);
+        streakCard.setPadding(dp(18), dp(14), dp(18), dp(14));
+        streakCard.setBackground(round(CARD, 18));
+        homeStreakTitle = tv("THIS WEEK", 11, MUTED, true);
+        homeStreakBody = tv("", 14, TEXT, true);
+        streakCard.addView(homeStreakTitle, new LinearLayout.LayoutParams(-2, -2));
+        LinearLayout.LayoutParams sbp = new LinearLayout.LayoutParams(-2, -2);
+        sbp.topMargin = dp(6);
+        streakCard.addView(homeStreakBody, sbp);
+        final TextView streakHow = tv("How is this calculated?  \u25be", 12, MUTED, true);
+        final TextView streakWhy = tv(Explain.asText(Explain.streakCard()), 12, MUTED, false);
+        streakWhy.setVisibility(View.GONE);
+        streakHow.setPadding(0, dp(8), 0, 0);
+        streakHow.setOnClickListener(v -> { boolean open = streakWhy.getVisibility() != View.VISIBLE; streakWhy.setVisibility(open ? View.VISIBLE : View.GONE); streakHow.setText("How is this calculated?  " + (open ? "\u25b4" : "\u25be")); });
+        streakCard.addView(streakHow, new LinearLayout.LayoutParams(-2, -2));
+        streakCard.addView(streakWhy, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams scp = new LinearLayout.LayoutParams(-1, -2);
+        scp.topMargin = dp(12);
+        col.addView(streakCard, scp);
+
         homeGlanceCard = new LinearLayout(this);
         homeGlanceCard.setOrientation(LinearLayout.VERTICAL);
         homeGlanceCard.setPadding(dp(18), dp(16), dp(18), dp(16));
@@ -1085,6 +1082,16 @@ public class NewLookActivity extends Activity {
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(-1, dp(56));
         dlp.topMargin = dp(12);
         col.addView(dayLog, dlp);
+        Button pullNow = pillButton("Pull now", CARD, TEXT);      // 0.41.0: the same handler as the Strap data screen
+        pullNow.setOnClickListener(v -> { if (!MainActivity.linkRunning()) MainActivity.startLinkHost(this); MainActivity.requestPull(); toast("Pull requested"); });
+        LinearLayout.LayoutParams pnp = new LinearLayout.LayoutParams(-1, dp(56));
+        pnp.topMargin = dp(12);
+        col.addView(pullNow, pnp);
+        Button remind = pillButton("Reminders", CARD, TEXT);      // 0.42.0: reading reminders with their own times for work days and days off
+        remind.setOnClickListener(v -> EcgReminder.showDialog(this));
+        LinearLayout.LayoutParams rmp = new LinearLayout.LayoutParams(-1, dp(56));
+        rmp.topMargin = dp(12);
+        col.addView(remind, rmp);
 
         Button exportBtn = pillButton("Export ECG data for analysis", CARD, TEXT);
         exportBtn.setOnClickListener(v -> askExport());
@@ -1196,9 +1203,30 @@ public class NewLookActivity extends Activity {
         return min < 60 ? min + " m" : (min / 60) + ":" + String.format(Locale.UK, "%02d", min % 60);
     }
 
+    private void refreshStreak() {
+        try {
+            EcgStreak.Out s = EcgStreak.compute(EcgWidget.startsOf(getExternalFilesDir(null)), System.currentTimeMillis(), java.util.TimeZone.getDefault());
+            if (homeStreakBody != null) homeStreakBody.setText(EcgStreak.strip(s) + "\n" + EcgStreak.summary(s));
+            if (homeStreakBody != null) homeStreakBody.setContentDescription(EcgStreak.summary(s) + (s.today ? ". You have a reading today." : ". No reading yet today."));
+        } catch (Throwable ignored) { }
+    }
+
+    private void publishShortcuts() {
+        if (android.os.Build.VERSION.SDK_INT < 25) return;
+        android.content.pm.ShortcutManager sm = (android.content.pm.ShortcutManager) getSystemService(android.content.pm.ShortcutManager.class);
+        if (sm == null) return;
+        Intent take = new Intent(this, MainActivity.class).setAction(Intent.ACTION_VIEW).putExtra("stay", true).putExtra("start_ecg", true);
+        Intent pull = new Intent(this, MainActivity.class).setAction(Intent.ACTION_VIEW).putExtra("pull_now", true);
+        List<android.content.pm.ShortcutInfo> l = new ArrayList<>();
+        l.add(new android.content.pm.ShortcutInfo.Builder(this, "take_ecg").setShortLabel("Take an ECG").setLongLabel("Take an ECG reading").setIcon(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_menu_edit)).setIntent(take).build());
+        l.add(new android.content.pm.ShortcutInfo.Builder(this, "pull_now").setShortLabel("Pull now").setLongLabel("Pull the strap's stored data now").setIcon(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_popup_sync)).setIntent(pull).build());
+        sm.setDynamicShortcuts(l);
+    }
+
     private void refreshHome() {
         refreshDayLogLine();
         refreshGlance();
+        refreshStreak();
         List<Rep> reps = loadReports();
         if (reps.isEmpty()) {
             latestFile = null;
@@ -1440,11 +1468,11 @@ public class NewLookActivity extends Activity {
 
     // ------------------------------------------------------------------ small view helpers
 
-    private int dp(int v) {
+    int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
-    private GradientDrawable round(int color, int radiusDp) {
+    GradientDrawable round(int color, int radiusDp) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(color);
         g.setCornerRadius(dp(radiusDp));
@@ -1452,7 +1480,7 @@ public class NewLookActivity extends Activity {
         return g;
     }
 
-    private TextView tv(String s, int sp, int color, boolean bold) {
+    TextView tv(String s, int sp, int color, boolean bold) {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(sp);
@@ -1461,7 +1489,7 @@ public class NewLookActivity extends Activity {
         return t;
     }
 
-    private Button pillButton(String s, int bg, int fg) {
+    Button pillButton(String s, int bg, int fg) {
         Button b = new Button(this);
         b.setText(s);
         b.setAllCaps(false);

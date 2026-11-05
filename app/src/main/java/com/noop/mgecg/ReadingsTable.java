@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.33.0 (1 Nov 2026): "Your readings": one row per saved ECG reading with the measurements from its report (R, T, P, QRS, QTc, ST), the strap's own end-of-reading amplitude (event 118),
+// FILE VERSION 0.42.0 (5 Nov 2026): this week and the streak, and your own typical range with the latest reading beside it, at the top of the screen. 0.41.0 (5 Nov 2026): the CSV also carries the strap's verdict, average HR, HRV release, the full event 118 / 119 numbers, the live noise by band and the notes of the reading page (where, run, why noisy). 0.33.0 (1 Nov 2026): "Your readings": one row per saved ECG reading with the measurements from its report (R, T, P, QRS, QTc, ST), the strap's own end-of-reading amplitude (event 118),
 // and the context the strap recorded around it (steps in the previous hour, still share, skin temperature, wrist orientation), plus the Polar H10 chest R when its ECG file covers the reading.
 // Plotted against the clock hour, and exported as one CSV (Download/MGreports). Measurements are single-lead and informal; not a diagnosis.
 
@@ -52,6 +52,8 @@ final class ReadingsTable {
     static final class Row {
         long ts; String grade = "-"; double hr = Double.NaN, rmssd = Double.NaN, dur = Double.NaN, R = Double.NaN, T = Double.NaN, P = Double.NaN, QRS = Double.NaN, QT = Double.NaN, QTcF = Double.NaN, ST = Double.NaN;
         double E = Double.NaN, steps1h = Double.NaN, still30 = Double.NaN, skin = Double.NaN, gravZ = Double.NaN, h10R = Double.NaN, clock = Double.NaN;
+        double evB = Double.NaN, evC = Double.NaN, evD = Double.NaN, evN = Double.NaN, evN1 = Double.NaN, evN2 = Double.NaN, e119n2 = Double.NaN, e119q3 = Double.NaN;      // 0.41.0: event 118 / 119 numbers
+        java.util.Map<String, String> nt = new java.util.HashMap<String, String>();                                                                              // 0.41.0: reading_notes.csv
         String tag = ""; double hoursAwake = Double.NaN, expectedR = Double.NaN, rVsLine = Double.NaN;      // 0.37.0: posture and strap position tag, hours since the last sleep second, your own line R = 450 + 31 x hours awake, the percent difference from it
     }
 
@@ -133,10 +135,19 @@ final class ReadingsTable {
             try { Cursor sc = DayLog.db(c).rawQuery("SELECT MAX(ts) FROM r18 WHERE state = 2 AND ts BETWEEN ? AND ?", new String[] { String.valueOf(r.ts - 30L * 3600L), String.valueOf(r.ts) });
                 try { if (sc.moveToFirst() && !sc.isNull(0)) { double h = (r.ts - sc.getLong(0)) / 3600.0; if (h >= 0 && h <= 30) r.hoursAwake = h; } } finally { sc.close(); } } catch (Throwable ignored) { }
             if (!Double.isNaN(r.hoursAwake)) { r.expectedR = LINE_A + LINE_B * r.hoursAwake; if (!Double.isNaN(r.R)) r.rVsLine = 100.0 * (r.R / r.expectedR - 1.0); }
-            Cursor ec = DayLog.db(c).rawQuery("SELECT inner FROM strap_events WHERE id = 118 AND ts BETWEEN ? AND ? ORDER BY ts LIMIT 1", new String[] { String.valueOf(r.ts), String.valueOf(r.ts + 900L) });
-            try { if (ec.moveToFirst()) { String hex = ec.getString(0); if (hex != null && hex.length() >= 80) { int e = Integer.parseInt(hex.substring(34, 36), 16) | (Integer.parseInt(hex.substring(36, 38), 16) << 8); if (e > 0 && e < 5000) r.E = e; } } } finally { ec.close(); }
+            Cursor ec = DayLog.db(c).rawQuery("SELECT ts, inner FROM strap_events WHERE id = 118 AND ts BETWEEN ? AND ? ORDER BY ts LIMIT 1", new String[] { String.valueOf(r.ts), String.valueOf(r.ts + 900L) });
+            long evTs = -1;
+            try { if (ec.moveToFirst()) { evTs = ec.getLong(0); byte[] b = hexBytes(ec.getString(1)); if (b != null && b.length >= 31 && b[0] == 2) {
+                int e = StrapEvents.u16(b, 17); if (e > 0 && e < 5000) r.E = e;
+                r.evB = StrapEvents.u32(b, 9); r.evC = StrapEvents.u16(b, 13); r.evD = StrapEvents.u16(b, 15); r.evN = StrapEvents.u32(b, 19); r.evN1 = StrapEvents.u32(b, 23); r.evN2 = StrapEvents.u32(b, 27); } } } finally { ec.close(); }
+            if (evTs >= 0) {
+                Cursor e9 = DayLog.db(c).rawQuery("SELECT inner FROM strap_events WHERE id = 119 AND ts BETWEEN ? AND ? ORDER BY ts LIMIT 1", new String[] { String.valueOf(evTs - 2L), String.valueOf(evTs + 2L) });
+                try { if (e9.moveToFirst()) { byte[] b = hexBytes(e9.getString(0)); if (b != null && b.length >= 37 && b[0] == 1) { r.e119n2 = StrapEvents.u32(b, 9); r.e119q3 = StrapEvents.f32(b, 33); } } } finally { e9.close(); }
+            }
         } catch (Throwable ignored) { }
     }
+
+    private static byte[] hexBytes(String h) { if (h == null || h.length() < 2) return null; int n = h.length() / 2; byte[] b = new byte[n]; try { for (int i = 0; i < n; i++) b[i] = (byte) Integer.parseInt(h.substring(2 * i, 2 * i + 2), 16); } catch (NumberFormatException e) { return null; } return b; }
 
     /** One row per reading, newest first (call off the main thread). */
     static List<Row> load(Context c, HealthModel.Data d, int max) {
@@ -146,7 +157,7 @@ final class ReadingsTable {
             String n = rd.file.getName(); long ts; try { ts = Long.parseLong(n.substring("ecg_report_".length(), n.length() - ".html".length())); } catch (Exception e) { continue; }
             Row r = new Row(); r.ts = ts; fromText(r, plain(rd.file)); if (Double.isNaN(r.hr)) { r.hr = parse(rd.hr); } if (Double.isNaN(r.rmssd)) { r.rmssd = parse(rd.hrv); } if (r.grade.equals("-")) r.grade = rd.grade;
             cal.setTimeInMillis(ts * 1000L); r.clock = cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60.0;
-            context(c, r); if (dir != null) { r.h10R = h10R(dir, ts, Double.isNaN(r.dur) ? 120 : r.dur); r.tag = ReadingTag.forReading(dir, ts); }
+            context(c, r); if (dir != null) { r.h10R = h10R(dir, ts, Double.isNaN(r.dur) ? 120 : r.dur); r.tag = ReadingTag.forReading(dir, ts); r.nt = ReadingNotes.forReading(dir, ts); }
             out.add(r);
         }
         return out;
@@ -154,11 +165,18 @@ final class ReadingsTable {
     private static double parse(String s) { return grab(s == null ? "" : s, "(\\d+(?:\\.\\d+)?)"); }
 
     static String csv(List<Row> rows) {
-        StringBuilder sb = new StringBuilder("time_local,grade,duration_s,hr,rmssd_ms,R_uV,T_uV,P_uV,QRS_ms,QT_ms,QTc_fridericia_ms,ST_uV,strap_E_uV,steps_previous_hour,still_share_previous_30min,skin_c,gravity_z,h10_R_uV,strap_over_h10,tag,hours_awake,expected_R_uV_your_line,R_vs_line_pct\n");
+        StringBuilder sb = new StringBuilder("time_local,grade,duration_s,hr,rmssd_ms,R_uV,T_uV,P_uV,QRS_ms,QT_ms,QTc_fridericia_ms,ST_uV,strap_E_uV,steps_previous_hour,still_share_previous_30min,skin_c,gravity_z,h10_R_uV,strap_over_h10,tag,hours_awake,expected_R_uV_your_line,R_vs_line_pct,result_code,strap_avg_hr,verdict_s,hrv_first_s,hrv_first_ms,ev_B_ms,ev_C,ev_D,ev_N,ev_n1,ev_n2,ev119_n2,ev119_q3_pct,where,position,run,why_noisy,stop,noise_0p5_5_uV,noise_8_25_uV,noise_25_48_uV,noise_mains_uV,noise_52_100_uV,contact_z,live_R_uV,live_QRS_ms,live_dip_uV,live_QT_ms,beats_live,app\n");
         SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.UK);
-        for (Row r : rows) sb.append(f.format(new Date(r.ts * 1000L))).append(',').append(r.grade).append(',').append(c0(r.dur)).append(',').append(c0(r.hr)).append(',').append(c0(r.rmssd)).append(',').append(c0(r.R)).append(',').append(c0(r.T)).append(',').append(c0(r.P)).append(',').append(c0(r.QRS)).append(',').append(c0(r.QT)).append(',').append(c0(r.QTcF)).append(',').append(c0(r.ST)).append(',').append(c0(r.E)).append(',').append(c0(r.steps1h)).append(',').append(c2(r.still30)).append(',').append(c1(r.skin)).append(',').append(c2(r.gravZ)).append(',').append(c0(r.h10R)).append(',').append(Double.isNaN(r.R) || Double.isNaN(r.h10R) ? "" : String.format(Locale.US, "%.2f", r.R / r.h10R)).append(',').append(r.tag.replace(',', ' ')).append(',').append(c1(r.hoursAwake)).append(',').append(c0(r.expectedR)).append(',').append(c1(r.rVsLine)).append('\n');
+        for (Row r : rows) { sb.append(f.format(new Date(r.ts * 1000L))).append(',').append(r.grade).append(',').append(c0(r.dur)).append(',').append(c0(r.hr)).append(',').append(c0(r.rmssd)).append(',').append(c0(r.R)).append(',').append(c0(r.T)).append(',').append(c0(r.P)).append(',').append(c0(r.QRS)).append(',').append(c0(r.QT)).append(',').append(c0(r.QTcF)).append(',').append(c0(r.ST)).append(',').append(c0(r.E)).append(',').append(c0(r.steps1h)).append(',').append(c2(r.still30)).append(',').append(c1(r.skin)).append(',').append(c2(r.gravZ)).append(',').append(c0(r.h10R)).append(',').append(Double.isNaN(r.R) || Double.isNaN(r.h10R) ? "" : String.format(Locale.US, "%.2f", r.R / r.h10R)).append(',').append(r.tag.replace(',', ' ')).append(',').append(c1(r.hoursAwake)).append(',').append(c0(r.expectedR)).append(',').append(c1(r.rVsLine));
+            for (String k : NOTE_KEYS_A) sb.append(',').append(nt(r, k));
+            sb.append(',').append(c0(r.evB)).append(',').append(c0(r.evC)).append(',').append(c0(r.evD)).append(',').append(c0(r.evN)).append(',').append(c0(r.evN1)).append(',').append(c0(r.evN2)).append(',').append(c0(r.e119n2)).append(',').append(c1(r.e119q3));
+            for (String k : NOTE_KEYS_B) sb.append(',').append(nt(r, k));
+            sb.append('\n'); }
         return sb.toString();
     }
+    private static final String[] NOTE_KEYS_A = { "result", "strap_hr", "verdict_s", "hrv_first_s", "hrv_first_ms" };
+    private static final String[] NOTE_KEYS_B = { "where", "pos", "run", "why", "stop", "noise_0p5_5", "noise_8_25", "noise_25_48", "noise_mains", "noise_52_100", "contact_z", "live_R_uV", "live_QRS_ms", "live_dip_uV", "live_QT_ms", "beats_live", "app" };
+    private static String nt(Row r, String k) { String v = r.nt == null ? null : r.nt.get(k); return v == null ? "" : v.replace(',', ';'); }
     private static String c0(double v) { return Double.isNaN(v) ? "" : String.format(Locale.US, "%.0f", v); }
     private static String c1(double v) { return Double.isNaN(v) ? "" : String.format(Locale.US, "%.1f", v); }
     private static String c2(double v) { return Double.isNaN(v) ? "" : String.format(Locale.US, "%.2f", v); }
@@ -196,6 +214,15 @@ final class ReadingsTable {
     private static void fill(final Activity a, LinearLayout col, TextView status, final List<Row> rows) {
         if (rows == null || rows.isEmpty()) { status.setText("No saved readings with a report yet."); return; }
         col.removeView(status); int n = rows.size();
+        try {                                                                  // 0.42.0: this week, the streak and your typical range
+            long[] st = new long[n]; for (int i = 0; i < n; i++) st[i] = rows.get(i).ts;
+            EcgStreak.Out so = EcgStreak.compute(st, System.currentTimeMillis(), java.util.TimeZone.getDefault());
+            TextView wk = HeartGraph.label(a, "THIS WEEK\n" + EcgStreak.strip(so) + "\n" + EcgStreak.summary(so), 13, INK, 400); wk.setLineSpacing(0, 1.2f); col.addView(wk, HeartGraph.lp(a, -1, -2, 10));
+            TextView tp = HeartGraph.label(a, "YOUR TYPICAL RANGE (last " + Math.min(28, n) + " readings)\n" + typical(rows), 12, INK, 400); tp.setLineSpacing(0, 1.25f); col.addView(tp, HeartGraph.lp(a, -1, -2, 12));
+            final TextView how = HeartGraph.label(a, "How is this calculated?  (tap)", 12, MUT, 400); final TextView why = HeartGraph.label(a, Explain.asText(Explain.streakCard()) + "\n\n" + Explain.asText(Explain.typicalRange()), 12, MUT, 400); why.setVisibility(View.GONE);
+            how.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { why.setVisibility(why.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE); } });
+            col.addView(how, HeartGraph.lp(a, -1, -2, 6)); col.addView(why, HeartGraph.lp(a, -1, -2, 4));
+        } catch (Throwable ignored) { }
         TextView sum = HeartGraph.label(a, n + " readings. R is the report's R wave height, E the strap's own end-of-reading QRS amplitude, H10 R the chest-strap R when its ECG file covers the reading (a single-beat estimate that reads about 12 % below an averaged beat).", 13, MUT, 400); sum.setLineSpacing(0, 1.25f); col.addView(sum, HeartGraph.lp(a, -1, -2, 6));
         double[] x = new double[n], rr = new double[n], ee = new double[n], tt = new double[n]; for (int i = 0; i < n; i++) { Row r = rows.get(i); x[i] = r.clock; rr[i] = r.R; ee[i] = r.E; tt[i] = r.T; }
         Scatter s1 = new Scatter(a); s1.set(x, new double[][] { rr, ee, tt }, new int[] { ROSE, BLUE, GOLD }); col.addView(s1, HeartGraph.lp(a, -1, Math.round(dp(a, 150)), 12));
@@ -221,6 +248,25 @@ final class ReadingsTable {
         TextView tv = HeartGraph.label(a, sb.toString().trim(), 11, MUT, 400); tv.setTypeface(android.graphics.Typeface.MONOSPACE); tv.setLineSpacing(0, 1.1f); col.addView(tv, HeartGraph.lp(a, -1, -2, 6));
         TextView ex = HeartGraph.pill(a, "Export the table as a CSV (Download/MGreports)", BLUE, 0xFF05131E);
         ex.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { export(a, rows); } }); col.addView(ex, HeartGraph.lp(a, -2, -2, 14));
+    }
+
+    /** Median and middle half of each measure over the newest 28 readings, with the latest reading beside it. */
+    private static String typical(List<Row> rows) {
+        int m = Math.min(28, rows.size()); StringBuilder sb = new StringBuilder();
+        String[] names = { "R wave (uV)", "QRS (ms)", "HR (bpm)", "HRV RMSSD (ms)", "Noise 8-25 Hz, live meter (uV)" };
+        for (int k = 0; k < names.length; k++) {
+            List<Double> v = new ArrayList<Double>(); double latest = Double.NaN;
+            for (int i = 0; i < m; i++) {
+                Row r = rows.get(i); double x = k == 0 ? r.R : k == 1 ? r.QRS : k == 2 ? r.hr : k == 3 ? r.rmssd : Double.NaN;
+                if (k == 4) { try { String s = r.nt == null ? null : r.nt.get("noise_8_25"); if (s != null) x = Double.parseDouble(s); } catch (NumberFormatException e) { x = Double.NaN; } }
+                if (!Double.isNaN(x)) { v.add(x); if (Double.isNaN(latest)) latest = x; }
+            }
+            if (v.size() < 5) { sb.append(names[k]).append(": too few readings\n"); continue; }
+            List<Double> s = new ArrayList<Double>(v); Collections.sort(s); int n = s.size();
+            double med = s.get(n / 2), q1 = s.get((int) Math.floor(0.25 * (n - 1))), q3 = s.get((int) Math.ceil(0.75 * (n - 1)));
+            sb.append(String.format(Locale.UK, "%s: typical %.0f to %.0f (median %.0f); latest %.0f, %s%n", names[k], q1, q3, med, latest, latest > q3 ? "above" : latest < q1 ? "below" : "within"));
+        }
+        return sb.toString().trim();
     }
 
     private static String corr(String name, List<Row> rows, int which) {

@@ -14,6 +14,7 @@ public class DayLogBootReceiver extends BroadcastReceiver {
         if (Intent.ACTION_BOOT_COMPLETED.equals(a) || "android.intent.action.QUICKBOOT_POWERON".equals(a) || Intent.ACTION_MY_PACKAGE_REPLACED.equals(a)) {
             try { Backup.schedule(c); Backup.ensure(c); } catch (Throwable ignored) { }      // 0.16.0: the alarm does not survive a restart or an update by itself
             try { DayLogService.ensure(c); } catch (Throwable ignored) { }                  // 0.19.2: after a restart or an update the logger service and its 15 minute alarm come back by themselves
+            try { EcgReminder.schedule(c); EcgWidget.refreshAll(c); } catch (Throwable ignored) { }      // 0.42.0: the reminder alarm and the widget come back after a restart or an update
             KeepAlive.afterRestart(c);
         }
     }
