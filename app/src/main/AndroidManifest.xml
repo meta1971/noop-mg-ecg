@@ -42,6 +42,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 0.42.3: the guided-run cue buzzes with the phone's vibrator -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- 0.15.0: lets the logger start the invisible link owner from the background (Android 10+ blocks background activity starts otherwise); nothing is drawn -->
@@ -162,17 +164,6 @@
             </intent-filter>
         </receiver>
 
-        <!-- 0.42.0: home-screen widget (latest reading, this week, Take an ECG) -->
-        <receiver
-            android:name=".EcgWidget"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/ecg_widget_info" />
-        </receiver>
 
     </application>
 
