@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.25.0 (29 Oct 2026): "Full pull" of ONE reading: a small zip with everything the app holds for that reading (live raw frames, the stored 500 Hz, 100 Hz, per-second, 50 Hz optical, 100 Hz motion and pulse records, events, log lines, H10 files, the report), with readable CSV copies. Research only.
+// FILE VERSION 0.43.0 (6 Nov 2026): events.txt is collected OUTSIDE the 1.5 MB cap (the cap now limits only app_log_excerpt.txt; before, readings over about 2.5 min lost the end events 118 / 119 / 124 stop); make() takes a callback and says "Saved: ready to upload"; makeBatch() writes ONE zip with a folder per reading (Home: Send all new). 0.25.0 (29 Oct 2026): "Full pull" of ONE reading: a small zip with everything the app holds for that reading (live raw frames, the stored 500 Hz, 100 Hz, per-second, 50 Hz optical, 100 Hz motion and pulse records, events, log lines, H10 files, the report), with readable CSV copies. Research only.
 
 import android.app.Activity;
 import android.content.ContentResolver;
@@ -12,6 +12,7 @@ import android.widget.Toast;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FilterOutputStream;
 import java.io.FileReader;
 import java.io.OutputStream;
 import java.nio.file.Files;
@@ -77,7 +78,7 @@ final class ReadingPull {
         // log lines and events from the app logs
         StringBuilder ev = new StringBuilder(), lg = new StringBuilder();
         File[] fs = dir.listFiles(); if (fs != null) { Arrays.sort(fs); for (File f : fs) { String n = f.getName(); if (!n.startsWith("labrador_log_") || !n.endsWith(".txt")) continue; long mt = f.lastModified() / 1000; if (mt < t0 - 60 || mt - 86400 > t1) continue;
-            try (BufferedReader br = new BufferedReader(new FileReader(f))) { String ln; while ((ln = br.readLine()) != null) { String[] c = ln.split("\t", 4); if (c.length < 3) continue; long ms; try { ms = Long.parseLong(c[1]); } catch (NumberFormatException e) { continue; } double s = ms / 1000.0; if (s < t0 - 15 || s > t1 + 90) continue; ln = ln.replaceAll("5AM[0-9]{6}", "5AM******"); if (c[2].startsWith("EVENT ")) ev.append(ln).append('\n'); if (c[2].startsWith("RX_GENERIC") || c[2].startsWith("RSSI")) continue; lg.append(ln).append('\n'); if (lg.length() > 1500000) break; } } catch (Exception ignored) { } } }
+            try (BufferedReader br = new BufferedReader(new FileReader(f))) { String ln; while ((ln = br.readLine()) != null) { String[] c = ln.split("\t", 4); if (c.length < 3) continue; long ms; try { ms = Long.parseLong(c[1]); } catch (NumberFormatException e) { continue; } double s = ms / 1000.0; if (s < t0 - 15 || s > t1 + 90) continue; ln = ln.replaceAll("5AM[0-9]{6}", "5AM******"); if (c[2].startsWith("EVENT ")) ev.append(ln).append('\n'); if (c[2].startsWith("RX_GENERIC") || c[2].startsWith("RSSI")) continue; if (lg.length() <= 1500000) lg.append(ln).append('\n'); } } catch (Exception ignored) { } } }
         out.put("events.txt", ev.toString().getBytes("UTF-8")); out.put("app_log_excerpt.txt", lg.toString().getBytes("UTF-8"));
         // the report, strip, H10 and unknown-frame captures
         if (html != null && html.exists() && html.length() < 5000000) out.put(html.getName(), Files.readAllBytes(html.toPath()));
@@ -105,25 +106,80 @@ final class ReadingPull {
         + "firmware_console.txt: the strap firmware's own log (type 50 frames joined; each frame carries 50 characters), addresses masked: command names, ECG start sequence, state changes, battery, history pulls.\n"
         + "unknown_frames_*.hex: raw copies of frames of kinds that are not decoded yet (console log type 50, the device-info channel); one frame per line: time ms, channel, length, hex.\n";
 
-    static void make(final Activity a, final File html) {
+    /** Newest saved zip (content Uri in this app's own Downloads entry), for the long-press share sheet. */
+    static volatile Uri lastUri;
+
+    static void make(final Activity a, final File html) { make(a, html, null); }
+
+    private static final class CountOut extends FilterOutputStream {
+        long n; CountOut(OutputStream o) { super(o); }
+        @Override public void write(int b) throws java.io.IOException { out.write(b); n++; }
+        @Override public void write(byte[] b, int off, int len) throws java.io.IOException { out.write(b, off, len); n += len; }
+    }
+
+    private static Uri newZipUri(ContentResolver cr, String name) {
+        ContentValues v = new ContentValues();
+        v.put(MediaStore.MediaColumns.DISPLAY_NAME, name); v.put(MediaStore.MediaColumns.MIME_TYPE, "application/zip"); v.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/" + FOLDER + "/"); v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        return cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+    }
+    private static void finishZipUri(ContentResolver cr, Uri uri) { ContentValues done = new ContentValues(); done.put(MediaStore.MediaColumns.IS_PENDING, 0); cr.update(uri, done, null, null); }
+
+    static void make(final Activity a, final File html, final Runnable onSaved) {
         if (html == null) { Toast.makeText(a, "No reading selected.", Toast.LENGTH_SHORT).show(); return; }
-        if (busy) { Toast.makeText(a, "A full pull is already running.", Toast.LENGTH_SHORT).show(); return; }
+        if (busy) { Toast.makeText(a, "A send is already running.", Toast.LENGTH_SHORT).show(); return; }
         busy = true; Toast.makeText(a, "Collecting everything for this reading (about 20 seconds)...", Toast.LENGTH_LONG).show();
         new Thread(new Runnable() { @Override public void run() {
-            String msg;
+            String msg; boolean ok = false;
             try {
                 String ver = a.getPackageManager().getPackageInfo(a.getPackageName(), 0).versionName;
                 LinkedHashMap<String, byte[]> files = build(html.getParentFile(), html, ver);
                 ByteArrayOutputStream bo = new ByteArrayOutputStream();
                 try (ZipOutputStream z = new ZipOutputStream(bo)) { z.setLevel(6); for (Map.Entry<String, byte[]> e : files.entrySet()) { z.putNextEntry(new ZipEntry(e.getKey())); z.write(e.getValue()); z.closeEntry(); } }
                 String stamp = html.getName().replaceAll("[^0-9]", ""); String name = "MG_full_pull_" + (stamp.length() > 10 ? stamp.substring(0, 10) : stamp) + ".zip";
-                ContentResolver cr = a.getContentResolver(); ContentValues v = new ContentValues();
-                v.put(MediaStore.MediaColumns.DISPLAY_NAME, name); v.put(MediaStore.MediaColumns.MIME_TYPE, "application/zip"); v.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/" + FOLDER + "/"); v.put(MediaStore.MediaColumns.IS_PENDING, 1);
-                Uri uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
-                if (uri == null) msg = "Could not save the full pull.";
-                else { try (OutputStream os = cr.openOutputStream(uri)) { os.write(bo.toByteArray()); } ContentValues done = new ContentValues(); done.put(MediaStore.MediaColumns.IS_PENDING, 0); cr.update(uri, done, null, null); msg = "Saved Download/" + FOLDER + "/" + name + " (" + files.size() + " files, " + String.format(Locale.UK, "%.1f", bo.size() / 1048576.0) + " MB)"; }
-            } catch (Throwable t) { msg = "The full pull failed: " + t; }
-            busy = false; final String m = msg; a.runOnUiThread(new Runnable() { @Override public void run() { Toast.makeText(a, m, Toast.LENGTH_LONG).show(); } });
+                ContentResolver cr = a.getContentResolver();
+                Uri uri = newZipUri(cr, name);
+                if (uri == null) msg = "Could not save the zip.";
+                else { try (OutputStream os = cr.openOutputStream(uri)) { os.write(bo.toByteArray()); } finishZipUri(cr, uri); lastUri = uri; ok = true; msg = "Saved: ready to upload. Download/" + FOLDER + "/" + name + " (" + String.format(Locale.UK, "%.1f", bo.size() / 1048576.0) + " MB)"; }
+            } catch (Throwable t) { msg = "The send failed: " + t; }
+            busy = false; final String m = msg;
+            if (ok && onSaved != null) { try { onSaved.run(); } catch (Throwable ignored) { } }
+            a.runOnUiThread(new Runnable() { @Override public void run() { Toast.makeText(a, m, Toast.LENGTH_LONG).show(); } });
         } }, "full-pull").start();
+    }
+
+    /** 0.43.0: ONE zip with a folder per reading (MG_<start>/...), streamed so only one reading is in memory at a time. Home "Send all new". */
+    static void makeBatch(final Activity a, final List<File> htmls, final Runnable onSaved) {
+        if (htmls == null || htmls.isEmpty()) { Toast.makeText(a, "Nothing new to send.", Toast.LENGTH_SHORT).show(); return; }
+        if (busy) { Toast.makeText(a, "A send is already running.", Toast.LENGTH_SHORT).show(); return; }
+        busy = true; Toast.makeText(a, "Collecting " + htmls.size() + " reading" + (htmls.size() == 1 ? "" : "s") + " (about " + 20 * htmls.size() + " seconds)...", Toast.LENGTH_LONG).show();
+        new Thread(new Runnable() { @Override public void run() {
+            String msg; boolean ok = false; ContentResolver cr = a.getContentResolver(); Uri uri = null;
+            try {
+                String ver = a.getPackageManager().getPackageInfo(a.getPackageName(), 0).versionName;
+                String name = "MG_new_" + htmls.size() + "_readings_" + (System.currentTimeMillis() / 1000L) + ".zip";
+                uri = newZipUri(cr, name);
+                if (uri == null) msg = "Could not save the zip.";
+                else {
+                    CountOut co;
+                    try (OutputStream os = cr.openOutputStream(uri)) {
+                        co = new CountOut(os);
+                        try (ZipOutputStream z = new ZipOutputStream(co)) {
+                            z.setLevel(6);
+                            for (File html : htmls) {
+                                LinkedHashMap<String, byte[]> files = build(html.getParentFile(), html, ver);
+                                String stamp = html.getName().replaceAll("[^0-9]", ""); String pre = "MG_" + (stamp.length() > 10 ? stamp.substring(0, 10) : stamp) + "/";
+                                for (Map.Entry<String, byte[]> e : files.entrySet()) { z.putNextEntry(new ZipEntry(pre + e.getKey())); z.write(e.getValue()); z.closeEntry(); }
+                                files.clear();
+                            }
+                        }
+                    }
+                    finishZipUri(cr, uri); lastUri = uri; ok = true;
+                    msg = "Saved: ready to upload. Download/" + FOLDER + "/" + name + " (" + htmls.size() + " readings, " + String.format(Locale.UK, "%.1f", co.n / 1048576.0) + " MB)";
+                }
+            } catch (Throwable t) { msg = "The send failed: " + t; try { if (uri != null) cr.delete(uri, null, null); } catch (Throwable ignored) { } }
+            busy = false; final String m = msg;
+            if (ok && onSaved != null) { try { onSaved.run(); } catch (Throwable ignored) { } }
+            a.runOnUiThread(new Runnable() { @Override public void run() { Toast.makeText(a, m, Toast.LENGTH_LONG).show(); } });
+        } }, "send-all").start();
     }
 }

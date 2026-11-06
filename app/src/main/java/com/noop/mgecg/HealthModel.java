@@ -223,7 +223,7 @@ final class HealthModel {
             } catch (Exception ignored) { }
             r.timeMs = t;
             r.when = new SimpleDateFormat("EEE d MMM, HH:mm", Locale.UK).format(new Date(t));
-            String head = readHead(f, 9000);
+            String head = readHead(f, 16000);
             String v = meta(head, "ecg-hr");
             if (v != null) r.hr = v;
             v = meta(head, "ecg-hrv");

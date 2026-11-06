@@ -81,7 +81,7 @@ public class NewLookActivity extends Activity {
     private FrameLayout homeLayer, reportsLayer, reportLayer;
     private LinearLayout reportsList, homeLatestCard;
     private TextView homeConn, homeLatestTitle, homeLatestBody, reportTitle, banner, homeStreakTitle, homeStreakBody;
-    private Button devPill;
+    private Button devPill, homeSendBtn, homeSendAll;      // 0.43.0: Send on the latest reading, Send all new
 
     private File bannerFile, openFile, latestFile;
     private long reportBaseline;
@@ -552,6 +552,12 @@ public class NewLookActivity extends Activity {
         ui.post(this::tickCountdown);
     }
 
+    /** 0.43.0: the Lab starts a test with its own get-ready pill, so the 5 s auto-start must not also press START. */
+    void cancelAutoCountdown() {
+        counting = false;
+        if (countdownCard != null) countdownCard.setVisibility(View.GONE);
+    }
+
     private void tickCountdown() {
         if (!counting || state != ST_ECG || countdownCard == null) { counting = false; if (countdownCard != null) countdownCard.setVisibility(View.GONE); return; }
         if (ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP")) { counting = false; countdownCard.setVisibility(View.GONE); return; }
@@ -789,6 +795,9 @@ public class NewLookActivity extends Activity {
 
         disclaimer.setTextColor(MUTED);
         disclaimer.setTextSize(11);
+
+        // 0.43.0: the old Markers, Packets and Research rows go under the page's one "Details" fold (the ECG screen shows START, the setup capsule, the Lab and the latest reading at rest)
+        try { if (ecgPage != null) ecgPage.finishLayout(packetsToggle, packetsView, markToggle, markLabel, markRow1, markRow2, cuff, ecgPrep, detailsToggle, rhythm, ecgStoredView); } catch (Throwable ignored) { }
     }
 
     // 0.25.1: a short buzz and a note when the fingers come off the clasp during a reading, or when there is no contact after 14 s
@@ -893,6 +902,7 @@ public class NewLookActivity extends Activity {
         if (!ecgStyled || ecgStartBtn == null) return;
         boolean running = ecgStartBtn.getText().toString().startsWith("STOP");
         if (running) sawRunning = true;
+        if (!running && ecgPage != null) ecgPage.tickRest();      // 0.43.0: the Next test chip follows the clock
         int rs = running ? 1 : 0;
         if (rs != lastRunningState) {                       // the old code resets the colour whenever it flips the button
             int prevRs = lastRunningState;
@@ -1001,12 +1011,25 @@ public class NewLookActivity extends Activity {
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-2, -2);
         bp.topMargin = dp(6);
         homeLatestCard.addView(homeLatestBody, bp);
+        homeSendBtn = pillButton("Send", PRIMARY, INK);      // 0.43.0: ONE Send per reading
+        homeSendBtn.setTextSize(16);
+        homeSendBtn.setVisibility(View.GONE);
+        LinearLayout.LayoutParams hsp = new LinearLayout.LayoutParams(-1, dp(48));
+        hsp.topMargin = dp(12);
+        homeLatestCard.addView(homeSendBtn, hsp);
         homeLatestCard.setOnClickListener(v -> {
             if (latestFile != null) openReport(latestFile);
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.topMargin = dp(28);
         col.addView(homeLatestCard, lp);
+
+        homeSendAll = pillButton("", CARD, TEXT);      // 0.43.0: ONE zip with a folder per reading not sent yet (at most 8)
+        homeSendAll.setVisibility(View.GONE);
+        homeSendAll.setOnClickListener(v -> SendFlow.sendAllNew(this, homeSendAll));
+        LinearLayout.LayoutParams sap = new LinearLayout.LayoutParams(-1, dp(52));
+        sap.topMargin = dp(10);
+        col.addView(homeSendAll, sap);
 
         LinearLayout streakCard = new LinearLayout(this);          // 0.42.0: this week and the streak
         streakCard.setOrientation(LinearLayout.VERTICAL);
@@ -1233,6 +1256,8 @@ public class NewLookActivity extends Activity {
             homeLatestTitle.setText("NO READINGS YET");
             homeLatestBody.setText("Take your first ECG. Your report will appear here.");
             homeLatestBody.setTextSize(15);
+            if (homeSendBtn != null) homeSendBtn.setVisibility(View.GONE);
+            if (homeSendAll != null) homeSendAll.setVisibility(View.GONE);
             return;
         }
         Rep r = reps.get(0);
@@ -1240,6 +1265,14 @@ public class NewLookActivity extends Activity {
         homeLatestTitle.setText("LATEST READING  \u00b7  TAP TO OPEN");
         homeLatestBody.setTextSize(17);
         homeLatestBody.setText(r.dateText + "\n" + r.summary());
+        try {
+            if (homeSendBtn != null) { homeSendBtn.setVisibility(View.VISIBLE); SendFlow.attach(this, homeSendBtn, ProReportMaker.unixOf(r.file), r.file); }
+            if (homeSendAll != null) {
+                int n = SendFlow.newCount(getExternalFilesDir(null));
+                homeSendAll.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
+                if (!homeSendAll.getText().toString().startsWith("Waiting")) homeSendAll.setText("Send all new  (" + n + ")");
+            }
+        } catch (Throwable ignored) { }
     }
 
     // ------------------------------------------------------------------ Reports list
@@ -1286,6 +1319,15 @@ public class NewLookActivity extends Activity {
             mid.addView(tv(r.dateText, 16, TEXT, true), new LinearLayout.LayoutParams(-2, -2));
             mid.addView(tv(r.summary(), 13, MUTED, false), new LinearLayout.LayoutParams(-2, -2));
             row.addView(mid, new LinearLayout.LayoutParams(0, -2, 1f));
+            Button sb = pillButton("Send", 0x22FFFFFF, TEXT);      // 0.43.0: ONE Send per reading
+            sb.setTextSize(13);
+            sb.setMinWidth(0);
+            sb.setMinimumWidth(0);
+            sb.setMinHeight(dp(38));
+            sb.setMinimumHeight(dp(38));
+            sb.setPadding(dp(14), 0, dp(14), 0);
+            row.addView(sb, new LinearLayout.LayoutParams(-2, dp(38)));
+            try { SendFlow.attach(this, sb, ProReportMaker.unixOf(r.file), r.file); } catch (Throwable ignored) { }
             row.addView(tv("\u203a", 26, MUTED, false), new LinearLayout.LayoutParams(-2, -2));
             row.setOnClickListener(v -> openReport(r.file));
             row.setOnLongClickListener(v -> {
@@ -1392,7 +1434,7 @@ public class NewLookActivity extends Activity {
         try {
             java.io.FileInputStream in = new java.io.FileInputStream(f);
             try {
-                byte[] b = new byte[9000];
+                byte[] b = new byte[16000];
                 int k = in.read(b);
                 int tot = HealthModel.fragmentSeconds(k <= 0 ? "" : new String(b, 0, k, "UTF-8"));
                 return tot >= 0 && tot < 20;

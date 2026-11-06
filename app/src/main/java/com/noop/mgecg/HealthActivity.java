@@ -1600,6 +1600,15 @@ public class HealthActivity extends Activity {
         TextView lrNote = tv("Tap to change: Off, On at start (the default: the live 500 Hz stream from the first second, about 0.1 s behind), Staged (126 on at about 16 s and off at about 41 s of one reading, a test).", 11.5f, MUT, 400);
         lrNote.setPadding(0, 0, 0, dpi(6));
         st.addView(lrNote);
+        // 0.43.0: the four graph options moved here from the ECG screen; they apply from the next reading
+        final TextView gwv = tv(ctl.getInt("graph_window", 6000) == 3500 ? "3.5 s (zoom)" : "6 s", 14, BLUE, 600);
+        st.addView(valueRow("ECG graph window", gwv, new View.OnClickListener() { @Override public void onClick(View v) { int w = ctl.getInt("graph_window", 6000) == 3500 ? 6000 : 3500; ctl.edit().putInt("graph_window", w).apply(); Live500View.windowMs = w; gwv.setText(w == 3500 ? "3.5 s (zoom)" : "6 s"); } }), lp(-1, dpi(52), 0));
+        final TextView gsv = tv(ctl.getBoolean("graph_sweep", false) ? "Sweep with erase bar" : "Scroll", 14, BLUE, 600);
+        st.addView(valueRow("ECG graph style", gsv, new View.OnClickListener() { @Override public void onClick(View v) { boolean w = !ctl.getBoolean("graph_sweep", false); ctl.edit().putBoolean("graph_sweep", w).apply(); Live500View.sweep = w; gsv.setText(w ? "Sweep with erase bar" : "Scroll"); } }), lp(-1, dpi(52), 0));
+        final TextView gtv = tv(ctl.getBoolean("graph_paper", false) ? "Paper (light)" : "Dark", 14, BLUE, 600);
+        st.addView(valueRow("ECG graph theme", gtv, new View.OnClickListener() { @Override public void onClick(View v) { boolean w = !ctl.getBoolean("graph_paper", false); ctl.edit().putBoolean("graph_paper", w).apply(); Live500View.paper = w; gtv.setText(w ? "Paper (light)" : "Dark"); } }), lp(-1, dpi(52), 0));
+        final TextView gpv = tv(ctl.getString("pro_display", "1").equals("1") ? "On (spline baseline, markers)" : "Off (0.05 Hz filter only)", 14, BLUE, 600);
+        st.addView(valueRow("ECG pro display", gpv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getString("pro_display", "1").equals("1"); ctl.edit().putString("pro_display", on ? "1" : "0").apply(); Live500.pro = on; gpv.setText(on ? "On (spline baseline, markers)" : "Off (0.05 Hz filter only)"); } }), lp(-1, dpi(52), 0));
         st.addView(toggleRow("Show the 500 Hz graph when live raw frames arrive", ctl, "ecg_view500"), lp(-1, dpi(52), 0));
         final TextView smv = tv(smoothText(ctl), 14, BLUE, 600);
         st.addView(valueRow("500 Hz graph smoothing (display only)", smv, new View.OnClickListener() {

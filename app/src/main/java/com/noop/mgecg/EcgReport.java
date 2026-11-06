@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
+// FILE VERSION 0.43.0 (6 Nov 2026): the report is a one-screen summary (grade, heart rate, HRV, QT, rhythm) with everything else in closed folds; the strap card, "All readings together" and the parameter table sit under ONE "Research" fold. No number or wording of a measurement changed. 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
 
 import java.util.List;
 import java.text.SimpleDateFormat;
@@ -214,13 +214,19 @@ public final class EcgReport {
         b.append("<header><h1>Your reading</h1><p class=\"sub\">").append(when).append(formatDuration(secs)).append(" &middot; ")
                 .append(esc(meta.device)).append("</p></header>");
 
+        final StringBuilder main = b;      // 0.43.0: summary on top, folds below
+        StringBuilder fFound = new StringBuilder(), fHr = new StringBuilder(), fQt = new StringBuilder(), fGraph = new StringBuilder(), fRel = new StringBuilder(), fRes = new StringBuilder();
+
         // ---- quality
         b.append("<section class=\"card q\">").append(ring(g)).append("<div><div class=\"k\">Reading quality</div><div class=\"big\">")
                 .append(g.word).append("</div><p>").append(qualitySentence(r, g, secs, meta)).append("</p>").append(noiseLine(strip)).append("</div></section>");
+        b.append(summaryTiles(r, usableReading));
+        b = fFound;
 
         // ---- what we found
         b.append("<section class=\"card\"><h2>What we found</h2><p class=\"lead\">").append(foundSentence(r, g, usableReading)).append("</p></section>");
 
+        b = fHr;
         // ---- tiles
         double hrShown = reportHr(r);
         boolean showHr = usableReading && !Double.isNaN(hrShown);
@@ -236,14 +242,17 @@ public final class EcgReport {
         b.append(tile("Early beats", usableReading ? String.valueOf(r.early) : "&ndash;", "", "Beats that came sooner than expected.", null));
         b.append("</div>");
 
+        b = fQt;
         // ---- QT
         b.append(qtCard(r.qt, r.qtBands));
         b.append(bandsCard(r.qtBands));
 
+        b = fRes;
         // ---- research-only reading
         EcgOpinion.Result op = EcgOpinion.build(r, g);
         b.append(opinionCard(op));
 
+        b = fGraph;
         // ---- graphs
         if (usableReading) {
             String tr = traceChart(strip, r.inverted);
@@ -258,9 +267,9 @@ public final class EcgReport {
                         .append("<div class=\"grid2\"><div class=\"mini\"><span>R wave height</span><b>")
                         .append(String.format(Locale.US, "%.2f mV", r.qt.rAmpUv / 1000.0)).append("</b></div><div class=\"mini\"><span>T wave vs noise</span><b>")
                         .append(String.format(Locale.US, "%.0f&times;", r.qt.tAmpUv / Math.max(1e-9, r.qt.noiseUv))).append("</b></div></div></section>");
-                b.append(detailCard(r.qt));
-                b.append(segmentsCard(r.qt));
-                b.append(parameterTable(r));
+                fRes.append(detailCard(r.qt));
+                fRes.append(segmentsCard(r.qt));
+                fRes.append(parameterTable(r));
             }
             if (r.rrMs.length >= 8) {
                 double[] ax = tachAxis(r);
@@ -288,6 +297,7 @@ public final class EcgReport {
                             : "Gaps in the bar are where contact slipped or the signal was too noisy. A steadier hold fills it in.").append("</p></section>");
         }
 
+        b = fRel;
         // ---- reliability
         b.append("<section class=\"card\"><h2>How reliable is this reading?</h2><p class=\"hint\">").append(reliabilityLine(g, r)).append("</p>");
         b.append(row("Clean seconds", r.usableSeconds + " of " + Math.max(secs, r.usableSeconds) + " (" + Math.round(g.fraction * 100) + "%)"));
@@ -300,8 +310,8 @@ public final class EcgReport {
         }
         if (r.settleDroppedS > 0) b.append(row("Settling", "first " + r.settleDroppedS + " stored seconds left out (research switch: averaged beat, QT and HRV from 12.8 s, rounded up to 13 s)"));
         b.append("</section>");
-        b.append(strapCard(strip));
-        b.append(pooledCard(strip));                                                                  // 0.40.0
+        fRes.append(strapCard(strip));
+        fRes.append(pooledCard(strip));                                                                  // 0.40.0
 
         b.append("<section class=\"card\"><h2>For a better reading next time</h2><ul><li>Rest your forearm on a table and keep still.</li>")
                 .append("<li>Hold steady, even contact with both fingers.</li><li>Stay on for at least 60 seconds.</li><li>Breathe normally and avoid talking.</li></ul></section>");
@@ -310,8 +320,9 @@ public final class EcgReport {
                 .append("<li>Regular timing does not mean a healthy heart.</li><li>It cannot diagnose or rule out any condition.</li></ul>")
                 .append("<p class=\"lead\">If you feel unwell, or have chest pain, fainting or palpitations, get medical advice.</p></section>");
 
-        b.append(explainSection(r, g, op));
+        fRes.append(explainSection(r, g, op));
 
+        b = fRes;
         b.append("<section class=\"card\"><h2>Technical details</h2>");
         b.append(row("Recording", secs + " s at 500 samples a second"));
         b.append(row("Filters", "0.67 to 40 Hz, zero-phase, 50 Hz notch"));
@@ -341,9 +352,37 @@ public final class EcgReport {
         for (String src : EcgOpinion.SOURCES) b.append("<li>").append(esc(src)).append("</li>");
         b.append("</ol></details></section>");
 
+        b = main;
+        b.append(fold("What we found", fFound)).append(fold("Heart rate, HRV and rhythm", fHr)).append(fold("QT interval", fQt)).append(fold("Graphs", fGraph))
+                .append(fold("How reliable, and for next time", fRel)).append(fold("Research", fRes));
         b.append("<p class=\"foot\">Research instrumentation. Not a medical device and not a diagnosis. It cannot detect or rule out any heart condition.</p>");
         b.append("</main></body></html>");
         return b.toString();
+    }
+
+    /** 0.43.0: a closed fold (native details element, no script). Empty content gives nothing. The print path opens every fold first (ReportActivity.printReport). */
+    static String fold(String title, StringBuilder inner) {
+        if (inner == null || inner.length() == 0) return "";
+        return "<details class=\"fold\"><summary>" + title + "</summary><div class=\"fb\">" + inner + "</div></details>";
+    }
+
+    /** 0.43.0: the one-screen summary: heart rate, HRV, QT and rhythm, value only (the captions and the full tiles are in the folds). Same values as the full tiles and the QT card. */
+    static String summaryTiles(EcgR16Analyzer.Result r, boolean usable) {
+        double hr = reportHr(r); boolean showHr = usable && !Double.isNaN(hr);
+        boolean showHrv = showHr && !r.inconclusive && !Double.isNaN(r.rmssd);
+        String[] rt = rhythmTile(r);
+        EcgIntervals.Result q = r.qt; boolean qtOk = q != null && q.status == EcgIntervals.Status.OK;
+        return "<div class=\"grid\">"
+                + ctile("Heart rate", showHr ? String.valueOf(Math.round(hr)) : "&ndash;", showHr ? "bpm" : "", null)
+                + ctile("HRV (RMSSD)", showHrv ? String.valueOf(Math.round(r.rmssd)) : "&ndash;", showHrv ? "ms" : "", null)
+                + ctile("QT interval", qtOk ? String.format(Locale.US, "%.0f", q.qtMs) : "&ndash;", qtOk ? "ms" : "", null)
+                + ctile("Rhythm timing", rt[0], "", rt[2])
+                + "</div>";
+    }
+
+    static String ctile(String label, String value, String unit, String colour) {
+        return "<div class=\"card ct\"><div class=\"k\">" + label + "</div><div class=\"val\"" + (colour != null ? " style=\"color:" + colour + "\"" : "") + ">" + value
+                + (unit.isEmpty() ? "" : "<small>" + unit + "</small>") + "</div></div>";
     }
 
     // ------------------------------------------------------------------ text
@@ -1160,5 +1199,9 @@ public final class EcgReport {
             + ".dot{width:10px;height:10px;border-radius:5px;margin-top:6px;flex:none}.dot.l0{background:var(--green)}.dot.l1{background:var(--amber)}.dot.l2{background:var(--grey)}h3{font-size:14px;margin:14px 0 2px}"
             + "details.why{border-top:1px solid var(--line);padding:2px 0}details.why summary{cursor:pointer;font-weight:600;font-size:15px;padding:10px 0;list-style:none}"
             + "details.why summary::-webkit-details-marker{display:none}details.why summary::after{content:\" \\25be\";color:var(--muted)}details.why[open] summary::after{content:\" \\25b4\"}"
-            + ".legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:2px 0 8px}.sw{display:inline-block;width:18px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}.sw.g{background:var(--green)}.sw.w{background:#cfd8e3}.trace.thin2{stroke:#cfd8e3;stroke-width:1.2;fill:none}.wb p{font-size:14px;line-height:1.5;color:var(--muted);margin:0 0 10px}ol.src{margin:8px 0 0;padding-left:18px;font-size:12px;line-height:1.5;color:var(--muted)}";
+            + ".legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:2px 0 8px}.sw{display:inline-block;width:18px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}.sw.g{background:var(--green)}.sw.w{background:#cfd8e3}.trace.thin2{stroke:#cfd8e3;stroke-width:1.2;fill:none}.wb p{font-size:14px;line-height:1.5;color:var(--muted);margin:0 0 10px}ol.src{margin:8px 0 0;padding-left:18px;font-size:12px;line-height:1.5;color:var(--muted)}"
+            + ".ct{min-height:0;padding:14px 16px;border-radius:22px}.ct .val{font-size:34px;margin-top:6px}"
+            + "details.fold{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:26px}details.fold>summary{cursor:pointer;list-style:none;padding:16px 20px;font-size:16px;font-weight:600;display:flex;justify-content:space-between;align-items:center}"
+            + "details.fold>summary::-webkit-details-marker{display:none}details.fold>summary::after{content:\"\\25be\";color:var(--muted)}details.fold[open]>summary::after{content:\"\\25b4\"}"
+            + "details.fold>.fb{display:flex;flex-direction:column;gap:14px;padding:0 10px 12px}@media print{details.fold{border:none;background:none}}";
 }

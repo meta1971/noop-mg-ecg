@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.19.2 (27 Oct 2026): shows one saved ECG report in a WebView, in its OWN PROCESS (":report" in the manifest).
+// FILE VERSION 0.43.0 (6 Nov 2026): the "Full pull" pill is now ONE "Send" (SendFlow: Preparing... N s, then Send), Save PDF opens every fold first. 0.19.2 (27 Oct 2026): shows one saved ECG report in a WebView, in its OWN PROCESS (":report" in the manifest).
 //
 // Why: Android ends every app that has the WebView loaded when Google updates "Android System WebView" (exit history line "stop com.google.android.webview
 // due to installPackageLI", reason USER_REQUESTED, no restart of the sticky service). The main screen used to build the report WebView at every start, so the
@@ -20,6 +20,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -103,8 +104,8 @@ public class ReportActivity extends Activity {
         final LinearLayout pills = new LinearLayout(this); pills.setOrientation(LinearLayout.HORIZONTAL); pills.setPadding(dp(12), 0, dp(12), dp(8));       // 0.25.1: the three buttons on their own row so the title keeps its width
         LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, dp(44), 1f); plp.rightMargin = dp(8);
         pills.addView(pro, plp);
-        TextView pull = pill("Full pull");                                  // 0.25.0: everything the app holds for this reading, one small zip
-        pull.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { ReadingPull.make(ReportActivity.this, new File(path)); } });
+        TextView pull = pill("Send");                                       // 0.43.0: one button: the whole pull of this reading (SendFlow)
+        try { SendFlow.attach(this, pull, ProReportMaker.unixOf(new File(path)), new File(path)); } catch (Throwable ignored) { }
         LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(0, dp(44), 1f); ulp.rightMargin = dp(8);
         pills.addView(pull, ulp);
         TextView save = pill("Save PDF");
@@ -120,13 +121,27 @@ public class ReportActivity extends Activity {
         ws.setAllowFileAccess(false);
         root.addView(webView, new LinearLayout.LayoutParams(-1, 0, 1f));
         setContentView(root);
+        rawHtml = html;
         webView.loadDataWithBaseURL(null, withFont(html), "text/html", "UTF-8", null);
     }
 
+    private String rawHtml;
+
+    /** 0.43.0: the report has closed folds on screen; a PDF must hold everything, so the page is loaded again with every fold open before it is printed. */
     private void printReport() {
         try {
-            PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+            final PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
             if (pm == null || webView == null) return;
+            if (rawHtml == null || !rawHtml.contains("<details class=\"fold\"")) { printNow(pm); return; }
+            webView.setWebViewClient(new WebViewClient() { @Override public void onPageFinished(WebView v, String url) { v.setWebViewClient(new WebViewClient()); printNow(pm); } });
+            webView.loadDataWithBaseURL(null, withFont(rawHtml.replace("<details class=\"fold\"", "<details class=\"fold\" open")), "text/html", "UTF-8", null);
+        } catch (Throwable t) {
+            Toast.makeText(this, "Could not start printing: " + t.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void printNow(PrintManager pm) {
+        try {
             String name = "ECG report";
             pm.print(name, webView.createPrintDocumentAdapter(name), new PrintAttributes.Builder().build());
         } catch (Throwable t) {
