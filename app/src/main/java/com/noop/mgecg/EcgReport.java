@@ -47,28 +47,30 @@ public final class EcgReport {
      * 0.41.1: the strap's end events (118 / 119) arrive with a pull that starts after the reading, so the first copy of a report says "Event 118 not received".
      * Writes the newest report again once the events are stored. Returns true when it was written. Only for the reading that started within 120 s of sinceUnix. Never throws.
      */
-    public static boolean refreshLast(long sinceUnix) {
+    public static boolean refreshLast(long sinceUnix) { return "ok".equals(refreshLastWhy(sinceUnix)); }
+
+    /** 0.42.3: the same, but says why it did nothing (the 06:50 reading of 6 Nov stayed at "Event 118 not received"): ok, no_report_yet, other_reading, no_events, not_written or error. */
+    public static String refreshLastWhy(long sinceUnix) {
         try {
             EcgR16Analyzer.Result r = lastRes; EcgR16Analyzer.Strip s = lastStrip;
-            if (r == null || s == null || appCtx == null || s.rawUv == null) return false;
-            if (sinceUnix > 0 && Math.abs(s.startUnix - sinceUnix) > 120L) return false;
+            if (r == null || s == null || appCtx == null || s.rawUv == null) return "no_report_yet";
+            if (sinceUnix > 0 && Math.abs(s.startUnix - sinceUnix) > 120L) return "other_reading_" + (s.startUnix - sinceUnix);
             long secs = s.rawUv.length / StrapBeatCheck.FS;
-            if (StrapEvents.raw(appCtx, 118, s.startUnix, s.startUnix + secs + 120, 1).isEmpty()) return false;
-            saveReportFile(r, s);
-            return true;
-        } catch (Throwable t) { return false; }
+            if (StrapEvents.raw(appCtx, 118, s.startUnix, s.startUnix + secs + 120, 1).isEmpty()) return "no_events_strip" + secs + "s";
+            return saveReportFile(r, s) ? "ok" : "not_written";
+        } catch (Throwable t) { return "error_" + t.getClass().getSimpleName(); }
     }
 
-    public static void saveReportFile(EcgR16Analyzer.Result r, EcgR16Analyzer.Strip s) {
+    public static boolean saveReportFile(EcgR16Analyzer.Result r, EcgR16Analyzer.Strip s) {
         java.io.File dir = reportDir;
-        if (dir == null || r == null || s == null || r.recordsIn == 0 || s.mv.length == 0) return;
-        lastRes = r; lastStrip = s;
+        if (dir == null || r == null || s == null || r.recordsIn == 0 || s.mv.length == 0) return false;
         try {
             long t = s.startUnix;
             if (t < 1672531200L || t > 1924992000L) t = System.currentTimeMillis() / 1000L;
             synchronized (EcgReport.class) {
-                if (isLateTail(lastReportStart, lastReportRecords, t, r.recordsIn)) return;      // 0.15.2: no second report for one reading
+                if (isLateTail(lastReportStart, lastReportRecords, t, r.recordsIn)) return false;      // 0.15.2: no second report for one reading
                 if (r.recordsIn >= 20) { lastReportStart = t; lastReportRecords = r.recordsIn; }
+                lastRes = r; lastStrip = s;      // 0.42.3: only for a real report. Before, a late tail overwrote these first, and the refresh then looked for the events in the tail
             }
             String html = html(r, s, null);
             java.io.File f = new java.io.File(dir, "ecg_report_" + t + ".html");
@@ -79,8 +81,9 @@ public final class EcgReport {
                 out.close();
             }
             try { EcgWidget.refreshAll(appCtx); } catch (Throwable ignored) { }      // 0.42.0: the widget shows the newest reading
+            return true;
         } catch (Throwable ignored) {
-            // best effort only
+            return false;      // best effort only
         }
     }
 

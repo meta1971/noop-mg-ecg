@@ -52,11 +52,19 @@ public class ReportActivity extends Activity {
         return b;
     }
 
+    private String reportPath; private long loadedMtime;
+    /** 0.42.3: the report file is rewritten when the strap's end events arrive; show the new copy when coming back to this screen. */
+    @Override protected void onResume() {
+        super.onResume();
+        try { if (reportPath != null && loadedMtime > 0L && new File(reportPath).lastModified() > loadedMtime) recreate(); } catch (Throwable ignored) { }
+    }
+
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
         try { if (Build.VERSION.SDK_INT >= 28) WebView.setDataDirectorySuffix("report"); } catch (Throwable ignored) { }   // set once per process; later calls throw and are ignored
         final String path = getIntent() == null ? null : getIntent().getStringExtra("path");
         String html = path == null ? null : readAll(new File(path));
+        reportPath = path; try { loadedMtime = path == null ? 0L : new File(path).lastModified(); } catch (Throwable ignored) { }
         if (html == null) {
             Toast.makeText(this, "Could not read that report.", Toast.LENGTH_LONG).show();
             finish();

@@ -22,7 +22,7 @@ import java.io.File;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.42.3-pro";
+    static final String VERSION = "0.42.4-pro";
     private final NewLookActivity a;
     private final SharedPreferences pr;
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -249,7 +249,7 @@ final class EcgPage {
         try {
             if (nowRunning && !was) {
                 startMs = Live500.sessionMs > 0 && System.currentTimeMillis() - Live500.sessionMs < 8000 ? Live500.sessionMs : System.currentTimeMillis();
-                autoStopped = false; stopReason = 0; cueLog = ""; lastOut = null; lastBands = null; LiveMeasure.clear();
+                refreshed = false; autoStopped = false; stopReason = 0; cueLog = ""; lastOut = null; lastBands = null; LiveMeasure.clear();
                 if (resultCard != null) resultCard.setVisibility(View.GONE);
                 if (avgView != null) avgView.set(null);
                 GuidedRun.Def d = GuidedRun.byId(pref("run_id", ""));
@@ -438,12 +438,13 @@ final class EcgPage {
         // the next pull brings the strap's end events: ask for one 12 s and 70 s after the stop (blocked by the app while another pull runs)
         h.postDelayed(() -> pullSoon(), 12000L); h.postDelayed(() -> pullSoon(), 70000L);
         final long sinceUnix = startMs / 1000L; final int[] tries = { 0 };
-        for (long at : new long[] { 45000L, 100000L, 190000L, 360000L }) h.postDelayed(() -> refreshReport(sinceUnix, tries), at);      // 0.41.1: write the report again once events 118 / 119 are stored
+        for (long at : new long[] { 45000L, 100000L, 190000L, 360000L, 600000L }) h.postDelayed(() -> refreshReport(sinceUnix, tries), at);      // 0.41.1: write the report again once events 118 / 119 are stored
     }
     private volatile boolean refreshed;
     private void refreshReport(final long sinceUnix, final int[] tries) {
         if (refreshed) return;
-        new Thread(new Runnable() { @Override public void run() { try { if (EcgReport.refreshLast(sinceUnix)) { refreshed = true; h.post(() -> a.toast("Report updated with the strap's own beat counts.")); } } catch (Throwable ignored) { } } }).start();
+        final int tryNo = ++tries[0];
+        new Thread(new Runnable() { @Override public void run() { try { String why = EcgReport.refreshLastWhy(sinceUnix); ReadingNotes.put(dir(), sinceUnix, "refresh_try" + tryNo, why); if ("ok".equals(why)) { refreshed = true; h.post(() -> a.toast("Report updated with the strap's own beat counts.")); } } catch (Throwable ignored) { } } }).start();
     }
     private void pullSoon() { try { if (!MainActivity.linkRunning()) MainActivity.startLinkHost(a); MainActivity.requestPull(); } catch (Throwable ignored) { } }
 }
