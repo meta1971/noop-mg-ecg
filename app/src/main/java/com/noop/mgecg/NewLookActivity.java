@@ -479,6 +479,7 @@ public class NewLookActivity extends Activity {
         state = ST_ECG;
         ecgClosing = false;
         restyleEcgOnce();
+        if (ecgPage != null) ecgPage.onOpen();      // 0.43.1
         fontAll(ecgContainer());
         updateEcgExtras();
         if (fromNew) beginCountdown();
@@ -631,6 +632,7 @@ public class NewLookActivity extends Activity {
     private void fontAll(View v) {
         if (v == null) return;
         try {
+            if (ecgPage != null && ecgPage.skipFont(v)) return;      // 0.43.1: the reading page keeps its own Home-style weights
             if (v instanceof TextView) {
                 TextView t = (TextView) v;
                 Typeface cur = t.getTypeface();
