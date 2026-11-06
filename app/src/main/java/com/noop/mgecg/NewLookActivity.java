@@ -158,7 +158,7 @@ public class NewLookActivity extends Activity {
         countdownCard.setBackground(round(PRIMARY, 20));
         countdownCard.setTextColor(0xFF05131E);
         countdownCard.setVisibility(View.GONE);
-        countdownCard.setOnClickListener(v -> { counting = false; countdownCard.setVisibility(View.GONE); toast("Not starting by itself. Press Start when you are ready."); });
+        countdownCard.setOnClickListener(v -> { counting = false; hideCountdown(); toast("Not starting by itself. Press Start when you are ready."); });
         FrameLayout.LayoutParams cdp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
         cdp.setMargins(dp(16), 0, dp(16), dp(40));
         root.addView(countdownCard, cdp);
@@ -394,7 +394,7 @@ public class NewLookActivity extends Activity {
             reportBaseline = newest;
             bannerFile = nf;
             bannerPending = true;
-            if (state != ST_REPORT && banner != null) banner.setVisibility(View.VISIBLE);
+            if (state != ST_REPORT && state != ST_ECG && state != ST_START && banner != null) banner.setVisibility(View.VISIBLE);      // 0.43.2: not over the reading page (it covered START / STOP and Send); Home shows it
         }
     }
 
@@ -553,24 +553,30 @@ public class NewLookActivity extends Activity {
         ui.post(this::tickCountdown);
     }
 
+    /** 0.43.2: the 5 s countdown is a slim pill inside the reading page (EcgPage.setCountdown), no longer a card laid over the bottom of the screen, which covered START and the Send buttons. */
+    private void hideCountdown() {
+        if (countdownCard != null) countdownCard.setVisibility(View.GONE);
+        if (ecgPage != null) ecgPage.setCountdown(null);
+    }
+
     /** 0.43.0: the Lab starts a test with its own get-ready pill, so the 5 s auto-start must not also press START. */
     void cancelAutoCountdown() {
         counting = false;
-        if (countdownCard != null) countdownCard.setVisibility(View.GONE);
+        hideCountdown();
     }
 
     private void tickCountdown() {
-        if (!counting || state != ST_ECG || countdownCard == null) { counting = false; if (countdownCard != null) countdownCard.setVisibility(View.GONE); return; }
-        if (ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP")) { counting = false; countdownCard.setVisibility(View.GONE); return; }
+        if (!counting || state != ST_ECG || countdownCard == null) { counting = false; if (countdownCard != null) hideCountdown(); return; }
+        if (ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP")) { counting = false; hideCountdown(); return; }
         if (isFinishing() || isDestroyed()) { counting = false; return; }                 // 0.22.1
         if (countLeft <= 0) {
             counting = false;
-            countdownCard.setVisibility(View.GONE);
+            hideCountdown();
             if (ecgStartBtn != null && ecgStartBtn.isAttachedToWindow()) ecgStartBtn.performClick();
             return;
         }
-        countdownCard.setText("Two fingers on the indents, forearm on a table.\nStarting in " + countLeft + "    (tap to cancel)");
-        countdownCard.setVisibility(View.VISIBLE);
+        String ct = "Two fingers on the indents, forearm on a table.\nStarting in " + countLeft + "    (tap to cancel)";
+        if (ecgPage != null) ecgPage.setCountdown(ct); else { countdownCard.setText(ct); countdownCard.setVisibility(View.VISIBLE); }
         countLeft--;
         ui.postDelayed(this::tickCountdown, 1000);
     }
@@ -582,7 +588,7 @@ public class NewLookActivity extends Activity {
         fromNew = false;
         counting = false;
         waitingConnect = false;
-        if (countdownCard != null) countdownCard.setVisibility(View.GONE);
+        if (countdownCard != null) hideCountdown();
         if (ran) lastReadingEndMs = System.currentTimeMillis();
         showHome();
         HealthActivity.pendingTab = 2;

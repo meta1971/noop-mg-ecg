@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.43.1 (6 Nov 2026): the reading page rebuilt in the style of the "Hi, Ame" pages (HealthActivity / HealthViews): Outfit thin figures, small caps labels, glass cards, the glowing tick dial, blue pills. Nothing of the old page is stacked any more:
+// FILE VERSION 0.43.2 (6 Nov 2026): the 5 s countdown is a slim pill in the page (it was a card over the bottom that covered START and Send), the pinned bar floats on a fade like the Home navigation bar, the "report ready" banner is not shown over this page. 0.43.1 (6 Nov 2026): the reading page rebuilt in the style of the "Hi, Ame" pages (HealthActivity / HealthViews): Outfit thin figures, small caps labels, glass cards, the glowing tick dial, blue pills. Nothing of the old page is stacked any more:
 // every old row is hidden, only the live graph is reused.
 //   AT REST   header, dial (last heart rate), one line of status, the latest reading (heart rate, HRV, grade) with its Send button, the next test (one tap), two chips (setup, Lab).
 //   RUNNING   header, dial (live heart rate, m:ss, ticks fill to 60 s), the cue pill (guided tests), ONE signal-light line, the live trace, "Details" (closed), STOP (1 s hold).
@@ -32,7 +32,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.43.1-pro";
+    static final String VERSION = "0.43.2-pro";
     static final int REST = 0, RUN = 1, DONE = 2;
     private static final int BLUE = HealthViews.BLUE, INK = HealthViews.INK, MUT = HealthViews.MUT, GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE, DARK = 0xFF05131E;
 
@@ -46,6 +46,7 @@ final class EcgPage {
     private TextView greetView, titleView, linkChip, statusLine, signalView, resultTitle, sendNote, detailsHeader, resultBody, whyHint, strapLine, bandsView, avgText, latestDate, nextText, setupChip, labChip, cueView, footer, sendBtn, latestSend, nextBtn, targetBtn;
     private final TextView[] rVal = new TextView[3], rCap = new TextView[3], lVal = new TextView[3], lCap = new TextView[3];
     private EcgOrb orb;
+    private TextView countPill;
     private AvgBeatView avgView;
     private ProgressLine cueLine;
     private Button start;
@@ -175,7 +176,7 @@ final class EcgPage {
         try {
             if (startBtn.getParent() != null) ((ViewGroup) startBtn.getParent()).removeView(startBtn);
             start.setAllCaps(false); start.setTextSize(17); start.setTypeface(HealthViews.font(a, 600)); start.setTextColor(DARK);
-            bar = new LinearLayout(a); bar.setOrientation(LinearLayout.VERTICAL); bar.setBackgroundColor(HealthViews.BG); bar.setPadding(dp(18), dp(10), dp(18), dp(14));
+            bar = new LinearLayout(a); bar.setOrientation(LinearLayout.VERTICAL); bar.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[] { 0x0007090C, 0xF007090C, 0xFF07090C })); bar.setPadding(dp(18), dp(30), dp(18), dp(18));
             bar.addView(startBtn, new LinearLayout.LayoutParams(-1, dp(58)));
             container.addView(bar, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         } catch (Throwable e) { fail("pinned bar", e); }
@@ -247,6 +248,9 @@ final class EcgPage {
         col.addView(orb, op);
         statusLine = t("", 13, MUT, 400); statusLine.setGravity(Gravity.CENTER); statusLine.setLineSpacing(0, 1.2f);
         col.addView(statusLine, lp(-1, -2, 4));
+        countPill = pill("", BLUE, DARK); countPill.setTextSize(14); countPill.setMaxLines(2); countPill.setPadding(dp(18), dp(10), dp(18), dp(10)); countPill.setVisibility(View.GONE);
+        countPill.setOnClickListener(v -> { a.cancelAutoCountdown(); a.toast("Not starting by itself. Press START ECG when you are ready."); });
+        col.addView(countPill, lp(-1, -2, 12));
         // the cue pill of a guided test: one slim line
         cuePill = new LinearLayout(a); cuePill.setOrientation(LinearLayout.VERTICAL); cuePill.setVisibility(View.GONE);
         cueView = pill("", BLUE, DARK); cueView.setTextSize(15); cueView.setMaxLines(2); cueView.setPadding(dp(18), dp(10), dp(18), dp(10)); cueView.setMinHeight(dp(56));
@@ -403,6 +407,11 @@ final class EcgPage {
 
     /** Called each time the ECG screen is opened: a page left on the last result goes back to rest (the latest reading card then carries its Send). */
     void onOpen() { try { if (!running) { detailsOpen = false; applyMode(REST); } } catch (Throwable e) { fail("open", e); } }
+
+    /** The 5 s auto-start countdown, shown inside the page; null hides it. A tap cancels it. */
+    void setCountdown(String s) {
+        try { if (countPill == null) return; if (s == null || running) { countPill.setVisibility(View.GONE); return; } countPill.setText(s); countPill.setVisibility(View.VISIBLE); } catch (Throwable e) { fail("countdown", e); }
+    }
 
     private void syncStatus() {
         try { if (statusLine == null || statusRef == null) return; String s = statusRef.getText() == null ? "" : statusRef.getText().toString(); if (!s.equals(lastStatus)) { lastStatus = s; statusLine.setText(s); } } catch (Throwable ignored) { }
