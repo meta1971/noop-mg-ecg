@@ -27,6 +27,7 @@ final class StrapBeatCheck {
         int strapRmssd = -1, strapResult;
         boolean windowFromB;                      // true = our numbers use the strap's own window (B to B + 29.1 s)
         int beats;                                 // our beats used
+        int ourN1 = -1;                            // 0.42.3: our beats in the strap's n1 window, B + 5.49 s to 36.21 s after the first sample (decode log 111.2, 113.5); -1 = reading too short
         double ourMedianUv = Double.NaN, ourMaxUv = Double.NaN, ourMinUv = Double.NaN;
         double maxRatio = Double.NaN;              // max per-beat amplitude / median
         double templateShare = Double.NaN;         // beats correlating > 0.9 with the median beat
@@ -86,6 +87,8 @@ final class StrapBeatCheck {
             w0 = s.firstSampleIdx + ANCHOR_SAMPLES + (int) (r.e118.b / 2);
             w1 = Math.min(n, w0 + (int) Math.round(WINDOW_S * FS));
             r.windowFromB = true;
+            int n1a = s.firstSampleIdx + (int) (r.e118.b / 2) + (int) Math.round(5.49 * FS), n1z = s.firstSampleIdx + (int) Math.round(36.21 * FS);
+            if (n >= n1z) { int c = 0; for (int b : s.beats) if (b >= n1a && b < n1z) c++; r.ourN1 = c; }
         }
         double[] wide = runs(raw, ProDsp.bandPass(0.5, 100, FS), null);
         double[] sig = runs(raw, ProDsp.bandPass(5, 25, FS), null);
@@ -167,8 +170,12 @@ final class StrapBeatCheck {
         else if (r.e118.noBeats) o.add(new String[] { "Event 118", "strap found no beats (A = B = FFFFFFFF, N = " + r.e118.n + ")" });
         else {
             o.add(new String[] { "Strap beats N / n1 / n2", r.e118.n + " / " + r.e118.n1 + " / " + r.e118.n2 + "  (n1, n2 acceptance rule OPEN)" });
+            if (r.ourN1 >= 0) {
+                long d = r.e118.n1 - r.ourN1;
+                o.add(new String[] { "d = strap n1 - our beats", String.format(L, "%+d  (strap n1 %d, ours %d between B + 5.49 s and 36.21 s). Result 1 readings sat at -1 to +1 (11 of 16 at 0); result 6 or 2 at +2, +1, +2, -7 (OBSERVED, 20 readings, decode log 111 / 113.5). They overlap at +1, so d is not a verdict.", d, r.e118.n1, r.ourN1) });
+            }
             o.add(new String[] { "First accepted beat B", String.format(L, "%.2f s after the first sample (next A %.2f s)", r.e118.b / 1000.0, r.e118.a / 1000.0) });
-            o.add(new String[] { "Strap amplitude E / C / D", r.e118.e + " / " + r.e118.c + " / " + r.e118.d + "  (median / minimum / maximum per-beat QRS)" });
+            o.add(new String[] { "Strap amplitude E / C / D", r.e118.e + " / " + r.e118.c + " / " + r.e118.d + "  (E follows the median per-beat QRS, D a high percentile, C the minimum in 23 of 34 readings and about 0.45 E in the rest, OPEN)" + (r.e118.e > 0 ? String.format(L, "  C / E = %.2f%s", r.e118.c / (double) r.e118.e, r.e118.c < 0.55 * r.e118.e ? ": C / E under 0.55 agreed with extra strap detections in 44 of 47 readings (decode log 111.3)" : "") : "") });
         }
         if (!Double.isNaN(r.ourMedianUv))
             o.add(new String[] { "Ours, 0.5-100 Hz, -40..+30 ms", String.format(L, "median %.0f uV, min %.0f, max %.0f (%d beats, %s)%s", r.ourMedianUv, r.ourMinUv, r.ourMaxUv, r.beats,

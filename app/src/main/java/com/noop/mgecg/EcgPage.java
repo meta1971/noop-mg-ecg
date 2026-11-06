@@ -10,6 +10,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -21,7 +22,7 @@ import java.io.File;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.42.2-pro";
+    static final String VERSION = "0.42.3-pro";
     private final NewLookActivity a;
     private final SharedPreferences pr;
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -35,6 +36,9 @@ final class EcgPage {
     private View anchor;
     private Button start;
     private LinearLayout waveCardRef;
+    private boolean holdFired, guidedThisRun; private Runnable holdRun;
+    private android.widget.ScrollView scrollRef;
+    private int cueCount; private android.speech.tts.TextToSpeech tts; private volatile boolean ttsOk;
     private TextView[] rowValues = new TextView[9];
 
     // state
@@ -62,6 +66,22 @@ final class EcgPage {
     /** Called once from NewLookActivity.styleEcgColumn after the top part is styled. Moves START / STOP into a pinned bar and adds the new cards. */
     void build(FrameLayout container, LinearLayout col, View top, TextView status, TextView verdict, LinearLayout waveCard, LinearLayout stats, Button startBtn) {
         start = startBtn; waveCardRef = waveCard;
+        // 0.42.3: while a reading runs, STOP needs a 1 s press-and-hold (a thumb brushing it while scrolling stopped the 22:00 reading). Timed, guided and auto stops click the button directly and are not affected.
+        start.setOnTouchListener(new View.OnTouchListener() { @Override public boolean onTouch(final View v, MotionEvent e) {
+            if (!start.getText().toString().startsWith("STOP")) return false;
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    holdFired = false; v.setPressed(true);
+                    holdRun = new Runnable() { @Override public void run() { holdFired = true; v.setPressed(false); try { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { } v.performClick(); } };
+                    h.postDelayed(holdRun, 1000L); return true;
+                case MotionEvent.ACTION_UP: case MotionEvent.ACTION_CANCEL:
+                    if (holdRun != null) h.removeCallbacks(holdRun); v.setPressed(false);
+                    if (!holdFired && e.getActionMasked() == MotionEvent.ACTION_UP) a.toast("Hold STOP for 1 second to end the reading");
+                    return true;
+                default: return true;
+            }
+        } });
+        try { if (col.getParent() instanceof android.widget.ScrollView) scrollRef = (android.widget.ScrollView) col.getParent(); } catch (Throwable ignored) { }
         try { Live500.pro = pref("pro_display", "1").equals("1"); Live500View.windowMs = pr.getInt("graph_window", 6000); Live500View.sweep = pr.getBoolean("graph_sweep", false); Live500View.paper = pr.getBoolean("graph_paper", false); } catch (Throwable t) { fail("display options", t); }
         // the anchor takes the place of the button in the column; the button itself goes into a pinned bar
         try {
@@ -122,6 +142,7 @@ final class EcgPage {
         addRow(2, "Where", WHERE, () -> pref("where_tag", "").isEmpty() ? WHERE[0] : pref("where_tag", ""), i -> pr.edit().putString("where_tag", i == 0 ? "" : WHERE[i]).apply());
         String[] runs = new String[GuidedRun.ALL.length]; for (int i = 0; i < runs.length; i++) runs[i] = GuidedRun.ALL[i].title;
         addRow(3, "Run", runs, () -> GuidedRun.byId(pref("run_id", "")).title, i -> { pr.edit().putString("run_id", GuidedRun.ALL[i].id).apply(); updateRunHint(); });
+        addActionRow("Test the cue (buzz, beep, voice)", "Test", new Runnable() { @Override public void run() { testCue(); } });
         addRow(4, "Auto-stop", AUTO, () -> { if (!pr.getBoolean("auto_stop", true)) return AUTO[0]; double t = a.autoTargetValue(); return t < 3.5 ? AUTO[1] : t < 4.5 ? AUTO[2] : AUTO[3]; }, i -> {
             SharedPreferences.Editor e = pr.edit(); if (i == 0) e.putBoolean("auto_stop", false); else e.putBoolean("auto_stop", true).putFloat("auto_target", i == 1 ? 3f : i == 2 ? 4f : 5f); e.apply(); });
         TextView dl = a.tv("Display", 11, NewLookActivity.MUTED, true); setupBody.addView(dl, lp(-2, -2, 8));
@@ -150,7 +171,20 @@ final class EcgPage {
         });
         setupBody.addView(r, lp(-1, -2, 6));
     }
-    private void updateRunHint() { if (runHint == null) return; GuidedRun.Def d = GuidedRun.byId(pref("run_id", "")); runHint.setText(d.id.isEmpty() ? "Free reading: auto-stop and the 3 / 4 / 5 uV target apply." : d.title + ". " + d.setup + " Buzz and beep at each step; it stops itself at " + d.stopSec + " s."); }
+    private void addActionRow(final String label, String value, final Runnable action) {
+        LinearLayout r = new LinearLayout(a); r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(Gravity.CENTER_VERTICAL); r.setBackground(a.round(0x14FFFFFF, 14)); r.setPadding(a.dp(12), a.dp(10), a.dp(12), a.dp(10));
+        r.addView(a.tv(label, 13, NewLookActivity.MUTED, false), new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView val = a.tv(value + "  \u25b6", 14, NewLookActivity.TEXT, true); val.setGravity(Gravity.END); r.addView(val, new LinearLayout.LayoutParams(-2, -2));
+        r.setContentDescription(label + ", double tap to run"); r.setOnClickListener(v -> action.run());
+        setupBody.addView(r, lp(-1, -2, 6));
+    }
+    private void idleCue() {
+        if (cueView == null) return;
+        GuidedRun.Def d = GuidedRun.byId(pref("run_id", ""));
+        if (running || d.id.isEmpty()) { if (!running) cueView.setVisibility(View.GONE); return; }
+        cueView.setVisibility(View.VISIBLE); cueView.setText(d.title + " is selected. During the run the phone buzzes, beeps and speaks at each step, and the run stops itself at " + d.stopSec + " s.");
+    }
+    private void updateRunHint() { idleCue(); if (runHint == null) return; GuidedRun.Def d = GuidedRun.byId(pref("run_id", "")); runHint.setText(d.id.isEmpty() ? "Free reading: auto-stop and the 3 / 4 / 5 uV target apply." : d.title + ". " + d.setup + " Buzz and beep at each step; it stops itself at " + d.stopSec + " s."); }
 
     void refreshSummary() {
         if (setupSummary == null) return;
@@ -219,7 +253,9 @@ final class EcgPage {
                 if (resultCard != null) resultCard.setVisibility(View.GONE);
                 if (avgView != null) avgView.set(null);
                 GuidedRun.Def d = GuidedRun.byId(pref("run_id", ""));
-                if (!d.id.isEmpty()) guide.start(d, startMs, sink); else guide.cancel();
+                guidedThisRun = !d.id.isEmpty();
+                if (!d.id.isEmpty()) { cueCount = 0; initTts(); guide.start(d, startMs, sink); } else guide.cancel();
+                if (scrollRef != null) scrollRef.post(new Runnable() { @Override public void run() { try { scrollRef.scrollTo(0, 0); } catch (Throwable ignored) { } } });      // the cue card and the graph are at the top
                 ReadingNotes.put(dir(), startMs / 1000L, "app", VERSION);
                 ReadingNotes.put(dir(), startMs / 1000L, "where", pref("where_tag", ""));
                 ReadingNotes.put(dir(), startMs / 1000L, "pos", a.positionTag);
@@ -239,7 +275,7 @@ final class EcgPage {
             if (setupBody != null && r) { setupBody.setVisibility(View.GONE); setupChevron.setText("\u25be"); }
             if (liveCard != null) liveCard.setVisibility(r ? View.VISIBLE : View.GONE);
             if (avgCard != null) avgCard.setVisibility(r || lastOut != null ? View.VISIBLE : View.GONE);
-            if (cueView != null && !r) cueView.setVisibility(View.GONE);
+            if (!r) idleCue();
             if (setupChevron != null) setupChevron.setVisibility(r ? View.INVISIBLE : View.VISIBLE);
             if (start != null && r && !start.getText().toString().startsWith("STOP")) start.setText("STOP");
             if (start != null && !r) start.setContentDescription("Start ECG reading");
@@ -288,7 +324,7 @@ final class EcgPage {
                 a.toast(el > NewLookActivity.AUTO_MAX_MS && (Double.isNaN(est) || est > a.autoTargetValue()) ? "Stopped at 5 minutes (report quality " + (Double.isNaN(est) ? "-" : String.format(Locale.UK, "%.1f", est)) + " uV)" : String.format(Locale.UK, "Stopped: report quality %.1f uV reached", est));
                 if (start != null && start.getText().toString().startsWith("STOP")) start.performClick();
             }
-            if (start != null && running) { start.setText(String.format(Locale.UK, "STOP  \u00b7  %d:%02d", el / 60000, (el / 1000) % 60)); start.setContentDescription(String.format(Locale.UK, "Stop the reading. %d minutes %d seconds so far.", el / 60000, (el / 1000) % 60)); }
+            if (start != null && running) { start.setText(String.format(Locale.UK, "STOP (hold 1 s)  \u00b7  %d:%02d", el / 60000, (el / 1000) % 60)); start.setContentDescription(String.format(Locale.UK, "Stop the reading. Press and hold for one second. %d minutes %d seconds so far.", el / 60000, (el / 1000) % 60)); }
             try {                                                                      // a spoken summary of the live graph for a screen reader
                 double rrS = Live500.medianRrS(); String say = txt.split("\n")[0].replace("\u25cf  ", "");
                 String desc = "Live ECG trace, 500 hertz. " + (Double.isNaN(rrS) ? "" : String.format(Locale.UK, "Heart rate %.0f beats a minute. ", 60.0 / rrS)) + say + ".";
@@ -319,14 +355,39 @@ final class EcgPage {
         @Override public void cue(String text, String mark, int sec) {
             lastCue = text; cueUntil = System.currentTimeMillis() + 4000L; cueLog += (cueLog.isEmpty() ? "" : ";") + sec + ":" + text;
             if (cueView != null) { cueView.setVisibility(View.VISIBLE); cueView.setText("NOW  " + text); }
-            try { if (start != null) start.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { }
-            try { final android.media.ToneGenerator tg = new android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 80); tg.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150); h.postDelayed(tg::release, 400); } catch (Throwable ignored) { }
+            alertUser(text, 1 + (cueCount++ % 2));      // 0.42.3: buzz (own vibrator), beep on the alarm stream and a spoken cue: the old haptic tap and media-stream beep were easy to miss
             if (mark != null) clickMark(mark);
             ReadingNotes.put(dir(), startMs / 1000L, "cue", sec + ":" + text);
         }
         @Override public void tick(String status) { if (cueView == null) return; cueView.setVisibility(View.VISIBLE); if (System.currentTimeMillis() > cueUntil) cueView.setText(status); }
         @Override public void stop() { stopReason = 2; if (start != null && start.getText().toString().startsWith("STOP")) { a.toast("Run finished"); start.performClick(); } }
     };
+
+    /** 0.42.3: vibration with the phone's vibrator, a beep on the ALARM stream and the cue spoken (also on the alarm stream). Each channel is tried on its own. */
+    private void initTts() {
+        if (tts != null) return;
+        try { tts = new android.speech.tts.TextToSpeech(a.getApplicationContext(), new android.speech.tts.TextToSpeech.OnInitListener() { @Override public void onInit(int s) { ttsOk = s == android.speech.tts.TextToSpeech.SUCCESS; } }); } catch (Throwable t) { tts = null; }
+    }
+    private void alertUser(String text, int pulses) {
+        boolean vib = false;
+        try {
+            android.os.Vibrator v = (android.os.Vibrator) a.getSystemService(android.content.Context.VIBRATOR_SERVICE);
+            if (v != null && v.hasVibrator()) {
+                long[] p = pulses >= 2 ? new long[] { 0, 350, 200, 350 } : new long[] { 0, 600 };
+                v.vibrate(android.os.VibrationEffect.createWaveform(p, -1), new android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_ALARM).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
+                vib = true;
+            }
+        } catch (Throwable ignored) { }
+        if (!vib) { try { if (start != null) start.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { } }
+        try { final android.media.ToneGenerator tg = new android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100); tg.startTone(pulses >= 2 ? android.media.ToneGenerator.TONE_PROP_BEEP2 : android.media.ToneGenerator.TONE_PROP_BEEP, 400); h.postDelayed(tg::release, 900); } catch (Throwable ignored) { }
+        try { if (tts != null && ttsOk) { android.os.Bundle b = new android.os.Bundle(); b.putInt(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_ALARM); tts.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, b, "cue"); } } catch (Throwable ignored) { }
+    }
+    /** The "Test the cue" row: buzz and beep at once, the voice about 1.5 s later (the speech engine starts on first use). */
+    private void testCue() {
+        initTts(); alertUser("Test. Clench your left fist now.", 1);
+        h.postDelayed(new Runnable() { @Override public void run() { try { if (tts != null && ttsOk) { android.os.Bundle b = new android.os.Bundle(); b.putInt(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_ALARM); tts.speak("Test. Clench your left fist now.", android.speech.tts.TextToSpeech.QUEUE_FLUSH, b, "cue"); } } catch (Throwable ignored) { } } }, 1500L);
+        a.toast("Cue test: you should feel a buzz, hear a beep and a voice. If not, check the phone's vibration, alarm volume and Do Not Disturb.");
+    }
 
     private void clickMark(String label) {
         try {
@@ -360,18 +421,20 @@ final class EcgPage {
         }
         // result card
         StringBuilder t = new StringBuilder();
-        if (vc != 0) resultTitle.setText("Strap verdict: " + StrapVerdict.describe(vc, Live500.verdictHr, Live500.lastMask)); else resultTitle.setText(dur < 40 ? "No strap verdict yet: the reading was " + String.format(Locale.UK, "%.0f", dur) + " s (it needs about 37 s of unbroken contact)" : "No strap verdict (contact was broken before it finished)");
+        if (vc != 0) resultTitle.setText("Strap verdict: " + StrapVerdict.describe(vc, Live500.verdictHr, Live500.lastMask)); else resultTitle.setText(dur < 42 ? "No strap verdict yet: the reading was " + String.format(Locale.UK, "%.0f", dur) + " s (the strap needs about 41 s from Start, 37 s of it in unbroken contact)" : "No strap verdict (contact was broken before it finished, or it was stopped too early)");
         double rr = Live500.medianRrS(); if (!Double.isNaN(rr)) t.append(String.format(Locale.UK, "HR %.0f", 60.0 / rr)); if (vc != 0) t.append(String.format(Locale.UK, " (strap %d)", Live500.verdictHr));
         if (Live500.hrvMs != 0) t.append(String.format(Locale.UK, "  \u00b7  strap HRV %d ms (from %.0f s)", Live500.hrvVal, (Live500.hrvMs - Live500.sessionMs) / 1000.0));
         if (o != null && o.avg != null) { t.append(String.format(Locale.UK, "\nR %.0f uV", o.rUv)); if (!Double.isNaN(o.qrsMs)) t.append(String.format(Locale.UK, "  \u00b7  QRS %.0f ms", o.qrsMs)); if (!Double.isNaN(o.postDipUv)) t.append(String.format(Locale.UK, "  \u00b7  S/ST dip %.0f uV", o.postDipUv)); if (!Double.isNaN(o.qtMs)) t.append(String.format(Locale.UK, "  \u00b7  QT %.0f ms", o.qtMs)); }
         boolean noisy = !Double.isNaN(b[1]) && b[1] > 27;
         if (!Double.isNaN(b[1])) t.append(String.format(Locale.UK, "\nNoise in the QRS band %.0f uV (usual 15-27): %s", b[1], b[1] <= 27 ? "good" : b[1] <= 40 ? "fair" : "noisy"));
+        t.append("\nStopped ").append(stopReason == 1 ? "by auto-stop" : stopReason == 2 ? "by the guided run" : "by you").append(String.format(Locale.UK, " after %.0f s.", dur));
         t.append("\nThe full report builds in 1 to 3 minutes and is written again by itself when the strap's own beat counts (events 118 / 119) arrive.");
         resultBody.setText(t.toString());
         whyHint.setVisibility(noisy ? View.VISIBLE : View.GONE); whyRow.setVisibility(noisy ? View.VISIBLE : View.GONE);
         for (int i = 0; i < whyRow.getChildCount(); i++) ((Button) whyRow.getChildAt(i)).setBackground(a.round(0x14FFFFFF, 28));
         resultCard.setVisibility(View.VISIBLE);
         if (avgView != null && o != null) { avgView.set(o); avgText.setText(avgLine(o)); avgCard.setVisibility(View.VISIBLE); }
+        if (guidedThisRun) { guidedThisRun = false; pr.edit().putString("run_id", "").apply(); updateRunHint(); a.toast("Guided run over: the next reading is a free reading."); }      // 0.42.3: a guided run is one-shot; it kept stopping every later reading at 45 s (23:10 reading)
         // the next pull brings the strap's end events: ask for one 12 s and 70 s after the stop (blocked by the app while another pull runs)
         h.postDelayed(() -> pullSoon(), 12000L); h.postDelayed(() -> pullSoon(), 70000L);
         final long sinceUnix = startMs / 1000L; final int[] tries = { 0 };

@@ -20,6 +20,17 @@ final class ReadingNotes {
         } catch (Exception ignored) { }
     }
 
+    /** 0.42.3: the raw lines (start second, key, value) of the reading that started within 30 s of tsSec, for the Full pull. */
+    static String linesFor(File dir, long tsSec) {
+        StringBuilder sb = new StringBuilder("start_unix_phone,key,value\n");
+        if (dir == null) return sb.toString();
+        File f = new File(dir, "reading_notes.csv"); if (!f.exists() || f.length() > 4000000) return sb.toString();
+        try (BufferedReader br = new BufferedReader(new FileReader(f))) {
+            String ln; while ((ln = br.readLine()) != null) { int a = ln.indexOf(','); if (a < 1) continue; try { long s = Long.parseLong(ln.substring(0, a)); if (Math.abs(s - tsSec) <= 30) sb.append(ln).append('\n'); } catch (NumberFormatException ignored) { } }
+        } catch (Exception ignored) { }
+        return sb.toString();
+    }
+
     /** The latest value of every key noted for a reading that started within 30 s of tsSec (empty map when none). */
     static Map<String, String> forReading(File dir, long tsSec) {
         Map<String, String> out = new HashMap<>();

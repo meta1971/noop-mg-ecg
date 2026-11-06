@@ -48,6 +48,7 @@ final class ReadingPull {
         String tagTxt = ReadingTag.forReading(dir, t0);
         man.append("Full pull of one ECG reading (WHOOP MG, NOOP-MG-ECG app ").append(build).append(")\nreading start (strap time, unix): ").append((long) t0).append("\nreading end: ").append((long) t1).append("\nposition or activity tag: ").append(tagTxt.isEmpty() ? "none" : tagTxt).append("\nlive frames: R16 ").append(live16.size()).append(", R17 ").append(live17.size()).append("\nstored in the history files (").append(S.files).append(" files scanned): R16 ").append(S.r16.size()).append(", R17 ").append(S.r17.size()).append(", R18 ").append(S.r18.size()).append(", R20 ").append(S.r20.size()).append(", R21 ").append(S.r21.size()).append(", R26 ").append(S.r26.size()).append("\nThe strap serial is masked in the text files. unknown_frames_*.hex holds RAW device-info frames that can contain the strap serial and token: never post that file publicly. Research use only.\n");
         out.put("manifest.txt", man.toString().getBytes("UTF-8"));
+        try { out.put("reading_notes.txt", ReadingNotes.linesFor(dir, (long) t0).getBytes("UTF-8")); } catch (Throwable ignored) { }      // 0.42.3: where, run, cue times, noise bands, verdict timing
         out.put("README.txt", README.getBytes("UTF-8"));
         // ECG 500 Hz live
         StringBuilder sb = new StringBuilder("unix_time_s,sample,microvolts,lead_on,fast_recovery,rail,quality\n");
