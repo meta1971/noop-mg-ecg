@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.43.0 (6 Nov 2026): ONE "Send" per reading (decode log 50.6 item 1a).
+// FILE VERSION 0.43.3 (6 Nov 2026): "ready" now needs a real report: on 6 Nov 22:43 the app analysed only 3 stored seconds right after Stop, wrote a 3-second fragment report (hidden from the list) and refresh said "ok" at 6 s, so Send went out without a report; now the report is rebuilt from the strap's history files (rebuildReport) when only a fragment exists. 0.43.0 (6 Nov 2026): ONE "Send" per reading (decode log 50.6 item 1a).
 // After Stop the app prepares the complete pull by itself: a strap pull at 12 s (and at 70 s), then every 2 s it checks that the strap's end events (118 and 119) of THIS reading are
 // stored, rewrites the report with them (EcgReport.refreshLastWhy, every try noted as refresh_try<n>) and marks the reading ready. The button reads "Preparing... N s", then "Send";
 // a tap before it is ready waits and sends when ready. Send saves MG_full_pull_<start>.zip exactly as the old Full pull did (ReadingPull). Works for readings WITHOUT a strap verdict.
@@ -90,6 +90,22 @@ final class SendFlow {
         } catch (Throwable t) { return null; }
     }
 
+    /** The app's own stored analysis can run before the strap has written the reading to its history (3 of 93 seconds on 6 Nov 22:43). Rebuilds the report from the history files, as the stored analysis would have. Returns a note. */
+    static String rebuildReport(File dir, long startSec, long durS) {
+        try {
+            double lo = startSec - 15, hi = startSec + durS + 30;
+            ReadingFrames.Sets S = ReadingFrames.collect(dir, lo, hi);
+            java.util.TreeMap<Double, byte[]> by = new java.util.TreeMap<>();
+            for (byte[] f : S.r16) { double u = ProAnalysis.u32(f, 15) + ProAnalysis.u16(f, 19) / 32768.0; if (u >= lo && u <= hi) by.put(u, f); }
+            if (by.size() < 20) return "rebuild_few_records_" + by.size();
+            List<byte[]> mine = new ArrayList<>(by.values());
+            EcgReport.reportDir = dir;
+            EcgR16Analyzer.Result r = EcgR16Analyzer.analyse(mine);
+            EcgR16Analyzer.Strip strip = EcgR16Analyzer.strip(mine);
+            return EcgReport.saveReportFile(r, strip) ? "rebuild_ok_" + mine.size() : "rebuild_not_written_" + mine.size();
+        } catch (Throwable t) { return "rebuild_error_" + t.getClass().getSimpleName(); }
+    }
+
     static boolean eventsStored(android.content.Context app, long startSec, long durS) {
         try {
             long from = startSec - 20, to = startSec + durS + 150;
@@ -109,7 +125,7 @@ final class SendFlow {
     }
 
     private static void prepare(android.content.Context app, File dir, long startSec, long stopMs, long durS, Runnable pull, Runnable onRefreshed) throws Exception {
-        boolean pulled12 = false, pulled70 = false, noted90 = false, readyMarked = false; int tryNo = 0; long nextTry = 0; String lastWhy = ""; boolean ev = false;
+        boolean pulled12 = false, pulled70 = false, noted90 = false, readyMarked = false; int tryNo = 0, rbNo = 0; long nextTry = 0, nextRb = 30; String lastWhy = ""; boolean ev = false;
         while (true) {
             long el = (System.currentTimeMillis() - stopMs) / 1000L;
             if (!pulled12 && el >= 12) { pulled12 = true; if (pull != null) H.post(pull); }
@@ -120,11 +136,20 @@ final class SendFlow {
                 String why = EcgReport.refreshLastWhy(startSec);
                 if (!why.equals(lastWhy)) { ReadingNotes.put(dir, startSec, "refresh_try" + (++tryNo), why); lastWhy = why; }
                 if ("ok".equals(why)) {
-                    ReadingNotes.put(dir, startSec, "prepare", "ready_" + el + "s"); put(dir, startSec, "ready", "");
-                    if (onRefreshed != null) H.post(onRefreshed);
-                    return;
+                    if (findReport(dir, startSec) != null) {
+                        ReadingNotes.put(dir, startSec, "prepare", "ready_" + el + "s"); put(dir, startSec, "ready", "");
+                        if (onRefreshed != null) H.post(onRefreshed);
+                        return;
+                    }
+                    ReadingNotes.put(dir, startSec, "refresh_try" + (++tryNo), "ok_but_fragment_report");      // a few stored seconds only: not a report of this reading; keep waiting, rebuild below
+                    lastWhy = "ok";
                 }
                 nextTry = el + (why.startsWith("no_report") || why.startsWith("other_reading") ? 2 : 10);
+            }
+            if (el >= nextRb && rbNo < 3 && findReport(dir, startSec) == null) {
+                String rb = rebuildReport(dir, startSec, durS); ReadingNotes.put(dir, startSec, "report_rebuild" + (++rbNo), rb); nextRb = el + 40;
+                if (rb.startsWith("rebuild_ok") && findReport(dir, startSec) != null && !ev) { ReadingNotes.put(dir, startSec, "prepare", "ready_report_rebuilt_" + el + "s"); put(dir, startSec, "ready", "noev"); readyMarked = true; }
+                if (rb.startsWith("rebuild_ok")) nextTry = 0;      // events are there: refresh once more at the next tick so the strap card is in
             }
             if (el >= 90 && !noted90) {
                 noted90 = true;

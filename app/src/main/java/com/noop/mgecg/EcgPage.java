@@ -1,11 +1,9 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.43.2 (6 Nov 2026): the 5 s countdown is a slim pill in the page (it was a card over the bottom that covered START and Send), the pinned bar floats on a fade like the Home navigation bar, the "report ready" banner is not shown over this page. 0.43.1 (6 Nov 2026): the reading page rebuilt in the style of the "Hi, Ame" pages (HealthActivity / HealthViews): Outfit thin figures, small caps labels, glass cards, the glowing tick dial, blue pills. Nothing of the old page is stacked any more:
-// every old row is hidden, only the live graph is reused.
-//   AT REST   header, dial (last heart rate), one line of status, the latest reading (heart rate, HRV, grade) with its Send button, the next test (one tap), two chips (setup, Lab).
-//   RUNNING   header, dial (live heart rate, m:ss, ticks fill to 60 s), the cue pill (guided tests), ONE signal-light line, the live trace, "Details" (closed), STOP (1 s hold).
-//   DONE      header, dial, the strap verdict with heart rate, HRV and noise, Send (one button: prepares the whole pull by itself, SendFlow), "Details" (closed), next test, chips.
-// Lab: runs A-F as a checklist with ticks from reading_notes (LabTests), one tap starts a test. The four graph rows are under You > Settings.
+// FILE VERSION 0.43.4 (6 Nov 2026): the reading page rebuilt from the screenshot of the "Hi, Ame" page (HealthActivity): greeting + big title + LIVE chip, ONE status card like "Synced 17 min ago / Sync now" with a green pill, the same three rings
+// (DailyViews.RingsView) with thin figures and caps labels, one plain sentence, caps-titled cards, a blue "More about this" link, the glow behind, the floating bottom bar. The rings are real measures, no countdown:
+//   AT REST   the last reading: heart rate, HRV, grade.   RUNNING   live heart rate, noise in the QRS band, the strap's own check (its 0 to 100 %).   DONE   heart rate, strap HRV, noise.
+// The status card is the latest reading with Send (rest), the signal light (running) or the strap verdict with Send (done). Lab: runs A-F as a checklist with ticks from reading_notes (LabTests), one tap starts a test.
 // Every step is guarded: a failure is written to the page footer and the rest of the page still works (decode log 116.5).
 
 import android.app.AlertDialog;
@@ -32,9 +30,9 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.43.2-pro";
+    static final String VERSION = "0.43.4-pro";
     static final int REST = 0, RUN = 1, DONE = 2;
-    private static final int BLUE = HealthViews.BLUE, INK = HealthViews.INK, MUT = HealthViews.MUT, GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE, DARK = 0xFF05131E;
+    private static final int BLUE = HealthViews.BLUE, INK = HealthViews.INK, MUT = HealthViews.MUT, GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE, VIOLET = HealthViews.VIOLET, DARK = 0xFF05131E;
 
     private final NewLookActivity a;
     private final SharedPreferences pr;
@@ -42,16 +40,17 @@ final class EcgPage {
     private final GuidedRun guide = new GuidedRun();
 
     // views
-    private LinearLayout colRef, bar, headerRow, signalCard, waveHost, resultCard, detailsBody, resultDetails, liveCard, avgCard, latestCard, nextRow, chipsRow, cuePill, whyRow, holder;
-    private TextView greetView, titleView, linkChip, statusLine, signalView, resultTitle, sendNote, detailsHeader, resultBody, whyHint, strapLine, bandsView, avgText, latestDate, nextText, setupChip, labChip, cueView, footer, sendBtn, latestSend, nextBtn, targetBtn;
-    private final TextView[] rVal = new TextView[3], rCap = new TextView[3], lVal = new TextView[3], lCap = new TextView[3];
-    private EcgOrb orb;
-    private TextView countPill;
+    private LinearLayout colRef, bar, headerRow, statusCard, waveHost, detailsBody, resultDetails, liveCard, avgCard, nextCard, setupCard, cuePill, whyRow, holder;
+    private TextView greetView, titleView, linkChip, stTitle, stSub, stPill, planView, noteView, sendNote, detailsHeader, resultBody, whyHint, strapLine, bandsView, avgText, nextText, nextPlain, setupVal, labVal, cueView, footer, nextBtn, targetBtn, countPill;
+    private DailyViews.RingsView rings;
+    private final float[] rFrac = new float[3];
+    private final int[] rCol = { ROSE, BLUE, VIOLET };
+    private final String[] rBig = { "--", "--", "--" }, rLab = { "HEART RATE", "STRAP HRV", "NOISE" }, rCap = { "", "", "" };
+    private File latestFile; private long latestStart;
     private AvgBeatView avgView;
     private ProgressLine cueLine;
     private Button start;
     private LinearLayout waveCardRef;
-    private TextView statusRef;
     private LinearLayout setupBody;
     private final TextView[] rowValues = new TextView[9];
     private ScrollView scrollRef;
@@ -62,7 +61,7 @@ final class EcgPage {
 
     // state
     private boolean running, autoStopped;
-    private long startMs, lastRestMs; private String cueLog = "", lastHr = "", nextId = "", lastStatus = "";
+    private long startMs, lastRestMs; private String cueLog = "", lastHr = "", nextId = "";
     private long cueUntil; private String lastCue = "";
     private LiveMeasure.Out lastOut; private double[] lastBands;
     private int stopReason;           // 0 by hand, 1 auto-stop, 2 guided run
@@ -73,6 +72,9 @@ final class EcgPage {
 
     // ------------------------------------------------------------------ helpers (the same looks as HealthActivity)
     private int dp(int v) { return a.dp(v); }
+    /** Ring fraction of a heart rate: against the max heart rate of the Today page (default 167). */
+    private float hrFrac(String hr) { try { int mx = a.getSharedPreferences("today", android.content.Context.MODE_PRIVATE).getInt("maxhr", 167); return Math.max(0f, Math.min(1f, Integer.parseInt(hr.trim()) / (float) Math.max(100, mx))); } catch (Throwable e) { return 0f; } }
+    private static float clamp01(double v) { return Double.isNaN(v) ? 0f : (float) Math.max(0.0, Math.min(1.0, v)); }
     private TextView t(String s, float sp, int color, int weight) {
         TextView x = new TextView(a); x.setText(s); x.setTextSize(sp); x.setTextColor(color); x.setTypeface(HealthViews.font(a, weight)); x.setIncludeFontPadding(false); return x;
     }
@@ -103,6 +105,279 @@ final class EcgPage {
     /** MainActivity's font pass must not flatten the weights of this page. */
     boolean skipFont(View v) { return v == colRef || v == bar; }
 
+    // ------------------------------------------------------------------ build
+    /** Called once from NewLookActivity.styleEcgColumn. The old rows are hidden; the live graph and the START / STOP button are reused. */
+    void build(FrameLayout container, LinearLayout col, View top, TextView status, TextView verdict, LinearLayout waveCard, LinearLayout stats, Button startBtn) {
+        start = startBtn; waveCardRef = waveCard; colRef = col;
+        // while a reading runs, STOP needs a 1 s press-and-hold (a thumb brushing it while scrolling stopped the 22:00 reading on 5 Nov). Timed, guided and auto stops click the button directly.
+        start.setOnTouchListener(new View.OnTouchListener() { @Override public boolean onTouch(final View v, MotionEvent e) {
+            if (!start.getText().toString().startsWith("STOP")) return false;
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    holdFired = false; v.setPressed(true);
+                    holdRun = new Runnable() { @Override public void run() { holdFired = true; v.setPressed(false); try { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { } v.performClick(); } };
+                    h.postDelayed(holdRun, 1000L); return true;
+                case MotionEvent.ACTION_UP: case MotionEvent.ACTION_CANCEL:
+                    if (holdRun != null) h.removeCallbacks(holdRun); v.setPressed(false);
+                    if (!holdFired && e.getActionMasked() == MotionEvent.ACTION_UP) a.toast("Hold STOP for 1 second to end the reading");
+                    return true;
+                default: return true;
+            }
+        } });
+        try { if (col.getParent() instanceof ScrollView) scrollRef = (ScrollView) col.getParent(); } catch (Throwable ignored) { }
+        applyDisplayPrefs();
+        try { if (pr.getLong("run_armed_ms", 0L) + 90000L < System.currentTimeMillis()) pr.edit().putString("run_id", "").apply(); } catch (Throwable ignored) { }      // a test selected in 0.42.x must never start a normal reading
+        // the START / STOP button goes into a pinned bar that floats on a fade, like the bottom bar of the Home pages
+        try {
+            if (startBtn.getParent() != null) ((ViewGroup) startBtn.getParent()).removeView(startBtn);
+            start.setAllCaps(false); start.setTextSize(17); start.setTypeface(HealthViews.font(a, 600)); start.setTextColor(DARK);
+            bar = new LinearLayout(a); bar.setOrientation(LinearLayout.VERTICAL); bar.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[] { 0x0007090C, 0xF007090C, 0xFF07090C })); bar.setPadding(dp(18), dp(30), dp(18), dp(18));
+            bar.addView(startBtn, new LinearLayout.LayoutParams(-1, dp(58)));
+            container.addView(bar, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        } catch (Throwable e) { fail("pinned bar", e); }
+        // the glow of the Home pages behind the page; every old row hidden; the live graph taken out to be reused
+        try { container.addView(new HealthActivity.GlowBg(a), 0, new FrameLayout.LayoutParams(-1, -1)); } catch (Throwable e) { fail("glow", e); }
+        try {
+            if (waveCard.getParent() instanceof ViewGroup) ((ViewGroup) waveCard.getParent()).removeView(waveCard);
+            for (int i = 0; i < col.getChildCount(); i++) col.getChildAt(i).setVisibility(View.GONE);
+            col.setPadding(dp(18), dp(40), dp(18), dp(130));
+        } catch (Throwable e) { fail("old rows", e); }
+        holder = new LinearLayout(a); holder.setOrientation(LinearLayout.VERTICAL); holder.setVisibility(View.GONE);
+        col.addView(holder, new LinearLayout.LayoutParams(-1, -2));
+        a.readingTag = pref("reading_tag", a.readingTag); a.positionTag = pref("position_tag", a.positionTag);
+        try { buildHeader(col); } catch (Throwable e) { fail("header", e); }
+        try { buildStatus(col); } catch (Throwable e) { fail("status card", e); }
+        try { buildRings(col); } catch (Throwable e) { fail("rings", e); }
+        try { buildRunning(col, waveCard); } catch (Throwable e) { fail("live trace", e); }
+        try { buildDetails(col); } catch (Throwable e) { fail("details", e); }
+        try { buildCards(col); } catch (Throwable e) { fail("next test and setup", e); }
+        try {
+            footer = t("", 11, GOLD, 400); footer.setGravity(Gravity.CENTER); footer.setVisibility(View.GONE);
+            col.addView(footer, lp(-1, -2, 12));
+            String old = pr.getString("page_fail", ""); if (!failures.isEmpty()) { footer.setText("Page note: " + failures + " (the rest works)"); footer.setVisibility(View.VISIBLE); }
+            else if (!old.isEmpty()) pr.edit().remove("page_fail").apply();
+        } catch (Throwable e) { /* cosmetic */ }
+        applyMode(REST);
+    }
+
+    /** Called at the end of NewLookActivity.styleEcgColumn: the old Markers, Packets and Research rows move under "More about this"; the old "preparing" line is dropped. */
+    void finishLayout(View... extras) {
+        try {
+            for (View v : extras) {
+                if (v == null) continue;
+                ViewGroup.LayoutParams old = v.getLayoutParams();
+                if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+                boolean drop = v instanceof TextView && ((TextView) v).getText().toString().startsWith("Preparing your report");
+                if (drop || detailsBody == null) { holder.addView(v); continue; }
+                if (old instanceof LinearLayout.LayoutParams) detailsBody.addView(v, old); else detailsBody.addView(v, lp(-1, -2, 6));
+            }
+        } catch (Throwable e) { fail("details rows", e); }
+    }
+
+    private void buildHeader(LinearLayout col) {
+        headerRow = hrow(); headerRow.setGravity(Gravity.TOP);
+        TextView back = t("\u2039", 28, INK, 300); back.setGravity(Gravity.CENTER); back.setBackground(HealthViews.glass(a, 20)); back.setContentDescription("Back");
+        back.setOnClickListener(v -> { if (!running) a.onBackPressed(); else a.toast("Hold STOP for 1 second to end the reading"); });
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(40), dp(40)); bp.rightMargin = dp(12); headerRow.addView(back, bp);
+        LinearLayout l = new LinearLayout(a); l.setOrientation(LinearLayout.VERTICAL);
+        greetView = t("", 13, MUT, 400); titleView = t("", 28, INK, 400); titleView.setPadding(0, dp(6), 0, 0);
+        l.addView(greetView); l.addView(titleView);
+        headerRow.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
+        linkChip = chip(""); headerRow.addView(linkChip);
+        col.addView(headerRow, new LinearLayout.LayoutParams(-1, -2));
+        updateLink();
+    }
+
+    private void updateLink() {
+        try {
+            if (linkChip == null) return;
+            LinkState.Info li = MainActivity.linkState(a);
+            linkChip.setText("\u25CF  " + li.chip); linkChip.setTextColor(li.level == LinkState.GOOD ? GREEN : li.level == LinkState.WARN ? GOLD : ROSE);
+        } catch (Throwable ignored) { }
+    }
+
+    /** The "Synced 17 min ago / Sync now" card of the Home page, reused for the three states. */
+    private void buildStatus(LinearLayout col) {
+        statusCard = glass(12);
+        LinearLayout r = hrow();
+        LinearLayout left = new LinearLayout(a); left.setOrientation(LinearLayout.VERTICAL);
+        stTitle = t("", 14, INK, 600); stTitle.setLineSpacing(0, 1.15f); stSub = t("", 11, MUT, 400); stSub.setLineSpacing(0, 1.15f);
+        left.addView(stTitle); left.addView(stSub, lp(-2, -2, 2));
+        r.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
+        stPill = HeartGraph.pill(a, "Send", 0x1A2EE6A8, 0xFF2EE6A8);
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-2, -2); pp.leftMargin = dp(10); r.addView(stPill, pp);
+        statusCard.addView(r, new LinearLayout.LayoutParams(-1, -2));
+        sendNote = t("", 11, MUT, 400); sendNote.setLineSpacing(0, 1.2f); sendNote.setVisibility(View.GONE); statusCard.addView(sendNote, lp(-1, -2, 8));
+        col.addView(statusCard, lp(-1, -2, 14));
+        // the 5 s auto-start countdown, shown inside the page
+        countPill = pill("", BLUE, DARK); countPill.setTextSize(14); countPill.setMaxLines(2); countPill.setPadding(dp(18), dp(10), dp(18), dp(10)); countPill.setVisibility(View.GONE);
+        countPill.setOnClickListener(v -> { a.cancelAutoCountdown(); a.toast("Not starting by itself. Press START ECG when you are ready."); });
+        col.addView(countPill, lp(-1, -2, 10));
+        // the cue pill of a guided test: one slim line
+        cuePill = new LinearLayout(a); cuePill.setOrientation(LinearLayout.VERTICAL); cuePill.setVisibility(View.GONE);
+        cueView = pill("", BLUE, DARK); cueView.setTextSize(15); cueView.setMaxLines(2); cueView.setPadding(dp(18), dp(10), dp(18), dp(10)); cueView.setMinHeight(dp(56));
+        cueView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE);
+        cuePill.addView(cueView, new LinearLayout.LayoutParams(-1, -2));
+        cueLine = new ProgressLine(a, BLUE, 0x22FFFFFF); cuePill.addView(cueLine, lp(-1, dp(3), 6));
+        cuePill.setOnClickListener(v -> { if (!running && readyLeft > 0) { readyCancelled = true; pr.edit().putString("run_id", "").apply(); cuePill.setVisibility(View.GONE); a.toast("Test cancelled"); } });
+        col.addView(cuePill, lp(-1, -2, 10));
+    }
+
+    /** The three rings of the Home page: the same view, real measures. */
+    private void buildRings(LinearLayout col) {
+        rings = new DailyViews.RingsView(a, rFrac, rCol, rBig, rLab, rCap);
+        col.addView(rings, lp(-1, dp(196), 12));
+        planView = t("", 14, INK, 400); planView.setLineSpacing(0, 1.25f);
+        col.addView(planView, lp(-2, -2, 8));
+        noteView = t("Research only: not a diagnosis. The strap's own check and your report show how reliable each reading was.", 11, MUT, 400); noteView.setLineSpacing(0, 1.2f);
+        col.addView(noteView, lp(-2, -2, 6));
+    }
+
+    private void setRing(int i, float f, int col, String big, String lab, String cap) { rFrac[i] = f; rCol[i] = col; rBig[i] = big; rLab[i] = lab; rCap[i] = cap; }
+    private void drawRings() { if (rings != null) rings.invalidate(); }
+
+    private void buildRunning(LinearLayout col, LinearLayout waveCard) {
+        waveHost = glass(12);
+        waveHost.addView(caps("LIVE ECG"), new LinearLayout.LayoutParams(-2, -2));
+        waveCard.setBackground(null); waveCard.setPadding(0, 0, 0, 0);
+        waveHost.addView(waveCard, lp(-1, -2, 8));
+        waveHost.setVisibility(View.GONE);
+        col.addView(waveHost, lp(-1, -2, 12));
+    }
+
+    private static final String[] WHY = { "Tension", "Vibration", "Cold hands", "Charger near", "Not sure" };
+    private void buildDetails(LinearLayout col) {
+        detailsHeader = t("\u25be  More about this", 14, BLUE, 400); detailsHeader.setPadding(0, dp(14), 0, dp(6));
+        detailsHeader.setOnClickListener(v -> { detailsOpen = !detailsOpen; applyDetails(); });
+        detailsHeader.setVisibility(View.GONE);
+        col.addView(detailsHeader, new LinearLayout.LayoutParams(-2, -2));
+        detailsBody = new LinearLayout(a); detailsBody.setOrientation(LinearLayout.VERTICAL); detailsBody.setVisibility(View.GONE);
+        col.addView(detailsBody, lp(-1, -2, 0));
+        // after a reading: every result line, the why-noisy tap
+        resultDetails = glass(16);
+        resultDetails.addView(caps("THIS READING"), new LinearLayout.LayoutParams(-2, -2));
+        resultBody = t("", 13, INK, 400); resultBody.setLineSpacing(0, 1.25f); resultDetails.addView(resultBody, lp(-1, -2, 8));
+        whyHint = t("What made it noisy? One tap labels this reading.", 12, GOLD, 400); resultDetails.addView(whyHint, lp(-1, -2, 12));
+        whyRow = new LinearLayout(a); whyRow.setOrientation(LinearLayout.HORIZONTAL);
+        for (final String w : WHY) {
+            final TextView b = chip(w); b.setTextSize(11); b.setPadding(dp(4), dp(9), dp(4), dp(9));
+            b.setOnClickListener(v -> { ReadingNotes.put(dir(), startMs / 1000L, "why", w); for (int i = 0; i < whyRow.getChildCount(); i++) { TextView o = (TextView) whyRow.getChildAt(i); o.setTextColor(o.getText().toString().equals(w) ? BLUE : INK); } a.toast("Noted: " + w); });
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1f); p.rightMargin = dp(4); whyRow.addView(b, p);
+        }
+        resultDetails.addView(whyRow, lp(-1, -2, 6));
+        addExplain(resultDetails, Explain.resultCard());
+        resultDetails.setVisibility(View.GONE);
+        detailsBody.addView(resultDetails, lp(-1, -2, 8));
+        // while running: the strap's own check, noise bands, the 3 / 4 / 5 target
+        liveCard = glass(16);
+        liveCard.addView(caps("SIGNAL"), new LinearLayout.LayoutParams(-2, -2));
+        strapLine = t("", 13, INK, 400); strapLine.setLineSpacing(0, 1.2f); liveCard.addView(strapLine, lp(-1, -2, 8));
+        bandsView = t("", 12, MUT, 400); bandsView.setLineSpacing(0, 1.2f); liveCard.addView(bandsView, lp(-1, -2, 6));
+        targetBtn = chip(""); targetBtn.setTextSize(12);
+        targetBtn.setOnClickListener(v -> { double tg = a.autoTargetValue(); double nt = tg < 3.5 ? 4.0 : tg < 4.5 ? 5.0 : 3.0; pr.edit().putFloat("auto_target", (float) nt).putBoolean("auto_stop", true).apply(); refreshSummary(); if (rowValues[4] != null) rowValues[4].setText((nt < 3.5 ? AUTO[1] : nt < 4.5 ? AUTO[2] : AUTO[3]) + "  \u25be"); updateTarget(Double.NaN); });
+        liveCard.addView(targetBtn, lp(-1, -2, 10));
+        addExplain(liveCard, Explain.noiseBands());
+        liveCard.setVisibility(View.GONE);
+        detailsBody.addView(liveCard, lp(-1, -2, 8));
+        // the averaged beat
+        avgCard = glass(12);
+        avgCard.addView(caps("AVERAGED BEAT"), new LinearLayout.LayoutParams(-2, -2));
+        avgView = new AvgBeatView(a); avgCard.addView(avgView, lp(-1, dp(190), 8));
+        avgText = t("", 12, MUT, 400); avgText.setGravity(Gravity.CENTER); avgText.setLineSpacing(0, 1.2f); avgCard.addView(avgText, lp(-1, -2, 6));
+        addExplain(avgCard, Explain.avgBeatLive());
+        avgCard.setVisibility(View.GONE);
+        detailsBody.addView(avgCard, lp(-1, -2, 8));
+    }
+
+    private void applyDetails() {
+        boolean on = mode != REST;
+        if (detailsHeader != null) { detailsHeader.setVisibility(on ? View.VISIBLE : View.GONE); detailsHeader.setText((detailsOpen ? "\u25b4  Hide" : "\u25be  More about this")); }
+        if (detailsBody != null) detailsBody.setVisibility(on && detailsOpen ? View.VISIBLE : View.GONE);
+    }
+
+    /** A tap-to-open "How is this calculated?" line under a card (decode log 117: the plain-language rows of Explain). */
+    private void addExplain(LinearLayout card, String[][] rows) {
+        final TextView head = t("How is this calculated?  \u25be", 12, MUT, 400); head.setPadding(0, dp(12), 0, dp(4));
+        final TextView body = t(Explain.asText(rows), 12, MUT, 400); body.setLineSpacing(0, 1.2f); body.setVisibility(View.GONE);
+        head.setOnClickListener(v -> { boolean open = body.getVisibility() != View.VISIBLE; body.setVisibility(open ? View.VISIBLE : View.GONE); head.setText("How is this calculated?  " + (open ? "\u25b4" : "\u25be")); });
+        head.setContentDescription("How is this calculated? Double tap to show or hide the explanation.");
+        card.addView(head, new LinearLayout.LayoutParams(-1, -2)); card.addView(body, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    /** Two caps-titled cards like ACTIVITY TODAY: the next test (one tap) and the setup with the Lab. */
+    private void buildCards(LinearLayout col) {
+        nextCard = glass(16);
+        nextCard.addView(caps("NEXT TEST"), new LinearLayout.LayoutParams(-2, -2));
+        LinearLayout nr = hrow();
+        LinearLayout nl = new LinearLayout(a); nl.setOrientation(LinearLayout.VERTICAL);
+        nextText = t("", 14, INK, 400); nextPlain = t("", 12, MUT, 400); nextPlain.setLineSpacing(0, 1.2f);
+        nl.addView(nextText); nl.addView(nextPlain, lp(-2, -2, 3));
+        nr.addView(nl, new LinearLayout.LayoutParams(0, -2, 1f));
+        nextBtn = HeartGraph.pill(a, "Start", 0x1A2FA8F0, BLUE);
+        nextBtn.setOnClickListener(v -> { if (!nextId.isEmpty()) startRun(nextId); });
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(-2, -2); np.leftMargin = dp(10); nr.addView(nextBtn, np);
+        nextCard.addView(nr, lp(-1, -2, 8));
+        nextCard.setVisibility(View.GONE);
+        col.addView(nextCard, lp(-1, -2, 12));
+        setupCard = glass(16);
+        setupCard.addView(caps("READING SETUP"), new LinearLayout.LayoutParams(-2, -2));
+        LinearLayout r1 = hrow(); r1.setPadding(0, dp(12), 0, dp(4));
+        r1.addView(t("Posture, position, place", 14, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+        setupVal = t("", 12, MUT, 400); setupVal.setGravity(Gravity.END); r1.addView(setupVal);
+        r1.setOnClickListener(v -> { if (!running) openSetup(); });
+        setupCard.addView(r1, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout r2 = hrow(); r2.setPadding(0, dp(10), 0, dp(2));
+        r2.addView(t("Lab: tests A to F", 14, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+        labVal = t("", 12, MUT, 400); labVal.setGravity(Gravity.END); r2.addView(labVal);
+        r2.setOnClickListener(v -> { if (!running) openLab(); });
+        setupCard.addView(r2, new LinearLayout.LayoutParams(-1, -2));
+        col.addView(setupCard, lp(-1, -2, 12));
+        buildSetupRows(); refreshSummary();
+    }
+
+    // ------------------------------------------------------------------ the three states of the page
+    private void applyMode(int m) {
+        mode = m;
+        try {
+            boolean rest = m == REST, run = m == RUN, done = m == DONE;
+            if (waveHost != null) waveHost.setVisibility(run ? View.VISIBLE : View.GONE);
+            if (waveCardRef != null) waveCardRef.setVisibility(View.VISIBLE);
+            if (resultDetails != null) resultDetails.setVisibility(done ? View.VISIBLE : View.GONE);
+            if (liveCard != null) liveCard.setVisibility(run ? View.VISIBLE : View.GONE);
+            if (avgCard != null) avgCard.setVisibility(run || (done && lastOut != null) ? View.VISIBLE : View.GONE);
+            if (setupCard != null) setupCard.setVisibility(run ? View.GONE : View.VISIBLE);
+            if (planView != null) planView.setVisibility(run ? View.GONE : View.VISIBLE);
+            if (noteView != null) noteView.setVisibility(run ? View.GONE : View.VISIBLE);
+            if (sendNote != null) sendNote.setVisibility(done ? View.VISIBLE : View.GONE);
+            if (cuePill != null && !run && readyLeft <= 0) cuePill.setVisibility(View.GONE);
+            applyDetails();
+            if (!run) refreshNext(); else if (nextCard != null) nextCard.setVisibility(View.GONE);
+            String name = a.getSharedPreferences("today", android.content.Context.MODE_PRIVATE).getString("name", "Ame");
+            if (rest) {
+                greetView.setText("Hi, " + name); titleView.setText("Ready for an ECG");
+                planView.setText("Two fingers on the clasp, forearm on a table. Press START ECG when you are ready.");
+                refreshLatest();
+            } else if (run) {
+                greetView.setText("ECG  \u00b7  0:00"); GuidedRun.Def d = GuidedRun.byId(guidedThisRun ? pref("run_id", "") : ""); titleView.setText(guidedThisRun && !d.id.isEmpty() ? d.title : "Reading");
+                stPill.setVisibility(View.GONE); stSub.setVisibility(View.VISIBLE);
+            } else {
+                greetView.setText("Reading done"); titleView.setText(String.format(Locale.UK, "%d:%02d recorded", (long) lastDur / 60, (long) lastDur % 60));
+                planView.setText("Send collects everything by itself. Your report is in All reports.");
+            }
+            updateLink();
+            if (rest && scrollRef != null) scrollRef.post(new Runnable() { @Override public void run() { try { scrollRef.scrollTo(0, 0); } catch (Throwable ignored) { } } });
+        } catch (Throwable e) { fail("page state", e); }
+    }
+
+    /** Called each time the ECG screen is opened: a page left on the last result goes back to rest (the status card then carries the latest reading with its Send). */
+    void onOpen() { try { if (!running) { detailsOpen = false; applyMode(REST); } } catch (Throwable e) { fail("open", e); } }
+
+    /** The 5 s auto-start countdown, shown inside the page; null hides it. A tap cancels it. */
+    void setCountdown(String s) {
+        try { if (countPill == null) return; if (s == null || running) { countPill.setVisibility(View.GONE); return; } countPill.setText(s); countPill.setVisibility(View.VISIBLE); } catch (Throwable e) { fail("countdown", e); }
+    }
+
+    // ------------------------------------------------------------------ setup sheet and Lab sheet
     /** A small bottom sheet in the same glass look. The content is taken back out when the sheet closes, so it can be shown again. */
     private Dialog sheet(String title, final View content) {
         final Dialog d = new Dialog(a);
@@ -138,286 +413,6 @@ final class EcgPage {
         try { Live500.pro = pref("pro_display", "1").equals("1"); Live500View.windowMs = pr.getInt("graph_window", 6000); Live500View.sweep = pr.getBoolean("graph_sweep", false); Live500View.paper = pr.getBoolean("graph_paper", false); } catch (Throwable e) { fail("display options", e); }
     }
 
-    /** Three thin figures with small caps under them (the look of the Home tiles). */
-    private LinearLayout tiles(TextView[] vals, TextView[] caps, String[] labels) {
-        LinearLayout row = hrow();
-        for (int i = 0; i < 3; i++) {
-            LinearLayout c = new LinearLayout(a); c.setOrientation(LinearLayout.VERTICAL);
-            vals[i] = t("\u2014", 30, INK, 300); caps[i] = caps(labels[i]); caps[i].setTextSize(10); caps[i].setLetterSpacing(0.12f);
-            c.addView(vals[i], new LinearLayout.LayoutParams(-2, -2)); c.addView(caps[i], lp(-2, -2, 6));
-            row.addView(c, new LinearLayout.LayoutParams(0, -2, 1f));
-        }
-        return row;
-    }
-
-    // ------------------------------------------------------------------ build
-    /** Called once from NewLookActivity.styleEcgColumn. The old rows are hidden; the live graph and the START / STOP button are reused. */
-    void build(FrameLayout container, LinearLayout col, View top, TextView status, TextView verdict, LinearLayout waveCard, LinearLayout stats, Button startBtn) {
-        start = startBtn; waveCardRef = waveCard; statusRef = status; colRef = col;
-        // while a reading runs, STOP needs a 1 s press-and-hold (a thumb brushing it while scrolling stopped the 22:00 reading on 5 Nov). Timed, guided and auto stops click the button directly.
-        start.setOnTouchListener(new View.OnTouchListener() { @Override public boolean onTouch(final View v, MotionEvent e) {
-            if (!start.getText().toString().startsWith("STOP")) return false;
-            switch (e.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    holdFired = false; v.setPressed(true);
-                    holdRun = new Runnable() { @Override public void run() { holdFired = true; v.setPressed(false); try { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { } v.performClick(); } };
-                    h.postDelayed(holdRun, 1000L); return true;
-                case MotionEvent.ACTION_UP: case MotionEvent.ACTION_CANCEL:
-                    if (holdRun != null) h.removeCallbacks(holdRun); v.setPressed(false);
-                    if (!holdFired && e.getActionMasked() == MotionEvent.ACTION_UP) a.toast("Hold STOP for 1 second to end the reading");
-                    return true;
-                default: return true;
-            }
-        } });
-        try { if (col.getParent() instanceof ScrollView) scrollRef = (ScrollView) col.getParent(); } catch (Throwable ignored) { }
-        applyDisplayPrefs();
-        try { if (pr.getLong("run_armed_ms", 0L) + 90000L < System.currentTimeMillis()) pr.edit().putString("run_id", "").apply(); } catch (Throwable ignored) { }      // a test selected in 0.42.x must never start a normal reading
-        // the START / STOP button goes into a pinned bar, in the Home pill look
-        try {
-            if (startBtn.getParent() != null) ((ViewGroup) startBtn.getParent()).removeView(startBtn);
-            start.setAllCaps(false); start.setTextSize(17); start.setTypeface(HealthViews.font(a, 600)); start.setTextColor(DARK);
-            bar = new LinearLayout(a); bar.setOrientation(LinearLayout.VERTICAL); bar.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[] { 0x0007090C, 0xF007090C, 0xFF07090C })); bar.setPadding(dp(18), dp(30), dp(18), dp(18));
-            bar.addView(startBtn, new LinearLayout.LayoutParams(-1, dp(58)));
-            container.addView(bar, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
-        } catch (Throwable e) { fail("pinned bar", e); }
-        // the glow of the Home pages behind the page; every old row hidden; the live graph taken out to be reused
-        try { container.addView(new HealthActivity.GlowBg(a), 0, new FrameLayout.LayoutParams(-1, -1)); } catch (Throwable e) { fail("glow", e); }
-        try {
-            if (waveCard.getParent() instanceof ViewGroup) ((ViewGroup) waveCard.getParent()).removeView(waveCard);
-            for (int i = 0; i < col.getChildCount(); i++) col.getChildAt(i).setVisibility(View.GONE);
-            col.setPadding(dp(18), dp(40), dp(18), dp(130));
-        } catch (Throwable e) { fail("old rows", e); }
-        holder = new LinearLayout(a); holder.setOrientation(LinearLayout.VERTICAL); holder.setVisibility(View.GONE);
-        col.addView(holder, new LinearLayout.LayoutParams(-1, -2));
-        a.readingTag = pref("reading_tag", a.readingTag); a.positionTag = pref("position_tag", a.positionTag);
-        try { buildHeader(col); } catch (Throwable e) { fail("header", e); }
-        try { buildHero(col); } catch (Throwable e) { fail("dial", e); }
-        try { buildRunning(col, waveCard); } catch (Throwable e) { fail("running", e); }
-        try { buildResult(col); } catch (Throwable e) { fail("result card", e); }
-        try { buildDetails(col); } catch (Throwable e) { fail("details", e); }
-        try { buildLatest(col); } catch (Throwable e) { fail("latest reading", e); }
-        try { buildBottom(col); } catch (Throwable e) { fail("setup and Lab", e); }
-        try {
-            footer = t("", 11, GOLD, 400); footer.setGravity(Gravity.CENTER); footer.setVisibility(View.GONE);
-            col.addView(footer, lp(-1, -2, 12));
-            String old = pr.getString("page_fail", ""); if (!failures.isEmpty()) { footer.setText("Page note: " + failures + " (the rest works)"); footer.setVisibility(View.VISIBLE); }
-            else if (!old.isEmpty()) pr.edit().remove("page_fail").apply();
-        } catch (Throwable e) { /* cosmetic */ }
-        applyMode(REST);
-    }
-
-    /** Called at the end of NewLookActivity.styleEcgColumn: the old Markers, Packets and Research rows move under Details; the old "preparing" line is dropped. */
-    void finishLayout(View... extras) {
-        try {
-            for (View v : extras) {
-                if (v == null) continue;
-                ViewGroup.LayoutParams old = v.getLayoutParams();
-                if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
-                boolean drop = v instanceof TextView && ((TextView) v).getText().toString().startsWith("Preparing your report");
-                if (drop || detailsBody == null) { holder.addView(v); continue; }
-                if (old instanceof LinearLayout.LayoutParams) detailsBody.addView(v, old); else detailsBody.addView(v, lp(-1, -2, 6));
-            }
-        } catch (Throwable e) { fail("details rows", e); }
-    }
-
-    private void buildHeader(LinearLayout col) {
-        headerRow = hrow(); headerRow.setGravity(Gravity.TOP);
-        TextView back = t("\u2039", 30, INK, 300); back.setGravity(Gravity.CENTER); back.setBackground(HealthViews.glass(a, 22)); back.setContentDescription("Back");
-        back.setOnClickListener(v -> { if (!running) a.onBackPressed(); else a.toast("Hold STOP for 1 second to end the reading"); });
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(44), dp(44)); bp.rightMargin = dp(14); headerRow.addView(back, bp);
-        LinearLayout l = new LinearLayout(a); l.setOrientation(LinearLayout.VERTICAL);
-        greetView = t("", 13, MUT, 400); titleView = t("", 28, INK, 400); titleView.setPadding(0, dp(6), 0, 0);
-        l.addView(greetView); l.addView(titleView);
-        headerRow.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
-        linkChip = chip(""); headerRow.addView(linkChip);
-        col.addView(headerRow, new LinearLayout.LayoutParams(-1, -2));
-        updateLink();
-    }
-
-    private void updateLink() {
-        try {
-            if (linkChip == null) return;
-            LinkState.Info li = MainActivity.linkState(a);
-            linkChip.setText("\u25CF  " + li.chip); linkChip.setTextColor(li.level == LinkState.GOOD ? GREEN : li.level == LinkState.WARN ? GOLD : ROSE);
-        } catch (Throwable ignored) { }
-    }
-
-    private void buildHero(LinearLayout col) {
-        orb = new EcgOrb(a);
-        LinearLayout.LayoutParams op = lp(dp(220), dp(220), 14); op.gravity = Gravity.CENTER_HORIZONTAL;
-        col.addView(orb, op);
-        statusLine = t("", 13, MUT, 400); statusLine.setGravity(Gravity.CENTER); statusLine.setLineSpacing(0, 1.2f);
-        col.addView(statusLine, lp(-1, -2, 4));
-        countPill = pill("", BLUE, DARK); countPill.setTextSize(14); countPill.setMaxLines(2); countPill.setPadding(dp(18), dp(10), dp(18), dp(10)); countPill.setVisibility(View.GONE);
-        countPill.setOnClickListener(v -> { a.cancelAutoCountdown(); a.toast("Not starting by itself. Press START ECG when you are ready."); });
-        col.addView(countPill, lp(-1, -2, 12));
-        // the cue pill of a guided test: one slim line
-        cuePill = new LinearLayout(a); cuePill.setOrientation(LinearLayout.VERTICAL); cuePill.setVisibility(View.GONE);
-        cueView = pill("", BLUE, DARK); cueView.setTextSize(15); cueView.setMaxLines(2); cueView.setPadding(dp(18), dp(10), dp(18), dp(10)); cueView.setMinHeight(dp(56));
-        cueView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE);
-        cuePill.addView(cueView, new LinearLayout.LayoutParams(-1, -2));
-        cueLine = new ProgressLine(a, BLUE, 0x22FFFFFF); cuePill.addView(cueLine, lp(-1, dp(3), 6));
-        cuePill.setOnClickListener(v -> { if (!running && readyLeft > 0) { readyCancelled = true; pr.edit().putString("run_id", "").apply(); cuePill.setVisibility(View.GONE); a.toast("Test cancelled"); } });
-        col.addView(cuePill, lp(-1, -2, 12));
-    }
-
-    private void buildRunning(LinearLayout col, LinearLayout waveCard) {
-        signalCard = glass(14);
-        signalView = t("", 14, MUT, 400); signalView.setGravity(Gravity.CENTER); signalCard.addView(signalView, new LinearLayout.LayoutParams(-1, -2));
-        signalCard.setVisibility(View.GONE);
-        col.addView(signalCard, lp(-1, -2, 12));
-        waveHost = glass(6);
-        waveCard.setBackground(null); waveCard.setPadding(0, 0, 0, 0);
-        waveHost.addView(waveCard, new LinearLayout.LayoutParams(-1, -2));
-        waveHost.setVisibility(View.GONE);
-        col.addView(waveHost, lp(-1, -2, 12));
-    }
-
-    private static final String[] WHY = { "Tension", "Vibration", "Cold hands", "Charger near", "Not sure" };
-    private void buildResult(LinearLayout col) {
-        resultCard = glass(18);
-        resultCard.addView(caps("STRAP VERDICT"));
-        resultTitle = t("", 15, INK, 400); resultTitle.setLineSpacing(0, 1.2f); resultTitle.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        resultCard.addView(resultTitle, lp(-1, -2, 6));
-        resultCard.addView(tiles(rVal, rCap, new String[] { "HEART RATE", "STRAP HRV MS", "NOISE UV" }), lp(-1, -2, 16));
-        sendBtn = pill("Send", BLUE, DARK); sendBtn.setTextSize(16);
-        resultCard.addView(sendBtn, lp(-1, dp(52), 18));
-        sendNote = t("", 12, MUT, 400); sendNote.setGravity(Gravity.CENTER); sendNote.setLineSpacing(0, 1.2f);
-        resultCard.addView(sendNote, lp(-1, -2, 8));
-        resultCard.setVisibility(View.GONE);
-        col.addView(resultCard, lp(-1, -2, 12));
-    }
-
-    private void buildDetails(LinearLayout col) {
-        detailsHeader = chip("Details  \u25be"); detailsHeader.setTextColor(MUT);
-        detailsHeader.setOnClickListener(v -> { detailsOpen = !detailsOpen; applyDetails(); });
-        detailsHeader.setVisibility(View.GONE);
-        col.addView(detailsHeader, lp(-1, -2, 12));
-        detailsBody = new LinearLayout(a); detailsBody.setOrientation(LinearLayout.VERTICAL); detailsBody.setVisibility(View.GONE);
-        col.addView(detailsBody, lp(-1, -2, 0));
-        // after a reading: every result line, the why-noisy tap
-        resultDetails = glass(16);
-        resultBody = t("", 13, MUT, 400); resultBody.setLineSpacing(0, 1.2f); resultDetails.addView(resultBody, new LinearLayout.LayoutParams(-1, -2));
-        whyHint = t("What made it noisy? One tap labels this reading.", 12, GOLD, 400); resultDetails.addView(whyHint, lp(-1, -2, 10));
-        whyRow = new LinearLayout(a); whyRow.setOrientation(LinearLayout.HORIZONTAL);
-        for (final String w : WHY) {
-            final TextView b = chip(w); b.setTextSize(11); b.setPadding(dp(4), dp(9), dp(4), dp(9));
-            b.setOnClickListener(v -> { ReadingNotes.put(dir(), startMs / 1000L, "why", w); for (int i = 0; i < whyRow.getChildCount(); i++) { TextView o = (TextView) whyRow.getChildAt(i); o.setTextColor(o.getText().toString().equals(w) ? BLUE : INK); } a.toast("Noted: " + w); });
-            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1f); p.rightMargin = dp(4); whyRow.addView(b, p);
-        }
-        resultDetails.addView(whyRow, lp(-1, -2, 6));
-        addExplain(resultDetails, Explain.resultCard());
-        resultDetails.setVisibility(View.GONE);
-        detailsBody.addView(resultDetails, lp(-1, -2, 8));
-        // while running: the strap's own check, noise bands, the 3 / 4 / 5 target
-        liveCard = glass(16);
-        strapLine = t("", 13, MUT, 400); strapLine.setGravity(Gravity.CENTER); liveCard.addView(strapLine, new LinearLayout.LayoutParams(-1, -2));
-        bandsView = t("", 12, MUT, 400); bandsView.setGravity(Gravity.CENTER); bandsView.setLineSpacing(0, 1.2f); liveCard.addView(bandsView, lp(-1, -2, 6));
-        targetBtn = chip(""); targetBtn.setTextSize(12);
-        targetBtn.setOnClickListener(v -> { double tg = a.autoTargetValue(); double nt = tg < 3.5 ? 4.0 : tg < 4.5 ? 5.0 : 3.0; pr.edit().putFloat("auto_target", (float) nt).putBoolean("auto_stop", true).apply(); refreshSummary(); if (rowValues[4] != null) rowValues[4].setText((nt < 3.5 ? AUTO[1] : nt < 4.5 ? AUTO[2] : AUTO[3]) + "  \u25be"); updateTarget(Double.NaN); });
-        liveCard.addView(targetBtn, lp(-1, -2, 10));
-        addExplain(liveCard, Explain.noiseBands());
-        liveCard.setVisibility(View.GONE);
-        detailsBody.addView(liveCard, lp(-1, -2, 8));
-        // the averaged beat
-        avgCard = glass(10);
-        avgView = new AvgBeatView(a); avgCard.addView(avgView, new LinearLayout.LayoutParams(-1, dp(190)));
-        avgText = t("", 12, MUT, 400); avgText.setGravity(Gravity.CENTER); avgText.setLineSpacing(0, 1.2f); avgCard.addView(avgText, lp(-1, -2, 6));
-        addExplain(avgCard, Explain.avgBeatLive());
-        avgCard.setVisibility(View.GONE);
-        detailsBody.addView(avgCard, lp(-1, -2, 8));
-    }
-
-    private void applyDetails() {
-        boolean on = mode != REST;
-        if (detailsHeader != null) { detailsHeader.setVisibility(on ? View.VISIBLE : View.GONE); detailsHeader.setText("Details  " + (detailsOpen ? "\u25b4" : "\u25be")); }
-        if (detailsBody != null) detailsBody.setVisibility(on && detailsOpen ? View.VISIBLE : View.GONE);
-    }
-
-    /** A tap-to-open "How is this calculated?" line under a card (decode log 117: the plain-language rows of Explain). */
-    private void addExplain(LinearLayout card, String[][] rows) {
-        final TextView head = t("How is this calculated?  \u25be", 12, MUT, 400); head.setPadding(0, dp(12), 0, dp(4));
-        final TextView body = t(Explain.asText(rows), 12, MUT, 400); body.setLineSpacing(0, 1.2f); body.setVisibility(View.GONE);
-        head.setOnClickListener(v -> { boolean open = body.getVisibility() != View.VISIBLE; body.setVisibility(open ? View.VISIBLE : View.GONE); head.setText("How is this calculated?  " + (open ? "\u25b4" : "\u25be")); });
-        head.setContentDescription("How is this calculated? Double tap to show or hide the explanation.");
-        card.addView(head, new LinearLayout.LayoutParams(-1, -2)); card.addView(body, new LinearLayout.LayoutParams(-1, -2));
-    }
-
-    private void buildLatest(LinearLayout col) {
-        latestCard = glass(18);
-        LinearLayout hd = hrow(); hd.addView(caps("LATEST READING")); hd.addView(spacer()); latestDate = t("", 12, MUT, 400); hd.addView(latestDate);
-        latestCard.addView(hd, new LinearLayout.LayoutParams(-1, -2));
-        latestCard.addView(tiles(lVal, lCap, new String[] { "HEART RATE", "HRV MS", "GRADE" }), lp(-1, -2, 14));
-        latestSend = pill("Send", BLUE, DARK); latestSend.setTextSize(15); latestSend.setVisibility(View.GONE);
-        latestCard.addView(latestSend, lp(-1, dp(48), 16));
-        col.addView(latestCard, lp(-1, -2, 18));
-    }
-
-    private void buildBottom(LinearLayout col) {
-        nextRow = glass(14);
-        LinearLayout nr = hrow();
-        LinearLayout nl = new LinearLayout(a); nl.setOrientation(LinearLayout.VERTICAL);
-        nl.addView(caps("NEXT TEST")); nextText = t("", 15, INK, 400); nl.addView(nextText, lp(-2, -2, 6));
-        nr.addView(nl, new LinearLayout.LayoutParams(0, -2, 1f));
-        nextBtn = pill("Start", BLUE, DARK); nextBtn.setPadding(dp(22), 0, dp(22), 0);
-        nextBtn.setOnClickListener(v -> { if (!nextId.isEmpty()) startRun(nextId); });
-        nr.addView(nextBtn, new LinearLayout.LayoutParams(-2, dp(42)));
-        nextRow.addView(nr, new LinearLayout.LayoutParams(-1, -2));
-        nextRow.setVisibility(View.GONE);
-        col.addView(nextRow, lp(-1, -2, 12));
-        chipsRow = hrow();
-        setupChip = chip(""); setupChip.setSingleLine(true); setupChip.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        setupChip.setOnClickListener(v -> { if (!running) openSetup(); });
-        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(0, -2, 1f); sp.rightMargin = dp(8);
-        chipsRow.addView(setupChip, sp);
-        labChip = chip("Lab  \u203a"); labChip.setOnClickListener(v -> { if (!running) openLab(); });
-        chipsRow.addView(labChip, new LinearLayout.LayoutParams(-2, -2));
-        col.addView(chipsRow, lp(-1, -2, 12));
-        buildSetupRows(); refreshSummary();
-    }
-
-    // ------------------------------------------------------------------ the three states of the page
-    private void applyMode(int m) {
-        mode = m;
-        try {
-            boolean rest = m == REST, run = m == RUN, done = m == DONE;
-            if (statusLine != null) statusLine.setVisibility(rest || done ? View.VISIBLE : View.GONE);
-            if (signalCard != null) signalCard.setVisibility(run ? View.VISIBLE : View.GONE);
-            if (waveHost != null) waveHost.setVisibility(run ? View.VISIBLE : View.GONE);
-            if (waveCardRef != null) waveCardRef.setVisibility(View.VISIBLE);
-            if (resultCard != null) resultCard.setVisibility(done ? View.VISIBLE : View.GONE);
-            if (resultDetails != null) resultDetails.setVisibility(done ? View.VISIBLE : View.GONE);
-            if (liveCard != null) liveCard.setVisibility(run ? View.VISIBLE : View.GONE);
-            if (avgCard != null) avgCard.setVisibility(run || (done && lastOut != null) ? View.VISIBLE : View.GONE);
-            if (latestCard != null) latestCard.setVisibility(rest ? View.VISIBLE : View.GONE);
-            if (chipsRow != null) chipsRow.setVisibility(run ? View.GONE : View.VISIBLE);
-            if (cuePill != null && !run && readyLeft <= 0) cuePill.setVisibility(View.GONE);
-            applyDetails();
-            if (!run) refreshNext(); else if (nextRow != null) nextRow.setVisibility(View.GONE);
-            String name = a.getSharedPreferences("today", android.content.Context.MODE_PRIVATE).getString("name", "Ame");
-            if (rest) { greetView.setText("Hi, " + name); titleView.setText("Take a reading"); }
-            else if (run) { greetView.setText("ECG"); GuidedRun.Def d = GuidedRun.byId(guidedThisRun ? pref("run_id", "") : ""); titleView.setText(guidedThisRun && !d.id.isEmpty() ? d.title : "Reading"); }
-            else { greetView.setText("Reading done"); titleView.setText(String.format(Locale.UK, "%d:%02d recorded", (long) lastDur / 60, (long) lastDur % 60)); }
-            if (rest) refreshLatest();
-            if (orb != null) { if (rest) orb.set(lastHr.isEmpty() ? "ECG" : lastHr, lastHr.isEmpty() ? "READY" : "LAST BPM", 0f); }
-            updateLink(); syncStatus();
-            if (rest && scrollRef != null) scrollRef.post(new Runnable() { @Override public void run() { try { scrollRef.scrollTo(0, 0); } catch (Throwable ignored) { } } });
-        } catch (Throwable e) { fail("page state", e); }
-    }
-
-    /** Called each time the ECG screen is opened: a page left on the last result goes back to rest (the latest reading card then carries its Send). */
-    void onOpen() { try { if (!running) { detailsOpen = false; applyMode(REST); } } catch (Throwable e) { fail("open", e); } }
-
-    /** The 5 s auto-start countdown, shown inside the page; null hides it. A tap cancels it. */
-    void setCountdown(String s) {
-        try { if (countPill == null) return; if (s == null || running) { countPill.setVisibility(View.GONE); return; } countPill.setText(s); countPill.setVisibility(View.VISIBLE); } catch (Throwable e) { fail("countdown", e); }
-    }
-
-    private void syncStatus() {
-        try { if (statusLine == null || statusRef == null) return; String s = statusRef.getText() == null ? "" : statusRef.getText().toString(); if (!s.equals(lastStatus)) { lastStatus = s; statusLine.setText(s); } } catch (Throwable ignored) { }
-    }
-
-    // ------------------------------------------------------------------ setup sheet and Lab sheet
     private static final String[] POSTURE = { "No tag", "Table", "Couch", "Lying", "Standing", "After exercise" };
     private static final String[] POSITION = { "Wrist", "Chest V2", "Chest V4", "Chest V5", "Chest V6", "Bicep L", "Bicep R", "H10 in hands" };
     private static final String[] WHERE = { "Not set", "Home", "Work", "Truck", "Outside", "Other" };
@@ -456,9 +451,9 @@ final class EcgPage {
     }
 
     void refreshSummary() {
-        if (setupChip == null) return;
+        if (setupVal == null) return;
         String s = a.readingTag.isEmpty() ? "No tag" : a.readingTag, p = a.positionTag.isEmpty() ? "Wrist" : a.positionTag, w = pref("where_tag", "");
-        setupChip.setText(s + "  \u00b7  " + p + (w.isEmpty() ? "" : "  \u00b7  " + w) + (!pr.getBoolean("auto_stop", true) ? "  \u00b7  no auto-stop" : "") + "  \u25be");
+        setupVal.setText(s + "  \u00b7  " + p + (w.isEmpty() ? "" : "  \u00b7  " + w) + (!pr.getBoolean("auto_stop", true) ? "  \u00b7  no auto-stop" : "") + "  \u25be");
     }
 
     private String ticks(int n) { StringBuilder s = new StringBuilder(); for (int i = 0; i < 2; i++) s.append(i < n ? "\u25cf " : "\u25cb "); return s.toString() + " " + n + " / 2"; }
@@ -518,38 +513,49 @@ final class EcgPage {
     } };
 
     // ------------------------------------------------------------------ latest reading, next test
+    private static float gradeFrac(String g) { switch (g == null || g.isEmpty() ? '?' : g.charAt(0)) { case 'A': return 1f; case 'B': return 0.75f; case 'C': return 0.5f; case 'D': return 0.25f; default: return 0f; } }
+    private static double num(String s) { try { return Double.parseDouble(s.trim()); } catch (Throwable e) { return Double.NaN; } }
+
     void refreshLatest() {
         try {
-            if (latestCard == null) return;
+            if (statusCard == null) return;
             List<NewLookActivity.Rep> reps = a.loadReports();
-            if (reps.isEmpty()) { latestCard.setVisibility(View.GONE); lastHr = ""; return; }
+            stTitle.setTextColor(INK);
+            if (reps.isEmpty()) {
+                latestFile = null; lastHr = "";
+                stTitle.setText("No reading yet"); stSub.setText("Press START ECG to take your first one."); stPill.setVisibility(View.GONE); statusCard.setOnClickListener(null);
+                setRing(0, 0f, ROSE, "--", "HEART RATE", "last reading"); setRing(1, 0f, BLUE, "--", "HRV", "RMSSD, ms"); setRing(2, 0f, VIOLET, "--", "GRADE", "report quality"); drawRings();
+                return;
+            }
             final NewLookActivity.Rep r = reps.get(0);
+            latestFile = r.file; latestStart = ProReportMaker.unixOf(r.file);
             lastHr = "-".equals(r.hr) ? "" : r.hr;
-            latestDate.setText(r.dateText);
-            lVal[0].setText(lastHr.isEmpty() ? "\u2014" : lastHr); lCap[0].setText("HEART RATE");
-            lVal[1].setText("-".equals(r.hrv) ? "\u2014" : r.hrv); lCap[1].setText("HRV MS");
-            lVal[2].setText("?".equals(r.grade) ? "\u2014" : r.grade); lCap[2].setText("GRADE");
-            lVal[2].setTextColor(r.gradeColor());
-            latestSend.setVisibility(View.VISIBLE);
-            SendFlow.attach(a, latestSend, ProReportMaker.unixOf(r.file), r.file);
-            latestCard.setOnClickListener(v -> a.openReport(r.file));
-            if (mode == REST && orb != null) orb.set(lastHr.isEmpty() ? "ECG" : lastHr, lastHr.isEmpty() ? "READY" : "LAST BPM", 0f);
+            if (mode != REST) return;
+            stTitle.setText("Latest reading  \u00b7  " + r.dateText); stSub.setText(r.summary());
+            stPill.setVisibility(View.VISIBLE); SendFlow.attach(a, stPill, latestStart, r.file);
+            statusCard.setOnClickListener(v -> a.openReport(r.file));
+            double hrv = num(r.hrv);
+            setRing(0, hrFrac(lastHr), ROSE, lastHr.isEmpty() ? "--" : lastHr, "HEART RATE", "last reading");
+            setRing(1, clamp01(hrv / 100.0), BLUE, "-".equals(r.hrv) ? "--" : r.hrv, "HRV", "RMSSD, ms");
+            setRing(2, gradeFrac(r.grade), r.gradeColor(), "?".equals(r.grade) ? "--" : r.grade, "GRADE", "report quality");
+            drawRings();
         } catch (Throwable e) { fail("latest reading", e); }
     }
 
     void refreshNext() {
         try {
-            nextId = LabTests.next(LabTests.done(dir()), LabTests.hourNow());
-            if (nextRow == null) return;
-            if (nextId.isEmpty() || running || mode == RUN) { nextRow.setVisibility(View.GONE); return; }
-            nextText.setText(nextId + "   " + LabTests.name(nextId)); nextRow.setVisibility(View.VISIBLE);
+            LabTests.Result res = LabTests.done(dir());
+            nextId = LabTests.next(res, LabTests.hourNow());
+            if (labVal != null) labVal.setText(String.format(Locale.UK, "A %d  B %d  C %d  D %d  of 2  \u203a", res.n[0], res.n[1], res.n[2], res.n[3]));
+            if (nextCard == null) return;
+            if (nextId.isEmpty() || running || mode == RUN) { nextCard.setVisibility(View.GONE); return; }
+            nextText.setText(nextId + "   " + LabTests.name(nextId)); nextPlain.setText(LabTests.plain(nextId)); nextCard.setVisibility(View.VISIBLE);
         } catch (Throwable e) { fail("next test", e); }
     }
 
     /** Called every 500 ms by NewLookActivity while the screen is at rest. */
     void tickRest() {
         if (running) return;
-        syncStatus();
         long now = System.currentTimeMillis(); if (now - lastRestMs < 30000L) return; lastRestMs = now;
         refreshNext(); updateLink();
     }
@@ -569,7 +575,8 @@ final class EcgPage {
                 GuidedRun.Def d = GuidedRun.byId(rid);
                 guidedThisRun = !d.id.isEmpty(); runStopSec = d.stopSec;
                 if (!d.id.isEmpty()) { cueCount = 0; initTts(); guide.start(d, startMs, sink); cuePill.setVisibility(View.VISIBLE); cueView.setText("Keep still and relaxed"); cueLine.set(0f); } else { guide.cancel(); cuePill.setVisibility(View.GONE); }
-                if (orb != null) orb.set("--", "0:00", 0f);
+                setRing(0, 0f, ROSE, "--", "HEART RATE", "live"); setRing(1, 0f, BLUE, "--", "NOISE", "uV, usual 15-27"); setRing(2, 0f, VIOLET, "0%", "STRAP CHECK", "its own analysis"); drawRings();
+                stTitle.setText("Settling"); stTitle.setTextColor(INK); stSub.setText("The strap needs about 12 s.");
                 if (scrollRef != null) scrollRef.post(new Runnable() { @Override public void run() { try { scrollRef.scrollTo(0, 0); } catch (Throwable ignored) { } } });
                 ReadingNotes.put(dir(), startMs / 1000L, "app", VERSION);
                 ReadingNotes.put(dir(), startMs / 1000L, "where", pref("where_tag", ""));
@@ -593,7 +600,7 @@ final class EcgPage {
             long now = System.currentTimeMillis(); long el = now - Live500.startMs;
             double[] b = LiveBands.rms(); lastBands = b;
             double est = Live500.meanBeatNoiseEstimate(), nz = Live500.recentNoise(3);
-            // signal light: ONE line on its card; the strap's own check goes under Details
+            // the signal light is the status card; the strap's own check is its second line
             String txt; int colr; double n825 = b[1];
             boolean noContact = !live || !Live500.everOn || Live500.openRun >= 1;
             if (noContact) { txt = "\u25cf  Contact: two fingertips resting lightly on the clasp"; colr = 0xFFE5534B; }
@@ -608,7 +615,7 @@ final class EcgPage {
             int pg = Live500.lastProgress, cd = Live500.lastCode; String strap = "";
             if (cd != 0 && pg == 100) strap = "Strap's own check (research): " + StrapVerdict.describe(cd, Live500.lastAvgHr, Live500.lastMask);
             else if (pg <= 100) strap = "Strap's own check: analysing " + pg + " %" + (Live500.lastMask != 0 ? " (" + StrapVerdict.reasons(Live500.lastMask) + ")" : "");
-            signalView.setText(txt); signalView.setTextColor(colr); strapLine.setText(strap);
+            stTitle.setText(txt); stTitle.setTextColor(colr); stSub.setText(strap); strapLine.setText(strap);
             if (!Double.isNaN(b[1])) {
                 String bt = String.format(Locale.UK, "Noise (between beats):  QRS band 8-25 Hz %.0f uV (usual 15-27)  \u00b7  25-48 Hz %.0f  \u00b7  50 Hz %.0f  \u00b7  drift %.0f", b[1], b[2], b[3], b[0]);
                 String hint = LiveBands.hint(b, lastOut != null && !Double.isNaN(lastOut.rUv) ? lastOut.rUv : Double.NaN);
@@ -616,9 +623,16 @@ final class EcgPage {
                 bandsView.setText(bt + (hint != null && b[1] > 27 ? "\n" + hint : ""));
             } else bandsView.setText("Noise by band appears after about 10 s of beats");
             updateTarget(est);
-            // the dial: live heart rate, m:ss, ticks fill towards 60 s (a guided test: towards its end)
+            // the three rings: live heart rate, noise in the QRS band, the strap's own check (0 to 100 %)
             double rrS = Live500.medianRrS();
-            orb.set(Double.isNaN(rrS) ? "--" : String.valueOf(Math.round(60.0 / rrS)), String.format(Locale.UK, "%d:%02d", el / 60000, (el / 1000) % 60), guide.active() && runStopSec > 0 ? el / (runStopSec * 1000f) : el / 60000f);
+            String hrNow = Double.isNaN(rrS) ? "--" : String.valueOf(Math.round(60.0 / rrS));
+            double nv = !Double.isNaN(n825) ? n825 : nz;
+            int ncol = Double.isNaN(nv) ? MUT : nv <= 27 ? GREEN : nv <= 40 ? GOLD : ROSE;
+            setRing(0, hrFrac(hrNow), ROSE, hrNow, "HEART RATE", "live");
+            setRing(1, Double.isNaN(nv) ? 0f : clamp01(1.0 - nv / 60.0), ncol, Double.isNaN(nv) ? "--" : String.format(Locale.UK, "%.0f", nv), "NOISE", "uV, usual 15-27");
+            setRing(2, clamp01(Math.min(100, pg) / 100.0), VIOLET, Math.min(100, pg) + "%", "STRAP CHECK", cd != 0 && pg == 100 ? "result " + cd : "its own analysis");
+            drawRings();
+            greetView.setText(String.format(Locale.UK, "ECG  \u00b7  %d:%02d", el / 60000, (el / 1000) % 60));
             // averaged beat
             LiveMeasure.request();
             LiveMeasure.Out o = LiveMeasure.last();
@@ -732,33 +746,36 @@ final class EcgPage {
                 if (!Double.isNaN(o.postDipUv)) ReadingNotes.put(d, startSec, "live_dip_uV", String.format(Locale.US, "%.0f", o.postDipUv)); if (!Double.isNaN(o.qtMs)) ReadingNotes.put(d, startSec, "live_QT_ms", String.format(Locale.US, "%.0f", o.qtMs));
             }
         } catch (Throwable e) { fail("reading notes", e); }
-        // result card: strap verdict, heart rate, HRV, noise, Send; every other line under Details
+        // the status card: the strap verdict and Send; the rings: heart rate, strap HRV, noise; every other line under "More about this"
         try {
             if (b == null) b = new double[] { Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN };
-            if (vc != 0) resultTitle.setText("Strap verdict: " + StrapVerdict.describe(vc, Live500.verdictHr, Live500.lastMask)); else resultTitle.setText(dur < 42 ? "No strap verdict yet: the reading was " + String.format(Locale.UK, "%.0f", dur) + " s (the strap needs about 41 s from Start, 37 s of it in unbroken contact)" : "No strap verdict (contact was broken before it finished, or it was stopped too early)");
+            String verdict = vc != 0 ? "Strap verdict: " + StrapVerdict.describe(vc, Live500.verdictHr, Live500.lastMask) : (dur < 42 ? "No strap verdict yet: the reading was " + String.format(Locale.UK, "%.0f", dur) + " s (the strap needs about 41 s from Start, 37 s of it in unbroken contact)" : "No strap verdict (contact was broken before it finished, or it was stopped too early)");
             double rr = Live500.medianRrS();
-            String hrTxt = Double.isNaN(rr) ? "\u2014" : String.valueOf(Math.round(60.0 / rr));
-            rVal[0].setText(hrTxt); rCap[0].setText(vc != 0 ? "HEART RATE \u00b7 STRAP " + Live500.verdictHr : "HEART RATE");
-            rVal[1].setText(Live500.hrvMs != 0 ? String.valueOf(Live500.hrvVal) : "\u2014"); rCap[1].setText(Live500.hrvMs != 0 ? String.format(Locale.UK, "STRAP HRV MS \u00b7 FROM %.0f S", (Live500.hrvMs - Live500.sessionMs) / 1000.0) : "STRAP HRV MS");
-            if (!Double.isNaN(b[1])) { rVal[2].setText(String.format(Locale.UK, "%.0f", b[1])); rVal[2].setTextColor(b[1] <= 27 ? GREEN : b[1] <= 40 ? GOLD : ROSE); rCap[2].setText("NOISE UV \u00b7 " + (b[1] <= 27 ? "GOOD" : b[1] <= 40 ? "FAIR" : "NOISY")); }
-            else { rVal[2].setText("\u2014"); rVal[2].setTextColor(INK); rCap[2].setText("NOISE UV"); }
+            String hrTxt = Double.isNaN(rr) ? "--" : String.valueOf(Math.round(60.0 / rr));
             if (!Double.isNaN(rr)) lastHr = hrTxt;
-            if (orb != null) orb.set(hrTxt.equals("\u2014") ? "--" : hrTxt, "BPM", 1f);
             StringBuilder t = new StringBuilder();
             if (!Double.isNaN(rr)) { t.append(String.format(Locale.UK, "HR %.0f", 60.0 / rr)); if (vc != 0) t.append(String.format(Locale.UK, " (strap %d)", Live500.verdictHr)); }
             if (Live500.hrvMs != 0) t.append(String.format(Locale.UK, "  \u00b7  strap HRV %d ms (from %.0f s)", Live500.hrvVal, (Live500.hrvMs - Live500.sessionMs) / 1000.0));
+            String line1 = t.toString();
+            stTitle.setText(verdict); stTitle.setTextColor(INK); stSub.setText(line1); stSub.setVisibility(line1.isEmpty() ? View.GONE : View.VISIBLE);
+            boolean haveNoise = !Double.isNaN(b[1]);
+            String lvl = !haveNoise ? "" : b[1] <= 27 ? "good" : b[1] <= 40 ? "fair" : "noisy";
+            setRing(0, hrFrac(hrTxt), ROSE, hrTxt, "HEART RATE", vc != 0 ? "strap " + Live500.verdictHr : "median beat gap");
+            setRing(1, Live500.hrvMs != 0 ? clamp01(Live500.hrvVal / 100.0) : 0f, BLUE, Live500.hrvMs != 0 ? String.valueOf(Live500.hrvVal) : "--", "STRAP HRV", Live500.hrvMs != 0 ? String.format(Locale.UK, "ms, from %.0f s", (Live500.hrvMs - Live500.sessionMs) / 1000.0) : "not released");
+            setRing(2, haveNoise ? clamp01(1.0 - b[1] / 60.0) : 0f, !haveNoise ? MUT : b[1] <= 27 ? GREEN : b[1] <= 40 ? GOLD : ROSE, haveNoise ? String.format(Locale.UK, "%.0f", b[1]) : "--", "NOISE", haveNoise ? "uV, " + lvl : "uV");
+            drawRings();
             if (o != null && o.avg != null) { t.append(t.length() > 0 ? "\n" : "").append(String.format(Locale.UK, "R %.0f uV", o.rUv)); if (!Double.isNaN(o.qrsMs)) t.append(String.format(Locale.UK, "  \u00b7  QRS %.0f ms", o.qrsMs)); if (!Double.isNaN(o.postDipUv)) t.append(String.format(Locale.UK, "  \u00b7  S/ST dip %.0f uV", o.postDipUv)); if (!Double.isNaN(o.qtMs)) t.append(String.format(Locale.UK, "  \u00b7  QT %.0f ms", o.qtMs)); }
-            if (!Double.isNaN(b[1])) t.append("\n").append(String.format(Locale.UK, "Noise in the QRS band %.0f uV (usual 15-27): %s", b[1], b[1] <= 27 ? "good" : b[1] <= 40 ? "fair" : "noisy"));
+            if (haveNoise) t.append("\n").append(String.format(Locale.UK, "Noise in the QRS band %.0f uV (usual 15-27): %s", b[1], lvl));
             t.append("\nStopped ").append(stopReason == 1 ? "by auto-stop" : stopReason == 2 ? "by the guided run" : "by you").append(String.format(Locale.UK, " after %.0f s.", dur));
-            t.append("\nSend collects everything by itself: the strap's end events (118 / 119), the report written again with them, and the zip.");
             resultBody.setText(t.toString());
-            boolean noisy = !Double.isNaN(b[1]) && b[1] > 27;
+            boolean noisy = haveNoise && b[1] > 27;
             whyHint.setVisibility(noisy ? View.VISIBLE : View.GONE); whyRow.setVisibility(noisy ? View.VISIBLE : View.GONE);
             for (int i = 0; i < whyRow.getChildCount(); i++) ((TextView) whyRow.getChildAt(i)).setTextColor(INK);
             if (avgView != null && o != null) { avgView.set(o); avgText.setText(avgLine(o)); }
-            SendFlow.attach(a, sendBtn, startSec, null);
+            stPill.setVisibility(View.VISIBLE); statusCard.setOnClickListener(null);
+            SendFlow.attach(a, stPill, startSec, null);
             startNoteTick(startSec);
-        } catch (Throwable e) { fail("result card", e); }
+        } catch (Throwable e) { fail("result", e); }
         if (guidedThisRun) {
             guidedThisRun = false; pr.edit().putString("run_id", "").apply();      // a guided run is one-shot; it kept stopping every later reading at 45 s (23:10 reading of 5 Nov)
             if (stopReason == 2) { try { SendFlow.autoSend(a, startSec); a.toast("Done: sending"); } catch (Throwable e) { fail("auto send", e); } }
@@ -766,14 +783,14 @@ final class EcgPage {
         applyMode(DONE);
     }
 
-    /** The one status line under Send: what the app is doing, or what is in the zip. Stops by itself when the card is hidden. */
+    /** The one status line under the card: what the app is doing, or what is in the zip. Stops by itself when the page leaves the result. */
     private void startNoteTick(final long startSec) {
         final Runnable[] r = new Runnable[1];
         r[0] = new Runnable() { @Override public void run() {
             try {
-                if (sendNote == null || resultCard == null || resultCard.getVisibility() != View.VISIBLE || startMs / 1000L != startSec) return;
+                if (sendNote == null || mode != DONE || startMs / 1000L != startSec) return;
                 SendFlow.St s = SendFlow.status(dir(), startSec);
-                sendNote.setText(s.kind == 1 ? "Getting the strap's end events and the report ready (about 1 to 3 min). You can tap Send now: it sends when ready." : s.kind == 3 ? "Saved: ready to upload." : s.noEvents ? "Ready. The strap sent no end events for this reading (events 118 / 119); the zip has everything else." : "Ready. The zip has the end events, the report with them and your notes.");
+                sendNote.setText(s.kind == 1 ? "Send is getting the strap's end events and the report ready (about 1 to 3 min). You can tap it now: it sends when ready." : s.kind == 3 ? "Saved: ready to upload." : s.noEvents ? "Ready. The strap sent no end events for this reading (events 118 / 119); the zip has everything else." : "Ready. The zip has the end events, the report with them and your notes.");
                 h.postDelayed(r[0], 2000L);
             } catch (Throwable ignored) { }
         } };
