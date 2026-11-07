@@ -47,9 +47,19 @@ final class ReadingPull {
         ReadingFrames.Sets S = ReadingFrames.collect(dir, t0, t1);
         StringBuilder man = new StringBuilder();
         String tagTxt = ReadingTag.forReading(dir, t0);
-        man.append("Full pull of one ECG reading (WHOOP MG, NOOP-MG-ECG app ").append(build).append(")\nreading start (strap time, unix): ").append((long) t0).append("\nreading end: ").append((long) t1).append("\nposition or activity tag: ").append(tagTxt.isEmpty() ? "none" : tagTxt).append("\nlive frames: R16 ").append(live16.size()).append(", R17 ").append(live17.size()).append("\nstored in the history files (").append(S.files).append(" files scanned): R16 ").append(S.r16.size()).append(", R17 ").append(S.r17.size()).append(", R18 ").append(S.r18.size()).append(", R20 ").append(S.r20.size()).append(", R21 ").append(S.r21.size()).append(", R26 ").append(S.r26.size()).append("\nThe strap serial is masked in the text files. unknown_frames_*.hex holds RAW device-info frames that can contain the strap serial and token: never post that file publicly. Research use only.\n");
+        man.append("Full pull of one ECG reading (WHOOP MG, MG Heart app ").append(build).append(")\nreading start (strap time, unix): ").append((long) t0).append("\nreading end: ").append((long) t1).append("\nposition or activity tag: ").append(tagTxt.isEmpty() ? "none" : tagTxt).append("\nlive frames: R16 ").append(live16.size()).append(", R17 ").append(live17.size()).append("\nstored in the history files (").append(S.files).append(" files scanned): R16 ").append(S.r16.size()).append(", R17 ").append(S.r17.size()).append(", R18 ").append(S.r18.size()).append(", R20 ").append(S.r20.size()).append(", R21 ").append(S.r21.size()).append(", R26 ").append(S.r26.size()).append("\nThe strap serial is masked in the text files. unknown_frames_*.hex holds RAW device-info frames that can contain the strap serial and token: never post that file publicly. Research use only.\n");
         out.put("manifest.txt", man.toString().getBytes("UTF-8"));
-        try { out.put("reading_notes.txt", ReadingNotes.linesFor(dir, (long) t0).getBytes("UTF-8")); } catch (Throwable ignored) { }      // 0.42.3: where, run, cue times, noise bands, verdict timing
+        try {
+            String notes = ReadingNotes.linesFor(dir, (long) t0);
+            try {                                                                                  // 0.44.0: slow-transient counter (decode log 50.6 item 1 C)
+                if (!live16.isEmpty()) {
+                    long st = (long) t0; int a = notes.indexOf('\n'); if (a > 0 && a + 1 < notes.length()) { int c = notes.indexOf(',', a + 1); if (c > a + 1) { try { st = Long.parseLong(notes.substring(a + 1, c)); } catch (NumberFormatException ignored) { } } }
+                    if (!notes.endsWith("\n")) notes += "\n";
+                    notes += SlowTransients.noteLines(st, SlowTransients.analyse(live16));
+                }
+            } catch (Throwable ignored) { }
+            out.put("reading_notes.txt", notes.getBytes("UTF-8"));
+        } catch (Throwable ignored) { }      // 0.42.3: where, run, cue times, noise bands, verdict timing
         out.put("README.txt", README.getBytes("UTF-8"));
         // ECG 500 Hz live
         StringBuilder sb = new StringBuilder("unix_time_s,sample,microvolts,lead_on,fast_recovery,rail,quality\n");

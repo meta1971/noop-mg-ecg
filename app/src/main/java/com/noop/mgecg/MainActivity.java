@@ -11265,6 +11265,8 @@ public class MainActivity extends NewLookActivity {
         ecgWaveformView.reset();
         Live500.reset();
         Live500.setMode(getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getInt("ecg_smooth500", 2));       // 0.18.0: 0 not smoothed, 1 light, 2 smoothed (default)
+        Live500.setClean(getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_clean_view", false));       // 0.44.0: clean view (slow Gaussian 20 ms)
+        Live500View.qualityColours = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_quality_colours", true);       // 0.44.0
         updateGraphSource(false);
         ecgLiveBeatIntervalsMs.clear();
         ecgFullSessionIntervalsMs.clear();

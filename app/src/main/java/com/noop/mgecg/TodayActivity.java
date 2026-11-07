@@ -150,7 +150,7 @@ public class TodayActivity extends Activity {
         rings.setOrientation(LinearLayout.HORIZONTAL);
         rings.setWeightSum(3f);
         double sleepFrac = Double.isNaN(d.sleepPct) ? 0 : Math.min(1.0, d.sleepPct / 100.0);
-        rings.addView(ringCell(sleepFrac, SLEEP, d.night == null ? "\u2014" : hours(d.night.tstH), "SLEEP", d.night == null ? "no night yet" : (int) Math.round(d.sleepPct) + "% of goal"));
+        rings.addView(ringCell(sleepFrac, SLEEP, d.night == null ? "\u2014" : hours(d.night.tstH + d.napH), "SLEEP", d.night == null ? "no night yet" : (int) Math.round(d.sleepPct) + "% of goal"));
         int recCol = Double.isNaN(d.recovery) ? DIM : (d.recovery < 34 ? RED : (d.recovery < 67 ? AMBER : GREEN));
         rings.addView(ringCell(Double.isNaN(d.recovery) ? 0 : d.recovery / 100.0, recCol,
                 Double.isNaN(d.recovery) ? "\u2014" : String.valueOf((int) Math.round(d.recovery)) + "%", "RECOVERY",

@@ -46,8 +46,27 @@ final class DailyViews {
             super(c);
             this.frac = frac; this.col = col; this.big = big; this.label = label; this.cap = cap;
         }
+        // 0.44.0 (decode log 50.6 item 1, A2): the number of one ring pulses (about 120 ms, up to 16 % larger) when a new R marker of the live graph appears
+        private static final long PULSE_MS = 120L;
+        private int pulseRing = -1; private double lastPulseDue = Double.NaN; private long pulseStart;
+        /** ring index whose number pulses with the live heartbeat, or -1 for none */
+        void setPulse(int ring) { pulseRing = ring; lastPulseDue = Double.NaN; pulseStart = 0L; invalidate(); }
+        private float pulseScale() {
+            if (pulseRing < 0) return 1f;
+            long now = System.currentTimeMillis();
+            double due = Live500.newestBeatDue(now);
+            if (!Double.isNaN(due) && (Double.isNaN(lastPulseDue) || due > lastPulseDue + 1.0)) {
+                boolean fresh = now - due < 1500.0;                       // a beat first seen long after its time (page start, a stall) does not pulse
+                lastPulseDue = due; if (fresh) pulseStart = now;
+            }
+            long age = now - pulseStart;
+            postInvalidateOnAnimation();
+            if (pulseStart > 0L && age >= 0L && age < PULSE_MS) return 1f + 0.16f * (float) Math.sin(Math.PI * age / (double) PULSE_MS);
+            return 1f;
+        }
         @Override protected void onDraw(Canvas cv) {
             Context c = getContext();
+            final float pulse = pulseScale();
             float w = getWidth(), cellW = w / 3f;
             float dia = Math.min(cellW - dp(c, 14), dp(c, 104));
             float sw = dp(c, 9);
@@ -62,7 +81,7 @@ final class DailyViews {
                     Paint pr = new Paint(tr); pr.setColor(col[i]);
                     cv.drawArc(r, -90, 360f * f, false, pr);
                 }
-                Paint t = paint(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 300)); t.setTextSize(dp(c, big[i].length() > 3 ? 22 : 28));
+                Paint t = paint(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 300)); t.setTextSize(dp(c, big[i].length() > 3 ? 22 : 28) * (i == pulseRing && !"--".equals(big[i]) ? pulse : 1f));
                 cv.drawText(big[i], cx, top + dia / 2f + dp(c, 9), t);
                 Paint l = paint(INK); l.setTextAlign(Paint.Align.CENTER); l.setTypeface(font(c, 400)); l.setTextSize(dp(c, 11)); l.setLetterSpacing(0.14f);
                 cv.drawText(label[i], cx, top + dia + dp(c, 20), l);

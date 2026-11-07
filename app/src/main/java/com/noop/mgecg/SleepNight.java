@@ -38,6 +38,29 @@ final class SleepNight {
         double[] brByHour = new double[0];
     }
 
+    /** 0.44.0 nap rule (decode log 50.6 B). The 20 min threshold, the 10 min merge gap and the 30 min guard are GUESSES, to be tuned on his own daytime data. */
+    static final long NAP_MIN_S = 1200L, NAP_MERGE_GAP_S = 600L, NAP_GUARD_S = 1800L;
+
+    /**
+     * Naps after the latest night: {startTs, endTs, sleepSeconds}. A nap is a stretch of the band's SLEEP state (gaps of up to 10 minutes merged) of at least 20 minutes
+     * that starts more than 30 minutes after the night's end, has itself ended (its last SLEEP second is more than 10 minutes before the newest record: a sleep that is
+     * still going on is not counted yet) and is not itself the size of a night (3 h span and 2 h asleep: that is the next night). Naps never enter the night's own numbers.
+     * Input: timestamps of every record whose band state is SLEEP, sorted.
+     */
+    static List<long[]> naps(long[] sleepTs, long nightEndTs, long newestTs) {
+        List<long[]> out = new ArrayList<>();
+        int i = 0;
+        while (i < sleepTs.length) {
+            int j = i;
+            while (j + 1 < sleepTs.length && sleepTs[j + 1] - sleepTs[j] <= NAP_MERGE_GAP_S) j++;
+            long s = sleepTs[i], e = sleepTs[j], asleep = j - i + 1;
+            boolean nightSized = e - s >= 3 * 3600 && asleep >= 2 * 3600;
+            if (s > nightEndTs + NAP_GUARD_S && e - s >= NAP_MIN_S && e < newestTs - NAP_MERGE_GAP_S && !nightSized) out.add(new long[] {s, e, asleep});
+            i = j + 1;
+        }
+        return out;
+    }
+
     /** Clusters of sleep: {startTs, endTs, sleepSeconds}. Input: timestamps of every record whose band state is SLEEP, sorted. */
     static List<long[]> clusters(long[] sleepTs) {
         List<long[]> blocks = new ArrayList<>();
@@ -51,7 +74,10 @@ final class SleepNight {
         List<long[]> out = new ArrayList<>();
         long[] cur = null;
         for (long[] b : blocks) {
-            if (cur != null && b[0] - cur[1] <= 10800) { cur[1] = b[1]; cur[2] += b[2]; }
+            // 0.44.0: a later block joins the night when it is within 30 minutes of it, or within 3 hours and itself the size of a night (a second sleep after a long wake).
+            // A shorter block more than 30 minutes after the night is a nap (SleepNight.naps), not part of the night: before 0.44.0 it was merged and inflated the time in bed.
+            boolean nightSized = b[1] - b[0] >= 3 * 3600 && b[2] >= 2 * 3600;
+            if (cur != null && b[0] - cur[1] <= (nightSized ? 10800 : NAP_GUARD_S)) { cur[1] = b[1]; cur[2] += b[2]; }
             else { if (cur != null) out.add(cur); cur = new long[] {b[0], b[1], b[2]}; }
         }
         if (cur != null) out.add(cur);

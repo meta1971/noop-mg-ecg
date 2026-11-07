@@ -232,7 +232,7 @@ final class DayLog {
         List<TodayModel.NightStat> out = new ArrayList<>();
         try {
             SQLiteDatabase d = db(c);
-            try { android.content.SharedPreferences mp = c.getApplicationContext().getSharedPreferences("daylog_meta", Context.MODE_PRIVATE); if (mp.getInt("night_rule", 0) < 2) { d.execSQL("DELETE FROM night_stats"); mp.edit().putInt("night_rule", 2).apply(); } } catch (Throwable ignored) { }     // 0.33.0: cached nights are rebuilt once with the new sleep-time rule
+            try { android.content.SharedPreferences mp = c.getApplicationContext().getSharedPreferences("daylog_meta", Context.MODE_PRIVATE); if (mp.getInt("night_rule", 0) < 3) { d.execSQL("DELETE FROM night_stats"); mp.edit().putInt("night_rule", 3).apply(); } } catch (Throwable ignored) { }     // 0.33.0: cached nights are rebuilt once with the new sleep-time rule; 0.44.0 (rule 3): naps no longer merge into the night
             Cursor q = d.rawQuery("SELECT ts FROM r18 WHERE state = 2 ORDER BY ts", null);
             List<Long> tl = new ArrayList<>();
             while (q.moveToNext()) tl.add(q.getLong(0));

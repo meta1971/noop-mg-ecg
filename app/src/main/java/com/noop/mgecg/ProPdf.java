@@ -434,7 +434,7 @@ final class ProPdf {
             "[12] Jane R, Blasi A, Garcia J, Laguna P. Evaluation of an automatic threshold based detector of waveform limits in Holter ECG with the QT database. Computers in Cardiology 1997 (tolerances 10.2, 12.7, 6.5, 11.6 and 30.6 ms).",
             "[13] Joutsen A, et al. ECG signal quality in intermittent long-term dry electrode recordings with controlled motion artifacts. Sci Rep 2024 (doi 10.1038/s41598-024-56595-0)."};
         for (String s : refs) y = para(p, s, 36, y, W - 72, 8.8, 11.5, INK, false) + 4;
-        para(p, "Generated on the phone by the NOOP-MG-ECG app from the reading's own live raw ECG frames. Research use only.", 36, y + 12, W - 72, 8.5, 11, GREY, false);
+        para(p, "Generated on the phone by the MG Heart app from the reading's own live raw ECG frames. Research use only.", 36, y + 12, W - 72, 8.5, 11, GREY, false);
     }
 
     static String whenText(double unix) { SimpleDateFormat f = new SimpleDateFormat("EEE d MMM yyyy HH:mm 'UTC'", Locale.UK); f.setTimeZone(TimeZone.getTimeZone("UTC")); return f.format(new Date((long) (unix * 1000))); }

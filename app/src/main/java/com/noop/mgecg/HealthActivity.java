@@ -867,7 +867,12 @@ public class HealthActivity extends Activity {
         c.addView(caps("SLEEP: LAST NIGHT"));
         if (n == null) { note(c, "No complete night found yet."); return; }
         kv(c, "In bed", hhmm(n.bedTs) + " to " + hhmm(n.endTs) + "  (" + HealthModel.hm(n.tibH) + ")");
-        kv(c, "Asleep", HealthModel.hm(n.tstH) + (Double.isNaN(day.sleepPct) ? "" : "  (" + Math.round(day.sleepPct) + " % of your " + Math.round(day.sleepGoalH) + " h goal)"));
+        kv(c, "Asleep (the night)", HealthModel.hm(n.tstH) + "  (" + Math.round(100.0 * n.tstH / day.sleepGoalH) + " % of your " + Math.round(day.sleepGoalH) + " h goal)");
+        if (day.napH > 0) {                                                                   // 0.44.0: naps since waking; the night's efficiency, HRV and recovery stay night-only
+            for (long[] nb : day.naps) kv(c, "Nap " + hhmm(nb[0]) + " to " + hhmm(nb[1]), HealthModel.hmShort(nb[2]));
+            kv(c, "Night plus naps (the sleep ring)", HealthModel.hm(n.tstH + day.napH) + (Double.isNaN(day.sleepPct) ? "" : "  (" + Math.round(day.sleepPct) + " %)"));
+            note(c, "A nap is a stretch of the band's SLEEP state of at least 20 minutes (gaps up to 10 minutes merged) that starts more than 30 minutes after the night ended. Efficiency, heart rate, HRV and recovery use the night only. The 20 minute limit is a first guess.");
+        }
         kv(c, "Efficiency", Math.round(n.effPct) + " %");
         kv(c, "Awake in bed (not counted as sleep)", HealthModel.hm(Math.max(0.0, n.tibH - n.tstH)) + "  (settling " + Math.round(n.settleMin) + " min, " + n.restless.size() + " restless spells)");        // 0.33.0
         if (!Double.isNaN(n.hrFirst3) || !Double.isNaN(n.hrLast3)) kv(c, "Heart rate, first 3 h / last 3 h", (Double.isNaN(n.hrFirst3) ? "-" : String.valueOf(Math.round(n.hrFirst3))) + " / " + (Double.isNaN(n.hrLast3) ? "-" : String.valueOf(Math.round(n.hrLast3))) + " bpm");
@@ -911,7 +916,7 @@ public class HealthActivity extends Activity {
         TodayModel.Day day = d.day;
         SleepNight.Night n = day.night;
         long age = System.currentTimeMillis() / 1000L - day.newestTs;
-        col.addView(head("Hi, " + name(), n != null ? "You slept " + HealthModel.hmShort((long) (n.tstH * 3600)) : "Good morning", null));
+        col.addView(head("Hi, " + name(), n != null ? "You slept " + HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) : "Good morning", null));
         View banner = loggerBanner(age);                       // 0.13.2: say so when the all-day log is not running
         if (banner != null) col.addView(banner, lp(-1, -2, 12));
         col.addView(syncStrip(day), lp(-1, -2, 10));              // 0.20.0: when it last synced, how far behind the strap is, and a Sync now button
@@ -922,7 +927,7 @@ public class HealthActivity extends Activity {
         String[] rb = {Double.isNaN(rec) ? "\u2014" : Math.round(rec) + "%", String.format(Locale.UK, "%.1f", day.effort), Double.isNaN(day.sleepPct) ? "\u2014" : Math.round(day.sleepPct) + "%"};
         String[] rl = {"RECOVERY", "EFFORT", "SLEEP"};
         String[] rcap = {Double.isNaN(rec) ? "needs " + TodayModel.MIN_BASELINE + " nights" : "vs your last " + day.baselineNights + " nights", "of 21 today",
-                n == null ? "no night yet" : HealthModel.hmShort((long) (n.tstH * 3600)) + " of " + Math.round(day.sleepGoalH) + " h goal"};
+                n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h goal"};
         DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
         final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(android.view.MotionEvent e) { return true; }
@@ -1070,7 +1075,8 @@ public class HealthActivity extends Activity {
         col.addView(egc, lp(-1, -2, 10));
         if (n != null) {
             String sub = (Double.isNaN(n.brMedian) ? "" : "Breathing " + String.format(Locale.UK, "%.1f", n.brMedian) + " a minute") + (Double.isNaN(n.skinMedian) ? "" : ", skin " + String.format(Locale.UK, "%.1f", n.skinMedian) + " \u00b0C");
-            col.addView(rowCard("Last night \u00b7 " + HealthModel.hm(n.tstH) + " asleep" + (day.spo2 != null && day.spo2.validWindows > 0 ? " \u00b7 SpO2 " + day.spo2.median + "%" : ""), sub.isEmpty() ? "Open Rest for the whole night" : sub,
+            String napLine = day.napH > 0 ? "Nap " + HealthModel.hmShort((long) (day.napH * 3600)) + "\n" : "";
+            col.addView(rowCard("Last night \u00b7 " + HealthModel.hm(n.tstH) + " asleep" + (day.spo2 != null && day.spo2.validWindows > 0 ? " \u00b7 SpO2 " + day.spo2.median + "%" : ""), napLine + (sub.isEmpty() ? "Open Rest for the whole night" : sub),
                     new View.OnClickListener() { @Override public void onClick(View v) { go(3); } }), lp(-1, -2, 10));
         }
         LinearLayout c = card(16);
@@ -1567,7 +1573,8 @@ public class HealthActivity extends Activity {
         col.addView(chipT, cp);
         TextView capt = tv("the ring closes at your need \u00b7 " + HealthModel.hm(goal), 12, MUT, 400);
         capt.setGravity(Gravity.CENTER);
-        col.addView(capt, lp(-1, -2, 28));
+        col.addView(capt, lp(-1, -2, d.day.napH > 0 ? 4 : 28));
+        if (d.day.napH > 0) { TextView napT = tv("Nap " + HealthModel.hmShort((long) (d.day.napH * 3600)), 13, BLUE, 600); napT.setGravity(Gravity.CENTER); col.addView(napT, lp(-1, -2, 20)); }          // 0.44.0: not in this ring (the night's own stages)
         col.addView(rowCard("The ring is " + Math.round(100 * need) + "% closed. See what the night was made of", "Stages are estimates from heart rate and movement", null), lp(-1, -2, 14));
         LinearLayout ringc = explainerCard("ABOUT THE RING", "What it fills towards and how the stages are estimated");
         final double goalF = goal;
@@ -1778,6 +1785,17 @@ public class HealthActivity extends Activity {
         st.addView(valueRow("ECG graph theme", gtv, new View.OnClickListener() { @Override public void onClick(View v) { boolean w = !ctl.getBoolean("graph_paper", false); ctl.edit().putBoolean("graph_paper", w).apply(); Live500View.paper = w; gtv.setText(w ? "Paper (light)" : "Dark"); } }), lp(-1, dpi(52), 0));
         final TextView gpv = tv(ctl.getString("pro_display", "1").equals("1") ? "On (spline baseline, markers)" : "Off (0.05 Hz filter only)", 14, BLUE, 600);
         st.addView(valueRow("ECG pro display", gpv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getString("pro_display", "1").equals("1"); ctl.edit().putString("pro_display", on ? "1" : "0").apply(); Live500.pro = on; gpv.setText(on ? "On (spline baseline, markers)" : "Off (0.05 Hz filter only)"); } }), lp(-1, dpi(52), 0));
+        // 0.44.0: quality colours of the live trace and the clean view
+        final TextView gqv = tv(ctl.getBoolean("ecg_quality_colours", true) ? "On" : "Off", 14, BLUE, 600);
+        st.addView(valueRow("ECG quality colours", gqv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getBoolean("ecg_quality_colours", true); ctl.edit().putBoolean("ecg_quality_colours", on).apply(); Live500View.qualityColours = on; gqv.setText(on ? "On" : "Off"); } }), lp(-1, dpi(52), 0));
+        TextView gqNote = tv("The live trace is coloured by the strap's own quality for each second: normal colour for quality 3, amber for 2, grey for 0 or 1, a gap when the fingers are off.", 11.5f, MUT, 400);
+        gqNote.setPadding(0, 0, 0, dpi(6));
+        st.addView(gqNote);
+        final TextView gcv = tv(ctl.getBoolean("ecg_clean_view", false) ? "On (clean view)" : "Off", 14, BLUE, 600);
+        st.addView(valueRow("ECG display smoothing", gcv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getBoolean("ecg_clean_view", false); ctl.edit().putBoolean("ecg_clean_view", on).apply(); Live500.setClean(on); gcv.setText(on ? "On (clean view)" : "Off"); } }), lp(-1, dpi(52), 0));
+        TextView gcNote = tv("On: heavier smoothing between the beats (about 20 ms) for a calmer picture; the QRS keeps its shape and the graph says smoothed. Display only: reports and stored data are not changed.", 11.5f, MUT, 400);
+        gcNote.setPadding(0, 0, 0, dpi(6));
+        st.addView(gcNote);
         st.addView(toggleRow("Show the 500 Hz graph when live raw frames arrive", ctl, "ecg_view500"), lp(-1, dpi(52), 0));
         final TextView smv = tv(smoothText(ctl), 14, BLUE, 600);
         st.addView(valueRow("500 Hz graph smoothing (display only)", smv, new View.OnClickListener() {

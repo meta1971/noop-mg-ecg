@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.43.9-pro";
+    static final String VERSION = "0.44.0-pro";
     static final int REST = 0, RUN = 1, DONE = 2;
     private static final int BLUE = HealthViews.BLUE, INK = HealthViews.INK, MUT = HealthViews.MUT, GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE, VIOLET = HealthViews.VIOLET, DARK = 0xFF05131E;
 
@@ -51,6 +51,7 @@ final class EcgPage {
     private ProgressLine cueLine;
     private Button start;
     private LinearLayout waveCardRef;
+    private LinearLayout replayCard; private ReplayView replayView; private volatile boolean replayLoading; private long replayFor = -1L;      // 0.44.0: replay of the finished reading
     private LinearLayout setupBody;
     private final TextView[] rowValues = new TextView[9];
     private ScrollView scrollRef;
@@ -238,11 +239,21 @@ final class EcgPage {
 
     private void buildRunning(LinearLayout col, LinearLayout waveCard) {
         waveHost = glass(12);
-        waveHost.addView(caps("LIVE ECG"), new LinearLayout.LayoutParams(-2, -2));
+        LinearLayout wh = hrow(); wh.addView(caps("LIVE ECG"), new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView full = t("tap the graph for full screen", 10.5f, MUT, 400); wh.addView(full, new LinearLayout.LayoutParams(-2, -2));
+        waveHost.addView(wh, new LinearLayout.LayoutParams(-1, -2));
         waveCard.setBackground(null); waveCard.setPadding(0, 0, 0, 0);
         waveHost.addView(waveCard, lp(-1, -2, 8));
         waveHost.setVisibility(View.GONE);
         col.addView(waveHost, lp(-1, -2, 12));
+        // 0.44.0: after the reading the same place holds the replay of the whole recording
+        replayCard = glass(12);
+        replayCard.addView(caps("REPLAY"), new LinearLayout.LayoutParams(-2, -2));
+        replayView = new ReplayView(a); replayCard.addView(replayView, lp(-1, dp(230), 8));
+        TextView rn = t("Drag to move, pinch to zoom, double-tap to fit the whole reading. Amber and grey shading is the strap's own quality for that second; triangles are the beats found.", 11, MUT, 400); rn.setLineSpacing(0, 1.2f);
+        replayCard.addView(rn, lp(-1, -2, 6));
+        replayCard.setVisibility(View.GONE);
+        col.addView(replayCard, lp(-1, -2, 12));
     }
 
     private static final String[] WHY = { "Tension", "Vibration", "Cold hands", "Charger near", "Not sure" };
@@ -342,6 +353,7 @@ final class EcgPage {
             boolean rest = m == REST, run = m == RUN, done = m == DONE;
             if (waveHost != null) waveHost.setVisibility(run ? View.VISIBLE : View.GONE);
             if (waveCardRef != null) waveCardRef.setVisibility(View.VISIBLE);
+            if (replayCard != null) { replayCard.setVisibility(done ? View.VISIBLE : View.GONE); if (done) startReplayLoad(); else if (replayView != null) { replayView.setData(null, ""); replayFor = -1L; } }
             if (resultDetails != null) resultDetails.setVisibility(done ? View.VISIBLE : View.GONE);
             if (liveCard != null) liveCard.setVisibility(run ? View.VISIBLE : View.GONE);
             if (avgCard != null) avgCard.setVisibility(run || (done && lastOut != null) ? View.VISIBLE : View.GONE);
@@ -410,7 +422,7 @@ final class EcgPage {
     }
 
     private void applyDisplayPrefs() {
-        try { Live500.pro = pref("pro_display", "1").equals("1"); Live500View.windowMs = pr.getInt("graph_window", 6000); Live500View.sweep = pr.getBoolean("graph_sweep", false); Live500View.paper = pr.getBoolean("graph_paper", false); } catch (Throwable e) { fail("display options", e); }
+        try { Live500.pro = pref("pro_display", "1").equals("1"); Live500View.windowMs = pr.getInt("graph_window", 6000); Live500View.sweep = pr.getBoolean("graph_sweep", false); Live500View.paper = pr.getBoolean("graph_paper", false); Live500View.qualityColours = pr.getBoolean("ecg_quality_colours", true); Live500.setClean(pr.getBoolean("ecg_clean_view", false)); } catch (Throwable e) { fail("display options", e); }
     }
 
     private static final String[] POSTURE = { "No tag", "Table", "Couch", "Lying", "Standing", "After exercise" };
@@ -570,6 +582,7 @@ final class EcgPage {
                 startMs = Live500.sessionMs > 0 && System.currentTimeMillis() - Live500.sessionMs < 8000 ? Live500.sessionMs : System.currentTimeMillis();
                 autoStopped = false; stopReason = 0; cueLog = ""; lastOut = null; lastBands = null; LiveMeasure.clear(); readyCancelled = true; readyLeft = 0; detailsOpen = false;
                 applyDisplayPrefs();
+                if (rings != null) rings.setPulse(0);                                        // 0.44.0: the heart-rate number pulses at each detected R
                 if (avgView != null) avgView.set(null);
                 String rid = pref("run_id", ""); if (!rid.isEmpty() && pr.getLong("run_armed_ms", 0L) + 90000L < System.currentTimeMillis()) { rid = ""; pr.edit().putString("run_id", "").apply(); }
                 GuidedRun.Def d = GuidedRun.byId(rid);
@@ -586,7 +599,7 @@ final class EcgPage {
                 ReadingNotes.put(dir(), startMs / 1000L, "pro", Live500.pro ? "1" : "0");
                 applyMode(RUN);
             } else if (!nowRunning && was) {
-                guide.cancel(); finishReading();
+                guide.cancel(); if (rings != null) rings.setPulse(-1); finishReading();
             }
         } catch (Throwable e) { fail("running change", e); }
         if (start != null && !nowRunning) start.setContentDescription("Start ECG reading");
@@ -648,7 +661,7 @@ final class EcgPage {
             if (start != null && running) { start.setText(String.format(Locale.UK, "STOP (hold 1 s)  \u00b7  %d:%02d", el / 60000, (el / 1000) % 60)); start.setContentDescription(String.format(Locale.UK, "Stop the reading. Press and hold for one second. %d minutes %d seconds so far.", el / 60000, (el / 1000) % 60)); }
             try {                                                                      // a spoken summary of the live graph for a screen reader
                 String say = txt.replace("\u25cf  ", "");
-                String desc = "Live ECG trace, 500 hertz. " + (Double.isNaN(rrS) ? "" : String.format(Locale.UK, "Heart rate %.0f beats a minute. ", 60.0 / rrS)) + say + ".";
+                String desc = "Live ECG trace, 500 hertz. Tap for full screen. " + (Double.isNaN(rrS) ? "" : String.format(Locale.UK, "Heart rate %.0f beats a minute. ", 60.0 / rrS)) + say + ".";
                 if (waveCardRef != null) for (int i = 0; i < waveCardRef.getChildCount(); i++) { View vv = waveCardRef.getChildAt(i); if (vv instanceof Live500View) vv.setContentDescription(desc); }
             } catch (Throwable ignored) { }
         } catch (Throwable e) { fail("update", e); }
@@ -795,6 +808,25 @@ final class EcgPage {
             } catch (Throwable ignored) { }
         } };
         h.post(r[0]);
+    }
+
+    /** 0.44.0: loads the live raw bin of the finished reading (off the main thread) into the replay card. */
+    private void startReplayLoad() {
+        try {
+            final long sec = startMs / 1000L;
+            if (replayView == null || replayLoading || replayFor == sec) return;
+            replayLoading = true; replayView.setData(null, "Loading the reading\u2026");
+            final File d = dir();
+            new Thread(new Runnable() { @Override public void run() {
+                ReplayData rd = null;
+                try { try { Thread.sleep(800L); } catch (InterruptedException ignored) { } rd = ReplayData.load(ProReportMaker.findBin(d, sec)); } catch (Throwable ignored) { }
+                final ReplayData fr = rd;
+                h.post(new Runnable() { @Override public void run() {
+                    replayLoading = false;
+                    if (mode == DONE && startMs / 1000L == sec && replayView != null) { replayView.setData(fr, fr == null ? "No 500 Hz data found for this reading" : null); replayFor = sec; }
+                } });
+            } }).start();
+        } catch (Throwable e) { replayLoading = false; fail("replay", e); }
     }
 
     private void pullSoon() { try { if (!MainActivity.linkRunning()) MainActivity.startLinkHost(a); MainActivity.requestPull(); } catch (Throwable ignored) { } }

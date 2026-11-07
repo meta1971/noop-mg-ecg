@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.41.0 (5 Nov 2026): pro display (PR-point spline baseline, beat windows, averaged beat, live noise by band, verdict timing, contact value); 0.18.0 (27 Oct): the 500 Hz live graph data, with QRS-aware smoothing. Pure Java (no Android), tested off the phone against a scipy reference.
+// FILE VERSION 0.44.0 (7 Nov 2026): strap quality byte kept per sample (snapshotQ, quality colouring of the live trace), clean view (slow Gaussian 20 ms), newestBeatDue (heart-rate pulse); 0.41.0 (5 Nov 2026): pro display (PR-point spline baseline, beat windows, averaged beat, live noise by band, verdict timing, contact value); 0.18.0 (27 Oct): the 500 Hz live graph data, with QRS-aware smoothing. Pure Java (no Android), tested off the phone against a scipy reference.
 
 /**
  * Turns the live raw ECG frames (type 43, layout 16, command 126) into a display trace.
@@ -76,6 +76,8 @@ final class Live500 {
     private static final Front front = new Front();
     private static final Band band = new Band();
     private static final double[] xin = new double[CAP], outv = new double[CAP], env = new double[CAP], due = new double[CAP];
+    private static final byte[] qual = new byte[CAP];                // 0.44.0: the strap's per-second quality byte (R16 byte 21) of the frame each sample came from; 0 for inserted gap samples
+    private static byte curQ;                                     // set under LOCK before the samples of a frame are appended
     private static long nAbs, procUpTo;                         // samples appended, samples with a final output
     private static boolean primed, haveOffset;
     private static double offsetMs, nextDue = Double.NaN, lastDueMs;
@@ -106,8 +108,13 @@ final class Live500 {
     }
 
     /** 0 = off, 1 = light (slow sigma 8 ms), 2 = smooth (12 ms). Set before a reading; takes effect for samples released after the call. */
-    static void setMode(int m) { synchronized (LOCK) { mode = (m < 0 || m > 2) ? 2 : m; kSlow = kernel(mode == 0 ? SIGMA_FAST_MS : mode == 1 ? 8.0 : 12.0); } }
-    static String modeLabel() { synchronized (LOCK) { return mode == 0 ? "not smoothed" : mode == 1 ? "light smoothing" : "smoothed"; } }
+    static void setMode(int m) { synchronized (LOCK) { mode = (m < 0 || m > 2) ? 2 : m; kSlow = kernel(slowSigmaMs()); } }
+    /** 0.44.0 clean view: heavier display smoothing between the beats (slow Gaussian sigma 20 ms instead of 8 or 12 ms); the QRS weight and the fast Gaussian are unchanged. Display only. */
+    static volatile boolean cleanView;
+    static final double SIGMA_CLEAN_MS = 20.0;
+    static void setClean(boolean on) { synchronized (LOCK) { cleanView = on; kSlow = kernel(slowSigmaMs()); } }
+    private static double slowSigmaMs() { return cleanView ? SIGMA_CLEAN_MS : mode == 0 ? SIGMA_FAST_MS : mode == 1 ? 8.0 : 12.0; }
+    static String modeLabel() { synchronized (LOCK) { return cleanView ? "smoothed (clean view)" : mode == 0 ? "not smoothed" : mode == 1 ? "light smoothing" : "smoothed"; } }
 
     // 0.25.1: electrode contact seen in the live frames (about one frame a second)
     static volatile int openRun; static volatile boolean everOn; static volatile long startMs;
@@ -199,7 +206,7 @@ final class Live500 {
         } else {
             primed = false; xin[pi] = Double.NaN; ei = 0.0; LiveBands.sample(gi, 0.0, false);
         }
-        env[pi] = ei; due[pi] = dueMs; outv[pi] = Double.NaN; lastDueMs = dueMs;
+        env[pi] = ei; due[pi] = dueMs; outv[pi] = Double.NaN; qual[pi] = curQ; lastDueMs = dueMs;
         nAbs++;
         if (gi >= 2) {                                                // peak decision for sample gi-1
             double c = env[p(gi - 1)];
@@ -264,7 +271,7 @@ final class Live500 {
             double yf = gconv(kFast, gi);
             double w = weight(gi);
             double y = yf;
-            if (w < 1.0 && mode != 0) { double ys = gconv(kSlow, gi); y = (Double.isNaN(ys) || Double.isNaN(yf)) ? yf : w * yf + (1 - w) * ys; }
+            if (w < 1.0 && (mode != 0 || cleanView)) { double ys = gconv(kSlow, gi); y = (Double.isNaN(ys) || Double.isNaN(yf)) ? yf : w * yf + (1 - w) * ys; }
             outv[p(gi)] = y;
             if (testSink != null) testSink.accept(y);
         }
@@ -292,6 +299,7 @@ final class Live500 {
             if (!haveOffset) { offsetMs = off; haveOffset = true; } else offsetMs += (off - offsetMs) * EMA;
             boolean contiguous = lastCounter >= 0 && ctr == lastCounter + 1;
             if (lastCounter >= 0 && !contiguous) {                      // a missing record: break the trace, start the filters and the timeline again
+                curQ = 0;
                 for (int g = 0; g < GAPN; g++) append(false, 0, lastDueMs + 2.0);
                 nextDue = Double.NaN;
             }
@@ -304,6 +312,7 @@ final class Live500 {
                 startMs = nextDue; step = 2.0 + pull / n;
             }
             int bad = 0;
+            curQ = (byte) (f[21] & 0xFF);
             for (int k = 0; k < n; k++) {
                 int b0 = f[34 + 3 * k] & 0xFF, b1 = f[35 + 3 * k] & 0xFF, b2 = f[36 + 3 * k] & 0xFF;
                 int raw = ((b0 & 3) << 16) | (b1 << 8) | b2;
@@ -324,7 +333,10 @@ final class Live500 {
      * Copies the final samples due between nowMs - windowMs and nowMs, oldest first, into outV (microvolts after the smoothing) and outT (due time in ms).
      * Returns how many were copied.
      */
-    static int snapshot(long nowMs, double windowMs, float[] outV, double[] outT) {
+    static int snapshot(long nowMs, double windowMs, float[] outV, double[] outT) { return snapshotQ(nowMs, windowMs, outV, outT, null); }
+
+    /** As snapshot, and the strap's quality byte (0 to 3) of each copied sample into outQ (may be null). */
+    static int snapshotQ(long nowMs, double windowMs, float[] outV, double[] outT, byte[] outQ) {
         synchronized (LOCK) {
             int m = 0;
             long start = Math.max(0, nAbs - CAP + 64);
@@ -332,7 +344,7 @@ final class Live500 {
                 int pi = p(gi); double d = due[pi];
                 if (d > nowMs) break;
                 if (d < nowMs - windowMs) continue;
-                outV[m] = (float) outv[pi]; outT[m] = d; m++;
+                outV[m] = (float) outv[pi]; outT[m] = d; if (outQ != null) outQ[m] = qual[pi]; m++;
             }
             if (pro && m > 0) { try { applyBase(outV, outT, m); } catch (RuntimeException ex) { if (testCandSink != null) ex.printStackTrace(); } }
             return m;
@@ -471,6 +483,14 @@ final class Live500 {
             int cnt = Math.min(bN, NB), m = 0;
             for (int i = bN - cnt; i < bN && m < tOut.length; i++) { int q = i & (NB - 1); double d = bDue[q]; if (d > nowMs || d < nowMs - windowMs) continue; tOut[m] = d; ampOut[m] = bAmp[q]; okOut[m] = bOk[q]; m++; }
             return m;
+        }
+    }
+    /** 0.44.0: display time (ms) of the newest accepted beat that is already on the screen (its due time is not after nowMs); NaN when none. The same beats as the R markers. */
+    static double newestBeatDue(long nowMs) {
+        synchronized (LOCK) {
+            int cnt = Math.min(bN, NB);
+            for (int i = bN - 1; i >= bN - cnt; i--) { double d = bDue[i & (NB - 1)]; if (d <= nowMs) return d; }
+            return Double.NaN;
         }
     }
     /** The kept beat windows (PRE_W + POST_W samples, uV, baseline at the PR level, R up). Shared arrays: do not change them. */

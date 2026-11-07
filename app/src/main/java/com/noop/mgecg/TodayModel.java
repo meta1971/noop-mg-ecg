@@ -49,6 +49,8 @@ final class TodayModel {
         int baselineNights;
         double zRhr = Double.NaN, zHrv = Double.NaN;
         int maxHr = 167;
+        List<long[]> naps = new ArrayList<>();  // 0.44.0: naps since the latest night {startTs, endTs, sleepSeconds}
+        double napH;                            // hours asleep in those naps; the night's own numbers (efficiency, HRV, recovery) never include them
     }
 
     /** Local 04:00 on or before [nowSec]. */
@@ -162,8 +164,11 @@ final class TodayModel {
             for (byte[] f : u) { long t = R18Codec.ts(f); if (t >= cc[0] - 7200L && t <= cc[1] + 600L) nr.add(f); }
             d.night = SleepNight.analyse(nr, d.oldestTs, d.newestTs);
             if (d.night != null) {
+                d.naps = SleepNight.naps(Arrays.copyOf(st, ns), d.night.endTs, d.newestTs);
+                double napSec = 0; for (long[] nb : d.naps) napSec += nb[2];
+                d.napH = napSec / 3600.0;
                 d.spo2 = Spo2.summarize(Spo2.windows(nr));
-                d.sleepPct = 100.0 * d.night.tstH / sleepGoalH;
+                d.sleepPct = 100.0 * (d.night.tstH + d.napH) / sleepGoalH;                  // 0.44.0: the sleep ring shows night plus naps
                 NightStat now = statOf(d.night, d.spo2);
                 double[] rec = recovery(now, earlier);
                 if (rec != null) { d.recovery = rec[0]; d.zRhr = rec[1]; d.zHrv = rec[2]; d.baselineNights = (int) rec[3]; }
