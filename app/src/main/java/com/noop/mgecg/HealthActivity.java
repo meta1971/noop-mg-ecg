@@ -520,11 +520,13 @@ public class HealthActivity extends Activity {
     interface Filler { void fill(LinearLayout panel); }
 
     /** Adds a "More about this" strip to a card; tapping opens a panel built on demand. The open state survives a refresh. */
-    private void expandable(final String key, final LinearLayout card, final Filler f) {
+    private void expandable(final String key, final LinearLayout card, final Filler f) { expandable(key, card, f, "More about this"); }
+
+    private void expandable(final String key, final LinearLayout card, final Filler f, final String label) {
         final LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setVisibility(View.GONE);
-        final TextView bar = tv("\u25BE  More about this", 12, BLUE, 600);
+        final TextView bar = tv("\u25BE  " + label, 12, BLUE, 600);
         bar.setPadding(0, dpi(12), 0, dpi(2));
         card.addView(bar);
         card.addView(panel, lp(-1, -2, 4));
@@ -538,7 +540,7 @@ public class HealthActivity extends Activity {
             bar.setText("\u25B4  Hide");
         } };
         bar.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
-            if (openCards.contains(key)) { openCards.remove(key); panel.removeAllViews(); panel.setVisibility(View.GONE); bar.setText("\u25BE  More about this"); }
+            if (openCards.contains(key)) { openCards.remove(key); panel.removeAllViews(); panel.setVisibility(View.GONE); bar.setText("\u25BE  " + label); }
             else { openCards.add(key); open.run(); }
         } });
         if (openCards.contains(key)) open.run();
@@ -945,6 +947,7 @@ public class HealthActivity extends Activity {
         plan.setLineSpacing(0, 1.25f);
         col.addView(plan, lp(-2, -2, 8));
         col.addView(tv("Estimates from this strap's own records, built on your own recent nights. Not WHOOP's scores and not a medical measure.", 11, MUT, 400), lp(-2, -2, 4));
+        try { col.addView(alarmCard(), lp(-1, -2, 16)); } catch (Throwable ignored) { }      // 0.43.5: a morning and an evening buzz alarm
 
         // ---- workouts and activity found in today's records (0.20.0: moved up, under the rings)
         LinearLayout wkc = card(16);
@@ -1266,51 +1269,103 @@ public class HealthActivity extends Activity {
         }
     }
 
+    // ------------------------------------------------------------------ alarms (0.43.5)
+    /** A morning and an evening alarm: the phone buzzes and a note offers Take ECG or Snooze 30 min. The times are the reading reminders of the You tab (set here, they apply to work days and days off alike). */
+    private View alarmCard() {
+        LinearLayout c = card(16);
+        c.addView(caps("ALARMS"));
+        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+        c.addView(box, lp(-1, -2, 2));
+        fillAlarmRows(box);
+        return c;
+    }
+
+    private void fillAlarmRows(final LinearLayout box) {
+        box.removeAllViews();
+        final ReminderTime.Cfg g = EcgReminder.load(this);
+        final boolean work = ReminderTime.workDay(g, java.util.Calendar.getInstance());
+        for (int k = 0; k < 2; k++) {
+            final int part = k; final int m = g.t[(work ? 0 : 2) + k]; final boolean on = m >= 0;
+            LinearLayout r = hrow(); r.setPadding(0, dpi(12), 0, dpi(2));
+            LinearLayout left = new LinearLayout(this); left.setOrientation(LinearLayout.VERTICAL);
+            left.addView(tv(k == 0 ? "Morning" : "Evening", 14, INK, 400));
+            left.addView(tv(on ? "Buzz, then Take ECG or Snooze" : "Off", 11, MUT, 400), lp(-2, -2, 2));
+            r.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView time = tv(ReminderTime.hhmm(on ? m : (k == 0 ? 8 * 60 + 30 : 19 * 60 + 30)), 26, on ? INK : MUT, 300);
+            time.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                int cur = on ? m : (part == 0 ? 8 * 60 + 30 : 19 * 60 + 30);
+                new android.app.TimePickerDialog(HealthActivity.this, new android.app.TimePickerDialog.OnTimeSetListener() { @Override public void onTimeSet(android.widget.TimePicker tp, int hh, int mm) {
+                    EcgReminder.setSimple(HealthActivity.this, part, hh * 60 + mm); askNotify(); fillAlarmRows(box); } }, cur / 60, cur % 60, true).show(); } });
+            r.addView(time);
+            TextView sw = HeartGraph.pill(this, on ? "On" : "Off", on ? 0x1A2EE6A8 : 0x0DFFFFFF, on ? 0xFF2EE6A8 : MUT);
+            sw.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                EcgReminder.setSimple(HealthActivity.this, part, on ? -1 : (part == 0 ? 8 * 60 + 30 : 19 * 60 + 30)); if (!on) askNotify(); fillAlarmRows(box); } });
+            LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-2, -2); sp.leftMargin = dpi(12); r.addView(sw, sp);
+            box.addView(r);
+        }
+        long[] nx = ReminderTime.next(System.currentTimeMillis(), java.util.TimeZone.getDefault(), EcgReminder.load(this));
+        TextView note = tv(nx == null ? "No alarm is on. Tap a time to set it." : "Next: " + new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(new java.util.Date(nx[0])) + ". Skipped if you took a reading in the last 3 hours.", 11, MUT, 400);
+        note.setPadding(0, dpi(10), 0, 0); box.addView(note);
+        if (!EcgReminder.exactOk(this)) {
+            TextView ex = tv("Exact times need \"Alarms & reminders\" allowed for this app: tap here.", 11, GOLD, 400); ex.setPadding(0, dpi(6), 0, 0);
+            ex.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { try { startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:" + getPackageName()))); } catch (Throwable ignored) { } } });
+            box.addView(ex);
+        }
+        TextView test = tv("\u25b8  Test the buzz", 12, BLUE, 600); test.setPadding(0, dpi(12), 0, dpi(2));
+        test.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { askNotify(); EcgReminder.post(getApplicationContext(), true); } });
+        box.addView(test);
+    }
+
+    private void askNotify() { if (android.os.Build.VERSION.SDK_INT >= 33) { try { requestPermissions(new String[] { "android.permission.POST_NOTIFICATIONS" }, 4108); } catch (Throwable ignored) { } } }
+
     // ------------------------------------------------------------------ ECG
+    // 0.43.5 (6 Nov 2026): tidied in the style of the Today page. No count of readings any more (it said "90 readings"); one Start button, the latest reading as the status card with Send and the three rings, This week, the readings by day, and every tool under one "More tools" link.
     private View ecgTab() {
         LinearLayout col = screen();
         HealthModel.Data d = data;
         int n = d == null ? 0 : d.readings.size();
-        col.addView(tv("ECG", 13, MUT, 400));
-        LinearLayout top = hrow();
-        top.addView(tv(n + (n == 1 ? " reading" : " readings"), 40, INK, 200));
-        top.addView(spacer());
-        top.addView(pillButton("Start", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), new LinearLayout.LayoutParams(dpi(110), dpi(38)));
-        col.addView(top, lp(-1, -2, 8));
-        col.addView(tv(n == 0 ? "None saved yet. Two fingers on the clasp, about three minutes." : "Newest first. Tap one to open its full report.", 12.5f, MUT, 400), lp(-2, -2, 4));
-        try {                                                              // 0.42.1: this week, the streak and reminders (they were only on the older Home screen in 0.42.0)
+        col.addView(head("ECG", n == 0 ? "Take your first reading" : "Ready for an ECG", null));
+        col.addView(pillButton("Start an ECG", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), lp(-1, dpi(54), 16));
+        if (n == 0) col.addView(tv("Two fingers on the clasp, forearm on a table. About a minute is enough.", 14, INK, 400), lp(-2, -2, 14));
+        try {                                                              // the latest reading: the status card with Send, then the three rings (like the Today page)
+            if (n > 0 && d.readings.get(0).file != null) {
+                final HealthModel.Reading r0 = d.readings.get(0);
+                LinearLayout sc = card(12); LinearLayout row = hrow();
+                LinearLayout left = new LinearLayout(this); left.setOrientation(LinearLayout.VERTICAL);
+                left.addView(tv("Latest reading  \u00b7  " + r0.when, 14, INK, 600));
+                StringBuilder sub = new StringBuilder();
+                if (!"-".equals(r0.hr)) sub.append("HR ").append(r0.hr).append(" bpm");
+                if (!"-".equals(r0.hrv)) sub.append(sub.length() > 0 ? " \u00b7 " : "").append("HRV ").append(r0.hrv).append(" ms");
+                if (!"-".equals(r0.rhythm)) sub.append(sub.length() > 0 ? " \u00b7 " : "").append(r0.rhythm);
+                left.addView(tv(sub.length() == 0 ? "Tap to open the report" : sub.toString(), 11, MUT, 400), lp(-2, -2, 2));
+                row.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
+                TextView send = HeartGraph.pill(this, "Send", 0x1A2EE6A8, 0xFF2EE6A8);
+                SendFlow.attach(this, send, ProReportMaker.unixOf(r0.file), r0.file);
+                LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-2, -2); sp.leftMargin = dpi(10); row.addView(send, sp);
+                sc.addView(row);
+                sc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { openReport(r0.file); } });
+                col.addView(sc, lp(-1, -2, 14));
+                double hr = Double.NaN, hv = Double.NaN; try { hr = Double.parseDouble(r0.hr); } catch (Throwable ignored) { } try { hv = Double.parseDouble(r0.hrv); } catch (Throwable ignored) { }
+                String g = r0.grade == null ? "-" : r0.grade.toUpperCase(Locale.UK); float gf = g.startsWith("A") ? 1f : g.startsWith("B") ? 0.75f : g.startsWith("C") ? 0.5f : g.startsWith("D") ? 0.25f : 0f;
+                int gc = g.startsWith("A") || g.startsWith("B") ? GREEN : g.startsWith("C") ? GOLD : MUT;
+                float[] rf = { Double.isNaN(hr) ? 0f : (float) Math.min(1.0, hr / 167.0), Double.isNaN(hv) ? 0f : (float) Math.min(1.0, hv / 100.0), gf };
+                int[] rc = { HealthViews.ROSE, BLUE, gc };
+                String[] rb = { Double.isNaN(hr) ? "\u2014" : String.valueOf(Math.round(hr)), Double.isNaN(hv) ? "\u2014" : String.valueOf(Math.round(hv)), "-".equals(g) ? "\u2014" : g };
+                String[] rl = { "HEART RATE", "HRV", "GRADE" };
+                String[] rcap = { "bpm", "RMSSD, ms", "report quality" };
+                col.addView(new DailyViews.RingsView(this, rf, rc, rb, rl, rcap), lp(-1, dpi(196), 6));
+            }
+        } catch (Throwable ignored) { }
+        try {                                                              // this week and the streak
             long[] st = new long[n]; for (int i = 0; i < n; i++) st[i] = d.readings.get(i).timeMs / 1000L;
             EcgStreak.Out so = EcgStreak.compute(st, System.currentTimeMillis(), java.util.TimeZone.getDefault());
             col.addView(rowCard("This week", EcgStreak.strip(so) + "\n" + EcgStreak.summary(so) + "\nTap for how this is worked out.", new View.OnClickListener() { @Override public void onClick(View v) {
                 new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("This week and the streak").setMessage(Explain.asText(Explain.streakCard())).setPositiveButton("OK", null).show(); } }), lp(-1, -2, 12));
-            col.addView(pillButton("Reminders: set the times for work days and days off", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgReminder.showDialog(HealthActivity.this); } }), lp(-1, dpi(44), 8));
         } catch (Throwable ignored) { }
-        long lastEnd = NewLookActivity.lastReadingEndMs;                   // 0.22.0: a reading just ended: the report takes 1 to 3 minutes
+        long lastEnd = NewLookActivity.lastReadingEndMs;                   // a reading just ended: the report is being made
         if (lastEnd > 0 && System.currentTimeMillis() - lastEnd < 6 * 60000L && (n == 0 || d.readings.get(0).timeMs < lastEnd - 300000L)) {
-            col.addView(rowCard("Preparing your report\u2026", "The stored ECG is fetched and analysed, 1 to 3 minutes. This list fills in by itself.", null), lp(-1, -2, 12));
+            col.addView(rowCard("Preparing your report\u2026", "This list fills in by itself.", null), lp(-1, -2, 12));
         }
-        if (n > 0 && d.readings.get(0).file != null) {
-            final java.io.File newest = d.readings.get(0).file;
-            col.addView(pillButton("Professional PDF of the newest reading", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.make(HealthActivity.this, newest); } }), lp(-1, dpi(44), 12));        // 0.23.0
-        }
-        col.addView(pillButton("Readings table: R, T, QTc and context", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) ReadingsTable.show(HealthActivity.this, data); } }), lp(-1, dpi(44), 8));      // 0.33.0
-        col.addView(pillButton("Save the analysis code (Python and Java) to Downloads", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.saveCode(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.23.1
-        col.addView(pillButton("Recover readings from the strap's stored data", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { StoredReading.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.25.1
-        col.addView(pillButton("Blood pressure research capture", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { BpCapture.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));      // 0.26.0
-        col.addView(pillButton("Read strap settings (read-only)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) {      // 0.27.1
-            if (!MainActivity.requestDeviceSettings()) { android.widget.Toast.makeText(HealthActivity.this, "The strap is not connected.", android.widget.Toast.LENGTH_SHORT).show(); return; }
-            android.widget.Toast.makeText(HealthActivity.this, "Reading 8 strap settings (about 6 s)...", android.widget.Toast.LENGTH_SHORT).show();
-            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() { @Override public void run() {
-                if (isFinishing()) return;
-                new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("Strap settings").setMessage(MainActivity.deviceSettingsText()).setPositiveButton("OK", null).show();
-            } }, 6500L);
-        } }), lp(-1, dpi(44), 8));
-        LinearLayout mc = explainerCard("HOW THE REPORT IS MADE AND CHECKED", "Method, agreement with the Python reference, and the database tests");
-        expandable("e_method", mc, new Filler() { @Override public void fill(LinearLayout p) { rows(p, Explain.reportMethod()); } });
-        col.addView(mc, lp(-1, -2, 10));
-        LinearLayout egt = explainerCard("HOW TO GET A STRONG READING", "What the grades mean, finger placement, what the QRS height tells you");
-        expandable("e_ecg", egt, new Filler() { @Override public void fill(LinearLayout p) { fillEcgPanel(p); } });
-        col.addView(egt, lp(-1, -2, 12));
         if (d != null) {
             // 0.27.0: readings grouped by day, newest first. Today and yesterday open; older days folded (tap a day to open or close it).
             java.text.SimpleDateFormat dk = new java.text.SimpleDateFormat("yyyy-MM-dd", Locale.UK), dl = new java.text.SimpleDateFormat("EEE d MMM", Locale.UK);
@@ -1323,7 +1378,7 @@ public class HealthActivity extends Activity {
                 if (!k.equals(today) && !k.equals(yest) && !k.equals("undated")) try { label = dl.format(dk.parse(k)); } catch (Exception ignored) { }
                 String best = null; for (HealthModel.Reading r : rs) if (r.grade != null && !"-".equals(r.grade)) { String g = r.grade.toUpperCase(Locale.UK); if (best == null || g.compareTo(best) < 0) best = g; }
                 boolean open = openDays.contains(k) || (!closedDays.contains(k) && (k.equals(today) || k.equals(yest)));
-                final String head = label + "  \u00b7  " + rs.size() + (rs.size() == 1 ? " reading" : " readings") + (best != null ? "  \u00b7  best grade " + best : "");
+                final String head = label + (best != null ? "  \u00b7  best grade " + best : "");
                 final TextView ht = tv(head + (open ? "   \u25be" : "   \u25b8"), 13, INK, 600); ht.setPadding(dpi(4), dpi(10), dpi(4), dpi(6));
                 final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setVisibility(open ? View.VISIBLE : View.GONE);
                 for (final HealthModel.Reading r : rs) box.addView(readingCard(r), lp(-1, -2, 12));
@@ -1331,7 +1386,38 @@ public class HealthActivity extends Activity {
                 col.addView(ht, lp(-1, -2, 2)); col.addView(box, lp(-1, -2, 4));
             }
         }
-        col.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 16));
+        // every tool under one link
+        LinearLayout tc = card(16);
+        tc.addView(caps("TOOLS"));
+        tc.addView(tv("Reminders, the professional PDF, the readings table, export and the strap's stored data", 12, MUT, 400), lp(-2, -2, 6));
+        final HealthModel.Data dd = d;
+        expandable("e_tools", tc, new Filler() { @Override public void fill(LinearLayout p) {
+            p.addView(pillButton("Reminders: set the times for work days and days off", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgReminder.showDialog(HealthActivity.this); } }), lp(-1, dpi(44), 10));
+            if (dd != null && !dd.readings.isEmpty() && dd.readings.get(0).file != null) {
+                final java.io.File newest = dd.readings.get(0).file;
+                p.addView(pillButton("Professional PDF of the newest reading", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.make(HealthActivity.this, newest); } }), lp(-1, dpi(44), 8));
+            }
+            p.addView(pillButton("Readings table: R, T, QTc and context", 0x1A2FA8F0, BLUE, new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) ReadingsTable.show(HealthActivity.this, data); } }), lp(-1, dpi(44), 8));
+            p.addView(pillButton("Save the analysis code (Python and Java) to Downloads", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { ProReportMaker.saveCode(HealthActivity.this); } }), lp(-1, dpi(44), 8));
+            p.addView(pillButton("Recover readings from the strap's stored data", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { StoredReading.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));
+            p.addView(pillButton("Blood pressure research capture", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { BpCapture.show(HealthActivity.this); } }), lp(-1, dpi(44), 8));
+            p.addView(pillButton("Read strap settings (read-only)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) {
+                if (!MainActivity.requestDeviceSettings()) { android.widget.Toast.makeText(HealthActivity.this, "The strap is not connected.", android.widget.Toast.LENGTH_SHORT).show(); return; }
+                android.widget.Toast.makeText(HealthActivity.this, "Reading 8 strap settings (about 6 s)...", android.widget.Toast.LENGTH_SHORT).show();
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() { @Override public void run() {
+                    if (isFinishing()) return;
+                    new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("Strap settings").setMessage(MainActivity.deviceSettingsText()).setPositiveButton("OK", null).show();
+                } }, 6500L);
+            } }), lp(-1, dpi(44), 8));
+            p.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 8));
+            LinearLayout mc = explainerCard("HOW THE REPORT IS MADE AND CHECKED", "Method, agreement with the Python reference, and the database tests");
+            expandable("e_method", mc, new Filler() { @Override public void fill(LinearLayout q) { rows(q, Explain.reportMethod()); } });
+            p.addView(mc, lp(-1, -2, 12));
+            LinearLayout egt = explainerCard("HOW TO GET A STRONG READING", "What the grades mean, finger placement, what the QRS height tells you");
+            expandable("e_ecg", egt, new Filler() { @Override public void fill(LinearLayout q) { fillEcgPanel(q); } });
+            p.addView(egt, lp(-1, -2, 10));
+        } }, "More tools");
+        col.addView(tc, lp(-1, -2, 16));
         col.addView(tv("Research only: not a diagnosis. Reports show how reliable each measurement was.", 11, MUT, 400), lp(-2, -2, 16));
         return wrap(col);
     }

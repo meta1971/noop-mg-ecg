@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.42.0 (5 Nov 2026): reading reminders with their own times for work days and days off (and a one-tap "today is a work day / day off" override). Decode log 50.6 items 1 and 2:
+// FILE VERSION 0.43.5 (6 Nov 2026): the reminder BUZZES the phone (own vibrator on the alarm stream, six pulses) and its note is high priority and silent; the Today page sets a morning and an evening time (setSimple). 0.42.0 (5 Nov 2026): reading reminders with their own times for work days and days off (and a one-tap "today is a work day / day off" override). Decode log 50.6 items 1 and 2:
 // morning 08:00-10:00 and evening 19:00-21:00 on the same day were the planned Run E; shifts differ, so every time can be changed or switched off.
 // The alarm goes to DayLogReceiver (no manifest change). A reminder is skipped when a reading was taken in the last 3 hours.
 
@@ -34,7 +34,7 @@ import static com.noop.mgecg.ReminderTime.*;
 final class EcgReminder {
     private EcgReminder() {}
 
-    static final String A_FIRE = "com.noop.mgecg.ECG_REMIND", A_SNOOZE = "com.noop.mgecg.ECG_SNOOZE", CH = "ecg_reminder";
+    static final String A_FIRE = "com.noop.mgecg.ECG_REMIND", A_SNOOZE = "com.noop.mgecg.ECG_SNOOZE", CH = "ecg_reminder", CH2 = "ecg_alarm_buzz";
     static final int ID = 4108, REQ = 7102, REQ_SNOOZE = 7103;
     static final String[] SLOT = { "Work day, morning", "Work day, evening", "Day off, morning", "Day off, evening" };
 
@@ -52,6 +52,28 @@ final class EcgReminder {
         SharedPreferences.Editor e = c.getApplicationContext().getSharedPreferences("ecg_reminder", Context.MODE_PRIVATE).edit().putBoolean("on", g.on).putInt("mask", g.workMask).putInt("ovday", g.overrideDay).putInt("ovtype", g.overrideType);
         for (int i = 0; i < 4; i++) e.putInt("t" + i, g.t[i]);
         e.apply();
+    }
+
+    /** The Today page: part 0 = morning, 1 = evening; minutes after midnight or -1 for off. Applies to work days and days off alike. */
+    static void setSimple(Context c, int part, int minutes) {
+        Cfg g = load(c); g.t[part] = minutes; g.t[2 + part] = minutes;
+        g.on = g.t[0] >= 0 || g.t[1] >= 0 || g.t[2] >= 0 || g.t[3] >= 0;
+        save(c, g); schedule(c);
+    }
+
+    /** true when exact alarm times are allowed (below Android 12 always). */
+    static boolean exactOk(Context c) {
+        try { if (Build.VERSION.SDK_INT < 31) return true; AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE); return am != null && am.canScheduleExactAlarms(); } catch (Throwable t) { return true; }
+    }
+
+    /** Six pulses (about 6 s) on the phone's own vibrator, alarm usage, so it also buzzes in silent mode. */
+    static void buzz(Context c) {
+        try {
+            android.os.Vibrator v = (android.os.Vibrator) c.getSystemService(Context.VIBRATOR_SERVICE);
+            if (v == null || !v.hasVibrator()) return;
+            long[] p = { 0, 700, 350, 700, 350, 700, 350, 700, 350, 700, 350, 700 };
+            v.vibrate(android.os.VibrationEffect.createWaveform(p, -1), new android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_ALARM).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
+        } catch (Throwable ignored) { }
     }
 
     // ------------------------------------------------------------------ alarm
@@ -99,18 +121,19 @@ final class EcgReminder {
 
     static void post(Context c, boolean test) {
         NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE); if (nm == null) return;
-        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CH) == null) { NotificationChannel ch = new NotificationChannel(CH, "ECG reading reminders", NotificationManager.IMPORTANCE_DEFAULT); nm.createNotificationChannel(ch); }
+        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CH2) == null) { NotificationChannel ch = new NotificationChannel(CH2, "ECG alarms (buzz)", NotificationManager.IMPORTANCE_HIGH); ch.setSound(null, null); ch.enableVibration(false); nm.createNotificationChannel(ch); }      // the buzz comes from buzz() so it never doubles
         Intent open = new Intent(c, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT).putExtra("stay", true).putExtra("start_ecg", true);
         PendingIntent take = PendingIntent.getActivity(c, 7104, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent snooze = PendingIntent.getBroadcast(c, 7105, new Intent(c, DayLogReceiver.class).setAction(A_SNOOZE), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
         String part = hour < 12 ? "morning" : "evening";
-        Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(c, CH) : new Notification.Builder(c);
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(c, CH2) : new Notification.Builder(c);
         b.setSmallIcon(android.R.drawable.ic_menu_recent_history).setContentTitle(test ? "Test: time for an ECG reading" : "Time for your " + part + " ECG reading")
             .setContentText("Sit at the table, forearm supported, two fingertips on the clasp. 45 s is enough.").setAutoCancel(true).setContentIntent(take)
             .addAction(new Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_edit), "Take ECG", take).build())
             .addAction(new Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_recent_history), "Snooze 30 min", snooze).build());
         nm.notify(ID, b.build());
+        buzz(c);
     }
 
     // ------------------------------------------------------------------ settings screen (from Home)
