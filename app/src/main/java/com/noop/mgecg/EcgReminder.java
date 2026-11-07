@@ -1,8 +1,8 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.43.8 (7 Nov 2026): the buzz is the byte-verified MG command (MainActivity.buzzStrap: opcode 19, payload 01 47 152 0 x 8 loop), one short buzz every 4 s until the double-tap; the guessed methods are gone. 0.43.7 (7 Nov 2026): the MG buzz repeats every 6 s until a live DOUBLE_TAP event (id 14) from the strap, "Stop buzz" or Snooze in the note, or the cap (1, 3, 5 or 10 min, default 5); the strap link is reopened and the buzz resent when it drops. 0.43.6 (6 Nov 2026): the alarm buzzes the MG, not the phone (MainActivity.buzzStrap; opens the strap link first when it is down, retries for about 30 s; the phone buzz is a separate option, off), Monday to Friday and Saturday-Sunday have their own times (setSlot), buzz length 1 / 3 / 5. 0.43.5: the reminder BUZZES the phone (own vibrator on the alarm stream, six pulses) and its note is high priority and silent; the Today page sets a morning and an evening time (setSimple). 0.42.0 (5 Nov 2026): reading reminders with their own times for work days and days off (and a one-tap "today is a work day / day off" override). Decode log 50.6 items 1 and 2:
+// FILE VERSION 0.43.9 (7 Nov 2026): the alarm ALWAYS fires at its time (the 3-hour skip after a reading is removed; it silenced the 13:01 test on 7 Nov). 0.43.8 (7 Nov 2026): the buzz is the byte-verified MG command (MainActivity.buzzStrap: opcode 19, payload 01 47 152 0 x 8 loop), one short buzz every 4 s until the double-tap; the guessed methods are gone. 0.43.7 (7 Nov 2026): the MG buzz repeats every 6 s until a live DOUBLE_TAP event (id 14) from the strap, "Stop buzz" or Snooze in the note, or the cap (1, 3, 5 or 10 min, default 5); the strap link is reopened and the buzz resent when it drops. 0.43.6 (6 Nov 2026): the alarm buzzes the MG, not the phone (MainActivity.buzzStrap; opens the strap link first when it is down, retries for about 30 s; the phone buzz is a separate option, off), Monday to Friday and Saturday-Sunday have their own times (setSlot), buzz length 1 / 3 / 5. 0.43.5: the reminder BUZZES the phone (own vibrator on the alarm stream, six pulses) and its note is high priority and silent; the Today page sets a morning and an evening time (setSimple). 0.42.0 (5 Nov 2026): reading reminders with their own times for work days and days off (and a one-tap "today is a work day / day off" override). Decode log 50.6 items 1 and 2:
 // morning 08:00-10:00 and evening 19:00-21:00 on the same day were the planned Run E; shifts differ, so every time can be changed or switched off.
-// The alarm goes to DayLogReceiver (no manifest change). A reminder is skipped when a reading was taken in the last 3 hours.
+// The alarm goes to DayLogReceiver (no manifest change). Since 0.43.9 an alarm is never skipped because of an earlier reading.
 
 import android.app.Activity;
 import android.app.AlarmManager;
@@ -133,14 +133,6 @@ final class EcgReminder {
         } catch (Throwable ignored) { }
     }
 
-    private static long newestReadingSec(Context c) {
-        try {
-            File dir = c.getExternalFilesDir(null); List<File> fs = NewLookActivity.listReportFiles(dir); long best = 0;
-            for (File f : fs) { String n = f.getName(); try { long t = Long.parseLong(n.substring("ecg_report_".length(), n.length() - ".html".length())); if (t > best) best = t; } catch (Exception ignored) { } }
-            return best;
-        } catch (Throwable t) { return 0; }
-    }
-
     /** Called by DayLogReceiver. */
     static void onAction(Context c0, String action) {
         Context c = c0.getApplicationContext();
@@ -157,10 +149,7 @@ final class EcgReminder {
             }
             if (A_FIRE.equals(action)) {
                 Cfg g = load(c);
-                if (g.on) {
-                    long last = newestReadingSec(c);
-                    if (last == 0 || System.currentTimeMillis() / 1000L - last > 3L * 3600L) post(c, false);
-                }
+                if (g.on) post(c, false);
                 schedule(c);
             }
         } catch (Throwable ignored) { }
@@ -194,7 +183,7 @@ final class EcgReminder {
         final Runnable[] rebuild = new Runnable[1];
         rebuild[0] = new Runnable() { @Override public void run() {
             col.removeAllViews();
-            col.addView(note(a, "Each time can be changed or switched off. Work days and days off have their own times; the override is for today only. A reminder is skipped when you took a reading in the last 3 hours.", 12));
+            col.addView(note(a, "Each time can be changed or switched off. Work days and days off have their own times; the override is for today only. An alarm always goes off at its time.", 12));
             col.addView(row(a, "Reminders", g.on ? "On" : "Off", new View.OnClickListener() { @Override public void onClick(View v) {
                 g.on = !g.on; save(a, g); schedule(a); if (g.on && Build.VERSION.SDK_INT >= 33) { try { a.requestPermissions(new String[] { "android.permission.POST_NOTIFICATIONS" }, 4108); } catch (Throwable ignored) { } } rebuild[0].run(); } }));
             Calendar today = Calendar.getInstance(); final int ymd = ymd(today);

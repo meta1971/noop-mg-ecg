@@ -1353,7 +1353,7 @@ public class HealthActivity extends Activity {
         t2.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { askNotify(); EcgReminder.post(getApplicationContext(), true); } });
         box.addView(t2);
         long[] nx = ReminderTime.next(System.currentTimeMillis(), java.util.TimeZone.getDefault(), EcgReminder.load(this));
-        TextView note = tv((nx == null ? "No alarm is on." : "Next: " + new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(new java.util.Date(nx[0])) + ".") + " An alarm is skipped if you took a reading in the last 3 hours. Double-tap the MG to stop the buzz, or use Stop buzz or Snooze 30 min in the note.", 11, MUT, 400);
+        TextView note = tv((nx == null ? "No alarm is on." : "Next: " + new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(new java.util.Date(nx[0])) + ".") + " An alarm always goes off at its time. Double-tap the MG to stop the buzz, or use Stop buzz or Snooze 30 min in the note.", 11, MUT, 400);
         note.setLineSpacing(0, 1.2f); note.setPadding(0, dpi(14), 0, 0); box.addView(note);
         if (!EcgReminder.exactOk(this)) {
             TextView ex = tv("Exact times need \"Alarms & reminders\" allowed for this app: tap here.", 11, GOLD, 400); ex.setPadding(0, dpi(8), 0, 0);
