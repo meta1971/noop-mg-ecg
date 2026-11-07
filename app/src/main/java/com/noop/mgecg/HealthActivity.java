@@ -1347,7 +1347,7 @@ public class HealthActivity extends Activity {
         TextView lk = tv("MG link: " + (linked ? "connected" : "not connected now. At alarm time the app reconnects first (up to 30 s)."), 11, linked ? GREEN : MUT, 400);
         lk.setPadding(0, dpi(10), 0, 0); box.addView(lk);
         TextView t1 = tv("\u25b8  Test the MG buzz", 13, BLUE, 600); t1.setPadding(0, dpi(14), 0, dpi(2));
-        t1.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { testMgBuzz(0); } });
+        t1.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { testMgBuzz(); } });
         box.addView(t1);
         TextView t2 = tv("\u25b8  Send a test alarm now", 13, BLUE, 600); t2.setPadding(0, dpi(10), 0, dpi(2));
         t2.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { askNotify(); EcgReminder.post(getApplicationContext(), true); } });
@@ -1386,19 +1386,17 @@ public class HealthActivity extends Activity {
         r.addView(sw); box.addView(r);
     }
 
-    /** Tries the three candidate buzz commands one after the other and asks which one made the MG buzz; the one that did is kept for the alarms. */
-    private void testMgBuzz(final int method) {
-        if (!MainActivity.buzzStrap(method)) { android.widget.Toast.makeText(this, "The MG is not connected now. Press Sync now on the Today page, wait a few seconds and try again.", android.widget.Toast.LENGTH_LONG).show(); return; }
-        android.widget.Toast.makeText(this, "Buzz method " + (method + 1) + " of 3 sent. Watch your MG.", android.widget.Toast.LENGTH_SHORT).show();
+    /** Sends one short buzz to the MG (byte-verified command, OpenStrap) and asks whether it buzzed. */
+    private void testMgBuzz() {
+        if (!MainActivity.buzzStrap(1)) { android.widget.Toast.makeText(this, "The MG is not connected now. Press Sync now on the Today page, wait a few seconds and try again.", android.widget.Toast.LENGTH_LONG).show(); return; }
+        android.widget.Toast.makeText(this, "Buzz sent. Watch your MG.", android.widget.Toast.LENGTH_SHORT).show();
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() { @Override public void run() {
             if (isFinishing()) return;
-            new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("Did your MG buzz?").setMessage("Method " + (method + 1) + " of 3.")
-                .setPositiveButton("Yes", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) {
-                    getSharedPreferences("ecg_reminder", MODE_PRIVATE).edit().putInt("buzz_method", method).apply(); android.widget.Toast.makeText(HealthActivity.this, "Saved: the alarms use method " + (method + 1) + ".", android.widget.Toast.LENGTH_LONG).show(); } })
-                .setNegativeButton("No", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) {
-                    if (method < 2) testMgBuzz(method + 1); else android.widget.Toast.makeText(HealthActivity.this, "None of the 3 buzzed. Export the data and send it to me: the strap's replies are in the log.", android.widget.Toast.LENGTH_LONG).show(); } })
-                .setNeutralButton("Stop", null).show();
-        } }, 3500L);
+            new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("Did your MG buzz?")
+                .setPositiveButton("Yes", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) { android.widget.Toast.makeText(HealthActivity.this, "Good. The alarms use this buzz.", android.widget.Toast.LENGTH_LONG).show(); } })
+                .setNegativeButton("No", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) { android.widget.Toast.makeText(HealthActivity.this, "No buzz. Export the data and send it to me: the strap's reply is in the log.", android.widget.Toast.LENGTH_LONG).show(); } })
+                .show();
+        } }, 3000L);
     }
 
     private void askNotify() { if (android.os.Build.VERSION.SDK_INT >= 33) { try { requestPermissions(new String[] { "android.permission.POST_NOTIFICATIONS" }, 4108); } catch (Throwable ignored) { } } }

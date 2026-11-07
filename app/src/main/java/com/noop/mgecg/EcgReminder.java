@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.43.7 (7 Nov 2026): the MG buzz repeats every 6 s until a live DOUBLE_TAP event (id 14) from the strap, "Stop buzz" or Snooze in the note, or the cap (1, 3, 5 or 10 min, default 5); the strap link is reopened and the buzz resent when it drops. 0.43.6 (6 Nov 2026): the alarm buzzes the MG, not the phone (MainActivity.buzzStrap; opens the strap link first when it is down, retries for about 30 s; the phone buzz is a separate option, off), Monday to Friday and Saturday-Sunday have their own times (setSlot), buzz length 1 / 3 / 5. 0.43.5: the reminder BUZZES the phone (own vibrator on the alarm stream, six pulses) and its note is high priority and silent; the Today page sets a morning and an evening time (setSimple). 0.42.0 (5 Nov 2026): reading reminders with their own times for work days and days off (and a one-tap "today is a work day / day off" override). Decode log 50.6 items 1 and 2:
+// FILE VERSION 0.43.8 (7 Nov 2026): the buzz is the byte-verified MG command (MainActivity.buzzStrap: opcode 19, payload 01 47 152 0 x 8 loop), one short buzz every 4 s until the double-tap; the guessed methods are gone. 0.43.7 (7 Nov 2026): the MG buzz repeats every 6 s until a live DOUBLE_TAP event (id 14) from the strap, "Stop buzz" or Snooze in the note, or the cap (1, 3, 5 or 10 min, default 5); the strap link is reopened and the buzz resent when it drops. 0.43.6 (6 Nov 2026): the alarm buzzes the MG, not the phone (MainActivity.buzzStrap; opens the strap link first when it is down, retries for about 30 s; the phone buzz is a separate option, off), Monday to Friday and Saturday-Sunday have their own times (setSlot), buzz length 1 / 3 / 5. 0.43.5: the reminder BUZZES the phone (own vibrator on the alarm stream, six pulses) and its note is high priority and silent; the Today page sets a morning and an evening time (setSimple). 0.42.0 (5 Nov 2026): reading reminders with their own times for work days and days off (and a one-tap "today is a work day / day off" override). Decode log 50.6 items 1 and 2:
 // morning 08:00-10:00 and evening 19:00-21:00 on the same day were the planned Run E; shifts differ, so every time can be changed or switched off.
 // The alarm goes to DayLogReceiver (no manifest change). A reminder is skipped when a reading was taken in the last 3 hours.
 
@@ -70,21 +70,21 @@ final class EcgReminder {
     private static volatile boolean buzzing; private static volatile long buzzStart; private static volatile int buzzGen; private static volatile int buzzUsed;
     static int buzzMaxMin(Context c) { return sp(c).getInt("buzz_max_min", 5); }
 
-    /** Keeps buzzing the MG, one command every 6 s, until the strap is double-tapped (live event 14), Stop buzz or Snooze is pressed, or the cap is reached. The strap link is opened first when it is down and the buzz is sent again when it comes back. */
-    static void buzzMg(final Context c0, final int method) {
+    /** Keeps buzzing the MG, one short buzz every 4 s, until the strap is double-tapped (live event 14), Stop buzz or Snooze is pressed, or the cap is reached. The strap link is opened first when it is down and the buzz is sent again when it comes back. */
+    static void buzzMg(final Context c0) {
         final Context c = c0.getApplicationContext();
         final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
-        final int gen = ++buzzGen; buzzing = true; buzzStart = System.currentTimeMillis(); buzzUsed = method;
+        final int gen = ++buzzGen; buzzing = true; buzzStart = System.currentTimeMillis();
         final long cap = buzzStart + buzzMaxMin(c) * 60000L;
         final int[] fails = { 0 }; final boolean[] everSent = { false };
         new Runnable() { @Override public void run() {
             try {
                 if (gen != buzzGen || !buzzing) return;                              // stopped, or replaced by a newer alarm
                 if (System.currentTimeMillis() > cap) { stopBuzz(c, false); return; }
-                boolean sent = MainActivity.linkRunning() && MainActivity.buzzStrap(method);
+                boolean sent = MainActivity.linkRunning() && MainActivity.buzzStrap(1);
                 if (sent) everSent[0] = true;
                 else { if (fails[0] == 0) MainActivity.startLinkHost(c); if (++fails[0] == 8 && !everSent[0]) notReached(c); }
-                h.postDelayed(this, sent ? 6000L : 4000L);
+                h.postDelayed(this, 4000L);
             } catch (Throwable ignored) { }
         } }.run();
     }
@@ -92,7 +92,6 @@ final class EcgReminder {
     static void stopBuzz(Context c, boolean tapped) {
         boolean was = buzzing; buzzing = false; buzzGen++;
         try { NotificationManager nm = (NotificationManager) c.getApplicationContext().getSystemService(Context.NOTIFICATION_SERVICE); if (nm != null && was && tapped) nm.cancel(ID); } catch (Throwable ignored) { }      // a buzz that ran to its cap leaves the note
-        if (was && tapped && buzzUsed == 0) MainActivity.stopStrapBuzz();
     }
 
     /** MainActivity: a live DOUBLE_TAP event from the strap. Ends a buzz that has run for at least 1.5 s (so the tap that ends it is not the knock of the alarm starting). */
@@ -184,7 +183,7 @@ final class EcgReminder {
             .addAction(new Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_close_clear_cancel), "Stop buzz", stop).build());
         nm.notify(ID, b.build());
         if (buzzPhoneOn(c)) buzz(c);                       // the phone only when asked for
-        if (buzzMgOn(c)) buzzMg(c, buzzMethod(c));
+        if (buzzMgOn(c)) buzzMg(c);
     }
 
     // ------------------------------------------------------------------ settings screen (from Home)
