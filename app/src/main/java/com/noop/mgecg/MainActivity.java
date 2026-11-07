@@ -10804,6 +10804,31 @@ public class MainActivity extends NewLookActivity {
         return true;
     }
 
+    /**
+     * 0.43.6: buzz the MG (the alarm buzzes the strap, not the phone). Three candidate commands from the WHOOP command list, none of them decoded on this strap yet, so the payloads are INFERRED:
+     * method 0 RUN_ALARM (68, revision 1), 1 RUN_HAPTICS_PATTERN (79, revision 1, pattern 1), 2 RUN_HAPTIC_PATTERN_MAVERICK (19, revision 1, pattern 1). None is on the forbidden list.
+     * The Today > Alarms > "Test the MG buzz" asks which one buzzed and keeps it; the strap's reply and event 60 HAPTICS_FIRED are in the log (TX name=BUZZ_...). Returns false when the strap link is not ready.
+     */
+    static boolean buzzStrap(final int method) {
+        final MainActivity m = instance != null ? instance : headless;
+        if (m == null || m.gatt == null || m.cmdWrite == null) return false;
+        m.mainH.post(new Runnable() { @Override public void run() {
+            try {
+                if (method == 1) m.sendPuffinPayload(79, new byte[] { 0x01, 0x01 }, "BUZZ_RUN_HAPTICS_PATTERN(79)");
+                else if (method == 2) m.sendPuffinPayload(19, new byte[] { 0x01, 0x01 }, "BUZZ_RUN_HAPTIC_PATTERN_MAVERICK(19)");
+                else m.sendPuffinPayload(68, new byte[] { 0x01 }, "BUZZ_RUN_ALARM(68)");
+            } catch (Throwable ignored) { }
+        } });
+        return true;
+    }
+
+    /** 0.43.7: after a double-tap ends the alarm: DISABLE_ALARM (69), already sent by the app on this strap before, so a RUN_ALARM buzz cannot stay armed. */
+    static void stopStrapBuzz() {
+        final MainActivity m = instance != null ? instance : headless;
+        if (m == null || m.gatt == null || m.cmdWrite == null) return;
+        m.mainH.post(new Runnable() { @Override public void run() { try { m.sendPuffinPayload(69, new byte[] { 0x01 }, "BUZZ_STOP_DISABLE_ALARM(69)"); } catch (Throwable ignored) { } } });
+    }
+
     static String deviceSettingsText() {
         StringBuilder s = new StringBuilder();
         for (String k : DEVICE_KEYS) { String v = deviceSettings.get(k); s.append(k).append(" = ").append(v == null ? "no reply" : v).append('\n'); }
@@ -11137,6 +11162,7 @@ public class MainActivity extends NewLookActivity {
                 final long stopTs = Protocol.u32le(payload, 1);
                 mainH.post(() -> onStrapEcgSessionStopEvent(stopTs));
             }
+            if (id == 14 && !pullAckActive) mainH.post(() -> EcgReminder.onStrapTap(MainActivity.this));      // 0.43.7: a live double-tap on the strap ends the alarm buzz
             StringBuilder sb = new StringBuilder("EVENT id=").append(id)
                     .append(" name=").append(eventName(id))
                     .append(" seq=").append(v[9] & 0xff)

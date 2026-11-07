@@ -1269,51 +1269,136 @@ public class HealthActivity extends Activity {
         }
     }
 
-    // ------------------------------------------------------------------ alarms (0.43.5)
-    /** A morning and an evening alarm: the phone buzzes and a note offers Take ECG or Snooze 30 min. The times are the reading reminders of the You tab (set here, they apply to work days and days off alike). */
+    // ------------------------------------------------------------------ alarms (0.43.6)
+    /** One small row on the Today page; everything is set inside the sheet it opens. The alarm buzzes the MG, not the phone. */
     private View alarmCard() {
-        LinearLayout c = card(16);
-        c.addView(caps("ALARMS"));
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
-        c.addView(box, lp(-1, -2, 2));
-        fillAlarmRows(box);
+        LinearLayout c = card(12);
+        LinearLayout r = hrow();
+        LinearLayout left = new LinearLayout(this); left.setOrientation(LinearLayout.VERTICAL);
+        left.addView(tv("Alarms", 14, INK, 600));
+        ReminderTime.Cfg g = EcgReminder.load(this);
+        String sub;
+        if (!g.on) sub = "Off. Set a morning and an evening buzz for your MG.";
+        else {
+            long[] nx = ReminderTime.next(System.currentTimeMillis(), java.util.TimeZone.getDefault(), g);
+            sub = nx == null ? "On" : "Next: " + new java.text.SimpleDateFormat("EEE HH:mm", Locale.UK).format(new java.util.Date(nx[0])) + "  \u00b7  buzzes your MG";
+        }
+        left.addView(tv(sub, 11, MUT, 400), lp(-2, -2, 2));
+        r.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView btn = HeartGraph.pill(this, "Set", 0x1A2FA8F0, BLUE);
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-2, -2); bp.leftMargin = dpi(10); r.addView(btn, bp);
+        c.addView(r);
+        View.OnClickListener open = new View.OnClickListener() { @Override public void onClick(View v) { openAlarmSheet(); } };
+        c.setOnClickListener(open); btn.setOnClickListener(open);
         return c;
     }
 
-    private void fillAlarmRows(final LinearLayout box) {
+    private android.app.Dialog alarmDlg;
+
+    private void openAlarmSheet() {
+        try {
+            final LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+            fillAlarmSheet(box);
+            final android.app.Dialog d = new android.app.Dialog(this);
+            alarmDlg = d;
+            d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+            LinearLayout outer = card(18); outer.setBackground(glass(this, 26));
+            LinearLayout hd = hrow();
+            hd.addView(tv("Alarms", 22, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView done = tv("Done", 15, BLUE, 600); done.setPadding(dpi(12), dpi(8), dpi(4), dpi(8));
+            done.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { d.dismiss(); } });
+            hd.addView(done);
+            outer.addView(hd);
+            ScrollView sv = new ScrollView(this); sv.setVerticalScrollBarEnabled(false); sv.addView(box, new ViewGroup.LayoutParams(-1, -2));
+            outer.addView(sv, lp(-1, -2, 8));
+            d.setContentView(outer);
+            d.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() { @Override public void onDismiss(android.content.DialogInterface x) { alarmDlg = null; try { refreshAlarmCardSoon(); } catch (Throwable ignored) { } } });
+            android.view.Window w = d.getWindow();
+            if (w != null) { w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0)); w.setLayout(-1, -2); w.setGravity(Gravity.BOTTOM); }
+            d.show();
+        } catch (Throwable t) { android.widget.Toast.makeText(this, "Could not open the alarms: " + t.getMessage(), android.widget.Toast.LENGTH_LONG).show(); }
+    }
+
+    /** The Today page is rebuilt so the small row shows the new next alarm. */
+    private void refreshAlarmCardSoon() { try { if (tab == 0) render(); } catch (Throwable ignored) { } }
+
+    private void fillAlarmSheet(final LinearLayout box) {
         box.removeAllViews();
         final ReminderTime.Cfg g = EcgReminder.load(this);
-        final boolean work = ReminderTime.workDay(g, java.util.Calendar.getInstance());
-        for (int k = 0; k < 2; k++) {
-            final int part = k; final int m = g.t[(work ? 0 : 2) + k]; final boolean on = m >= 0;
-            LinearLayout r = hrow(); r.setPadding(0, dpi(12), 0, dpi(2));
-            LinearLayout left = new LinearLayout(this); left.setOrientation(LinearLayout.VERTICAL);
-            left.addView(tv(k == 0 ? "Morning" : "Evening", 14, INK, 400));
-            left.addView(tv(on ? "Buzz, then Take ECG or Snooze" : "Off", 11, MUT, 400), lp(-2, -2, 2));
-            r.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
-            TextView time = tv(ReminderTime.hhmm(on ? m : (k == 0 ? 8 * 60 + 30 : 19 * 60 + 30)), 26, on ? INK : MUT, 300);
-            time.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
-                int cur = on ? m : (part == 0 ? 8 * 60 + 30 : 19 * 60 + 30);
-                new android.app.TimePickerDialog(HealthActivity.this, new android.app.TimePickerDialog.OnTimeSetListener() { @Override public void onTimeSet(android.widget.TimePicker tp, int hh, int mm) {
-                    EcgReminder.setSimple(HealthActivity.this, part, hh * 60 + mm); askNotify(); fillAlarmRows(box); } }, cur / 60, cur % 60, true).show(); } });
-            r.addView(time);
-            TextView sw = HeartGraph.pill(this, on ? "On" : "Off", on ? 0x1A2EE6A8 : 0x0DFFFFFF, on ? 0xFF2EE6A8 : MUT);
-            sw.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
-                EcgReminder.setSimple(HealthActivity.this, part, on ? -1 : (part == 0 ? 8 * 60 + 30 : 19 * 60 + 30)); if (!on) askNotify(); fillAlarmRows(box); } });
-            LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-2, -2); sp.leftMargin = dpi(12); r.addView(sw, sp);
-            box.addView(r);
-        }
+        box.addView(caps("MONDAY TO FRIDAY"), lp(-2, -2, 14));
+        alarmRow(box, g, "Morning", 0); alarmRow(box, g, "Evening", 1);
+        box.addView(caps("SATURDAY AND SUNDAY"), lp(-2, -2, 18));
+        alarmRow(box, g, "Morning", 2); alarmRow(box, g, "Evening", 3);
+        box.addView(caps("THE BUZZ"), lp(-2, -2, 18));
+        final android.content.SharedPreferences ep = getSharedPreferences("ecg_reminder", MODE_PRIVATE);
+        switchRow(box, "Buzz the MG", ep.getBoolean("buzz_mg", true), "buzz_mg", ep, true);
+        LinearLayout lr = hrow(); lr.setPadding(0, dpi(12), 0, dpi(2));
+        LinearLayout lleft = new LinearLayout(this); lleft.setOrientation(LinearLayout.VERTICAL);
+        lleft.addView(tv("Keep buzzing for up to", 14, INK, 400)); lleft.addView(tv("It stops when you double-tap the MG", 11, MUT, 400), lp(-2, -2, 2));
+        lr.addView(lleft, new LinearLayout.LayoutParams(0, -2, 1f));
+        int mins = ep.getInt("buzz_max_min", 5);
+        TextView lv = HeartGraph.pill(this, mins + " min  \u25be", 0x0DFFFFFF, INK);
+        lv.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("Keep buzzing for up to").setItems(new String[] { "1 min", "3 min", "5 min", "10 min" }, new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface dd, int w) {
+                ep.edit().putInt("buzz_max_min", w == 0 ? 1 : w == 1 ? 3 : w == 2 ? 5 : 10).apply(); fillAlarmSheet(box); } }).show(); } });
+        lr.addView(lv); box.addView(lr);
+        switchRow(box, "Also buzz this phone", ep.getBoolean("buzz_phone", false), "buzz_phone", ep, false);
+        boolean linked = MainActivity.linkRunning();
+        TextView lk = tv("MG link: " + (linked ? "connected" : "not connected now. At alarm time the app reconnects first (up to 30 s)."), 11, linked ? GREEN : MUT, 400);
+        lk.setPadding(0, dpi(10), 0, 0); box.addView(lk);
+        TextView t1 = tv("\u25b8  Test the MG buzz", 13, BLUE, 600); t1.setPadding(0, dpi(14), 0, dpi(2));
+        t1.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { testMgBuzz(0); } });
+        box.addView(t1);
+        TextView t2 = tv("\u25b8  Send a test alarm now", 13, BLUE, 600); t2.setPadding(0, dpi(10), 0, dpi(2));
+        t2.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { askNotify(); EcgReminder.post(getApplicationContext(), true); } });
+        box.addView(t2);
         long[] nx = ReminderTime.next(System.currentTimeMillis(), java.util.TimeZone.getDefault(), EcgReminder.load(this));
-        TextView note = tv(nx == null ? "No alarm is on. Tap a time to set it." : "Next: " + new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(new java.util.Date(nx[0])) + ". Skipped if you took a reading in the last 3 hours.", 11, MUT, 400);
-        note.setPadding(0, dpi(10), 0, 0); box.addView(note);
+        TextView note = tv((nx == null ? "No alarm is on." : "Next: " + new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(new java.util.Date(nx[0])) + ".") + " An alarm is skipped if you took a reading in the last 3 hours. Double-tap the MG to stop the buzz, or use Stop buzz or Snooze 30 min in the note.", 11, MUT, 400);
+        note.setLineSpacing(0, 1.2f); note.setPadding(0, dpi(14), 0, 0); box.addView(note);
         if (!EcgReminder.exactOk(this)) {
-            TextView ex = tv("Exact times need \"Alarms & reminders\" allowed for this app: tap here.", 11, GOLD, 400); ex.setPadding(0, dpi(6), 0, 0);
+            TextView ex = tv("Exact times need \"Alarms & reminders\" allowed for this app: tap here.", 11, GOLD, 400); ex.setPadding(0, dpi(8), 0, 0);
             ex.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { try { startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:" + getPackageName()))); } catch (Throwable ignored) { } } });
             box.addView(ex);
         }
-        TextView test = tv("\u25b8  Test the buzz", 12, BLUE, 600); test.setPadding(0, dpi(12), 0, dpi(2));
-        test.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { askNotify(); EcgReminder.post(getApplicationContext(), true); } });
-        box.addView(test);
+    }
+
+    private void alarmRow(final LinearLayout box, ReminderTime.Cfg g, String label, final int slot) {
+        final int m = g.t[slot]; final boolean on = m >= 0; final int def = new ReminderTime.Cfg().t[slot];
+        LinearLayout r = hrow(); r.setPadding(0, dpi(10), 0, dpi(2));
+        r.addView(tv(label, 14, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView time = tv(ReminderTime.hhmm(on ? m : def), 26, on ? INK : MUT, 300);
+        time.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            int cur = on ? m : def;
+            new android.app.TimePickerDialog(HealthActivity.this, new android.app.TimePickerDialog.OnTimeSetListener() { @Override public void onTimeSet(android.widget.TimePicker tp, int hh, int mm) {
+                EcgReminder.setSlot(HealthActivity.this, slot, hh * 60 + mm); askNotify(); fillAlarmSheet(box); } }, cur / 60, cur % 60, true).show(); } });
+        r.addView(time);
+        TextView sw = HeartGraph.pill(this, on ? "On" : "Off", on ? 0x1A2EE6A8 : 0x0DFFFFFF, on ? 0xFF2EE6A8 : MUT);
+        sw.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { EcgReminder.setSlot(HealthActivity.this, slot, on ? -1 : def); if (!on) askNotify(); fillAlarmSheet(box); } });
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-2, -2); sp.leftMargin = dpi(12); r.addView(sw, sp);
+        box.addView(r);
+    }
+
+    private void switchRow(final LinearLayout box, String label, final boolean on, final String key, final android.content.SharedPreferences ep, final boolean dflt) {
+        LinearLayout r = hrow(); r.setPadding(0, dpi(12), 0, dpi(2));
+        r.addView(tv(label, 14, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView sw = HeartGraph.pill(this, on ? "On" : "Off", on ? 0x1A2EE6A8 : 0x0DFFFFFF, on ? 0xFF2EE6A8 : MUT);
+        sw.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { ep.edit().putBoolean(key, !on).apply(); fillAlarmSheet(box); } });
+        r.addView(sw); box.addView(r);
+    }
+
+    /** Tries the three candidate buzz commands one after the other and asks which one made the MG buzz; the one that did is kept for the alarms. */
+    private void testMgBuzz(final int method) {
+        if (!MainActivity.buzzStrap(method)) { android.widget.Toast.makeText(this, "The MG is not connected now. Press Sync now on the Today page, wait a few seconds and try again.", android.widget.Toast.LENGTH_LONG).show(); return; }
+        android.widget.Toast.makeText(this, "Buzz method " + (method + 1) + " of 3 sent. Watch your MG.", android.widget.Toast.LENGTH_SHORT).show();
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() { @Override public void run() {
+            if (isFinishing()) return;
+            new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("Did your MG buzz?").setMessage("Method " + (method + 1) + " of 3.")
+                .setPositiveButton("Yes", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) {
+                    getSharedPreferences("ecg_reminder", MODE_PRIVATE).edit().putInt("buzz_method", method).apply(); android.widget.Toast.makeText(HealthActivity.this, "Saved: the alarms use method " + (method + 1) + ".", android.widget.Toast.LENGTH_LONG).show(); } })
+                .setNegativeButton("No", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) {
+                    if (method < 2) testMgBuzz(method + 1); else android.widget.Toast.makeText(HealthActivity.this, "None of the 3 buzzed. Export the data and send it to me: the strap's replies are in the log.", android.widget.Toast.LENGTH_LONG).show(); } })
+                .setNeutralButton("Stop", null).show();
+        } }, 3500L);
     }
 
     private void askNotify() { if (android.os.Build.VERSION.SDK_INT >= 33) { try { requestPermissions(new String[] { "android.permission.POST_NOTIFICATIONS" }, 4108); } catch (Throwable ignored) { } } }
