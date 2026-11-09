@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.45.0-pro";
+    static final String VERSION = "0.45.1-pro";
     static final int REST = 0, RUN = 1, DONE = 2;
     private static final int BLUE = HealthViews.BLUE, INK = HealthViews.INK, MUT = HealthViews.MUT, GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE, VIOLET = HealthViews.VIOLET, DARK = 0xFF05131E;
 
@@ -482,7 +482,7 @@ final class EcgPage {
         if (P != null && P.unlocked && P.mean != null && P.iv != null) {
             ProAnalysis.Iv v = P.iv;
             bankView.set(P.mean); bankView.setVisibility(View.VISIBLE);
-            bankNote.setText(String.format(Locale.UK, "Your own average beat from %,d matching beats. QRS %.0f ms (8 %% slope rule on a 100 Hz low-pass), R wave %.0f / %.0f / %.0f ms wide at 50 / 25 / 10 %% of its height. R %.0f uV, Q %.0f uV, S %.0f uV, T %.0f uV%s. The two random halves agree in the QRS (%.2f) and not in the quiet stretch (%.2f). Nothing above 100 Hz is claimed (decode log 134.1). Kept on this phone; Send does not include it.",
+            bankNote.setText(String.format(Locale.UK, "Your own average beat from %,d matching beats. QRS %.0f ms (4 %% slope rule on a 40 Hz low-pass), R wave %.0f / %.0f / %.0f ms wide at 50 / 25 / 10 %% of its height. R %.0f uV, Q %.0f uV, S %.0f uV, T %.0f uV%s. The two random halves agree in the QRS (%.2f) and not in the quiet stretch (%.2f). Nothing above 100 Hz is claimed (decode log 134.1). Kept on this phone; Send does not include it.",
                 P.kept, v.qrs, v.rW50, v.rW25, v.rW10, v.rAmp, Double.isNaN(P.qTrough) ? Double.NaN : P.qTrough, v.sAmp, v.tAmp, v.qtValid ? String.format(Locale.UK, ", QT %.0f ms", v.qt) : "", P.splitQrs, P.splitCtl));
         } else {
             bankView.setVisibility(View.GONE);

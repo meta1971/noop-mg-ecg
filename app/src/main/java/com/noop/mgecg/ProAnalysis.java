@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.45.1 (9 Nov 2026): QRS delineation back on the 40 Hz low-pass with a 4 % slope rule (was 5 %; 0.45.0 tried 100 Hz and 8 %): on 180 LUDB records (500 Hz, lead I, cardiologists' marks) 40 Hz / 4 % had the lowest error (QRS onset +1.4 ms mean, 9.2 MAE; offset -0.1, 9.5), 100 Hz / 8 % the highest (+8.8 / -10.9); the R wave width at 50 / 25 / 10 % of the peak stays on a 100 Hz trace.
 // FILE VERSION 0.45.0 (8 Nov 2026): QRS delineation on a 100 Hz low-pass with the 8 % slope rule (was 40 Hz, 5 %) and the R wave width at 50 / 25 / 10 % of the peak (a); own beat selection by template correlation and amplitude instead of the strap's quality 3 (e);
 // beat timing from a 25 Hz low-passed stream with parabolic apex (g); MCR v1 beat pipeline: median-cascade baseline for detection, rho scoring, split-pair merging, step windows (h, ProMcr); the 40 best beats per reading for the personal beat bank (d).
 // FILE VERSION 0.23.0 (28 Oct 2026): the 500 Hz analysis behind the professional report: beats, mean beat, intervals with bootstrap confidence ranges, variability,
@@ -16,13 +17,14 @@ final class ProAnalysis {
     static final int FS = 500, PRE = 250, POST = 400, QW0 = PRE - 20, QW1 = PRE + 30;
     static final double UV = 0.0621;
     static final boolean OWN_DEFAULT = true;                    // 0.45.0 (e): beats are chosen by template correlation and amplitude; false = the strap's quality-3 seconds only, as before. When the own selection leaves fewer than 30 beats (45 s guided runs: 9 of 66 real readings did on 9 Nov) analyse() runs the old selection instead and sets Result.oldSelection
-    static final int QRS_LP_HZ = 100, QRS_MIN_BEATS = 100;     // 0.45.0 (a)
-    static final double QRS_SLOPE = 0.08;
+    static final int QRS_LP_HZ = 40, QRS_W_LP_HZ = 100, QRS_MIN_BEATS = 100;     // 0.45.1: delineation on a 40 Hz low-pass (0.45.0 used 100 Hz, which was noisier and farther from the cardiologists on LUDB at 500 Hz); the R wave widths and nothing else use the 100 Hz trace
+    static final double QRS_SLOPE = 0.04, QRS_SLOPE_ALT = 0.08;      // 0.45.1: 4 % (QT Database: 3-5 % agree best with the first cardiologist, 8 % is the farthest); the 8 % width stays as a second figure
     static final double[][] BANDS = {{0, 20}, {20, 40}, {40, 60}, {60, 80}, {80, 100}, {100, 130}, {130, 160}, {160, 200}, {200, 250}};
 
     static final class Iv {
         double sAmp = Double.NaN;      // 0.26.1: S-wave depth, the lowest point from the R apex to 80 ms after it, against the PR baseline
         double qrsOn, qrsOff, qrs, base, rAmp, st = Double.NaN, tAmp = Double.NaN, tPeak = Double.NaN, tEnd = Double.NaN, pAmp = Double.NaN, pPeak = Double.NaN, pOn = Double.NaN, pOff = Double.NaN, pr = Double.NaN, pDur = Double.NaN;
+        double qrsAlt = Double.NaN;                                                      // 0.45.1: QRS width by the 8 % rule (the 0.45.0 figure)
         double qt = Double.NaN, qtcB = Double.NaN, qtcF = Double.NaN, qtcFr = Double.NaN; boolean qtValid;
         double rW50 = Double.NaN, rW25 = Double.NaN, rW10 = Double.NaN;      // 0.45.0 (a): width of the R wave (ms) at 50 / 25 / 10 % of its height above the PR baseline, on the 100 Hz low-passed average
         int nBeats; boolean qrsIndicative;                                   // beats in the average; the slope-rule QRS width is only indicative under QRS_MIN_BEATS beats
@@ -452,7 +454,7 @@ final class ProAnalysis {
     }
 
     static Iv delineate(double[] avgIn, double rrS) { return delineate(avgIn, rrS, QRS_MIN_BEATS); }
-    /** 0.45.0 (a): no 40 Hz low-pass (it widened the QRS to 94 ms; the unfiltered 8 % rule gives about 70 ms, decode log 50.5 QRS WIDTH): a 100 Hz low-pass and the 8 % slope rule, meant for averages of QRS_MIN_BEATS beats or more.
+    /** 0.45.1: a 40 Hz low-pass and the 4 % slope rule (0.45.0 tried 100 Hz and 8 %: noisier, and 8 % was the farthest from the cardiologists on LUDB and on the QT Database; qrsAlt keeps the 8 % width as a second figure), meant for averages of QRS_MIN_BEATS beats or more.
      *  With fewer beats (the 20-beat QT windows) the slope noise raises the threshold (4 x the robust slope noise before the P wave) and the width is flagged indicative. P and T keep their own 20 and 15 Hz filters. */
     static Iv delineate(double[] avgIn, double rrS, int nBeats) {
         double[] a = ProDsp.filtfilt(avgIn, ProDsp.butterLow(4, QRS_LP_HZ, FS)); int r = PRE; double thrFrac = QRS_SLOPE;
@@ -465,9 +467,12 @@ final class ProAnalysis {
         while (i > r - sm(120)) { if (act[i]) { on = i; g = 0; } else { g++; if (g > gap) break; } i--; }
         i = r; g = 0; int off = r;
         while (i < r + sm(120)) { if (act[i]) { off = i; g = 0; } else { g++; if (g > gap) break; } i++; }
+        double thrAlt = QRS_SLOPE_ALT * dm; if (nBeats < QRS_MIN_BEATS) thrAlt = Math.max(thrAlt, thr);
+        int on8 = r, off8 = r; { int ii = r, gg = 0; while (ii > r - sm(120)) { if (Math.abs(d[ii]) > thrAlt) { on8 = ii; gg = 0; } else { gg++; if (gg > gap) break; } ii--; } ii = r; gg = 0; while (ii < r + sm(120)) { if (Math.abs(d[ii]) > thrAlt) { off8 = ii; gg = 0; } else { gg++; if (gg > gap) break; } ii++; } }
         int b0 = on - sm(30), b1 = on - sm(10); double base = (b1 > b0 && b0 >= 0) ? ProDsp.median(a, b0, b1) : ProDsp.median(a, Math.max(0, on - sm(30)), on);
-        Iv o = new Iv(); o.qrsOn = ms(on - r); o.qrsOff = ms(off - r); o.qrs = ms(off - on); o.base = base; o.rAmp = a[r] - base; o.nBeats = nBeats; o.qrsIndicative = nBeats < QRS_MIN_BEATS;
-        o.rW50 = rWidth(a, r, base, 0.50); o.rW25 = rWidth(a, r, base, 0.25); o.rW10 = rWidth(a, r, base, 0.10);
+        Iv o = new Iv(); o.qrsOn = ms(on - r); o.qrsOff = ms(off - r); o.qrs = ms(off - on); o.base = base; o.rAmp = a[r] - base; o.nBeats = nBeats; o.qrsIndicative = nBeats < QRS_MIN_BEATS; o.qrsAlt = ms(off8 - on8);
+        double[] aw = ProDsp.filtfilt(avgIn, ProDsp.butterLow(4, QRS_W_LP_HZ, FS));      // the R wave widths are read on the 100 Hz trace
+        o.rW50 = rWidth(aw, r, base, 0.50); o.rW25 = rWidth(aw, r, base, 0.25); o.rW10 = rWidth(aw, r, base, 0.10);
         { double mn = a[r]; for (int k = r; k <= Math.min(a.length - 1, r + sm(80)); k++) mn = Math.min(mn, a[k]); o.sAmp = mn - base; }
         int j = off + sm(60); if (j + sm(10) < a.length) { double s = 0; int c = 0; for (int k = j - sm(10); k < j + sm(10); k++) { s += a[k]; c++; } o.st = s / c - base; }
         int t0 = off + sm(60), t1 = Math.min(a.length - 1, r + (int) (Math.min(0.55 * rrS, 0.5) * FS));
