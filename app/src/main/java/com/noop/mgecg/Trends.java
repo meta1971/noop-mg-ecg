@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.49.0 (9 Nov 2026): the screen moved to TrendsScreen; this file keeps the night helpers (allNights, series, stats, weekSummary) and the smooth curve used by several screens.
 // FILE VERSION 0.12.0 (26 Oct): trends over 7, 30 and 90 nights. Research only.
 
 import android.app.Activity;
@@ -117,87 +118,8 @@ final class Trends {
     }
 
     // ------------------------------------------------------------------ screen
-    static void show(final Activity a, final HealthModel.Data d) {
-        final List<TodayModel.NightStat> all = allNights(d);
-        final Dialog dlg = new Dialog(a, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
-        dlg.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        LinearLayout root = new LinearLayout(a);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(BG);
-        int pad = Math.round(dp(a, 16));
-        root.setPadding(pad, Math.round(dp(a, 30)), pad, Math.round(dp(a, 14)));
-        LinearLayout top = new LinearLayout(a);
-        top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        top.addView(HeartGraph.label(a, "Trends", 22, INK, 300));
-        top.addView(new View(a), new LinearLayout.LayoutParams(0, 1, 1f));
-        TextView close = HeartGraph.pill(a, "Close", 0x1AFFFFFF, INK);
-        close.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { dlg.dismiss(); } });
-        top.addView(close);
-        root.addView(top);
-
-        final LinearLayout mchips = new LinearLayout(a);
-        mchips.setOrientation(LinearLayout.HORIZONTAL);
-        HorizontalScrollView hs = new HorizontalScrollView(a);
-        hs.setHorizontalScrollBarEnabled(false);
-        hs.addView(mchips);
-        root.addView(hs, HeartGraph.lp(a, -1, -2, 12));
-        final LinearLayout rchips = new LinearLayout(a);
-        rchips.setOrientation(LinearLayout.HORIZONTAL);
-        root.addView(rchips, HeartGraph.lp(a, -1, -2, 8));
-
-        final TextView summary = HeartGraph.label(a, "", 13, MUT, 400);
-        summary.setLineSpacing(0, 1.2f);
-        root.addView(summary, HeartGraph.lp(a, -1, -2, 10));
-        final TextView read = HeartGraph.label(a, "Touch the graph to read a night.", 13, INK, 400);
-        root.addView(read, HeartGraph.lp(a, -1, -2, 6));
-        final TrendView chart = new TrendView(a);
-        root.addView(chart, new LinearLayout.LayoutParams(-1, 0, 1f));
-        TextView note = HeartGraph.label(a, "One point per night. The shaded band is your usual range for the nights shown (average plus or minus one spread). Recovery is each night against the nights before it. HRV is from the wrist's optical intervals. Estimates, not a diagnosis.", 11, MUT, 400);
-        note.setLineSpacing(0, 1.2f);
-        root.addView(note, HeartGraph.lp(a, -1, -2, 8));
-        final TextView about = HeartGraph.label(a, "", 12.5f, INK, 400);              // 0.21.0: what the selected graph means
-        about.setLineSpacing(0, 1.25f);
-        root.addView(about, HeartGraph.lp(a, -1, -2, 8));
-
-        final Runnable[] redraw = new Runnable[1];
-        redraw[0] = new Runnable() {
-            @Override public void run() {
-                mchips.removeAllViews();
-                for (int i = 0; i < NAME.length; i++) {
-                    final int mi = i;
-                    TextView ch = HeartGraph.pill(a, NAME[i], i == metric ? COL[i] : 0x1AFFFFFF, i == metric ? 0xFF05131E : INK);
-                    ch.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { metric = mi; redraw[0].run(); } });
-                    LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(-2, -2);
-                    l.rightMargin = Math.round(dp(a, 8));
-                    mchips.addView(ch, l);
-                }
-                rchips.removeAllViews();
-                for (int i = 0; i < RANGE_N.length; i++) {
-                    final int ri = i;
-                    TextView ch = HeartGraph.pill(a, RANGE_LABEL[i], i == range ? BLUE : 0x1AFFFFFF, i == range ? 0xFF05131E : INK);
-                    ch.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { range = ri; redraw[0].run(); } });
-                    LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(-2, -2);
-                    l.rightMargin = Math.round(dp(a, 8));
-                    rchips.addView(ch, l);
-                }
-                double[] v = series(all, metric);
-                int to = v.length, from = Math.max(0, to - RANGE_N[range]);
-                chart.set(all, v, from, to, metric, new Readout2() { @Override public void show(String s) { read.setText(s); } });
-                double[] st = stats(v, from, to);
-                double last = Double.NaN;
-                for (int i = to - 1; i >= from; i--) if (!Double.isNaN(v[i])) { last = v[i]; break; }
-                if (st[2] == 0) summary.setText("No " + NAME[metric].toLowerCase(Locale.UK) + " numbers for these nights yet.");
-                else summary.setText("Latest " + fmt(metric, last) + "  \u00b7  average " + fmt(metric, st[0]) + "  \u00b7  usual " + fmt(metric, st[0] - st[1]) + " to " + fmt(metric, st[0] + st[1]) + "\n" + (int) st[2] + " of " + (to - from) + " nights have a value.\n" + (metric == 3 ? weekSummary(all, a.getSharedPreferences("today", Context.MODE_PRIVATE).getFloat("goal", 8.0f)) : ""));
-                read.setText("Touch the graph to read a night.");
-                about.setText(NAME[metric] + ": " + Explain.trend(NAME[metric]));
-            }
-        };
-        dlg.setContentView(root);
-        dlg.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
-        dlg.show();
-        redraw[0].run();
-    }
+    /** 0.49.0: the screen lives in TrendsScreen (personal baselines, nights and ECG readings side by side). */
+    static void show(final Activity a, final HealthModel.Data d) { TrendsScreen.show(a, d); }
 
     /** Slopes (y per x) of a monotone cubic through the points: no overshoot between neighbours. */
     static float[] tangents(float[] xs, float[] ys, int n) {
@@ -219,98 +141,5 @@ final class Trends {
         if (n == 2) { p.lineTo(xs[1], ys[1]); return; }
         float[] m = tangents(xs, ys, n);
         for (int i = 0; i < n - 1; i++) { float h = xs[i + 1] - xs[i]; p.cubicTo(xs[i] + h / 3f, ys[i] + m[i] * h / 3f, xs[i + 1] - h / 3f, ys[i + 1] - m[i + 1] * h / 3f, xs[i + 1], ys[i + 1]); }
-    }
-
-    interface Readout2 { void show(String s); }
-
-    // ------------------------------------------------------------------ the chart
-    static final class TrendView extends View {
-        private List<TodayModel.NightStat> nights;
-        private double[] v;
-        private int from, to, m;
-        private Readout2 readout;
-        private float touchX = -1f;
-
-        TrendView(Context c) { super(c); }
-
-        void set(List<TodayModel.NightStat> n, double[] vals, int f, int t, int metric, Readout2 r) { nights = n; v = vals; from = f; to = t; m = metric; readout = r; touchX = -1f; invalidate(); }
-
-        private float xOf(int i) {
-            int cnt = Math.max(1, to - from - 1);
-            return dp(getContext(), 14) + (getWidth() - dp(getContext(), 28)) * (i - from) / (float) cnt;
-        }
-
-        @Override public boolean onTouchEvent(MotionEvent e) {
-            if (v == null || to - from < 1) return true;
-            int a = e.getActionMasked();
-            if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE) {
-                getParent().requestDisallowInterceptTouchEvent(true);
-                touchX = e.getX();
-                int best = from; float bd = 1e9f;
-                for (int i = from; i < to; i++) { float dd = Math.abs(xOf(i) - touchX); if (dd < bd) { bd = dd; best = i; } }
-                touchX = xOf(best);
-                if (readout != null) {
-                    SimpleDateFormat f = new SimpleDateFormat("EEE d MMM", Locale.UK);
-                    readout.show(f.format(new Date(nights.get(best).bed * 1000L)) + "  \u00b7  " + fmt(m, v[best]));
-                }
-                invalidate();
-            }
-            return true;
-        }
-
-        @Override protected void onDraw(Canvas cv) {
-            if (v == null || to - from < 1) return;
-            Context c = getContext();
-            float w = getWidth(), h = getHeight(), ch = h - dp(c, 22);
-            double[] st = stats(v, from, to);
-            if (st[2] == 0) return;
-            double lo = 1e9, hi = -1e9;
-            for (int i = from; i < to; i++) if (!Double.isNaN(v[i])) { lo = Math.min(lo, v[i]); hi = Math.max(hi, v[i]); }
-            lo = Math.min(lo, st[0] - st[1]); hi = Math.max(hi, st[0] + st[1]);
-            if (m == 0) { lo = 0; hi = 100; }
-            else { double pad = Math.max((hi - lo) * 0.15, m == 3 ? 0.5 : m == 5 ? 0.2 : 1.0); lo -= pad; hi += pad; }
-            final double flo = lo, fhi = hi;
-            Paint g = paint(0x14FFFFFF); g.setStrokeWidth(dp(c, 1));
-            Paint tx = paint(MUT); tx.setTextSize(dp(c, 10)); tx.setTypeface(font(c, 400)); tx.setTextAlign(Paint.Align.RIGHT);
-            for (int k = 0; k < 5; k++) {
-                float y = ch * k / 4f;
-                cv.drawLine(0, y, w, y, g);
-                double val = fhi - (fhi - flo) * k / 4.0;
-                cv.drawText(String.format(Locale.UK, "%." + (m == 3 || m == 4 || m == 5 ? 1 : 0) + "f", val), w - dp(c, 2), y - dp(c, 3), tx);
-            }
-            float yb1 = (float) (ch * (1 - ((st[0] + st[1]) - flo) / (fhi - flo))), yb2 = (float) (ch * (1 - ((st[0] - st[1]) - flo) / (fhi - flo)));
-            cv.drawRoundRect(new RectF(0, Math.max(0, yb1), w, Math.min(ch, yb2)), dp(c, 6), dp(c, 6), paint(alpha(COL[m], 0.14f)));
-            Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
-            ln.setStyle(Paint.Style.STROKE); ln.setStrokeCap(Paint.Cap.ROUND); ln.setStrokeJoin(Paint.Join.ROUND); ln.setStrokeWidth(dp(c, 2.2f)); ln.setColor(COL[m]);
-            android.graphics.Path path = new android.graphics.Path();
-            // 0.29.1: smooth curve instead of straight peak-to-peak lines. Monotone cubic (Fritsch-Carlson): the curve never rises above or falls below the nights it joins.
-            // Over more than 10 nights the line also uses a light 1-2-1 average of neighbouring nights; the dots stay on the true values.
-            boolean avg = to - from > 10;
-            int i0 = from;
-            while (i0 < to) {
-                if (Double.isNaN(v[i0])) { i0++; continue; }
-                int i1 = i0; while (i1 < to && !Double.isNaN(v[i1])) i1++;
-                int n = i1 - i0; float[] xs = new float[n], ys = new float[n];
-                for (int k = 0; k < n; k++) {
-                    double val = v[i0 + k];
-                    if (avg && n > 2) { double l = v[i0 + Math.max(0, k - 1)], r = v[i0 + Math.min(n - 1, k + 1)]; val = 0.25 * l + 0.5 * val + 0.25 * r; }
-                    xs[k] = xOf(i0 + k); ys[k] = (float) (ch * (1 - (val - flo) / (fhi - flo)));
-                }
-                smoothPath(path, xs, ys, n);
-                i0 = i1;
-            }
-            cv.drawPath(path, ln);
-            for (int i = from; i < to; i++) {
-                if (Double.isNaN(v[i])) continue;
-                float x = xOf(i), y = (float) (ch * (1 - (v[i] - flo) / (fhi - flo)));
-                cv.drawCircle(x, y, dp(c, to - from > 40 ? 2.2f : 4f), paint(avg ? alpha(COL[m], 0.6f) : COL[m]));
-            }
-            tx.setTextAlign(Paint.Align.LEFT);
-            SimpleDateFormat f = new SimpleDateFormat("d MMM", Locale.UK);
-            cv.drawText(f.format(new Date(nights.get(from).bed * 1000L)), 0, h - dp(c, 5), tx);
-            tx.setTextAlign(Paint.Align.RIGHT);
-            cv.drawText(f.format(new Date(nights.get(to - 1).bed * 1000L)), w, h - dp(c, 5), tx);
-            if (touchX >= 0f) { Paint cur = paint(0x99FFFFFF); cur.setStrokeWidth(dp(c, 1)); cv.drawLine(touchX, 0, touchX, ch, cur); }
-        }
     }
 }

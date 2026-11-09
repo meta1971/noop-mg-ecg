@@ -31,6 +31,22 @@ final class ReadingNotes {
         return sb.toString();
     }
 
+    /** 0.49.0: every reading's notes in one pass (start second -> latest value of each key), for the Trends screen. Empty when there is no file or it is over 4 MB. */
+    static Map<Long, Map<String, String>> all(File dir) {
+        Map<Long, Map<String, String>> by = new HashMap<>();
+        if (dir == null) return by;
+        File f = new File(dir, "reading_notes.csv"); if (!f.exists() || f.length() > 4000000) return by;
+        try (BufferedReader br = new BufferedReader(new FileReader(f))) {
+            String ln; while ((ln = br.readLine()) != null) {
+                int a = ln.indexOf(','), b = ln.indexOf(',', a + 1); if (a < 1 || b < 0) continue;
+                long s; try { s = Long.parseLong(ln.substring(0, a)); } catch (NumberFormatException e) { continue; }
+                Map<String, String> m = by.get(s); if (m == null) { m = new HashMap<>(); by.put(s, m); }
+                m.put(ln.substring(a + 1, b), ln.substring(b + 1).trim());
+            }
+        } catch (Exception ignored) { }
+        return by;
+    }
+
     /** The latest value of every key noted for a reading that started within 30 s of tsSec (empty map when none). */
     static Map<String, String> forReading(File dir, long tsSec) {
         Map<String, String> out = new HashMap<>();
