@@ -15,7 +15,7 @@ final class ProAnalysis {
     private ProAnalysis() {}
     static final int FS = 500, PRE = 250, POST = 400, QW0 = PRE - 20, QW1 = PRE + 30;
     static final double UV = 0.0621;
-    static final boolean OWN_SELECTION = true;                  // 0.45.0 (e): beats are chosen by template correlation and amplitude; false = the strap's quality-3 seconds only, as before
+    static final boolean OWN_DEFAULT = true;                    // 0.45.0 (e): beats are chosen by template correlation and amplitude; false = the strap's quality-3 seconds only, as before. When the own selection leaves fewer than 30 beats (45 s guided runs: 9 of 66 real readings did on 9 Nov) analyse() runs the old selection instead and sets Result.oldSelection
     static final int QRS_LP_HZ = 100, QRS_MIN_BEATS = 100;     // 0.45.0 (a)
     static final double QRS_SLOPE = 0.08;
     static final double[][] BANDS = {{0, 20}, {20, 40}, {40, 60}, {60, 80}, {80, 100}, {100, 130}, {130, 160}, {160, 200}, {200, 250}};
@@ -54,6 +54,7 @@ final class ProAnalysis {
         double nrmssdMedian = Double.NaN; double rrMin, rrMax;
         double[] stripY; int[] stripPeaks; double stripStartS;
         double[] r17Mean; double r17Lag = Double.NaN, r17Height = Double.NaN, r17Width = Double.NaN;      // the filtered 100 Hz stream (R17) around the same beats, on a 2 ms grid from -300 ms
+        boolean oldSelection;                                                                         // 0.45.0: the own selection left under 30 beats, so the strap's quality-3 rule was used
         int mcrSteps, mcrMerged, mcrRejected, ownKept, ownDisturbed, ownNoisy, ownAmp, ownCorr;      // 0.45.0 (h): steps found, split pairs merged, detections under rho 0.6, and why beats were left out of the average
         double[][] bankBeats = new double[0][];                                                      // 0.45.0 (d): the 40 cleanest kept beats (full band, PRE + POST samples, uV), for the personal beat bank
         double[] r16Grid; double[] beatTimes;        // beat times (s from the start of the reading) from the 40 Hz low-passed signal with parabolic peak refinement; used to pair with the H10
@@ -88,6 +89,13 @@ final class ProAnalysis {
 
     /** 0.26.1: rejectUnix = strap seconds with heavy wrist rotation (from the stored motion record); they are left out of the clean stretches. */
     static Result analyse(byte[] bin, java.util.Set<Long> rejectUnix) {
+        Result r = analyseMode(bin, rejectUnix, OWN_DEFAULT);
+        if (r == null && OWN_DEFAULT && why.startsWith("only ") && why.contains("beats")) { Result r2 = analyseMode(bin, rejectUnix, false); if (r2 != null) { r2.oldSelection = true; return r2; } }
+        return r;
+    }
+
+    private static Result analyseMode(byte[] bin, java.util.Set<Long> rejectUnix, final boolean own) {
+        final boolean OWN_SELECTION = own;
         why = "";
         List<byte[]> fr = new ArrayList<>();
         List<byte[]> fr17 = new ArrayList<>();
