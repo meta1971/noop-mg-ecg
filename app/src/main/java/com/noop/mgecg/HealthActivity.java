@@ -1415,7 +1415,7 @@ public class HealthActivity extends Activity {
         int n = d == null ? 0 : d.readings.size();
         col.addView(head("ECG", n == 0 ? "Take your first reading" : "Ready for an ECG", null));
         col.addView(pillButton("Start an ECG", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), lp(-1, dpi(54), 16));
-        if (n == 0) col.addView(tv("Two fingers on the clasp, forearm on a table. About a minute is enough.", 14, INK, 400), lp(-2, -2, 14));
+        if (n == 0) col.addView(tv("Two fingers on the clasp, forearm on a table. A free reading runs about two and a half minutes: enough for a rhythm check.", 14, INK, 400), lp(-2, -2, 14));
         try {                                                              // the latest reading: the status card with Send, then the three rings (like the Today page)
             if (n > 0 && d.readings.get(0).file != null) {
                 final HealthModel.Reading r0 = d.readings.get(0);

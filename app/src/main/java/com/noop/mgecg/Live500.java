@@ -383,7 +383,10 @@ final class Live500 {
         LiveBands.beat(pendApex + 18);
     }
     static final double ACCEPT_FRAC = 0.45;                          // a beat candidate counts as a beat when its height is at least this fraction of the 90th percentile of the last 40 candidate heights (as the offline detector of decode log 50.4)
-    private static void proReset() { bN = 0; pkDone = 0; winNext = 0; wins.clear(); candN = 0; havePend = false; lastAccApex = Long.MIN_VALUE / 2; }
+    private static void proReset() { bN = 0; pkDone = 0; winNext = 0; wins.clear(); candN = 0; havePend = false; lastAccApex = Long.MIN_VALUE / 2; cleanBeatN = 0; }
+    /** 0.45.0 (c): beats whose window matches the running template (correlation 0.95 or more, R height 60 to 140 % of the template's). The live counter toward the clean-beat target; the same rule as the report's beat selection (e). */
+    private static volatile int cleanBeatN;
+    static int cleanBeats() { return cleanBeatN; }
 
     /** Lead-off block of the live frame (decode log 2b): median magnitude of the valid slots, about 80 at good contact. */
     private static void noteZ(byte[] f) {
@@ -444,6 +447,9 @@ final class Live500 {
                 int n = Math.min(wins.size(), 40); double[] tm = new double[w.length], col = new double[n];
                 for (int j = 0; j < w.length; j++) { for (int g = 0; g < n; g++) col[g] = wins.get(wins.size() - n + g)[j]; tm[j] = med(col); }
                 bOk[i] = corr(w, tm, PRE_W - 50, PRE_W + 225) >= DIM_GATE;
+                double tmx = 0; for (int j = PRE_W - 6; j <= PRE_W + 6; j++) tmx = Math.max(tmx, Math.abs(tm[j]));
+                double cq = corr(w, tm, PRE_W - 40, PRE_W + 60);      // the report's rule looks at the QRS (-80 to +120 ms), not at the T wave and the drift around it
+                if (cq >= 0.95 && tmx > 0 && Math.abs(mx) >= 0.6 * tmx && Math.abs(mx) <= 1.4 * tmx) cleanBeatN++;
             }
             wins.add(w); if (wins.size() > MAXWIN) wins.remove(0);
         }

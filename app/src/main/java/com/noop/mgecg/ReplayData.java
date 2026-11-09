@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.45.0 (8 Nov 2026): the trace of every stretch of 2 s or more is the MCR v1 trace (median-cascade baseline, decode log 137.2) low-passed at 40 Hz, and the beats are the MCR-validated detections (rho under 0.6 rejected, split pairs merged; ProMcr); shorter stretches keep the old filter.
 // FILE VERSION 0.44.0 (7 Nov 2026): the whole 500 Hz reading laid out for the replay on the result card (decode log 50.6 item 1, A3). Pure Java (no Android):
 // the live raw frames of the reading (live_raw bin, CRC-valid layout-16 frames) become a display trace in mV (the stored-R16 zero-phase 0.67-40 Hz + 50 Hz
 // notch filter of EcgWhoopSpec.improvedFilter, applied to every unbroken stretch of at least 1 s), the strap's quality byte (0-3) per sample, a class per
@@ -74,8 +75,17 @@ final class ReplayData {
         while (i < n) {
             if (Double.isNaN(uv[i])) { i++; continue; }
             int j = i; while (j < n && !Double.isNaN(uv[j])) j++;
-            if (j - i >= FS) { double[] z = EcgWhoopSpec.improvedFilter(Arrays.copyOfRange(uv, i, j)); for (int k = 0; k < z.length; k++) d.mv[i + k] = z[k] / 1000.0; }
-            if (j - i >= 4 * FS) { try { for (int p : EcgR16Analyzer.peaks(Arrays.copyOfRange(uv, i, j))) bl.add(i + p); } catch (Throwable ignored) { } }
+            if (j - i >= FS) {
+                double[] seg = Arrays.copyOfRange(uv, i, j), z = null, tr = null;
+                if (j - i >= 2 * FS) { try { tr = ProMcr.trace(seg); z = ProDsp.filtfilt(tr, ProDsp.butterLow(4, 40, FS)); } catch (Throwable e) { tr = null; z = null; } }
+                if (z == null) z = EcgWhoopSpec.improvedFilter(seg);
+                for (int k = 0; k < z.length; k++) d.mv[i + k] = z[k] / 1000.0;
+                if (j - i >= 4 * FS) {
+                    boolean done = false;
+                    if (tr != null) { try { for (int p : mcrBeats(tr)) bl.add(i + p); done = true; } catch (Throwable e) { done = false; } }
+                    if (!done) { try { for (int p : EcgR16Analyzer.peaks(seg)) bl.add(i + p); } catch (Throwable ignored) { } }
+                }
+            }
             i = j;
         }
         d.beats = new int[bl.size()]; d.beatAmp = new float[bl.size()];
@@ -92,6 +102,14 @@ final class ReplayData {
             d.secCls[s] = (byte) (sig < 20 ? 3 : qq >= 3 ? 0 : qq == 2 ? 1 : 2);
         }
         return d;
+    }
+
+    /** 0.45.0 (h): R detections on the MCR trace of one stretch (positive R, or the polarity flipped when the negative side is larger), scored against the stretch's own template; rho under 0.6 dropped, split pairs merged. */
+    static int[] mcrBeats(double[] tr) {
+        double hi = ProDsp.percentile(tr, 99.5), lo = -ProDsp.percentile(tr, 0.5); boolean inv = lo > hi;
+        double[] sg = tr; if (inv) { sg = new double[tr.length]; for (int k = 0; k < sg.length; k++) sg[k] = -tr[k]; }
+        int[] pk = ProAnalysis.detectR(sg);
+        return ProMcr.validate(sg, pk, null).idx;
     }
 
     /** Fixed vertical range for the whole replay in mV: {low, high}. The 0.3 and 99.7 percentiles of the usable samples with the live graph's margins (a slow contact transient is clipped, not scaled to). */

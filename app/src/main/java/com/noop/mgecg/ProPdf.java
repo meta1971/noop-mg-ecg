@@ -176,7 +176,7 @@ final class ProPdf {
         drawBeat(p, r, 36, 80, W - 72, 300, true);
         ProAnalysis.Iv v = r.iv; String[][] rows = {{"Measure", "Value (95 % range)", "Usual range", "Notes"},
             {"PR interval", ciTxt(v.pr, r.ci[1], "ms"), "120 to 200 ms", "P onset (15 % of the P height) to QRS onset; the P wave (" + f0(v.pAmp) + " uV) is small against " + f0(r.noiseSingle) + " uV of noise per beat."},
-            {"QRS duration", ciTxt(v.qrs, r.ci[0], "ms"), "under 120 ms", "Slope threshold 5 % of the maximum (70 ms at 8 %); method dependent."},
+            {"QRS duration", ciTxt(v.qrs, r.ci[0], "ms"), "under 120 ms", "Slope threshold 8 % of the steepest slope on a 100 Hz low-pass (0.45.0; the 40 Hz low-pass of earlier builds read about 94 ms); " + (v.qrsIndicative ? "indicative only: " + v.nBeats + " beats, fewer than 100. " : "average of " + v.nBeats + " beats. ") + "R wave width at 50 / 25 / 10 % of its height: " + f1(v.rW50) + " / " + f1(v.rW25) + " / " + f1(v.rW10) + " ms. Method dependent."},
             {"QT interval", ciTxt(v.qt, r.ci[2], "ms"), "depends on rate", "QRS onset to the tangent T end; repeatable, but absolute accuracy about 40 ms (QT Database test)."},
             {"QTc Fridericia", ciTxt(v.qtcF, r.ci[3], "ms"), "under 450 men, 460 women", "QT / R-R^(1/3); Bazett " + f0(v.qtcB) + " ms, Framingham " + f0(v.qtcFr) + " ms (the heart-rate recovery of 29 Oct favoured Fridericia and Framingham over Bazett)."},
             {"ST at J+60 ms", f0(v.st) + " uV", "about 0", "Relative to the end of the PR segment; the 0.5 Hz zero-phase filter matched a 0.05 Hz reference within 1 uV."},

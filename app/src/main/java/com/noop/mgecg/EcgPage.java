@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.44.0-pro";
+    static final String VERSION = "0.45.0-pro";
     static final int REST = 0, RUN = 1, DONE = 2;
     private static final int BLUE = HealthViews.BLUE, INK = HealthViews.INK, MUT = HealthViews.MUT, GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE, VIOLET = HealthViews.VIOLET, DARK = 0xFF05131E;
 
@@ -51,12 +51,17 @@ final class EcgPage {
     private ProgressLine cueLine;
     private Button start;
     private LinearLayout waveCardRef;
+    private LinearLayout bankCard; private TextView bankText, bankNote; private ProgressLine bankLine; private BankView bankView; private volatile boolean bankBusy; private static volatile BeatBank.Pooled bankPooled; private static volatile String bankSig = "";      // 0.45.0 (d): the personal beat bank card
     private LinearLayout replayCard; private ReplayView replayView; private volatile boolean replayLoading; private long replayFor = -1L;      // 0.44.0: replay of the finished reading
     private LinearLayout setupBody;
     private final TextView[] rowValues = new TextView[9];
     private ScrollView scrollRef;
-    private boolean holdFired, guidedThisRun, detailsOpen, readyCancelled;
-    private Runnable holdRun;
+    private boolean guidedThisRun, detailsOpen, readyCancelled;
+    // 0.45.0 (n): STOP has no hold. A tap starts a 3 s "Stopping, tap to cancel" bar; tapping the bar cancels. Guided, timed and auto stops click the button directly.
+    private LinearLayout stopBar; private TextView stopBarText; private ProgressLine stopLine; private boolean stopPending; private long stopT0, stopTapMs; private Runnable stopTick;
+    private static final long STOP_DELAY_MS = 3000L;
+    // 0.45.0 (b), (c): a free reading with auto-stop on ends when the fingers have been off for LIFT_STOP_S seconds once LIFT_MIN_CLEAN clean beats are in (and 60 s have passed); the auto-stop also waits for CLEAN_MIN clean beats (the two-half rhythm test needs 128); CLEAN_TARGET is the counter's goal (the beat bank).
+    private static final int LIFT_STOP_S = 3, LIFT_MIN_CLEAN = 64, CLEAN_MIN = 128, CLEAN_TARGET = 300;
     private int cueCount, mode = REST, runStopSec, readyLeft;
     private android.speech.tts.TextToSpeech tts; private volatile boolean ttsOk;
 
@@ -65,7 +70,7 @@ final class EcgPage {
     private long startMs, lastRestMs; private String cueLog = "", lastHr = "", nextId = "";
     private long cueUntil; private String lastCue = "";
     private LiveMeasure.Out lastOut; private double[] lastBands;
-    private int stopReason;           // 0 by hand, 1 auto-stop, 2 guided run
+    private int stopReason;           // 0 by hand, 1 auto-stop, 2 guided run, 3 fingers lifted (0.45.0)
     private String failures = "";
     private double lastDur;
 
@@ -110,20 +115,17 @@ final class EcgPage {
     /** Called once from NewLookActivity.styleEcgColumn. The old rows are hidden; the live graph and the START / STOP button are reused. */
     void build(FrameLayout container, LinearLayout col, View top, TextView status, TextView verdict, LinearLayout waveCard, LinearLayout stats, Button startBtn) {
         start = startBtn; waveCardRef = waveCard; colRef = col;
-        // while a reading runs, STOP needs a 1 s press-and-hold (a thumb brushing it while scrolling stopped the 22:00 reading on 5 Nov). Timed, guided and auto stops click the button directly.
+        // 0.45.0 (n): while a reading runs a tap on STOP does not stop at once: it starts a 3 s "Stopping, tap to cancel" bar (a thumb brushing the button while scrolling stopped the 22:00 reading on 5 Nov; the 1 s hold of 0.42.3 is gone). Timed, guided and auto stops click the button directly.
         start.setOnTouchListener(new View.OnTouchListener() { @Override public boolean onTouch(final View v, MotionEvent e) {
             if (!start.getText().toString().startsWith("STOP")) return false;
-            switch (e.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    holdFired = false; v.setPressed(true);
-                    holdRun = new Runnable() { @Override public void run() { holdFired = true; v.setPressed(false); try { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Throwable ignored) { } v.performClick(); } };
-                    h.postDelayed(holdRun, 1000L); return true;
-                case MotionEvent.ACTION_UP: case MotionEvent.ACTION_CANCEL:
-                    if (holdRun != null) h.removeCallbacks(holdRun); v.setPressed(false);
-                    if (!holdFired && e.getActionMasked() == MotionEvent.ACTION_UP) a.toast("Hold STOP for 1 second to end the reading");
-                    return true;
-                default: return true;
+            int act = e.getActionMasked();
+            if (act == MotionEvent.ACTION_DOWN) { v.setPressed(true); return true; }
+            if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                v.setPressed(false);
+                boolean inside = e.getX() >= 0 && e.getX() <= v.getWidth() && e.getY() >= 0 && e.getY() <= v.getHeight();      // a drag that ends outside the button is a scroll, not a tap
+                if (act == MotionEvent.ACTION_UP && inside && !stopPending) beginStop();
             }
+            return true;
         } });
         try { if (col.getParent() instanceof ScrollView) scrollRef = (ScrollView) col.getParent(); } catch (Throwable ignored) { }
         applyDisplayPrefs();
@@ -133,6 +135,11 @@ final class EcgPage {
             if (startBtn.getParent() != null) ((ViewGroup) startBtn.getParent()).removeView(startBtn);
             start.setAllCaps(false); start.setTextSize(17); start.setTypeface(HealthViews.font(a, 600)); start.setTextColor(DARK);
             bar = new LinearLayout(a); bar.setOrientation(LinearLayout.VERTICAL); bar.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[] { 0x0007090C, 0xF007090C, 0xFF07090C })); bar.setPadding(dp(18), dp(30), dp(18), dp(18));
+            stopBar = new LinearLayout(a); stopBar.setOrientation(LinearLayout.VERTICAL); stopBar.setBackground(HealthViews.glass(a, 18)); stopBar.setPadding(dp(16), dp(10), dp(16), dp(10)); stopBar.setVisibility(View.GONE);
+            stopBarText = t("Stopping, tap to cancel", 15, INK, 500); stopBarText.setGravity(Gravity.CENTER); stopBar.addView(stopBarText, new LinearLayout.LayoutParams(-1, -2));
+            stopLine = new ProgressLine(a, GOLD, 0x33FFFFFF); LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, dp(3)); slp.topMargin = dp(8); stopBar.addView(stopLine, slp);
+            stopBar.setOnClickListener(v -> cancelStop(true));
+            LinearLayout.LayoutParams sbp = new LinearLayout.LayoutParams(-1, -2); sbp.bottomMargin = dp(10); bar.addView(stopBar, sbp);
             bar.addView(startBtn, new LinearLayout.LayoutParams(-1, dp(58)));
             container.addView(bar, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         } catch (Throwable e) { fail("pinned bar", e); }
@@ -178,7 +185,7 @@ final class EcgPage {
     private void buildHeader(LinearLayout col) {
         headerRow = hrow(); headerRow.setGravity(Gravity.TOP);
         TextView back = t("\u2039", 28, INK, 300); back.setGravity(Gravity.CENTER); back.setBackground(HealthViews.glass(a, 20)); back.setContentDescription("Back");
-        back.setOnClickListener(v -> { if (!running) a.onBackPressed(); else a.toast("Hold STOP for 1 second to end the reading"); });
+        back.setOnClickListener(v -> { if (!running) a.onBackPressed(); else a.toast("A reading is running. Tap STOP to end it."); });
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(40), dp(40)); bp.rightMargin = dp(12); headerRow.addView(back, bp);
         LinearLayout l = new LinearLayout(a); l.setOrientation(LinearLayout.VERTICAL);
         greetView = t("", 13, MUT, 400); titleView = t("", 28, INK, 400); titleView.setPadding(0, dp(6), 0, 0);
@@ -254,6 +261,15 @@ final class EcgPage {
         replayCard.addView(rn, lp(-1, -2, 6));
         replayCard.setVisibility(View.GONE);
         col.addView(replayCard, lp(-1, -2, 12));
+        // 0.45.0 (d): the personal beat bank: the 40 cleanest beats of every reading, pooled on the phone; the detail view unlocks at 1,000 beats
+        bankCard = glass(12);
+        bankCard.addView(caps("YOUR BEAT BANK"), new LinearLayout.LayoutParams(-2, -2));
+        bankText = t("", 14, INK, 400); bankText.setLineSpacing(0, 1.2f); bankCard.addView(bankText, lp(-1, -2, 6));
+        bankLine = new ProgressLine(a, GREEN, 0x22FFFFFF); bankCard.addView(bankLine, lp(-1, dp(3), 8));
+        bankView = new BankView(a, INK, 0x33FFFFFF, MUT); bankView.setVisibility(View.GONE); bankCard.addView(bankView, lp(-1, dp(170), 10));
+        bankNote = t("", 11, MUT, 400); bankNote.setLineSpacing(0, 1.2f); bankCard.addView(bankNote, lp(-1, -2, 6));
+        bankCard.setVisibility(View.GONE);
+        col.addView(bankCard, lp(-1, -2, 12));
     }
 
     private static final String[] WHY = { "Tension", "Vibration", "Cold hands", "Charger near", "Not sure" };
@@ -353,6 +369,7 @@ final class EcgPage {
             boolean rest = m == REST, run = m == RUN, done = m == DONE;
             if (waveHost != null) waveHost.setVisibility(run ? View.VISIBLE : View.GONE);
             if (waveCardRef != null) waveCardRef.setVisibility(View.VISIBLE);
+            if (bankCard != null) { bankCard.setVisibility(run ? View.GONE : View.VISIBLE); if (!run) refreshBank(); }
             if (replayCard != null) { replayCard.setVisibility(done ? View.VISIBLE : View.GONE); if (done) startReplayLoad(); else if (replayView != null) { replayView.setData(null, ""); replayFor = -1L; } }
             if (resultDetails != null) resultDetails.setVisibility(done ? View.VISIBLE : View.GONE);
             if (liveCard != null) liveCard.setVisibility(run ? View.VISIBLE : View.GONE);
@@ -367,7 +384,7 @@ final class EcgPage {
             String name = a.getSharedPreferences("today", android.content.Context.MODE_PRIVATE).getString("name", "Ame");
             if (rest) {
                 greetView.setText("Hi, " + name); titleView.setText("Ready for an ECG");
-                planView.setText("Two fingers on the clasp, forearm on a table. Press START ECG when you are ready.");
+                planView.setText("Two fingers on the clasp, forearm on a table. Press START ECG when you are ready. A free reading runs about 2\u00bd minutes.");
                 refreshLatest();
             } else if (run) {
                 greetView.setText("ECG  \u00b7  0:00"); GuidedRun.Def d = GuidedRun.byId(guidedThisRun ? pref("run_id", "") : ""); titleView.setText(guidedThisRun && !d.id.isEmpty() ? d.title : "Reading");
@@ -420,6 +437,101 @@ final class EcgPage {
             p.setColor(fg); cv.drawRoundRect(0, 0, w * frac, hh, hh / 2f, hh / 2f, p);
         }
     }
+
+    /** 0.45.0 (d): the pooled mean beat of the beat bank, 400 ms before to 750 ms after the R apex, in the glass look. */
+    private static final class BankView extends View {
+        private double[] mean; private final int fg, grid, mut;
+        BankView(android.content.Context c, int fg, int grid, int mut) { super(c); this.fg = fg; this.grid = grid; this.mut = mut; }
+        void set(double[] m) { mean = m; invalidate(); }
+        @Override protected void onDraw(android.graphics.Canvas cv) {
+            if (mean == null) return;
+            float w = getWidth(), hh = getHeight(); int i0 = Math.max(0, ProAnalysis.PRE - 200), i1 = Math.min(mean.length - 1, ProAnalysis.PRE + 375);
+            double mn = 1e18, mx = -1e18; for (int i = i0; i <= i1; i++) { mn = Math.min(mn, mean[i]); mx = Math.max(mx, mean[i]); }
+            double span = Math.max(300.0, mx - mn); double lo = mn - 0.08 * span, hi = mx + 0.08 * span;
+            android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG); p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setColor(grid); p.setStrokeWidth(1f); float yz = (float) (hh - (0 - lo) / (hi - lo) * hh); cv.drawLine(0, yz, w, yz, p);
+            float xr = (float) ((ProAnalysis.PRE - i0) / (double) (i1 - i0) * w); cv.drawLine(xr, 0, xr, hh, p);
+            p.setColor(fg); p.setStrokeWidth(3f); android.graphics.Path path = new android.graphics.Path();
+            for (int i = i0; i <= i1; i++) { float x = (float) ((i - i0) / (double) (i1 - i0) * w), y = (float) (hh - (mean[i] - lo) / (hi - lo) * hh); if (i == i0) path.moveTo(x, y); else path.lineTo(x, y); }
+            cv.drawPath(path, p);
+            p.setStyle(android.graphics.Paint.Style.FILL); p.setColor(mut); p.setTextSize(24f); cv.drawText("R apex", Math.min(w - 90f, xr + 8f), 26f, p);
+        }
+    }
+
+    /** 0.45.0 (d): fills the bank from the readings on the phone that have no bank file yet (two per call, newest first, background thread), then pools. Never while a reading runs. */
+    private void refreshBank() {
+        if (bankBusy || running) return;
+        bankBusy = true;
+        Thread th = new Thread(new Runnable() { @Override public void run() {
+            try {
+                File d = dir(); int did = BeatBank.catchUp(d, 2);
+                final BeatBank.Summary sm = BeatBank.summary(d); BeatBank.Pooled P = null;
+                if (sm.beats >= BeatBank.UNLOCK) { String sig = sm.readings + ":" + sm.beats; if (bankPooled == null || !sig.equals(bankSig)) { P = BeatBank.pool(d); bankPooled = P; bankSig = sig; } else P = bankPooled; }
+                final BeatBank.Pooled PP = P; final boolean more = did > 0 && !BeatBank.pending(d).isEmpty();
+                a.runOnUiThread(new Runnable() { @Override public void run() { try { showBank(sm, PP); if (more && !running) h.postDelayed(new Runnable() { @Override public void run() { refreshBank(); } }, 4000L); } catch (Throwable e) { fail("bank card", e); } } });
+            } catch (Throwable e) { final Throwable ee = e; try { a.runOnUiThread(new Runnable() { @Override public void run() { fail("bank", ee); } }); } catch (Throwable ignored) { } }
+            finally { bankBusy = false; }
+        } }, "beat-bank");
+        th.setPriority(Thread.MIN_PRIORITY); th.start();
+    }
+
+    private void showBank(BeatBank.Summary sm, BeatBank.Pooled P) {
+        if (bankText == null) return;
+        bankText.setText(String.format(Locale.UK, "%,d of %,d beats  \u00b7  %d readings", sm.beats, BeatBank.UNLOCK, sm.readings));
+        bankLine.set(sm.beats / (float) BeatBank.UNLOCK);
+        if (P != null && P.unlocked && P.mean != null && P.iv != null) {
+            ProAnalysis.Iv v = P.iv;
+            bankView.set(P.mean); bankView.setVisibility(View.VISIBLE);
+            bankNote.setText(String.format(Locale.UK, "Your own average beat from %,d matching beats. QRS %.0f ms (8 %% slope rule on a 100 Hz low-pass), R wave %.0f / %.0f / %.0f ms wide at 50 / 25 / 10 %% of its height. R %.0f uV, Q %.0f uV, S %.0f uV, T %.0f uV%s. The two random halves agree in the QRS (%.2f) and not in the quiet stretch (%.2f). Nothing above 100 Hz is claimed (decode log 134.1). Kept on this phone; Send does not include it.",
+                P.kept, v.qrs, v.rW50, v.rW25, v.rW10, v.rAmp, Double.isNaN(P.qTrough) ? Double.NaN : P.qTrough, v.sAmp, v.tAmp, v.qtValid ? String.format(Locale.UK, ", QT %.0f ms", v.qt) : "", P.splitQrs, P.splitCtl));
+        } else {
+            bankView.setVisibility(View.GONE);
+            bankNote.setText(sm.beats >= BeatBank.UNLOCK && P != null && P.kept > 0 ? String.format(Locale.UK, "%,d beats pooled, but the split-half test did not pass (%.2f in the QRS, %.2f in the quiet stretch): no detail view yet.", P.kept, P.splitQrs, P.splitCtl)
+                : "The 40 cleanest beats of each reading are kept on this phone and pooled. At 1,000 beats your own average beat appears here. Send does not include them.");
+        }
+    }
+
+    /** 0.45.0 (b): true while a lift of the fingers would end the reading (free reading, auto-stop on, at least 60 s and LIFT_MIN_CLEAN clean beats in). */
+    boolean liftStopArmed() {
+        try { return running && !autoStopped && pr.getBoolean("auto_stop", true) && !guide.active() && System.currentTimeMillis() - Live500.startMs > 60000L && Live500.cleanBeats() >= LIFT_MIN_CLEAN; } catch (Throwable e) { return false; }
+    }
+
+    // ------------------------------------------------------------------ 0.45.0 (n): STOP with a 3 s cancel bar
+    private void beginStop() {
+        try {
+            if (stopPending || !running || start == null || !start.getText().toString().startsWith("STOP")) return;
+            stopPending = true; stopT0 = android.os.SystemClock.elapsedRealtime(); stopTapMs = System.currentTimeMillis();
+            if (stopBar != null) stopBar.setVisibility(View.VISIBLE);
+            try { start.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); } catch (Throwable ignored) { }
+            stopTick = new Runnable() { @Override public void run() { stopStep(); } };
+            stopStep();
+        } catch (Throwable e) { stopPending = false; fail("stop bar", e); }
+    }
+
+    private void stopStep() {
+        if (!stopPending) return;
+        if (!running || start == null || !start.getText().toString().startsWith("STOP")) { cancelStop(false); return; }      // the reading ended another way
+        long el = android.os.SystemClock.elapsedRealtime() - stopT0;
+        if (el >= STOP_DELAY_MS) {
+            stopPending = false; hideStopBar(); stopReason = 0;
+            start.performClick();
+            return;
+        }
+        int left = (int) ((STOP_DELAY_MS - el + 999L) / 1000L);
+        if (stopBarText != null) { stopBarText.setText("Stopping in " + left + " s, tap to cancel"); stopBar.setContentDescription("Stopping the reading in " + left + " seconds. Tap to cancel."); }
+        if (stopLine != null) stopLine.set(el / (float) STOP_DELAY_MS);
+        h.postDelayed(stopTick, 100L);
+    }
+
+    private void cancelStop(boolean toast) {
+        boolean was = stopPending;
+        stopPending = false; stopTapMs = 0L;
+        try { if (stopTick != null) h.removeCallbacks(stopTick); } catch (Throwable ignored) { }
+        hideStopBar();
+        if (was && toast) a.toast("Not stopping. The reading continues.");
+    }
+
+    private void hideStopBar() { try { if (stopBar != null) stopBar.setVisibility(View.GONE); if (stopLine != null) stopLine.set(0f); } catch (Throwable ignored) { } }
 
     private void applyDisplayPrefs() {
         try { Live500.pro = pref("pro_display", "1").equals("1"); Live500View.windowMs = pr.getInt("graph_window", 6000); Live500View.sweep = pr.getBoolean("graph_sweep", false); Live500View.paper = pr.getBoolean("graph_paper", false); Live500View.qualityColours = pr.getBoolean("ecg_quality_colours", true); Live500.setClean(pr.getBoolean("ecg_clean_view", false)); } catch (Throwable e) { fail("display options", e); }
@@ -580,7 +692,7 @@ final class EcgPage {
         try {
             if (nowRunning && !was) {
                 startMs = Live500.sessionMs > 0 && System.currentTimeMillis() - Live500.sessionMs < 8000 ? Live500.sessionMs : System.currentTimeMillis();
-                autoStopped = false; stopReason = 0; cueLog = ""; lastOut = null; lastBands = null; LiveMeasure.clear(); readyCancelled = true; readyLeft = 0; detailsOpen = false;
+                cancelStop(false); autoStopped = false; stopReason = 0; cueLog = ""; lastOut = null; lastBands = null; LiveMeasure.clear(); readyCancelled = true; readyLeft = 0; detailsOpen = false;
                 applyDisplayPrefs();
                 if (rings != null) rings.setPulse(0);                                        // 0.44.0: the heart-rate number pulses at each detected R
                 if (avgView != null) avgView.set(null);
@@ -599,7 +711,7 @@ final class EcgPage {
                 ReadingNotes.put(dir(), startMs / 1000L, "pro", Live500.pro ? "1" : "0");
                 applyMode(RUN);
             } else if (!nowRunning && was) {
-                guide.cancel(); if (rings != null) rings.setPulse(-1); finishReading();
+                guide.cancel(); if (rings != null) rings.setPulse(-1); finishReading(); cancelStop(false);
             }
         } catch (Throwable e) { fail("running change", e); }
         if (start != null && !nowRunning) start.setContentDescription("Start ECG reading");
@@ -653,12 +765,19 @@ final class EcgPage {
             if (guide.active() && runStopSec > 0 && cueLine != null) cueLine.set(el / (runStopSec * 1000f));
             // auto-stop (not during a guided run)
             boolean auto = pr.getBoolean("auto_stop", true) && !guide.active();
-            if (auto && !autoStopped && el > NewLookActivity.AUTO_MIN_MS && ((!Double.isNaN(est) && est <= a.autoTargetValue()) || el > NewLookActivity.AUTO_MAX_MS)) {
+            int clean = Live500.cleanBeats();
+            boolean quality = !Double.isNaN(est) && est <= a.autoTargetValue() && clean >= CLEAN_MIN;
+            if (auto && !autoStopped && el > NewLookActivity.AUTO_MIN_MS && (quality || el > NewLookActivity.AUTO_MAX_MS)) {
                 autoStopped = true; stopReason = 1;
-                a.toast(el > NewLookActivity.AUTO_MAX_MS && (Double.isNaN(est) || est > a.autoTargetValue()) ? "Stopped at 5 minutes (report quality " + (Double.isNaN(est) ? "-" : String.format(Locale.UK, "%.1f", est)) + " uV)" : String.format(Locale.UK, "Stopped: report quality %.1f uV reached", est));
+                a.toast(quality ? String.format(Locale.UK, "Stopped: report quality %.1f uV, %d clean beats", est, clean) : "Stopped at 5 minutes (report quality " + (Double.isNaN(est) ? "-" : String.format(Locale.UK, "%.1f", est)) + " uV, " + clean + " clean beats)");
                 if (start != null && start.getText().toString().startsWith("STOP")) start.performClick();
             }
-            if (start != null && running) { start.setText(String.format(Locale.UK, "STOP (hold 1 s)  \u00b7  %d:%02d", el / 60000, (el / 1000) % 60)); start.setContentDescription(String.format(Locale.UK, "Stop the reading. Press and hold for one second. %d minutes %d seconds so far.", el / 60000, (el / 1000) % 60)); }
+            else if (!autoStopped && live && liftStopArmed() && Live500.openRun >= LIFT_STOP_S) {      // 0.45.0 (b): the fingers came off late in a reading: stop now instead of recording the lift
+                autoStopped = true; stopReason = 3;
+                a.toast(String.format(Locale.UK, "Stopped: fingers lifted (%d clean beats)", clean));
+                if (start != null && start.getText().toString().startsWith("STOP")) start.performClick();
+            }
+            if (start != null && running) { start.setText(String.format(Locale.UK, "STOP  \u00b7  %d:%02d", el / 60000, (el / 1000) % 60)); start.setContentDescription(String.format(Locale.UK, "Stop the reading. Tap once; it stops after 3 seconds unless you tap Stopping to cancel. %d minutes %d seconds so far.", el / 60000, (el / 1000) % 60)); }
             try {                                                                      // a spoken summary of the live graph for a screen reader
                 String say = txt.replace("\u25cf  ", "");
                 String desc = "Live ECG trace, 500 hertz. Tap for full screen. " + (Double.isNaN(rrS) ? "" : String.format(Locale.UK, "Heart rate %.0f beats a minute. ", 60.0 / rrS)) + say + ".";
@@ -671,7 +790,8 @@ final class EcgPage {
         if (targetBtn == null) return;
         double tg = a.autoTargetValue(); boolean auto = pr.getBoolean("auto_stop", true);
         String e = Double.isNaN(est) ? "settling" : String.format(Locale.UK, "%.1f uV", est);
-        targetBtn.setText(auto ? "Report quality so far " + e + "  \u2192  target " + String.format(Locale.UK, "%.0f", tg) + " uV  (tap: 3, 4, 5)" : "Auto-stop off  \u00b7  quality so far " + e + "  (tap: 3, 4, 5 turns it on)");
+        int cb = Live500.cleanBeats();
+        targetBtn.setText(auto ? "Report quality " + e + "  \u2192  " + String.format(Locale.UK, "%.0f", tg) + " uV  \u00b7  clean beats " + cb + " of " + CLEAN_TARGET + "  (tap: 3, 4, 5)" : "Auto-stop off  \u00b7  quality " + e + "  \u00b7  clean beats " + cb + " of " + CLEAN_TARGET + "  (tap: 3, 4, 5 turns it on)");
     }
 
     private String avgLine(LiveMeasure.Out o) {
@@ -747,7 +867,9 @@ final class EcgPage {
             o = LiveMeasure.last(); if (o == null) { try { o = LiveMeasure.compute(Live500.windowsCopy(), Live500.medianRrS()); } catch (Throwable ignored) { } }
             lastOut = o; b = lastBands != null ? lastBands : LiveBands.rms();
             ReadingNotes.put(d, startSec, "dur_s", String.format(Locale.US, "%.0f", dur));
-            ReadingNotes.put(d, startSec, "stop", stopReason == 1 ? "auto" : stopReason == 2 ? "run" : "hand");
+            ReadingNotes.put(d, startSec, "stop", stopReason == 1 ? "auto" : stopReason == 2 ? "run" : stopReason == 3 ? "lift" : "hand");
+            ReadingNotes.put(d, startSec, "clean_beats_live", String.valueOf(Live500.cleanBeats()));
+            if (stopReason == 0 && stopTapMs > 0L) ReadingNotes.put(d, startSec, "stop_tap_s", String.format(Locale.US, "%.1f", (stopTapMs - startMs) / 1000.0));      // 0.45.0 (n): the tap; the reading ends 3 s later
             String[] bn = { "noise_0p5_5", "noise_8_25", "noise_25_48", "noise_mains", "noise_52_100" };
             for (int i = 0; i < 5; i++) if (!Double.isNaN(b[i])) ReadingNotes.put(d, startSec, bn[i], String.format(Locale.US, "%.1f", b[i]));
             double z = Live500.medianZ(); if (!Double.isNaN(z)) ReadingNotes.put(d, startSec, "contact_z", String.format(Locale.US, "%.1f", z));
@@ -779,7 +901,7 @@ final class EcgPage {
             drawRings();
             if (o != null && o.avg != null) { t.append(t.length() > 0 ? "\n" : "").append(String.format(Locale.UK, "R %.0f uV", o.rUv)); if (!Double.isNaN(o.qrsMs)) t.append(String.format(Locale.UK, "  \u00b7  QRS %.0f ms", o.qrsMs)); if (!Double.isNaN(o.postDipUv)) t.append(String.format(Locale.UK, "  \u00b7  S/ST dip %.0f uV", o.postDipUv)); if (!Double.isNaN(o.qtMs)) t.append(String.format(Locale.UK, "  \u00b7  QT %.0f ms", o.qtMs)); }
             if (haveNoise) t.append("\n").append(String.format(Locale.UK, "Noise in the QRS band %.0f uV (usual 15-27): %s", b[1], lvl));
-            t.append("\nStopped ").append(stopReason == 1 ? "by auto-stop" : stopReason == 2 ? "by the guided run" : "by you").append(String.format(Locale.UK, " after %.0f s.", dur));
+            t.append("\nStopped ").append(stopReason == 1 ? "by auto-stop" : stopReason == 2 ? "by the guided run" : stopReason == 3 ? "when your fingers lifted" : "by you").append(String.format(Locale.UK, " after %.0f s.", dur));
             resultBody.setText(t.toString());
             boolean noisy = haveNoise && b[1] > 27;
             whyHint.setVisibility(noisy ? View.VISIBLE : View.GONE); whyRow.setVisibility(noisy ? View.VISIBLE : View.GONE);

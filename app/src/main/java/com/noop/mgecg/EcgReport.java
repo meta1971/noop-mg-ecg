@@ -966,6 +966,14 @@ public final class EcgReport {
         b.append(row("Q wave depth", String.format(Locale.US, "%.0f &micro;V", Math.abs(s.qUv))));
         b.append(row("S wave depth", String.format(Locale.US, "%.0f &micro;V", Math.abs(s.sUv))));
         b.append(row("QRS start / end (J point)", String.format(Locale.US, "%.0f / %.0f ms from the R peak", s.qrsOnMs, s.qrsOffMs)));
+        try {   // 0.45.0 (a): the R wave width at 50 / 25 / 10 % of its height (robust to noise; the slope-rule QRS width depends on the method)
+            if (s.avg != null && s.rIdx > 60 && s.rIdx < s.avg.length - 60 && !Double.isNaN(s.qrsOnMs)) {
+                double[] lp = ProDsp.filtfilt(s.avg, ProDsp.butterLow(4, 100, 500)); int on = s.rIdx + (int) Math.round(s.qrsOnMs / EcgSegments.DT);
+                double base0 = ProDsp.median(lp, Math.max(0, on - 15), Math.max(1, on - 5));
+                double w50 = ProAnalysis.rWidth(lp, s.rIdx, base0, 0.50), w25 = ProAnalysis.rWidth(lp, s.rIdx, base0, 0.25), w10 = ProAnalysis.rWidth(lp, s.rIdx, base0, 0.10);
+                if (!Double.isNaN(w50) && !Double.isNaN(w25) && !Double.isNaN(w10)) b.append(row("R wave width at 50 / 25 / 10 % of its height", String.format(Locale.US, "%.1f / %.1f / %.1f ms (100 Hz low-pass)", w50, w25, w10)));
+            }
+        } catch (Throwable ignored) { }
         if (s.pPresent) b.append(row("P wave start / peak / end", String.format(Locale.US, "%.0f / %.0f / %.0f ms (start and end are approximate)", s.pOnMs, s.pPeakMs, s.pOffMs)));
         b.append(row("ST at J / 60 ms / 80 ms", String.format(Locale.US, "%+.0f / %+.0f / %+.0f &micro;V, slope %+.2f &micro;V per ms", s.stJUv, s.st60Uv, s.st80Uv, s.stSlopeUvPerMs)));
         if (!Double.isNaN(s.tPeakMs)) b.append(row("T wave peak", String.format(Locale.US, "%.0f ms after the R peak", s.tPeakMs)));

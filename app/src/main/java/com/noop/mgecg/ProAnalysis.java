@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.45.0 (8 Nov 2026): QRS delineation on a 100 Hz low-pass with the 8 % slope rule (was 40 Hz, 5 %) and the R wave width at 50 / 25 / 10 % of the peak (a); own beat selection by template correlation and amplitude instead of the strap's quality 3 (e);
+// beat timing from a 25 Hz low-passed stream with parabolic apex (g); MCR v1 beat pipeline: median-cascade baseline for detection, rho scoring, split-pair merging, step windows (h, ProMcr); the 40 best beats per reading for the personal beat bank (d).
 // FILE VERSION 0.23.0 (28 Oct 2026): the 500 Hz analysis behind the professional report: beats, mean beat, intervals with bootstrap confidence ranges, variability,
 // bandwidth study (does the part above 40 Hz carry signal?). A Java port of the Python reference (mglib.py, analyse.py), tested against it on real readings. Pure Java.
 
@@ -13,12 +15,17 @@ final class ProAnalysis {
     private ProAnalysis() {}
     static final int FS = 500, PRE = 250, POST = 400, QW0 = PRE - 20, QW1 = PRE + 30;
     static final double UV = 0.0621;
+    static final boolean OWN_SELECTION = true;                  // 0.45.0 (e): beats are chosen by template correlation and amplitude; false = the strap's quality-3 seconds only, as before
+    static final int QRS_LP_HZ = 100, QRS_MIN_BEATS = 100;     // 0.45.0 (a)
+    static final double QRS_SLOPE = 0.08;
     static final double[][] BANDS = {{0, 20}, {20, 40}, {40, 60}, {60, 80}, {80, 100}, {100, 130}, {130, 160}, {160, 200}, {200, 250}};
 
     static final class Iv {
         double sAmp = Double.NaN;      // 0.26.1: S-wave depth, the lowest point from the R apex to 80 ms after it, against the PR baseline
         double qrsOn, qrsOff, qrs, base, rAmp, st = Double.NaN, tAmp = Double.NaN, tPeak = Double.NaN, tEnd = Double.NaN, pAmp = Double.NaN, pPeak = Double.NaN, pOn = Double.NaN, pOff = Double.NaN, pr = Double.NaN, pDur = Double.NaN;
         double qt = Double.NaN, qtcB = Double.NaN, qtcF = Double.NaN, qtcFr = Double.NaN; boolean qtValid;
+        double rW50 = Double.NaN, rW25 = Double.NaN, rW10 = Double.NaN;      // 0.45.0 (a): width of the R wave (ms) at 50 / 25 / 10 % of its height above the PR baseline, on the 100 Hz low-passed average
+        int nBeats; boolean qrsIndicative;                                   // beats in the average; the slope-rule QRS width is only indicative under QRS_MIN_BEATS beats
     }
     static final class Hrv {
         int n, removed; double meanRr, hr, sdnn, sdnnDetr, rmssd, pnn50, sd1, sd2, lf, hf, vlf, fpk;
@@ -47,6 +54,8 @@ final class ProAnalysis {
         double nrmssdMedian = Double.NaN; double rrMin, rrMax;
         double[] stripY; int[] stripPeaks; double stripStartS;
         double[] r17Mean; double r17Lag = Double.NaN, r17Height = Double.NaN, r17Width = Double.NaN;      // the filtered 100 Hz stream (R17) around the same beats, on a 2 ms grid from -300 ms
+        int mcrSteps, mcrMerged, mcrRejected, ownKept, ownDisturbed, ownNoisy, ownAmp, ownCorr;      // 0.45.0 (h): steps found, split pairs merged, detections under rho 0.6, and why beats were left out of the average
+        double[][] bankBeats = new double[0][];                                                      // 0.45.0 (d): the 40 cleanest kept beats (full band, PRE + POST samples, uV), for the personal beat bank
         double[] r16Grid; double[] beatTimes;        // beat times (s from the start of the reading) from the 40 Hz low-passed signal with parabolic peak refinement; used to pair with the H10
     }
     static final String[] CI_KEYS = {"qrs", "pr", "qt", "qtcF", "qtcB", "pAmp", "rAmp", "tAmp", "st", "pDur"};
@@ -124,29 +133,35 @@ final class ProAnalysis {
         // clean segments
         List<int[]> segs = new ArrayList<>(); int cur = -1;
         for (int s = 0; s < sec; s++) {
-            boolean ok = q[s] == 3; if (ok) for (int k = 0; k < 500; k++) if (Double.isNaN(x[s * 500 + k])) { ok = false; break; }
+            boolean ok = OWN_SELECTION ? (q[s] >= 1 && s >= 13) : q[s] == 3; if (ok) for (int k = 0; k < 500; k++) if (Double.isNaN(x[s * 500 + k])) { ok = false; break; }      // 0.45.0 (e): any second with samples and no flagged ones; the beats are picked by shape and size below, not by the strap's quality byte
             if (ok && rejectUnix != null && rejectUnix.contains(u32(fr.get(s), 15))) { ok = false; R.motionDropped++; }
             if (ok && cur < 0) cur = s;
             if ((!ok || s == sec - 1) && cur >= 0) { int e = s + (ok && s == sec - 1 ? 1 : 0); if (e - cur >= 8) segs.add(new int[] {cur * 500 + 250, e * 500 - 250}); cur = -1; }
         }
         if (segs.isEmpty()) { why = "no stretch of 8 seconds with quality 3 and no flagged samples (" + R.qcount[3] + " seconds of quality 3 in " + sec + ")"; return null; }
         double[][] HP = ProDsp.butterHigh2(0.5, FS); double[][] NT = {ProDsp.notch(50, 35, FS)};
-        List<Double> btAcc = new ArrayList<>(); List<double[]> beats = new ArrayList<>(); List<Integer> bpos = new ArrayList<>(); List<Double> rrAcc = new ArrayList<>();
+        List<Double> btAcc = new ArrayList<>(); List<double[]> beats = new ArrayList<>(); List<Integer> bpos = new ArrayList<>(); List<Double> rrAcc = new ArrayList<>(); List<Boolean> bDist = new ArrayList<>();
         List<Double> earlyT = new ArrayList<>(), earlyR1 = new ArrayList<>(), earlyR2 = new ArrayList<>(), rrTAcc = new ArrayList<>();
         int bestSeg = 0; for (int i = 1; i < segs.size(); i++) if (segs.get(i)[1] - segs.get(i)[0] > segs.get(bestSeg)[1] - segs.get(bestSeg)[0]) bestSeg = i;
         for (int si = 0; si < segs.size(); si++) {
             int a = segs.get(si)[0], b = segs.get(si)[1];
-            double[] y = ProDsp.filtfilt(ProDsp.filtfilt(Arrays.copyOfRange(x, a, b), HP), NT);
-            int[] pk = detectR(y); if (pk.length < 10) continue;
-            double[] ylp = ProDsp.filtfilt(y, ProDsp.butterLow(4, 40, FS));
-            for (int p : pk) { int l = Math.max(1, p - 2), h = Math.min(ylp.length - 2, p + 2), bi = l; for (int i = l; i <= h; i++) if (ylp[i] > ylp[bi]) bi = i; double A = ylp[bi - 1], B = ylp[bi], C = ylp[bi + 1], D = A - 2 * B + C; btAcc.add((a + bi + (D != 0 ? 0.5 * (A - C) / D : 0)) / FS); }
-            for (int i = 1; i < pk.length; i++) { rrAcc.add((pk[i] - pk[i - 1]) * 1000.0 / FS); rrTAcc.add((a + pk[i]) / (double) FS); }
+            double[] xs = Arrays.copyOfRange(x, a, b);
+            double[] y = ProDsp.filtfilt(ProDsp.filtfilt(xs, HP), NT);                        // the morphology trace (0.5 Hz high-pass, as before): the averages are cut from it
+            double[] ym = OWN_SELECTION ? ProMcr.trace(xs) : y;                               // 0.45.0 (h): the MCR trace (median-cascade baseline) finds and scores the beats
+            int[] pk = detectR(ym); if (pk.length < 10) continue;
+            if (OWN_SELECTION) { ProMcr.Valid vb = ProMcr.validate(ym, pk, null); R.mcrRejected += vb.rejected; R.mcrMerged += vb.merged; pk = vb.idx; if (pk.length < 10) continue; }
+            int[] stp = OWN_SELECTION ? ProMcr.steps(xs) : new int[0]; R.mcrSteps += stp.length; boolean[] dist = ProMcr.disturbed(xs.length, stp);
+            double[] ylp = ProDsp.filtfilt(ym, ProDsp.butterLow(4, 25, FS));                  // 0.45.0 (g): the beat timing stream, 25 Hz low-pass (best single-beat R-peak SNR, decode log 134.1)
+            double[] tt = new double[pk.length]; for (int k = 0; k < pk.length; k++) tt[k] = ProMcr.apex(ylp, pk[k]);
+            for (double t : tt) btAcc.add((a + t) / FS);
+            for (int i = 1; i < pk.length; i++) { rrAcc.add((tt[i] - tt[i - 1]) * 1000.0 / FS); rrTAcc.add((a + tt[i]) / FS); }
             {   // 0.25.0 early beats: an interval under 80 % of the local median (11 intervals) followed by one over 112 %
                 int m = pk.length - 1; double[] rr = new double[m]; for (int i = 0; i < m; i++) rr[i] = (pk[i + 1] - pk[i]) * 1000.0 / FS;
                 if (m >= 12) for (int i = 0; i < m - 1; i++) { double med = ProDsp.median(rr, Math.max(0, i - 5), Math.min(m, i + 6)); if (rr[i] < 0.80 * med && rr[i + 1] > 1.12 * med) { earlyT.add((a + pk[i + 1]) / (double) FS); earlyR1.add(rr[i] / med); earlyR2.add(rr[i + 1] / med); } }
             }
-            for (int p : pk) if (p - PRE >= 0 && p + POST <= y.length) { beats.add(Arrays.copyOfRange(y, p - PRE, p + POST)); bpos.add(a + p); }
+            for (int p : pk) if (p - PRE >= 0 && p + POST <= y.length) { beats.add(Arrays.copyOfRange(y, p - PRE, p + POST)); bpos.add(a + p); bDist.add(dist[p]); }
         }
+
         R.beatsTotal = beats.size(); if (beats.size() < 30) { why = "only " + beats.size() + " beats found in the clean stretches (30 are needed)"; return null; }
         R.beatTimes = new double[btAcc.size()]; for (int i = 0; i < R.beatTimes.length; i++) R.beatTimes[i] = btAcc.get(i);
         R.rrMs = new double[rrAcc.size()]; for (int i = 0; i < R.rrMs.length; i++) R.rrMs[i] = rrAcc.get(i);
@@ -160,10 +175,27 @@ final class ProAnalysis {
             for (int k = 0; k < nb; k++) { cur2[k] = shifted(Lb[k], sh[k]); sh[k] += lag(cur2[k], T); cur2[k] = shifted(Lb[k], sh[k]); }
             T = med(cur2, nb, L);
         }
-        List<double[]> kept = new ArrayList<>(); List<Double> keptT = new ArrayList<>();
-        for (int k = 0; k < nb; k++) if (corrWin(cur2[k], T, PRE - 40, PRE + 60) > 0.9) { kept.add(shifted(beats.get(k), sh[k])); int gp = bpos.get(k); keptT.add(recT[Math.min(sec - 1, gp / 500)] + ((gp % 500) + sh[k]) / 500.0); }
-        int N = kept.size(); R.beatsUsed = N; if (N < 30) { why = "only " + N + " of " + nb + " beats matched the average beat (30 are needed)"; return null; }
+        List<double[]> kept = new ArrayList<>(); List<Double> keptT = new ArrayList<>(); List<Double> keptNz = new ArrayList<>();
+        // 0.45.0 (e): a beat goes into the average when its shape matches the personal template (correlation over 0.95), its R height is 60 to 140 % of the median, it lies outside the step windows and its local noise is at most 1.5 x the quiet noise
+        double[] ampB = new double[nb], nzB = new double[nb];
+        for (int k = 0; k < nb; k++) { double[] be = beats.get(k); double bs0 = ProDsp.median(be, PRE - 50, PRE - 35), mx0 = -1e18; for (int i = PRE - 6; i <= PRE + 6; i++) mx0 = Math.max(mx0, be[i]); ampB[k] = mx0 - bs0; nzB[k] = ProDsp.std(ProDsp.detrend(Arrays.copyOfRange(be, PRE + 225, PRE + 275)), 1); }
+        double ampMed = ProDsp.median(ampB), nzMed = ProDsp.median(nzB);
+        for (int k = 0; k < nb; k++) {
+            double cw = corrWin(cur2[k], T, PRE - 40, PRE + 60); boolean good;
+            if (!OWN_SELECTION) good = cw > 0.9;
+            else if (cw <= 0.95) { R.ownCorr++; good = false; }
+            else if (ampB[k] < 0.6 * ampMed || ampB[k] > 1.4 * ampMed) { R.ownAmp++; good = false; }
+            else if (bDist.get(k)) { R.ownDisturbed++; good = false; }
+            else if (nzB[k] > 1.5 * nzMed) { R.ownNoisy++; good = false; }
+            else good = true;
+            if (good) { kept.add(shifted(beats.get(k), sh[k])); keptNz.add(nzB[k]); int gp = bpos.get(k); keptT.add(recT[Math.min(sec - 1, gp / 500)] + ((gp % 500) + sh[k]) / 500.0); }
+        }
+        int N = kept.size(); R.beatsUsed = N; R.ownKept = N; if (N < 30) { why = "only " + N + " of " + nb + " beats matched the average beat (30 are needed)"; return null; }
         double[][] Bal = kept.toArray(new double[0][]);
+        {   // 0.45.0 (d): the 40 cleanest kept beats (lowest local noise), for the personal beat bank
+            Integer[] ord = new Integer[N]; for (int i = 0; i < N; i++) ord[i] = i; final List<Double> kz = keptNz; Arrays.sort(ord, (u, v) -> Double.compare(kz.get(u), kz.get(v)));
+            int nbk = Math.min(40, N); R.bankBeats = new double[nbk][]; for (int i = 0; i < nbk; i++) R.bankBeats[i] = Bal[ord[i]];
+        }
         double[] avg = new double[L], sd = new double[L];
         // 0.26.1: noise-weighted mean beat. Each beat's noise is measured in the quiet stretch 450 to 550 ms after R; weight = 1 / noise^2,
         // with the noise floored at half the median (no beat counts more than 4 times a typical one).
@@ -182,14 +214,14 @@ final class ProAnalysis {
         // variability
         R.hrv = hrv(R.rrMs, R.rrT); double rrS = ProDsp.median(R.rrMs) / 1000.0;
         R.hrvAll = R.hrv; steadyPhase(R);
-        R.iv = intervals(avg, rrS);
+        R.iv = intervals(avg, rrS, N);
         {   // 0.25.0 QT and ST per 20-beat window (step 10) with a bootstrap uncertainty for each window
             final int K = 20, STEP = 10; List<Double> wt = new ArrayList<>(), qtl = new ArrayList<>(), qs = new ArrayList<>(), stl = new ArrayList<>(), ss = new ArrayList<>(); Random rb = new Random(7);
             for (int a0 = 0; a0 + K <= N; a0 += STEP) {
                 double[] wa = new double[L]; for (int k = a0; k < a0 + K; k++) for (int i = 0; i < L; i++) wa[i] += Bal[k][i] / K;
-                Iv iw = intervals(wa, rrS); if (iw == null || !iw.qtValid || Double.isNaN(iw.st)) continue;
+                Iv iw = intervals(wa, rrS, K); if (iw == null || !iw.qtValid || Double.isNaN(iw.st)) continue;
                 List<Double> bq = new ArrayList<>(), bs = new ArrayList<>();
-                for (int b = 0; b < 25; b++) { double[] wb = new double[L]; for (int k = 0; k < K; k++) { double[] be = Bal[a0 + rb.nextInt(K)]; for (int i = 0; i < L; i++) wb[i] += be[i] / K; } Iv ib = intervals(wb, rrS); if (ib != null && ib.qtValid && !Double.isNaN(ib.st)) { bq.add(ib.qt); bs.add(ib.st); } }
+                for (int b = 0; b < 25; b++) { double[] wb = new double[L]; for (int k = 0; k < K; k++) { double[] be = Bal[a0 + rb.nextInt(K)]; for (int i = 0; i < L; i++) wb[i] += be[i] / K; } Iv ib = intervals(wb, rrS, K); if (ib != null && ib.qtValid && !Double.isNaN(ib.st)) { bq.add(ib.qt); bs.add(ib.st); } }
                 if (bq.size() < 12) continue;
                 wt.add(keptT.get(a0 + K / 2)); qtl.add(iw.qt); stl.add(iw.st); qs.add(sdOf(bq)); ss.add(sdOf(bs));
             }
@@ -205,7 +237,7 @@ final class ProAnalysis {
         for (int b = 0; b < NB; b++) {
             double[] m = new double[L]; double swb = 0; for (int i = 0; i < N; i++) { int ix = rnd.nextInt(N); double[] bb = Bal[ix]; double wv = wts[ix]; swb += wv; for (int j = 0; j < L; j++) m[j] += wv * bb[j]; }
             for (int j = 0; j < L; j++) m[j] /= swb;
-            Iv v = intervals(m, rrS); if (v == null) continue;
+            Iv v = intervals(m, rrS, N); if (v == null) continue;
             double[] vals = {v.qrs, v.pr, v.qt, v.qtcF, v.qtcB, v.pAmp, v.rAmp, v.tAmp, v.st, v.pDur};
             for (int k = 0; k < vals.length; k++) bs[k][ok] = vals[k]; ok++;
         }
@@ -255,7 +287,8 @@ final class ProAnalysis {
         int[] sg = segs.get(bestSeg); int len = sg[1] - sg[0]; int want = 30 * 500; int a0 = len > want + 2000 ? sg[0] + (int) (len * 0.15) : sg[0]; int b0 = Math.min(sg[1], a0 + want);
         if (b0 - a0 >= 10 * 500) {
             int pa = Math.max(0, a0 - 500), pb = Math.min(x.length, b0 + 500);
-            double[] pre = ProDsp.filtfilt(ProDsp.filtfilt(Arrays.copyOfRange(x, pa, pb), HP), NT); int[] pk = detectR(pre);
+            double[] pre; if (OWN_SELECTION) { double[] sg0 = Arrays.copyOfRange(x, pa, pb); ProMcr.gapFill(sg0); pre = ProMcr.trace(sg0); } else pre = ProDsp.filtfilt(ProDsp.filtfilt(Arrays.copyOfRange(x, pa, pb), HP), NT);      // 0.45.0 (h): the strip is the MCR trace, gaps filled
+            int[] pk = detectR(pre);
             double[] lp = ProDsp.filtfilt(pre, ProDsp.butterLow(4, 40, FS)); int o = a0 - pa; double[] sy = Arrays.copyOfRange(lp, o, o + (b0 - a0)); double md = ProDsp.median(sy); for (int i = 0; i < sy.length; i++) sy[i] -= md;
             List<Integer> pl = new ArrayList<>(); for (int p : pk) if (p >= o && p < o + sy.length) pl.add(p - o);
             R.stripY = sy; R.stripPeaks = new int[pl.size()]; for (int i = 0; i < pl.size(); i++) R.stripPeaks[i] = pl.get(i); R.stripStartS = a0 / 500.0;
@@ -296,6 +329,15 @@ final class ProAnalysis {
 
     static double bandSum(double[] p, double lo, double hi) { double s = 0; for (int k = 0; k < p.length; k++) { double f = k * 500.0 / 256.0; if (f >= lo && f < hi && !(f > 47 && f < 53)) s += p[k]; } return s; }
     static double fwhm(double[] a, int r) { double base = Math.min(a[r - 60], a[r - 30]) * 0.0; double pk = a[r]; double h = pk / 2; int l = r; while (l > 0 && a[l] > h) l--; int rr = r; while (rr < a.length - 1 && a[rr] > h) rr++; return (rr - l) * 1000.0 / FS; }
+    /** 0.45.0 (a): width (ms) of the R wave at frac of its height above base, linear interpolation, within 100 ms either side of the apex; NaN when the wave does not fall to that level. */
+    static double rWidth(double[] a, int r, double base, double frac) {
+        int rp = r; for (int i = Math.max(1, r - 3); i <= Math.min(a.length - 2, r + 3); i++) if (a[i] > a[rp]) rp = i;
+        double h = a[rp] - base; if (!(h > 0)) return Double.NaN; double lev = base + frac * h;
+        int l = rp; while (l > Math.max(1, rp - sm(100)) && a[l] > lev) l--; if (a[l] > lev) return Double.NaN;
+        int q = rp; while (q < Math.min(a.length - 2, rp + sm(100)) && a[q] > lev) q++; if (a[q] > lev) return Double.NaN;
+        double xl = l + (lev - a[l]) / (a[l + 1] - a[l]), xr = q - 1 + (a[q - 1] - lev) / (a[q - 1] - a[q]);
+        return (xr - xl) * 1000.0 / FS;
+    }
     static double[] med(double[][] B, int n, int L) { double[] m = new double[L], t = new double[n]; for (int j = 0; j < L; j++) { for (int k = 0; k < n; k++) t[k] = B[k][j]; m[j] = ProDsp.median(t); } return m; }
     static double[] shifted(double[] a, double sh) { double[] o = new double[a.length]; for (int i = 0; i < a.length; i++) { double p = i + sh; int i0 = (int) Math.floor(p); double f = p - i0; if (i0 < 0) o[i] = a[0]; else if (i0 >= a.length - 1) o[i] = a[a.length - 1]; else o[i] = a[i0] * (1 - f) + a[i0 + 1] * f; } return o; }
     static double lag(double[] seg, double[] T) {
@@ -391,8 +433,9 @@ final class ProAnalysis {
     static int sm(double ms) { return (int) Math.round(ms * FS / 1000.0); }
     static double ms(double n) { return n * 1000.0 / FS; }
 
-    static Iv intervals(double[] avg, double rrS) {
-        Iv o = delineate(avg, rrS); if (o == null) return null;
+    static Iv intervals(double[] avg, double rrS) { return intervals(avg, rrS, QRS_MIN_BEATS); }
+    static Iv intervals(double[] avg, double rrS, int nBeats) {
+        Iv o = delineate(avg, rrS, nBeats); if (o == null) return null;
         if (!Double.isNaN(o.tEnd)) {
             o.qt = o.tEnd - o.qrsOn; o.qtValid = o.qt >= 280 && o.qt <= 520 && o.tAmp > 20;
             o.qtcB = o.qt / Math.sqrt(rrS); o.qtcF = o.qt / Math.cbrt(rrS); o.qtcFr = o.qt + 154 * (1 - rrS);
@@ -400,18 +443,23 @@ final class ProAnalysis {
         return o;
     }
 
-    static Iv delineate(double[] avgIn, double rrS) {
-        double[] a = ProDsp.filtfilt(avgIn, ProDsp.butterLow(4, 40, FS)); int r = PRE; double thrFrac = 0.05;
+    static Iv delineate(double[] avgIn, double rrS) { return delineate(avgIn, rrS, QRS_MIN_BEATS); }
+    /** 0.45.0 (a): no 40 Hz low-pass (it widened the QRS to 94 ms; the unfiltered 8 % rule gives about 70 ms, decode log 50.5 QRS WIDTH): a 100 Hz low-pass and the 8 % slope rule, meant for averages of QRS_MIN_BEATS beats or more.
+     *  With fewer beats (the 20-beat QT windows) the slope noise raises the threshold (4 x the robust slope noise before the P wave) and the width is flagged indicative. P and T keep their own 20 and 15 Hz filters. */
+    static Iv delineate(double[] avgIn, double rrS, int nBeats) {
+        double[] a = ProDsp.filtfilt(avgIn, ProDsp.butterLow(4, QRS_LP_HZ, FS)); int r = PRE; double thrFrac = QRS_SLOPE;
         double[] d = ProDsp.gradient(a); for (int i = 0; i < d.length; i++) d[i] *= FS;
         int lo = r - sm(40), hi = r + sm(40); if (lo < 2 || hi >= a.length - 2) return null;
         double dm = 0; for (int i = lo; i < hi; i++) dm = Math.max(dm, Math.abs(d[i])); double thr = thrFrac * dm;
+        if (nBeats < QRS_MIN_BEATS) { int q0 = Math.max(2, r - sm(450)), q1 = Math.max(q0 + 10, r - sm(250)); double[] ad = new double[q1 - q0]; for (int i = 0; i < ad.length; i++) ad[i] = Math.abs(d[q0 + i]); thr = Math.max(thr, 4.0 * ProDsp.median(ad) / 0.6745); }
         boolean[] act = new boolean[a.length]; for (int i = 0; i < a.length; i++) act[i] = Math.abs(d[i]) > thr;
         int gap = Math.max(1, sm(6)); int i = r, g = 0, on = r;
         while (i > r - sm(120)) { if (act[i]) { on = i; g = 0; } else { g++; if (g > gap) break; } i--; }
         i = r; g = 0; int off = r;
         while (i < r + sm(120)) { if (act[i]) { off = i; g = 0; } else { g++; if (g > gap) break; } i++; }
         int b0 = on - sm(30), b1 = on - sm(10); double base = (b1 > b0 && b0 >= 0) ? ProDsp.median(a, b0, b1) : ProDsp.median(a, Math.max(0, on - sm(30)), on);
-        Iv o = new Iv(); o.qrsOn = ms(on - r); o.qrsOff = ms(off - r); o.qrs = ms(off - on); o.base = base; o.rAmp = a[r] - base;
+        Iv o = new Iv(); o.qrsOn = ms(on - r); o.qrsOff = ms(off - r); o.qrs = ms(off - on); o.base = base; o.rAmp = a[r] - base; o.nBeats = nBeats; o.qrsIndicative = nBeats < QRS_MIN_BEATS;
+        o.rW50 = rWidth(a, r, base, 0.50); o.rW25 = rWidth(a, r, base, 0.25); o.rW10 = rWidth(a, r, base, 0.10);
         { double mn = a[r]; for (int k = r; k <= Math.min(a.length - 1, r + sm(80)); k++) mn = Math.min(mn, a[k]); o.sAmp = mn - base; }
         int j = off + sm(60); if (j + sm(10) < a.length) { double s = 0; int c = 0; for (int k = j - sm(10); k < j + sm(10); k++) { s += a[k]; c++; } o.st = s / c - base; }
         int t0 = off + sm(60), t1 = Math.min(a.length - 1, r + (int) (Math.min(0.55 * rrS, 0.5) * FS));

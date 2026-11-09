@@ -178,7 +178,7 @@ public final class AfScreen {
             int k = 0;
             for (int j = lo; j < hi; j++) if (j != i) nb[k++] = rr[j];
             double med = nb.length == 0 ? rr[i] : median(nb, 0, nb.length);
-            if (i < rr.length - 1 && rr[i] < 0.65 * med && rr[i] + rr[i + 1] >= 0.8 * med && rr[i] + rr[i + 1] <= 1.2 * med) {
+            if (i < rr.length - 1 && (rr[i] < 0.65 * med || rr[i + 1] < 0.65 * med) && rr[i] + rr[i + 1] >= 0.8 * med && rr[i] + rr[i + 1] <= 1.2 * med) {      // 0.45.0 (i): EITHER interval short (the original tested only the first, so half of the doubled-beat errors were missed; decode log 136.4)
                 out.add(rr[i] + rr[i + 1]);
                 counts[0]++;
                 i += 2;
@@ -251,8 +251,8 @@ public final class AfScreen {
         for (double[] run : runs) {
             o.input += run.length;
             for (double v : run) raw.add(v);
-            rhythmOut += neighbourOut(run);
             double[] r = repair(run, counts);
+            rhythmOut += neighbourOut(r);      // 0.45.0 (i): the rhythm-out share comes from the REPAIRED run (before: the raw run, so every repaired detector error still counted as irregularity; decode log 136.4; tested on simulations only)
             netChange += Math.abs(r.length - run.length);
             double[] c = removePremature(r, removed);
             for (double v : c) cleaned.add(v);

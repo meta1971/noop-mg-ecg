@@ -811,7 +811,7 @@ public class NewLookActivity extends Activity {
     // 0.25.1: a short buzz and a note when the fingers come off the clasp during a reading, or when there is no contact after 14 s
     private int lastWarnRun; private boolean warnedNoContact; String readingTag = ""; private Button[] tagChips;
     private TextView qualityView; private Button autoChip; private boolean autoStopped;
-    static final double AUTO_TARGET_DEFAULT = 4.0; static final long AUTO_MIN_MS = 60000L, AUTO_MAX_MS = 300000L;      // 0.37.0: the target is a setting (3, 4 or 5 uV; default 4: from 38 reports it halves the sitting time and the ST / QT spread grows from +/-3 to +/-4 uV and +/-3 to +/-5 ms)
+    static final double AUTO_TARGET_DEFAULT = 4.0; static final long AUTO_MIN_MS = 150000L, AUTO_MAX_MS = 300000L;      // 0.45.0 (j): a free reading runs 150 s at least (a rhythm verdict needs about 65 clean beats, the two-half test 128); was 60 s. Guided runs have no auto-stop      // 0.37.0: the target is a setting (3, 4 or 5 uV; default 4: from 38 reports it halves the sitting time and the ST / QT spread grows from +/-3 to +/-4 uV and +/-3 to +/-5 ms)
     private double autoTarget() { double t = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getFloat("auto_target", (float) AUTO_TARGET_DEFAULT); return t < 2.5 ? 3.0 : t > 4.5 ? 5.0 : t > 3.5 ? 4.0 : 3.0; }
     private static String autoLabel(boolean on, double tgt) { return on ? String.format(java.util.Locale.UK, "Auto-stop ON: stops when report quality reaches %.0f uV (1 to 5 min). Tap the next button to change the target", tgt) : "Auto-stop OFF: you stop the reading"; }
     double autoTargetValue() { return autoTarget(); }
@@ -850,7 +850,7 @@ public class NewLookActivity extends Activity {
             boolean live = Live500.isLive(System.currentTimeMillis());          // 0.25.3: no alerts when live raw frames are not coming (live raw switched off)
             updateQuality(true, live);      // 0.27.0
             int run = live ? Live500.openRun : 0;
-            if (live && run >= 3 && lastWarnRun < 3) contactAlert("Fingers are off the clasp: put them back");
+            if (live && run >= 3 && lastWarnRun < 3 && !(ecgPage != null && ecgPage.liftStopArmed())) contactAlert("Fingers are off the clasp: put them back");      // 0.45.0 (b): when the reading is about to stop on the lift, the page says so
             lastWarnRun = run;
             if (live && !Live500.everOn && System.currentTimeMillis() - Live500.startMs > 14000L && !warnedNoContact) { warnedNoContact = true; contactAlert("No finger contact yet: put two fingers on the clasp"); }
             ui.postDelayed(this, 1000L);
