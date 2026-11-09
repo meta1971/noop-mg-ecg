@@ -72,15 +72,16 @@ final class FrameMonitor {
 
     /** Call once per notification with the arrival time, the short characteristic id (for example "0005") and the value. */
     // 0.25.0: raw capture of frames that are not decoded yet (console log type 50 and the device-info channel 0007), to unknown_frames_<date>.hex
+    static volatile boolean imuCapture; private static int capImu;      // 0.46.0 TEST (Settings > Live motion capture, off by default): while on, frames of any type other than 40 / 43 / 48 / 50 / 53-55 are saved raw (first 400 of a reading) so a live IMU stream can be decoded
     private static volatile java.io.File capDir; private static int cap50, cap07, capPuf; private static long capBytes;      // 0.42.4: capPuf = types 53 / 54 / 55 (strap-originated puffin events and relative-event frames), kept always: only 4 type-54 frames in 53 pulls, never stored raw
     static void captureTo(java.io.File dir) { if (dir != null) capDir = dir; }
     private static volatile long capUntil;                                       // 0.25.2: console (type 50) frames are kept only while a reading runs and for 150 s after it
     static void captureWindow(long untilMs) { capUntil = untilMs; }
-    static void captureReset() { synchronized (LOCK) { cap50 = 0; } }
+    static void captureReset() { synchronized (LOCK) { cap50 = 0; capImu = 0; } }
     private static void capture(long nowMs, String ch, byte[] f, int kind) {
         java.io.File dir = capDir; if (dir == null) return;
         synchronized (LOCK) {
-            if (kind == 1) { if (cap50 >= 3000) return; cap50++; } else if (kind == 2) { if (capPuf >= 400) return; capPuf++; } else { if (cap07 >= 300) return; cap07++; }
+            if (kind == 1) { if (cap50 >= 3000) return; cap50++; } else if (kind == 2) { if (capPuf >= 400) return; capPuf++; } else if (kind == 3) { if (capImu >= 400) return; capImu++; } else { if (cap07 >= 300) return; cap07++; }
             if (capBytes > 5000000L) return;
             try (java.io.FileWriter w = new java.io.FileWriter(new java.io.File(dir, "unknown_frames_" + new java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.UK).format(new java.util.Date(nowMs)) + ".hex"), true)) {
                 StringBuilder sb = new StringBuilder(); for (byte b : f) sb.append(String.format("%02X", b & 0xFF)); String ln = nowMs + " " + (ch.length() >= 8 ? ch.substring(4, 8) : ch) + " " + f.length + " " + sb + "\n"; w.write(ln); capBytes += ln.length();
@@ -90,7 +91,7 @@ final class FrameMonitor {
     static void note(long nowMs, String ch, byte[] f) {
         if (f == null || f.length == 0) return;
         int key = keyOf(f);
-        if (capDir != null && ch != null) { int ty = key >>> 24; if (ty == 50 && nowMs <= capUntil) capture(nowMs, ch, f, 1); else if (ty == 53 || ty == 54 || ty == 55) capture(nowMs, ch, f, 2); }
+        if (capDir != null && ch != null) { int ty = key >>> 24; if (ty == 50 && nowMs <= capUntil) capture(nowMs, ch, f, 1); else if (ty == 53 || ty == 54 || ty == 55) capture(nowMs, ch, f, 2); else if (imuCapture && ty != 40 && ty != 43 && ty != 48 && ty != 50) capture(nowMs, ch, f, 3); }
         Entry e = new Entry(nowMs, ch, f.length, Arrays.copyOf(f, Math.min(f.length, HEAD)));
         int type = key >>> 24;
         synchronized (LOCK) {

@@ -1796,6 +1796,10 @@ public class HealthActivity extends Activity {
         TextView gcNote = tv("On: heavier smoothing between the beats (about 20 ms) for a calmer picture; the QRS keeps its shape and the graph says smoothed. Display only: reports and stored data are not changed.", 11.5f, MUT, 400);
         gcNote.setPadding(0, 0, 0, dpi(6));
         st.addView(gcNote);
+        st.addView(toggleRow("Live motion capture (test)", ctl, "imu_live_test", false), lp(-1, dpi(52), 0));
+        TextView imuNote = tv("Test, off by default. During an ECG reading it asks the strap for its live accelerometer and gyro stream (START_RAW_DATA, then TOGGLE_IMU_MODE, as the NOOP app does) and saves the frames raw for decoding. It could disturb the ECG: turn it off if a reading ever looks different, and tell me.", 11.5f, MUT, 400);
+        imuNote.setPadding(0, 0, 0, dpi(6));
+        st.addView(imuNote);
         st.addView(toggleRow("Show the 500 Hz graph when live raw frames arrive", ctl, "ecg_view500"), lp(-1, dpi(52), 0));
         final TextView smv = tv(smoothText(ctl), 14, BLUE, 600);
         st.addView(valueRow("500 Hz graph smoothing (display only)", smv, new View.OnClickListener() {

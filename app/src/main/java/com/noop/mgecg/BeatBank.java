@@ -95,6 +95,18 @@ final class BeatBank {
         return done;
     }
 
+    /** 0.46.0: the median beat of the whole bank (121 samples, 60 before to 60 after the R apex, uV), for the live detector's template veto; null with fewer than 100 beats. n[0] = beats used. Cheap: no alignment, the beats of a reading are already apex-aligned. */
+    static double[] template(File dir, int[] n) {
+        List<double[]> all = new ArrayList<>();
+        List<File> fs = files(dir);
+        for (int i = fs.size() - 1; i >= 0 && all.size() < MAX_POOL; i--) { Rd r = read(fs.get(i), true); if (r == null) continue; Collections.addAll(all, r.beats); }
+        if (all.size() < 100) return null;
+        double[] t = new double[121], col = new double[all.size()];
+        for (int j = 0; j < 121; j++) { for (int k = 0; k < col.length; k++) col[k] = all.get(k)[PRE - 60 + j]; t[j] = ProDsp.median(col); }
+        if (n != null && n.length > 0) n[0] = all.size();
+        return t;
+    }
+
     static final class Pooled {
         int readings, loaded, kept; double rrS = 1.0;
         double[] mean; ProAnalysis.Iv iv;

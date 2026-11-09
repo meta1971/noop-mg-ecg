@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.45.1-pro";
+    static final String VERSION = "0.46.0-pro";
     static final int REST = 0, RUN = 1, DONE = 2;
     private static final int BLUE = HealthViews.BLUE, INK = HealthViews.INK, MUT = HealthViews.MUT, GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE, VIOLET = HealthViews.VIOLET, DARK = 0xFF05131E;
 
@@ -57,6 +57,9 @@ final class EcgPage {
     private final TextView[] rowValues = new TextView[9];
     private ScrollView scrollRef;
     private boolean guidedThisRun, detailsOpen, readyCancelled;
+    // 0.46.0: noise-adaptive display smoothing: the clean view (heavier smoothing between the beats, display only) switches on by itself after 6 s above 40 uV of 8-25 Hz noise and off again after 12 s below 30 uV; the recording is not changed
+    private int noisyRun, calmRun, autoCleanSec, longNoisy; private boolean autoCleanOn, noisyPrompted;
+    private static volatile double[] liveTpl; private static volatile int liveTplN; private static volatile String liveTplSig = "";      // 0.46.0: the personal median beat for the live detector's veto
     // 0.45.0 (n): STOP has no hold. A tap starts a 3 s "Stopping, tap to cancel" bar; tapping the bar cancels. Guided, timed and auto stops click the button directly.
     private LinearLayout stopBar; private TextView stopBarText; private ProgressLine stopLine; private boolean stopPending; private long stopT0, stopTapMs; private Runnable stopTick;
     private static final long STOP_DELAY_MS = 3000L;
@@ -466,6 +469,7 @@ final class EcgPage {
             try {
                 File d = dir(); int did = BeatBank.catchUp(d, 2);
                 final BeatBank.Summary sm = BeatBank.summary(d); BeatBank.Pooled P = null;
+                { String tsig = sm.readings + ":" + sm.beats; if (!tsig.equals(liveTplSig)) { int[] nn = new int[1]; liveTpl = BeatBank.template(d, nn); liveTplN = liveTpl == null ? 0 : nn[0]; liveTplSig = tsig; } }
                 if (sm.beats >= BeatBank.UNLOCK) { String sig = sm.readings + ":" + sm.beats; if (bankPooled == null || !sig.equals(bankSig)) { P = BeatBank.pool(d); bankPooled = P; bankSig = sig; } else P = bankPooled; }
                 final BeatBank.Pooled PP = P; final boolean more = did > 0 && !BeatBank.pending(d).isEmpty();
                 a.runOnUiThread(new Runnable() { @Override public void run() { try { showBank(sm, PP); if (more && !running) h.postDelayed(new Runnable() { @Override public void run() { refreshBank(); } }, 4000L); } catch (Throwable e) { fail("bank card", e); } } });
@@ -534,7 +538,7 @@ final class EcgPage {
     private void hideStopBar() { try { if (stopBar != null) stopBar.setVisibility(View.GONE); if (stopLine != null) stopLine.set(0f); } catch (Throwable ignored) { } }
 
     private void applyDisplayPrefs() {
-        try { Live500.pro = pref("pro_display", "1").equals("1"); Live500View.windowMs = pr.getInt("graph_window", 6000); Live500View.sweep = pr.getBoolean("graph_sweep", false); Live500View.paper = pr.getBoolean("graph_paper", false); Live500View.qualityColours = pr.getBoolean("ecg_quality_colours", true); Live500.setClean(pr.getBoolean("ecg_clean_view", false)); } catch (Throwable e) { fail("display options", e); }
+        try { Live500.pro = pref("pro_display", "1").equals("1"); Live500View.windowMs = pr.getInt("graph_window", 6000); Live500View.sweep = pr.getBoolean("graph_sweep", false); Live500View.paper = pr.getBoolean("graph_paper", false); Live500View.qualityColours = pr.getBoolean("ecg_quality_colours", true); Live500.setClean(pr.getBoolean("ecg_clean_view", false)); Live500.setTemplate(liveTpl, liveTplN); } catch (Throwable e) { fail("display options", e); }
     }
 
     private static final String[] POSTURE = { "No tag", "Table", "Couch", "Lying", "Standing", "After exercise" };
@@ -692,7 +696,7 @@ final class EcgPage {
         try {
             if (nowRunning && !was) {
                 startMs = Live500.sessionMs > 0 && System.currentTimeMillis() - Live500.sessionMs < 8000 ? Live500.sessionMs : System.currentTimeMillis();
-                cancelStop(false); autoStopped = false; stopReason = 0; cueLog = ""; lastOut = null; lastBands = null; LiveMeasure.clear(); readyCancelled = true; readyLeft = 0; detailsOpen = false;
+                cancelStop(false); noisyRun = 0; calmRun = 0; autoCleanSec = 0; longNoisy = 0; noisyPrompted = false; autoCleanOn = false; autoStopped = false; stopReason = 0; cueLog = ""; lastOut = null; lastBands = null; LiveMeasure.clear(); readyCancelled = true; readyLeft = 0; detailsOpen = false;
                 applyDisplayPrefs();
                 if (rings != null) rings.setPulse(0);                                        // 0.44.0: the heart-rate number pulses at each detected R
                 if (avgView != null) avgView.set(null);
@@ -712,6 +716,7 @@ final class EcgPage {
                 applyMode(RUN);
             } else if (!nowRunning && was) {
                 guide.cancel(); if (rings != null) rings.setPulse(-1); finishReading(); cancelStop(false);
+                if (autoCleanOn) { autoCleanOn = false; try { Live500.setClean(pr.getBoolean("ecg_clean_view", false)); } catch (Throwable ignored) { } }
             }
         } catch (Throwable e) { fail("running change", e); }
         if (start != null && !nowRunning) start.setContentDescription("Start ECG reading");
@@ -727,6 +732,14 @@ final class EcgPage {
             double est = Live500.meanBeatNoiseEstimate(), nz = Live500.recentNoise(3);
             // the signal light is the status card; the strap's own check is its second line
             String txt; int colr; double n825 = b[1];
+            if (!Double.isNaN(n825)) {
+                // 0.46.0: noise above 40 uV for a whole minute: say what to do (a prompt only; nothing is stopped)
+                if (n825 > 40) longNoisy++; else if (n825 < 30) longNoisy = 0;
+                if (longNoisy >= 60 && !noisyPrompted && !guide.active()) { noisyPrompted = true; try { a.toast("Still noisy after a minute: let go, shake out your hand, rest the whole forearm for a minute, then press STOP and start again"); } catch (Throwable ignored) { } }
+                boolean userClean = pr.getBoolean("ecg_clean_view", false);
+                if (!autoCleanOn && !userClean) { if (n825 > 40) { if (++noisyRun >= 6) { autoCleanOn = true; calmRun = 0; Live500.setClean(true); } } else noisyRun = 0; }
+                else if (autoCleanOn) { autoCleanSec++; if (n825 < 30) { if (++calmRun >= 12) { autoCleanOn = false; noisyRun = 0; calmRun = 0; Live500.setClean(userClean); } } else calmRun = 0; }
+            }
             boolean noContact = !live || !Live500.everOn || Live500.openRun >= 1;
             if (noContact) { txt = "\u25cf  Contact: two fingertips resting lightly on the clasp"; colr = 0xFFE5534B; }
             else if (Double.isNaN(n825) && Double.isNaN(nz)) { txt = "\u25cf  Settling (the strap needs about 12 s)"; colr = 0xFFD4A72C; }
@@ -745,7 +758,7 @@ final class EcgPage {
                 String bt = String.format(Locale.UK, "Noise (between beats):  QRS band 8-25 Hz %.0f uV (usual 15-27)  \u00b7  25-48 Hz %.0f  \u00b7  50 Hz %.0f  \u00b7  drift %.0f", b[1], b[2], b[3], b[0]);
                 String hint = LiveBands.hint(b, lastOut != null && !Double.isNaN(lastOut.rUv) ? lastOut.rUv : Double.NaN);
                 if (hint == null && b[1] > 40) hint = "Broadband noise (muscle or vibration): relax the hand, rest the forearm, keep still";
-                bandsView.setText(bt + (hint != null && b[1] > 27 ? "\n" + hint : ""));
+                bandsView.setText(bt + (hint != null && b[1] > 27 ? "\n" + hint : "") + (autoCleanOn ? "\nDisplay smoothing raised while the signal is noisy (the recording is not changed)" : "") + (longNoisy >= 60 ? "\nStill noisy: let go, shake out your hand, rest the whole forearm for a minute, then stop and start again" : ""));
             } else bandsView.setText("Noise by band appears after about 10 s of beats");
             updateTarget(est);
             // the three rings: live heart rate, noise in the QRS band, the strap's own check (0 to 100 %)
@@ -869,6 +882,10 @@ final class EcgPage {
             ReadingNotes.put(d, startSec, "dur_s", String.format(Locale.US, "%.0f", dur));
             ReadingNotes.put(d, startSec, "stop", stopReason == 1 ? "auto" : stopReason == 2 ? "run" : stopReason == 3 ? "lift" : "hand");
             ReadingNotes.put(d, startSec, "clean_beats_live", String.valueOf(Live500.cleanBeats()));
+            if (pr.getBoolean("imu_live_test", false)) ReadingNotes.put(d, startSec, "imu_live_test", "1");      // 0.46.0 TEST: the live IMU request was on for this reading
+            ReadingNotes.put(d, startSec, "live_template_beats", String.valueOf(Live500.tplBeats));      // 0.46.0: beats behind the live template veto (0 = none)
+            ReadingNotes.put(d, startSec, "peaks_raw_live", String.valueOf(Live500.beatsSeen()));      // 0.46.0: raw detector peaks (accepted beats are beats_live); a large gap means a noisy reading
+            if (autoCleanSec > 0) ReadingNotes.put(d, startSec, "autoclean_s", String.valueOf(autoCleanSec));
             if (stopReason == 0 && stopTapMs > 0L) ReadingNotes.put(d, startSec, "stop_tap_s", String.format(Locale.US, "%.1f", (stopTapMs - startMs) / 1000.0));      // 0.45.0 (n): the tap; the reading ends 3 s later
             String[] bn = { "noise_0p5_5", "noise_8_25", "noise_25_48", "noise_mains", "noise_52_100" };
             for (int i = 0; i < 5; i++) if (!Double.isNaN(b[i])) ReadingNotes.put(d, startSec, bn[i], String.format(Locale.US, "%.1f", b[i]));

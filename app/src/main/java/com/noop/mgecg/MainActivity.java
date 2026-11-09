@@ -5645,6 +5645,11 @@ public class MainActivity extends NewLookActivity {
             mainH.postDelayed(() -> { if (ecgSessionRunning) { logCensus("with126"); logRaw("LIVE_RAW_STAGE off"); send(0x7E, 0, "TOGGLE_RAW_ECG_LIVE_OFF [TEST 126, staged]"); } }, 41000);
         }
         if (testGates.getBoolean("ecg_savefiltered", false)) mainH.postDelayed(() -> send(0x7F, 1, "TOGGLE_FILTERED_ECG_SAVE_ON [TEST 127]"), 1300);
+        if (testGates.getBoolean("imu_live_test", false)) {      // 0.46.0 TEST, off unless switched on in You > Settings: ask the strap for its live accelerometer and gyro stream (NOOP's order that works on hardware, decode log 102: START_RAW_DATA 81 [01], then TOGGLE_IMU_MODE 106 [01 01]) once the ECG has settled; the frames are saved raw for decoding
+            FrameMonitor.imuCapture = true; FrameMonitor.captureReset();
+            mainH.postDelayed(() -> { if (ecgSessionRunning) { logRaw("IMU_LIVE_TEST start (81 then 106)"); sendPuffinPayload(81, new byte[] { 1 }, "START_RAW_DATA [TEST IMU]"); } }, 15000);
+            mainH.postDelayed(() -> { if (ecgSessionRunning) sendPuffinPayload(106, new byte[] { 1, 1 }, "TOGGLE_IMU_MODE_ON [TEST IMU]"); }, 15600);
+        }
 
         mainH.postDelayed(() -> {
 
@@ -11348,12 +11353,22 @@ public class MainActivity extends NewLookActivity {
      * 0.22.1: the screen was closed (swipe-away, Back) while a reading ran. Nothing is watching it, the 10 minute auto-restart would keep it going for hours (27 Oct: 07:35 to 10:11)
      * and no report can come out of it, so it is stopped cleanly: generation stop, then the toggles off. No analysis (the screen that would show it is gone).
      */
+    /** 0.46.0 TEST: undo the live IMU request after an ECG stop (106 [00 00], then STOP_RAW_DATA 82, which the official WHOOP Labs code sends, decode log 1121), and stop the raw capture. No-op unless the test switch is on. */
+    private void imuTestStop() {
+        try {
+            if (!getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("imu_live_test", false)) return;
+            mainH.postDelayed(() -> sendPuffinPayload(106, new byte[] { 0, 0 }, "TOGGLE_IMU_MODE_OFF [TEST IMU]"), 1800);
+            mainH.postDelayed(() -> sendPuffinPayload(82, new byte[0], "STOP_RAW_DATA [TEST IMU]"), 2200);
+            mainH.postDelayed(() -> FrameMonitor.imuCapture = false, 6000);
+        } catch (Throwable ignored) { }
+    }
+
     private void stopEcgBecauseScreenClosed() {
         if (!ecgSessionRunning) return;
         ecgSessionRunning = false;
         try { if (ecgElapsedTicker != null) ecgUiHandler.removeCallbacks(ecgElapsedTicker); } catch (Throwable ignored) { }
         logRaw("ECG_STOP_SCREEN_CLOSED elapsedS=" + (System.currentTimeMillis() - ecgSessionStartMs) / 1000 + " (no screen; auto-restart would have kept it running)");
-        send(0x7C, 1, "ECG_STOP (screen closed)");
+        send(0x7C, 1, "ECG_STOP (screen closed)"); imuTestStop();
         mainH.postDelayed(() -> send(0x8B, 0, "TOGGLE_LABRADOR_FILTERED_OFF (screen closed)"), 400);
         mainH.postDelayed(() -> send(0x7D, 0, "TOGGLE_LABRADOR_RAW_SAVE_OFF (screen closed)"), 800);
         mainH.postDelayed(() -> send(0x7E, 0, "TOGGLE_RAW_ECG_LIVE_OFF (screen closed)"), 1200);
@@ -11373,7 +11388,7 @@ public class MainActivity extends NewLookActivity {
 
         // clean three-step stop, matching the confirmed sequence:
         // generation stop, then both toggles off
-        send(0x7C, 1, "MAIN_CONTROL_ECG_DATA_GENERATION_STOP (ECG screen)");
+        send(0x7C, 1, "MAIN_CONTROL_ECG_DATA_GENERATION_STOP (ECG screen)"); imuTestStop();
         mainH.postDelayed(() ->
                 send(0x8B, 0, "TOGGLE_LABRADOR_FILTERED_OFF (ECG screen)"),
                 400);

@@ -196,7 +196,7 @@ final class ProAnalysis {
             else if (cw <= 0.95) { R.ownCorr++; good = false; }
             else if (ampB[k] < 0.6 * ampMed || ampB[k] > 1.4 * ampMed) { R.ownAmp++; good = false; }
             else if (bDist.get(k)) { R.ownDisturbed++; good = false; }
-            else if (nzB[k] > 1.5 * nzMed) { R.ownNoisy++; good = false; }
+            else if (nzB[k] > 2.0 * nzMed) { R.ownNoisy++; good = false; }      // 0.46.0: 2.0 (was 1.5): at 1.5 the criterion removed 8 % of the beats with no measurable gain in the interval widths
             else good = true;
             if (good) { kept.add(shifted(beats.get(k), sh[k])); keptNz.add(nzB[k]); int gp = bpos.get(k); keptT.add(recT[Math.min(sec - 1, gp / 500)] + ((gp % 500) + sh[k]) / 500.0); }
         }

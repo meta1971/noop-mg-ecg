@@ -216,9 +216,9 @@ final class Live500 {
                 if (ninit >= INIT) { peakLevel = initMax; inited = true; }
             } else {
                 double thr = Math.max(THR_FRAC * peakLevel, EMIN);
-                if (c > thr && c >= env[p(gi - 2)] && c > ei && (gi - 1 - lastPeak) > REFRACT) {
+                if (c > thr && c >= env[p(gi - 2)] && c > ei && ((gi - 1 - lastPeak) > REFRACT || ((gi - 1 - lastPeak) > BYPASS_GAP && c > BYPASS_K * lastPeakC))) {
                     if (c < MAXJUMP * peakLevel) {
-                        addPeak(gi - 1); peakLevel = (1 - ALPHA) * peakLevel + ALPHA * c; bigCount = 0;
+                        addPeak(gi - 1); if (c >= 0.5 * peakLevel) peakLevel = (1 - ALPHA) * peakLevel + ALPHA * c; bigCount = 0;
                     } else if (++bigCount >= 3) {                      // three huge beats in a row: the level was too low, take it over
                         peakLevel = c; bigCount = 0; addPeak(gi - 1);
                     }
@@ -229,7 +229,11 @@ final class Live500 {
         }
     }
 
+    /** 0.46.0: noise-robust detection (found on 87 real readings, 9 Nov: above 25 uV of 8-25 Hz noise the live detector fired on ripple peaks and its 0.25 s lockout then blocked the real beat behind them; accepted-beat recall 0.67 at 25-30 uV, 0.61 above 40). (1) A candidate inside the lockout is still taken when its energy is BYPASS_K times that of the last peak and it is at least BYPASS_GAP samples (50 ms) later: a real QRS cannot follow a ripple peak by less than 0.25 s otherwise, and the pro stage keeps the tallest candidate of a group; (2) the peak level is only updated by candidates of at least half of it, so a run of ripple peaks cannot drag the threshold down. Tested off-phone on the live frames of 87 readings: accepted-beat recall 0.95 / 0.95 / 0.92 / 0.85 / 0.89 at noise up to 20 / 20-25 / 25-30 / 30-40 / over 40 uV, precision 0.99 / 0.97 / 0.91 / 0.89 / 0.83. */
+    static final double BYPASS_K = 2.5; static final int BYPASS_GAP = 25;
+    private static double lastPeakC; static volatile java.util.List<Long> testBeatSink;      // off-phone tests only
     private static void addPeak(long q) {
+        lastPeakC = env[p(q)];
         pend[pendTail & 63] = q; pendTail++;      // 0.27.2: queue the beat for its noise window
         pk[pkCount & 63] = q; pkCount++; if (firstPeak < 0) firstPeak = q; if (testPeakSink != null) testPeakSink.add(q);
         lastPeak = q;
@@ -368,6 +372,25 @@ final class Live500 {
     private static final double[] candMag = new double[40]; private static int candN; private static long lastAccApex;
     private static boolean havePend; private static long pendApex; private static double pendMag, pendAmp, pendPr;
     static final int GROUP = 175;                                    // peaks within 0.35 s are one beat candidate (the largest wins)
+    /** 0.46.0: PERSONAL-TEMPLATE VETO. tpl is the median beat of the personal beat bank (121 samples around the R apex, smoothed like the display trace, zero mean, unit norm), set before a reading; null = no bank yet, nothing changes. A beat candidate whose QRS part (+-120 ms of the display trace) correlates under TPL_VETO_RHO with it is not accepted unless it is taller than TPL_VETO_FRAC x the reference height. Leave-one-out test on the live frames of 87 real readings (9 Nov): accepted-beat precision at 25-30 / 30-40 / over 40 uV of noise 0.91 / 0.89 / 0.83 -> 0.96 / 0.92 / 0.98, recall 0.93 -> 0.93 (6 readings 0.5 to 5.7 points lower). */
+    static final double TPL_VETO_RHO = 0.5, TPL_VETO_FRAC = 1.2;
+    static volatile double[] tpl; static volatile int tplBeats;
+    /** t: 121 samples around the R apex of the personal median beat (full band, any scale); n = beats behind it. */
+    static void setTemplate(double[] t, int n) {
+        if (t == null || t.length != 121) { tpl = null; tplBeats = 0; return; }
+        double[] k = kFast; int h = k.length / 2; double[] sm = new double[121];
+        for (int i = 0; i < 121; i++) { double num = 0, den = 0; for (int j = -h; j <= h; j++) { int q = i + j; if (q < 0 || q >= 121) continue; num += k[j + h] * t[q]; den += k[j + h]; } sm[i] = num / den; }
+        double m = 0; for (double v : sm) m += v; m /= 121; double nn = 0; for (int i = 0; i < 121; i++) { sm[i] -= m; nn += sm[i] * sm[i]; } nn = Math.sqrt(nn);
+        if (!(nn > 0)) { tpl = null; tplBeats = 0; return; }
+        for (int i = 0; i < 121; i++) sm[i] /= nn; tpl = sm; tplBeats = n;
+    }
+    private static double tplRho(long apex, double sign) {
+        double[] T = tpl; if (T == null) return Double.NaN;
+        double[] w = new double[121]; double m = 0;
+        for (int j = 0; j < 121; j++) { double v = outv[p(apex - 60 + j)]; if (Double.isNaN(v)) return Double.NaN; w[j] = sign * v; m += w[j]; }
+        m /= 121; double nn = 0, dot = 0; for (int j = 0; j < 121; j++) { w[j] -= m; nn += w[j] * w[j]; dot += w[j] * T[j]; }
+        return nn > 0 ? dot / Math.sqrt(nn) : Double.NaN;
+    }
     private static void finishPending() {
         if (!havePend) return; havePend = false;
         candMag[candN % 40] = pendMag; candN++;
@@ -375,12 +398,14 @@ final class Live500 {
         int k = Math.min(candN, 40); double[] t = java.util.Arrays.copyOf(candMag, k); java.util.Arrays.sort(t);
         double ref = t[(9 * (k - 1)) / 10];                                                   // 90th percentile of the group heights: the true beats are the tall ones
         if (pendMag < ACCEPT_FRAC * ref) return;                                              // a T wave, a noise burst
+        { double rho = tplRho(pendApex, pendAmp >= 0 ? 1.0 : -1.0); if (!Double.isNaN(rho) && rho < TPL_VETO_RHO && pendMag < TPL_VETO_FRAC * ref) return; }      // 0.46.0: not shaped like this person's beat
         if (pendApex - lastAccApex < 150) return;                                             // closer than 0.3 s to the last beat
         lastAccApex = pendApex;
         int i = bN & (NB - 1);
         bApex[i] = pendApex; bPr[i] = pendPr; bPrDue[i] = due[p(pendApex - 42)]; bDue[i] = due[p(pendApex)]; bAmp[i] = (float) pendAmp; bOk[i] = true;
         bN++;
         LiveBands.beat(pendApex + 18);
+        if (testBeatSink != null) testBeatSink.add(pendApex);
     }
     static final double ACCEPT_FRAC = 0.45;                          // a beat candidate counts as a beat when its height is at least this fraction of the 90th percentile of the last 40 candidate heights (as the offline detector of decode log 50.4)
     private static void proReset() { bN = 0; pkDone = 0; winNext = 0; wins.clear(); candN = 0; havePend = false; lastAccApex = Long.MIN_VALUE / 2; cleanBeatN = 0; }
