@@ -1797,7 +1797,7 @@ public class HealthActivity extends Activity {
         gcNote.setPadding(0, 0, 0, dpi(6));
         st.addView(gcNote);
         st.addView(toggleRow("Live motion capture (test)", ctl, "imu_live_test", false), lp(-1, dpi(52), 0));
-        TextView imuNote = tv("Test, off by default. During an ECG reading it asks the strap for its live accelerometer and gyro stream (START_RAW_DATA, then TOGGLE_IMU_MODE, as the NOOP app does) and saves the frames raw for decoding. It could disturb the ECG: turn it off if a reading ever looks different, and tell me.", 11.5f, MUT, 400);
+        TextView imuNote = tv("Test, off by default. During an ECG reading it asks the strap for its live accelerometer and gyro stream (START_RAW_DATA, then TOGGLE_IMU_MODE, as the NOOP app does) and shows a motion warning on the reading page when your arm moves (0.46.1; the sensor cannot see finger tremor). The frames are kept in the live-frame file. It could disturb the ECG: turn it off if a reading ever looks different, and tell me.", 11.5f, MUT, 400);
         imuNote.setPadding(0, 0, 0, dpi(6));
         st.addView(imuNote);
         st.addView(toggleRow("Show the 500 Hz graph when live raw frames arrive", ctl, "ecg_view500"), lp(-1, dpi(52), 0));

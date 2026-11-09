@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.46.0-pro";
+    static final String VERSION = "0.48.0-pro";
     static final int REST = 0, RUN = 1, DONE = 2;
     private static final int BLUE = HealthViews.BLUE, INK = HealthViews.INK, MUT = HealthViews.MUT, GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE, VIOLET = HealthViews.VIOLET, DARK = 0xFF05131E;
 
@@ -758,7 +758,7 @@ final class EcgPage {
                 String bt = String.format(Locale.UK, "Noise (between beats):  QRS band 8-25 Hz %.0f uV (usual 15-27)  \u00b7  25-48 Hz %.0f  \u00b7  50 Hz %.0f  \u00b7  drift %.0f", b[1], b[2], b[3], b[0]);
                 String hint = LiveBands.hint(b, lastOut != null && !Double.isNaN(lastOut.rUv) ? lastOut.rUv : Double.NaN);
                 if (hint == null && b[1] > 40) hint = "Broadband noise (muscle or vibration): relax the hand, rest the forearm, keep still";
-                bandsView.setText(bt + (hint != null && b[1] > 27 ? "\n" + hint : "") + (autoCleanOn ? "\nDisplay smoothing raised while the signal is noisy (the recording is not changed)" : "") + (longNoisy >= 60 ? "\nStill noisy: let go, shake out your hand, rest the whole forearm for a minute, then stop and start again" : ""));
+                bandsView.setText(bt + (hint != null && b[1] > 27 ? "\n" + hint : "") + (autoCleanOn ? "\nDisplay smoothing raised while the signal is noisy (the recording is not changed)" : "") + (longNoisy >= 60 ? "\nStill noisy: let go, shake out your hand, rest the whole forearm for a minute, then stop and start again" : "") + (LiveMotion.fresh(now) ? (LiveMotion.moving() ? "\nMotion sensor: your arm is moving: hold still (a step in the trace is likely)" : "\nMotion sensor: still") : ""));
             } else bandsView.setText("Noise by band appears after about 10 s of beats");
             updateTarget(est);
             // the three rings: live heart rate, noise in the QRS band, the strap's own check (0 to 100 %)
@@ -882,7 +882,7 @@ final class EcgPage {
             ReadingNotes.put(d, startSec, "dur_s", String.format(Locale.US, "%.0f", dur));
             ReadingNotes.put(d, startSec, "stop", stopReason == 1 ? "auto" : stopReason == 2 ? "run" : stopReason == 3 ? "lift" : "hand");
             ReadingNotes.put(d, startSec, "clean_beats_live", String.valueOf(Live500.cleanBeats()));
-            if (pr.getBoolean("imu_live_test", false)) ReadingNotes.put(d, startSec, "imu_live_test", "1");      // 0.46.0 TEST: the live IMU request was on for this reading
+            if (pr.getBoolean("imu_live_test", false)) { ReadingNotes.put(d, startSec, "imu_live_test", "1"); ReadingNotes.put(d, startSec, "imu_frames_live", String.valueOf(LiveMotion.frames())); ReadingNotes.put(d, startSec, "motion_moving_s", String.valueOf(LiveMotion.movingSeconds())); }      // 0.46.0 TEST: the live IMU request was on for this reading; 0.46.1: frames seen and seconds above the movement thresholds
             ReadingNotes.put(d, startSec, "live_template_beats", String.valueOf(Live500.tplBeats));      // 0.46.0: beats behind the live template veto (0 = none)
             ReadingNotes.put(d, startSec, "peaks_raw_live", String.valueOf(Live500.beatsSeen()));      // 0.46.0: raw detector peaks (accepted beats are beats_live); a large gap means a noisy reading
             if (autoCleanSec > 0) ReadingNotes.put(d, startSec, "autoclean_s", String.valueOf(autoCleanSec));

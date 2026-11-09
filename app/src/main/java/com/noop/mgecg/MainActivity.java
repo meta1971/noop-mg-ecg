@@ -5646,7 +5646,7 @@ public class MainActivity extends NewLookActivity {
         }
         if (testGates.getBoolean("ecg_savefiltered", false)) mainH.postDelayed(() -> send(0x7F, 1, "TOGGLE_FILTERED_ECG_SAVE_ON [TEST 127]"), 1300);
         if (testGates.getBoolean("imu_live_test", false)) {      // 0.46.0 TEST, off unless switched on in You > Settings: ask the strap for its live accelerometer and gyro stream (NOOP's order that works on hardware, decode log 102: START_RAW_DATA 81 [01], then TOGGLE_IMU_MODE 106 [01 01]) once the ECG has settled; the frames are saved raw for decoding
-            FrameMonitor.imuCapture = true; FrameMonitor.captureReset();
+            FrameMonitor.imuCapture = true; FrameMonitor.captureReset(); LiveMotion.reset();
             mainH.postDelayed(() -> { if (ecgSessionRunning) { logRaw("IMU_LIVE_TEST start (81 then 106)"); sendPuffinPayload(81, new byte[] { 1 }, "START_RAW_DATA [TEST IMU]"); } }, 15000);
             mainH.postDelayed(() -> { if (ecgSessionRunning) sendPuffinPayload(106, new byte[] { 1, 1 }, "TOGGLE_IMU_MODE_ON [TEST IMU]"); }, 15600);
         }
@@ -9136,6 +9136,7 @@ public class MainActivity extends NewLookActivity {
             byte[] value) {
 
         if (value.length >= 1584 && value.length > 9 && (value[9] & 0xff) == 16) { handleLiveRawR16(value); return; }     // 0.16.0 TEST: live raw 500 Hz (command 126)
+        if (value.length == 1244 && (value[9] & 0xff) == 21) { LiveMotion.feed(value, System.currentTimeMillis()); saveRealtimeEcgFragment(value); return; }      // 0.46.1: live IMU (R21), only arrives when the test switch asked for it; kept in the live-frame file, not fed to the ECG fragment path
         realtimeEcgFragments.add(value);
         realtimeEcgTotalBytes += value.length;
         saveRealtimeEcgFragment(value);
@@ -10516,14 +10517,15 @@ public class MainActivity extends NewLookActivity {
         waveformCard.setPadding(4, 4, 4, 4);
 
         ecgWaveformView = new EcgWaveformView(this);
+        final int graphH = Math.max(520, (int) (getResources().getDisplayMetrics().density * 300f));      // 0.47.0: 300 dp (it was 520 px, about 130 dp on this phone)
         waveformCard.addView(ecgWaveformView,
-                new LinearLayout.LayoutParams(-1, 520));
+                new LinearLayout.LayoutParams(-1, graphH));
 
         // 0.17.0: the 500 Hz live graph (frames from command 126) sits in the same card; it is shown while live raw frames arrive
         live500View = new Live500View(this);
         live500View.setVisibility(View.GONE);
         live500View.setStaleCallback(() -> updateGraphSource(false));
-        waveformCard.addView(live500View, new LinearLayout.LayoutParams(-1, 520));
+        waveformCard.addView(live500View, new LinearLayout.LayoutParams(-1, graphH));
         graphSourceLabel = new TextView(this);
         graphSourceLabel.setTextSize(12);
         graphSourceLabel.setTextColor(0xFF8FA1BD);
@@ -11357,8 +11359,8 @@ public class MainActivity extends NewLookActivity {
     private void imuTestStop() {
         try {
             if (!getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("imu_live_test", false)) return;
-            mainH.postDelayed(() -> sendPuffinPayload(106, new byte[] { 0, 0 }, "TOGGLE_IMU_MODE_OFF [TEST IMU]"), 1800);
-            mainH.postDelayed(() -> sendPuffinPayload(82, new byte[0], "STOP_RAW_DATA [TEST IMU]"), 2200);
+            mainH.postDelayed(() -> sendPuffinPayload(106, new byte[] { 1, 0 }, "TOGGLE_IMU_MODE_OFF [TEST IMU]"), 1800);      // 0.46.1: [revision 01][argument 0]; 0.46.0 sent [00 00] and the strap answered "Invalid rev (0)", so the stream ran on for minutes
+            mainH.postDelayed(() -> sendPuffinPayload(82, new byte[] { 1 }, "STOP_RAW_DATA [TEST IMU]"), 2200);
             mainH.postDelayed(() -> FrameMonitor.imuCapture = false, 6000);
         } catch (Throwable ignored) { }
     }
