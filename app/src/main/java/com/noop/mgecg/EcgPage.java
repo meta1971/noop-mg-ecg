@@ -32,7 +32,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.51.0-pro";
+    static final String VERSION = "0.51.1-pro";
     /** 0.50.0: the notes, the Full pull manifest and build.gradle now give one version (the installed versionName; VERSION is the fallback). */
     private String appVer() { try { String v = a.getPackageManager().getPackageInfo(a.getPackageName(), 0).versionName; return v == null || v.isEmpty() ? VERSION : v; } catch (Throwable t) { return VERSION; } }
     static final int REST = 0, RUN = 1, DONE = 2;
@@ -132,13 +132,13 @@ final class EcgPage {
                 try { Thread.sleep(8000L); } catch (InterruptedException ignored) { }
                 try { for (java.util.Map.Entry<String, String> e : ConsoleCatalog.endReading(d, startSec, System.currentTimeMillis()).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); } catch (Throwable ignored) { }
                 try { long[] cs = StrapConfigScan.fileStats(d); if (cs != null) { ReadingNotes.put(d, startSec, "strap_cfg_keys", String.valueOf(cs[0])); ReadingNotes.put(d, startSec, "strap_cfg_flags", String.valueOf(cs[1])); ReadingNotes.put(d, startSec, "strap_cfg_scan_s", String.valueOf(cs[2])); } } catch (Throwable ignored) { }
-                double[] meanFull = null;
+                double[] meanFull = null; List<byte[]> f16keep = null;
                 try {
                     File bin = ProReportMaker.findBin(d, startSec);
                     if (bin != null && bin.length() < 80L * 1024 * 1024) {
                         byte[] b = java.nio.file.Files.readAllBytes(bin.toPath());
                         try {
-                            SpectrumBlock.Out so = SpectrumBlock.reading(SpectrumBlock.r16(b));
+                            f16keep = SpectrumBlock.r16(b); SpectrumBlock.Out so = SpectrumBlock.reading(f16keep);
                             for (java.util.Map.Entry<String, String> e : so.notes.entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue());
                             if (so.psd != null) try (java.io.FileWriter w = new java.io.FileWriter(new File(d, "ecg_psd_" + startSec + ".csv"), false)) { w.write(SpectrumBlock.csv(so)); }
                         } catch (Throwable e) { ReadingNotes.put(d, startSec, "psd_skipped", "error_" + e.getClass().getSimpleName()); }
@@ -148,7 +148,11 @@ final class EcgPage {
                 } catch (Throwable ignored) { }
                 for (int i = 0; i < 40; i++) {                                     // event 118 comes about 5 s after the reading, stored by the next pull
                     List<StrapEvents.Raw> ev = StrapEvents.raw(ctx, 118, startSec - 20, startSec + (long) dur + 150, 5);
-                    if (!ev.isEmpty()) { for (java.util.Map.Entry<String, String> e : CrossChecks.ev118(ev.get(ev.size() - 1).in, meanFull).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); break; }
+                    if (!ev.isEmpty()) {
+                        for (java.util.Map.Entry<String, String> e : CrossChecks.ev118(ev.get(ev.size() - 1).in, meanFull).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue());
+                        try { if (f16keep != null) for (java.util.Map.Entry<String, String> e : CrossChecks.ev118Window(ev.get(ev.size() - 1).in, f16keep).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); } catch (Throwable ignored) { }      // 0.51.1
+                        break;
+                    }
                     try { Thread.sleep(5000L); } catch (InterruptedException ignored) { }
                 }
                 long wait = endMs + 160000L - System.currentTimeMillis(); if (wait > 0) try { Thread.sleep(wait); } catch (InterruptedException ignored) { }
