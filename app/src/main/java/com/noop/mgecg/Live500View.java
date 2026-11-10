@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.48.0 (9 Nov 2026): polished look. Slate grid instead of the maroon one, a soft plot background, a trace that fades in from the left with a layered glow and a bright leading dot, small amber R ticks, rounded card, header tiles (heart rate with a pulse dot, small-caps labels over bold values, a progress bar for the clean beats), a footer for the picture notes and the noise advice. Everything is still outside the waveform: header above, footer below.
+// FILE VERSION 0.52.0 (10 Nov 2026): fit-to-beat scale with hold (LiveScale), the scroll on the screen-refresh clock (FrameClock + Choreographer), no wait on the data thread, one glow pass. FILE VERSION 0.48.0 (9 Nov 2026): polished look. Slate grid instead of the maroon one, a soft plot background, a trace that fades in from the left with a layered glow and a bright leading dot, small amber R ticks, rounded card, header tiles (heart rate with a pulse dot, small-caps labels over bold values, a progress bar for the clean beats), a footer for the picture notes and the noise advice. Everything is still outside the waveform: header above, footer below.
 // FILE VERSION 0.47.0 (9 Nov 2026): a calmer, bigger graph. The waveform has its own plot area; the information sits in a band above and a band below it instead of over the trace. The scroll is snapped to whole pixels (no sub-pixel shimmer), the scale eases smoothly (fast to open, slow to close, with a dead band), the per-frame allocations are gone.
 // FILE VERSION 0.44.0 (7 Nov 2026): the trace is coloured by the strap's per-second quality (3 normal, 2 amber, 0-1 grey, lead-off gap) with a small legend; tap opens the landscape full screen (long press switches auto / fixed scale); own window length for the full screen.
 
@@ -13,6 +13,7 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Shader;
+import android.view.Choreographer;
 import android.view.View;
 
 /**
@@ -41,8 +42,10 @@ public class Live500View extends View {
     private double winOverrideMs;                          // 0.44.0: the full screen shows 10 s; 0 = the setting
     private boolean openFull = true;                       // 0.44.0: tap opens the full screen (there a tap switches the scale)
     private boolean autoScale = true;
-    private float yMin = -0.5f, yMax = 1.0f;          // millivolts, smoothed
-    private long lastScaleMs, lastEaseMs; private float tgtMax = 1.0f, tgtMin = -0.5f;
+    private final LiveScale sc = new LiveScale();         // 0.52.0 items 1-2: fit to beat and hold on baseline unrest
+    private final FrameClock clock = new FrameClock();    // 0.52.0 item 4a: the scroll runs on the screen-refresh time, not on the moment onDraw happens to run
+    private long lastScaleMs, frameNs; private boolean fcActive;
+    private int snapM, nbCache; private boolean haveSnap, liveCache; private double dueCache = Double.NaN;      // 0.52.0 item 4b: what the last frame had, reused while the data thread holds the lock
     private Runnable staleCb;
     private boolean wasLive;
     private long staleSince;
@@ -109,7 +112,7 @@ public class Live500View extends View {
         border.setColor(p ? 0xFFD9C9C9 : 0xFF1C2431);
         int tc = p ? 0xFF14171F : 0xFF35E0A1, ac = p ? 0xFFC77D0A : 0xFFF2B84B, gc = p ? 0xFF9AA0AB : 0xFF7C8798;
         trace.setColor(tc); trace.setStrokeWidth(1.8f * dp);
-        glow.setColor(p ? 0x00000000 : a(tc, 54)); glow.setStrokeWidth(4.2f * dp);
+        glow.setColor(p ? 0x00000000 : a(tc, 48)); glow.setStrokeWidth(5.4f * dp);      // 0.52.0: one glow pass instead of two
         glow2.setColor(p ? 0x00000000 : a(tc, 22)); glow2.setStrokeWidth(8f * dp);
         label.setColor(p ? 0xFF4A4F5C : 0xFF8795AB);
         rr.setColor(p ? 0xFF6A5A5A : 0xFF73839C);
@@ -147,18 +150,14 @@ public class Live500View extends View {
         if (Float.isNaN(h0)) h0 = Math.max(hi, -lo);
         qrsMv = qrsMv <= 0f ? h0 : qrsMv * 0.6f + h0 * 0.4f;
         if (!autoScale) return;
-        // 0.47.0: only the TARGETS change here; easeScale() moves the visible scale a little every frame. A target opens at once but closes only when it is more than 12 % of the range away (a dead band: no hunting).
-        float wantMax = Math.max(0.8f, hi * 1.25f), wantMin = Math.min(-0.4f, lo * 1.4f), span0 = Math.max(0.5f, tgtMax - tgtMin);
-        if (wantMax > tgtMax || wantMax < tgtMax - 0.12f * span0) tgtMax = wantMax;
-        if (wantMin < tgtMin || wantMin > tgtMin + 0.12f * span0) tgtMin = wantMin;
+        // 0.52.0: LiveScale. The floors follow the R height (fit to beat); while the baseline moves by more than max(0.25 mV, 0.35 x R) between the seconds of the window the scale may only open (hold, 4 s).
+        float un = 0f; try { un = LiveScale.unrestMv(v, t, m, tmp); } catch (RuntimeException ignored) { }
+        sc.update(now, hi, lo, qrsMv, un);
     }
 
     private void easeScale(long now) {
         if (!autoScale) return;
-        float dt = lastEaseMs == 0 ? 0.016f : Math.max(0.001f, Math.min(0.1f, (now - lastEaseMs) / 1000f)); lastEaseMs = now;
-        float kOpen = 1f - (float) Math.exp(-dt / 0.12f), kClose = 1f - (float) Math.exp(-dt / 1.6f);
-        yMax += (tgtMax - yMax) * (tgtMax > yMax ? kOpen : kClose);
-        yMin += (tgtMin - yMin) * (tgtMin < yMin ? kOpen : kClose);
+        sc.ease(now);
     }
 
     /** Time to x. nowQ is the clock snapped to whole pixels of scroll (win / width ms), so every frame is an exact whole-pixel shift of the last. */
@@ -171,7 +170,7 @@ public class Live500View extends View {
 
     /** The header strings, rebuilt four times a second (no per-frame formatting). */
     private void refreshHeader(long now) {
-        if (now - hdrMs < 250) return; hdrMs = now;
+        if (Live500.busy || now - hdrMs < 250) return; hdrMs = now;
         java.util.Locale L = java.util.Locale.UK;
         double rrS = Live500.medianRrS();
         hrS = (rrS > 0.25 && rrS < 2.5) ? String.format(L, "%.0f", 60.0 / rrS) : "--";
@@ -191,9 +190,20 @@ public class Live500View extends View {
         }
     }
 
+    private final Choreographer.FrameCallback fcb = new Choreographer.FrameCallback() {
+        @Override public void doFrame(long ns) { frameNs = ns; if (fcActive) { invalidate(); Choreographer.getInstance().postFrameCallback(this); } }
+    };
+    private void startFrames() { if (fcActive) return; fcActive = true; clock.reset(); try { Choreographer.getInstance().postFrameCallback(fcb); } catch (Throwable t) { fcActive = false; postInvalidateOnAnimation(); } }
+    private void stopFrames() { fcActive = false; try { Choreographer.getInstance().removeFrameCallback(fcb); } catch (Throwable ignored) { } }
+    @Override protected void onAttachedToWindow() { super.onAttachedToWindow(); startFrames(); }
+    @Override protected void onDetachedFromWindow() { stopFrames(); super.onDetachedFromWindow(); }
+    @Override public void onVisibilityAggregated(boolean isVisible) { super.onVisibilityAggregated(isVisible); if (isVisible) startFrames(); else stopFrames(); }
+
     @Override protected void onDraw(Canvas canvas) {
         int w = getWidth(), h = getHeight();
-        long now = System.currentTimeMillis();
+        if (!fcActive) startFrames();
+        final double nowD = clock.wallMs(frameNs != 0 ? frameNs : System.nanoTime(), System.currentTimeMillis());      // 0.52.0 item 4a
+        long now = (long) nowD; final boolean busyNow = Live500.busy;                                                     // 0.52.0 item 4b
         final double win = winOverrideMs > 0 ? winOverrideMs : windowMs;
         theme(); shaders(w, h);
         float radius = winOverrideMs > 0 ? 0f : 14f * dp;
@@ -203,10 +213,10 @@ public class Live500View extends View {
         float rightPad = winOverrideMs > 0 ? 58f * dp : 12f * dp;                  // the full screen has its close button top right
         float headH = Math.min(58f * dp, 0.22f * h), footH = Math.min(22f * dp, 0.09f * h);
         pt = headH; pb = h - footH; ph = Math.max(10f, pb - pt);
-        int m = Live500.snapshotQ(now, win, v, t, qv);
+        int m; if (busyNow && haveSnap) m = snapM; else { m = Live500.snapshotQ(now, win, v, t, qv); snapM = m; haveSnap = true; }
         updateScale(now, m); easeScale(now);
-        float lo = autoScale ? yMin : -1f, hi = autoScale ? yMax : 2f, span = Math.max(0.3f, hi - lo);
-        double msPerPx = win / Math.max(1, w); final double nowQ = Math.floor(now / msPerPx) * msPerPx;
+        float lo = autoScale ? sc.yMin : -1f, hi = autoScale ? sc.yMax : 2f, span = Math.max(0.3f, hi - lo);
+        double msPerPx = win / Math.max(1, w); final double nowQ = Math.floor(nowD / msPerPx) * msPerPx;
 
         // ---- plot area
         canvas.save(); canvas.clipRect(0, pt, w, pb);
@@ -243,13 +253,13 @@ public class Live500View extends View {
             else tp.lineTo(x, y);
             pvx = x; pvy = y; lastCls = cls;
         }
-        if (!paper) { glow2.setShader(shT); glow.setShader(shT); canvas.drawPath(path, glow2); canvas.drawPath(path, glow); }
+        if (!paper) { glow.setShader(shT); canvas.drawPath(path, glow); }
         if (qc) { trG.setShader(shG); trA.setShader(shA); canvas.drawPath(pathG, trG); canvas.drawPath(pathA, trA); }
         trace.setShader(shT); canvas.drawPath(path, trace);
 
         boolean pro = Live500.pro; lastRrMs = Double.NaN;
         if (pro && m > 0) {
-            int nb = Live500.proBeats(now, win, bt, ba, bo);
+            int nb = busyNow ? nbCache : Live500.proBeats(now, win, bt, ba, bo); nbCache = nb;
             for (int i = 0; i < nb; i++) {                                                   // dim the beats that do not match the typical shape
                 if (!bo[i] && !sweep) { float xa = xOf(bt[i] - 250, nowQ, w, win), xb = xOf(bt[i] + 450, nowQ, w, win); canvas.drawRect(Math.max(0, xa), pt, Math.min(w, xb), pb, veil); }
             }
@@ -276,7 +286,7 @@ public class Live500View extends View {
         calPath.reset(); calPath.moveTo(px, y0); calPath.lineTo(px + 5f * dp, y0); calPath.lineTo(px + 5f * dp, y1); calPath.lineTo(px + 5f * dp + pw, y1); calPath.lineTo(px + 5f * dp + pw, y0); calPath.lineTo(px + 10f * dp + pw, y0);
         canvas.drawPath(calPath, cal);
 
-        boolean live = Live500.isLive(now);
+        boolean live = busyNow ? liveCache : Live500.isLive(now); liveCache = live;
         if (live) { wasLive = true; staleSince = 0; }
         else if (wasLive) {
             if (staleSince == 0) staleSince = now;
@@ -294,7 +304,7 @@ public class Live500View extends View {
         canvas.drawRect(0, 0, w, headH, hdrBg);
         canvas.drawLine(0, headH, w, headH, divP);
         float pad = 12f * dp, base = headH - 13f * dp;
-        double due = Live500.newestBeatDue(now); float pulse = 0f; if (!Double.isNaN(due)) { double age = now - due; if (age >= 0 && age < 420) pulse = (float) (1.0 - age / 420.0); }
+        double due = busyNow ? dueCache : Live500.newestBeatDue(now); dueCache = due; float pulse = 0f; if (!Double.isNaN(due)) { double age = now - due; if (age >= 0 && age < 420) pulse = (float) (1.0 - age / 420.0); }
         halo.setColor(a(tcol, (int) (70 * pulse))); canvas.drawCircle(pad + 5f * dp, headH * 0.52f, (5f + 5f * pulse) * dp, halo);
         dot.setColor(tcol); canvas.drawCircle(pad + 5f * dp, headH * 0.52f, (3.4f + 1.2f * pulse) * dp, dot);
         float x = pad + 16f * dp;
@@ -330,6 +340,5 @@ public class Live500View extends View {
         }
         canvas.restore();
         if (radius > 0f) { rect.set(0.6f * dp, 0.6f * dp, w - 0.6f * dp, h - 0.6f * dp); canvas.drawRoundRect(rect, radius, radius, border); } else canvas.drawRect(1, 1, w - 1, h - 1, border);
-        postInvalidateOnAnimation();
     }
 }

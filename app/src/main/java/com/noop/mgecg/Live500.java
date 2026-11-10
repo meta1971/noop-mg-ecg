@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.44.0 (7 Nov 2026): strap quality byte kept per sample (snapshotQ, quality colouring of the live trace), clean view (slow Gaussian 20 ms), newestBeatDue (heart-rate pulse); 0.41.0 (5 Nov 2026): pro display (PR-point spline baseline, beat windows, averaged beat, live noise by band, verdict timing, contact value); 0.18.0 (27 Oct): the 500 Hz live graph data, with QRS-aware smoothing. Pure Java (no Android), tested off the phone against a scipy reference.
+// FILE VERSION 0.52.0 (10 Nov 2026): smoothing AUTO in mode 2 (NoiseTier), busy flag for the graph. FILE VERSION 0.44.0 (7 Nov 2026): strap quality byte kept per sample (snapshotQ, quality colouring of the live trace), clean view (slow Gaussian 20 ms), newestBeatDue (heart-rate pulse); 0.41.0 (5 Nov 2026): pro display (PR-point spline baseline, beat windows, averaged beat, live noise by band, verdict timing, contact value); 0.18.0 (27 Oct): the 500 Hz live graph data, with QRS-aware smoothing. Pure Java (no Android), tested off the phone against a scipy reference.
 
 /**
  * Turns the live raw ECG frames (type 43, layout 16, command 126) into a display trace.
@@ -98,7 +98,9 @@ final class Live500 {
     private static int pkCount;
     private static long firstPeak = -1;
     // smoothing
-    private static int mode = 2;                                // 0 off (no smoothing between beats), 1 light, 2 smooth
+    private static int mode = 2;                                // 0 off (no smoothing between beats), 1 light, 2 smooth (0.52.0: AUTO, the slow sigma follows the live noise)
+    private static final NoiseTier tier = new NoiseTier();       // 0.52.0 item 3: 8 / 12 / 20 ms from the live 8-25 Hz noise, mode 2 only
+    static volatile boolean busy;                                   // 0.52.0 item 4b: true while feedFrame holds the lock; the graph then reuses what it has instead of waiting
     private static double[] kFast = kernel(SIGMA_FAST_MS), kSlow = kernel(12.0);
 
     private static double[] kernel(double sigmaMs) {
@@ -113,8 +115,15 @@ final class Live500 {
     static volatile boolean cleanView;
     static final double SIGMA_CLEAN_MS = 20.0;
     static void setClean(boolean on) { synchronized (LOCK) { cleanView = on; kSlow = kernel(slowSigmaMs()); } }
-    private static double slowSigmaMs() { return cleanView ? SIGMA_CLEAN_MS : mode == 0 ? SIGMA_FAST_MS : mode == 1 ? 8.0 : 12.0; }
-    static String modeLabel() { synchronized (LOCK) { return cleanView ? "smoothed (clean view)" : mode == 0 ? "not smoothed" : mode == 1 ? "light smoothing" : "smoothed"; } }
+    private static double slowSigmaMs() { return cleanView ? SIGMA_CLEAN_MS : mode == 0 ? SIGMA_FAST_MS : mode == 1 ? 8.0 : tier.sigmaMs(); }
+    static String modeLabel() { synchronized (LOCK) { return cleanView ? "smoothed (clean view)" : mode == 0 ? "not smoothed" : mode == 1 ? "light smoothing" : "smoothed, auto " + (int) tier.sigmaMs() + " ms"; } }
+    /** 0.52.0 item 3, called under LOCK after each frame: in mode 2 the slow Gaussian follows the live noise (quiet 8 ms, fair 12 ms, noisy 20 ms); the kernel is rebuilt only when the tier changes. */
+    private static void autoSmooth(long nowMs) {
+        if (mode != 2 || cleanView) return;
+        double[] b = LiveBands.rms(); double nz = b == null ? Double.NaN : b[1];
+        int before = tier.tier(); tier.update(nz, nowMs);
+        if (tier.tier() != before) kSlow = kernel(slowSigmaMs());
+    }
 
     // 0.25.1: electrode contact seen in the live frames (about one frame a second)
     static volatile int openRun; static volatile boolean everOn; static volatile long startMs;
@@ -167,7 +176,7 @@ final class Live500 {
             nAbs = 0; procUpTo = 0; primed = false; haveOffset = false; frames = 0; lastFrameMs = 0; lastCounter = -1; nextDue = Double.NaN; lastDueMs = 0;
             front.clear(); band.clear(); z1 = 0; z2 = 0; java.util.Arrays.fill(ebuf, 0); esum = 0; eidx = 0; ninit = 0; lastPeak = -1_000_000_000L; bigCount = 0;
             peakLevel = 0; initMax = 0; inited = false; pkCount = 0; firstPeak = -1;
-            bufferMs = pro ? PRO_BUFFER_MS : BUFFER_MS; proReset(); LiveBands.reset();
+            bufferMs = pro ? PRO_BUFFER_MS : BUFFER_MS; proReset(); LiveBands.reset(); tier.reset(); kSlow = kernel(slowSigmaMs());
         }
         sessionMs = System.currentTimeMillis(); verdictMs = 0; hrvMs = 0; hrvVal = 0; verdictCode = 0; verdictHr = 0; lastHrv = 65535; synchronized (ZL) { zList.clear(); }
     }
@@ -299,6 +308,7 @@ final class Live500 {
         long ctr = u32(f, 11);
         double recMs = (u32(f, 15) + (((f[19] & 0xFF) | ((f[20] & 0xFF) << 8)) / 32768.0)) * 1000.0;
         synchronized (LOCK) {
+            busy = true; try {
             double off = arrivalMs - recMs;
             if (!haveOffset) { offsetMs = off; haveOffset = true; } else offsetMs += (off - offsetMs) * EMA;
             boolean contiguous = lastCounter >= 0 && ctr == lastCounter + 1;
@@ -329,6 +339,8 @@ final class Live500 {
             invalidInFrame = bad;
             frames++; lastFrameMs = arrivalMs;
             process();
+            autoSmooth(arrivalMs);
+            } finally { busy = false; }
         }
         return n;
     }
