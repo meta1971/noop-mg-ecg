@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.50.0-pro";
+    static final String VERSION = "0.50.1-pro";
     /** 0.50.0: the notes, the Full pull manifest and build.gradle now give one version (the installed versionName; VERSION is the fallback). */
     private String appVer() { try { String v = a.getPackageManager().getPackageInfo(a.getPackageName(), 0).versionName; return v == null || v.isEmpty() ? VERSION : v; } catch (Throwable t) { return VERSION; } }
     static final int REST = 0, RUN = 1, DONE = 2;

@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.50.1 (10 Nov 2026): the one-time rhythm_win backfill no longer starts after a history ingest (it slowed the opening screen); it starts when the Trends screen is opened, and waits 40 ms between 6-hour blocks.
 // FILE VERSION 0.50.0 (10 Nov 2026): the rule and the alert keep the 0.30.0 behaviour and gain what the held data showed (decode log 141): a window also needs a clean pulse signal (median pulse SNR 20 or more), little movement, no activity flag, lock lost in at most 10 % of seconds and an interval median that matches the heart rate (double-counted beats); an alert whose windows ended during sleep waits until the strap says awake (or 9 hours); every window is stored in daylog.db table rhythm_win (Trends row, export mg_rhythm_screen.csv).
 // FILE VERSION 0.30.0 (31 Oct 2026): irregular rhythm watch (rest gate = the strap's own STILL flag). Runs after every history ingest of the day logger. Research only, not a medical device.
 // Rule (settled on the public AF database and on 24 h of this strap, see the screen text): per-second records whose pulse lock is lost or whose byte 33 high nibble
@@ -145,7 +146,6 @@ final class IrregularWatch {
                 p.edit().putLong("lastAlertEnd", alertEnd).putLong("pendEnd", alertEnd).putLong("pendStart", ar[3]).putString("alerts", alertEnd + "," + ar[1] + "," + aHr + "\n" + hist).apply();
             }
             deliver(c, p, recs, now);
-            if (!p.getBoolean("backfilled50", false)) startBackfill(c);
         } catch (Throwable ignored) { }
     }
 
@@ -173,6 +173,8 @@ final class IrregularWatch {
 
     private static volatile boolean backfilling = false;
 
+    static boolean backfillDone(Context c) { return sp(c).getBoolean("backfilled50", false); }
+
     /** 0.50.0: one-time background fill of rhythm_win from the stored per-second records (last 100 days, 6-hour blocks, same rule as the live check). */
     static void startBackfill(final Context c) {
         if (backfilling) return; backfilling = true;
@@ -187,7 +189,7 @@ final class IrregularWatch {
                     Cursor cu = d.rawQuery("SELECT rec FROM r18 WHERE ts >= ? AND ts < ? ORDER BY ts", new String[] { String.valueOf(b), String.valueOf(b + B) });
                     try { while (cu.moveToNext()) { byte[] x = cu.getBlob(0); if (x != null) rs.add(x); } } finally { cu.close(); }
                     if (rs.size() >= MIN_RECS) store(c, windows(rs));
-                    try { Thread.sleep(5); } catch (InterruptedException ie) { return; }
+                    try { Thread.sleep(40); } catch (InterruptedException ie) { return; }
                 }
                 sp(c).edit().putBoolean("backfilled50", true).apply();
             } catch (Throwable ignored) { } finally { backfilling = false; }

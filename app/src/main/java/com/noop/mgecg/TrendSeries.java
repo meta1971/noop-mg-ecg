@@ -59,6 +59,7 @@ final class TrendSeries {
 
     /** 0.50.0: Sleep pulse scatter, one point per night: the median normalised successive difference of the optical pulse intervals (percent) over the night's usable asleep windows (IrregularWatch, at least 6 of them). Neutral colouring: it is YOUR line that matters. Reads daylog.db: call off the main thread when the table is large. */
     static Series rhythm(Context c, HealthModel.Data d) {
+        try { if (!IrregularWatch.backfillDone(c)) IrregularWatch.startBackfill(c); } catch (Throwable ignored) { }      // 0.50.1: the one-time fill of the stored windows runs in the background from here (reopen Trends when it has finished)
         List<TodayModel.NightStat> all = Trends.allNights(d);
         Series s = new Series("Sleep pulse scatter", "%", "NIGHTS", 1, 0xFF7FD6FF, 0, 0.8, 0.4, false);
         List<double[]> pts = new ArrayList<>();
