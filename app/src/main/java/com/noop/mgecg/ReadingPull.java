@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// 0.51.0 (10 Nov 2026): the Full pull also carries ecg_psd_<start>.csv, console_new.txt, console_templates.csv, afe_regs.csv and strap_config.csv.
+
 // FILE VERSION 0.43.0 (6 Nov 2026): events.txt is collected OUTSIDE the 1.5 MB cap (the cap now limits only app_log_excerpt.txt; before, readings over about 2.5 min lost the end events 118 / 119 / 124 stop); make() takes a callback and says "Saved: ready to upload"; makeBatch() writes ONE zip with a folder per reading (Home: Send all new). 0.25.0 (29 Oct 2026): "Full pull" of ONE reading: a small zip with everything the app holds for that reading (live raw frames, the stored 500 Hz, 100 Hz, per-second, 50 Hz optical, 100 Hz motion and pulse records, events, log lines, H10 files, the report), with readable CSV copies. Research only.
 
 import android.app.Activity;
@@ -94,15 +96,29 @@ final class ReadingPull {
         if (html != null && html.exists() && html.length() < 5000000) out.put(html.getName(), Files.readAllBytes(html.toPath()));
         String stamp = html == null ? "" : html.getName().replaceAll("[^0-9]", ""); File png = new File(dir, "ecg_strip_" + stamp + ".png"); if (png.exists() && png.length() < 5000000) out.put(png.getName(), Files.readAllBytes(png.toPath()));
         for (File hf : ProReportMaker.findH10All(dir, t0, (int) (t1 - t0) + 1)) if (hf.length() < 40000000) out.put(hf.getName(), Files.readAllBytes(hf.toPath()));      // 0.34.1: every H10 file that overlaps the reading
+        try {                                                                                      // 0.51.0: spectrum of this reading, console catalogue, AFE register lines, strap settings scan
+            File[] rf = dir.listFiles();
+            if (rf != null) for (File f : rf) {
+                String n = f.getName(); long s = -1;
+                if (n.startsWith("ecg_psd_") && n.endsWith(".csv")) s = parseLong(n.substring(8, n.length() - 4));
+                else if (n.startsWith("console_new_") && n.endsWith(".txt")) s = parseLong(n.substring(12, n.length() - 4));
+                if (s > 0 && Math.abs(s - unix) <= 30 && f.length() < 200000) out.put(n.startsWith("console_new_") ? "console_new.txt" : n, Files.readAllBytes(f.toPath()));
+            }
+            File cf = new File(dir, StrapConfigScan.FILE); if (cf.exists() && cf.length() < 200000) out.put(cf.getName(), Files.readAllBytes(cf.toPath()));
+            File ct = new File(dir, ConsoleCatalog.FILE); if (ct.exists() && ct.length() < 150000) out.put(ct.getName(), Files.readAllBytes(ct.toPath()));
+            File ar = new File(dir, ConsoleCatalog.REGS); if (ar.exists() && ar.length() < 200000) out.put(ar.getName(), Files.readAllBytes(ar.toPath()));
+        } catch (Throwable ignored) { }
         StringBuilder con = new StringBuilder(); int lastC = -1;
         java.text.SimpleDateFormat dayF = new java.text.SimpleDateFormat("yyyyMMdd", Locale.UK); String day0 = dayF.format(new java.util.Date((long) (t0 * 1000))), day1 = dayF.format(new java.util.Date((long) (t1 * 1000 + 600000)));      // 0.25.3: the capture files of the reading's day only
         if (fs != null) for (File f : fs) { String n = f.getName(); if (n.startsWith("unknown_frames_") && n.endsWith(".hex") && f.length() < 6000000 && (n.contains(day0) || n.contains(day1))) {
             out.put(n, Files.readAllBytes(f.toPath()));
             try (BufferedReader br = new BufferedReader(new FileReader(f))) { String ln; while ((ln = br.readLine()) != null) { String[] c = ln.split(" "); if (c.length < 4 || c[3].length() != 152) continue; byte[] b = new byte[76]; for (int i = 0; i < 76; i++) b[i] = (byte) Integer.parseInt(c[3].substring(2 * i, 2 * i + 2), 16); if ((b[8] & 0xFF) != 50) continue;
                 int cc = b[9] & 0xFF; if (lastC >= 0 && ((cc - lastC) & 0xFF) != 1) con.append("\n[frames missing]\n"); lastC = cc; int e = 21; while (e < 71 && b[e] != 0) e++; con.append(new String(b, 21, e - 21, "ISO-8859-1")); } } catch (Exception ignored) { } } }
-        if (con.length() > 0) out.put("firmware_console.txt", con.toString().replaceAll("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", "XX:XX:XX:XX:XX:XX").replaceAll("5AM[0-9]{6}", "5AM******").getBytes("UTF-8"));
+        if (con.length() > 0) out.put("firmware_console.txt", con.toString().replaceAll("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", "XX:XX:XX:XX:XX:XX").replaceAll("5AM[0-9]{6}", "5AM******").replaceAll("(?<![0-9A-Fa-f])[0-9A-Fa-f]{12}(?![0-9A-Fa-f])", "XXXXXXXXXXXX").getBytes("UTF-8"));      // 0.51.0: also the colon-less Bluetooth address of the "NFC COMMS: BT addr" line
         return out;
     }
+
+    private static long parseLong(String s) { try { return Long.parseLong(s); } catch (NumberFormatException e) { return -1; } }
 
     static final String README = "Columns and units (all times are strap time, unix seconds).\n"
         + "ecg_500hz_live.csv: the live 500 Hz ECG (layout 16), microvolts at the design scale 0.0621 uV per count; lead_on 1 = electrode contact, fast_recovery 1 = the strap's recovery flag, rail 1 = amplifier limit; quality = the strap's 0 to 3 per second.\n"
@@ -114,7 +130,10 @@ final class ReadingPull {
         + "pulse_packets_r26_hex.csv: raw pulse information packets (layout 26) as hex.\n"
         + "events.txt and app_log_excerpt.txt: the strap events and the app log lines around the reading (bulk packet lines left out).\n"
         + "firmware_console.txt: the strap firmware's own log (type 50 frames joined; each frame carries 50 characters), addresses masked: command names, ECG start sequence, state changes, battery, history pulls.\n"
-        + "unknown_frames_*.hex: raw copies of frames of kinds that are not decoded yet (console log type 50, the device-info channel); one frame per line: time ms, channel, length, hex.\n";
+        + "unknown_frames_*.hex: raw copies of frames of kinds that are not decoded yet (console log type 50, the device-info channel); one frame per line: time ms, channel, length, hex.\n"
+        + "ecg_psd_<start>.csv (0.51.0): Welch spectrum of the reading at the design scale 0.0621 uV per count, uV^2/Hz per 1 Hz bin (psd = after the mean beat is subtracted, psd_full = without); reading_notes psd_* hold the band densities in uV/rtHz.\n"
+        + "console_templates.csv / console_new.txt / afe_regs.csv (0.51.0): firmware console lines as templates (numbers replaced by #), the templates first seen during this reading, and MAX86176 register lines (strap time, name, value).\n"
+        + "strap_config.csv (0.51.0): the newest read-only scan of the strap's setting names and values (115 / 116 / 121, 117 / 118 / 128), raw replies in hex.\n";
 
     /** Newest saved zip (content Uri in this app's own Downloads entry), for the long-press share sheet. */
     static volatile Uri lastUri;

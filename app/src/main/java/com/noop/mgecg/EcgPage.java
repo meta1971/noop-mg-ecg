@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// 0.51.0 (10 Nov 2026): silent research notes after each reading (console catalogue, spectrum block, R17 / R16 and event 118 cross-checks, strap settings scan stats) and the Lab S scale lab (SimLabSheet), behind You > Settings > Research.
+
 // FILE VERSION 0.43.4 (6 Nov 2026): the reading page rebuilt from the screenshot of the "Hi, Ame" page (HealthActivity): greeting + big title + LIVE chip, ONE status card like "Synced 17 min ago / Sync now" with a green pill, the same three rings
 // (DailyViews.RingsView) with thin figures and caps labels, one plain sentence, caps-titled cards, a blue "More about this" link, the glow behind, the floating bottom bar. The rings are real measures, no countdown:
 //   AT REST   the last reading: heart rate, HRV, grade.   RUNNING   live heart rate, noise in the QRS band, the strap's own check (its 0 to 100 %).   DONE   heart rate, strap HRV, noise.
@@ -30,7 +32,7 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.50.1-pro";
+    static final String VERSION = "0.51.0-pro";
     /** 0.50.0: the notes, the Full pull manifest and build.gradle now give one version (the installed versionName; VERSION is the fallback). */
     private String appVer() { try { String v = a.getPackageManager().getPackageInfo(a.getPackageName(), 0).versionName; return v == null || v.isEmpty() ? VERSION : v; } catch (Throwable t) { return VERSION; } }
     static final int REST = 0, RUN = 1, DONE = 2;
@@ -82,32 +84,81 @@ final class EcgPage {
     EcgPage(NewLookActivity act) { a = act; pr = act.getSharedPreferences("labrador_ecg_control", android.content.Context.MODE_PRIVATE); }
 
     // ------------------------------------------------------------------ helpers (the same looks as HealthActivity)
-    private int dp(int v) { return a.dp(v); }
+    int dp(int v) { return a.dp(v); }
     /** Ring fraction of a heart rate: against the max heart rate of the Today page (default 167). */
     private float hrFrac(String hr) { try { int mx = a.getSharedPreferences("today", android.content.Context.MODE_PRIVATE).getInt("maxhr", 167); return Math.max(0f, Math.min(1f, Integer.parseInt(hr.trim()) / (float) Math.max(100, mx))); } catch (Throwable e) { return 0f; } }
     private static float clamp01(double v) { return Double.isNaN(v) ? 0f : (float) Math.max(0.0, Math.min(1.0, v)); }
-    private TextView t(String s, float sp, int color, int weight) {
+    TextView t(String s, float sp, int color, int weight) {
         TextView x = new TextView(a); x.setText(s); x.setTextSize(sp); x.setTextColor(color); x.setTypeface(HealthViews.font(a, weight)); x.setIncludeFontPadding(false); return x;
     }
-    private TextView caps(String s) { TextView x = t(s, 11, MUT, 400); x.setLetterSpacing(0.16f); return x; }
-    private LinearLayout glass(int pad) {
+    TextView caps(String s) { TextView x = t(s, 11, MUT, 400); x.setLetterSpacing(0.16f); return x; }
+    LinearLayout glass(int pad) {
         LinearLayout c = new LinearLayout(a); c.setOrientation(LinearLayout.VERTICAL); c.setBackground(HealthViews.glass(a, 22)); c.setPadding(dp(pad), dp(pad), dp(pad), dp(pad)); return c;
     }
-    private LinearLayout hrow() { LinearLayout r = new LinearLayout(a); r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(Gravity.CENTER_VERTICAL); return r; }
+    LinearLayout hrow() { LinearLayout r = new LinearLayout(a); r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(Gravity.CENTER_VERTICAL); return r; }
     private View spacer() { View v = new View(a); v.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1f)); return v; }
-    private TextView chip(String s) {
+    TextView chip(String s) {
         TextView x = t(s, 12, INK, 400); x.setGravity(Gravity.CENTER); x.setPadding(dp(13), dp(9), dp(13), dp(9));
         GradientDrawable g = new GradientDrawable(); g.setColor(0x0DFFFFFF); g.setCornerRadius(HealthViews.dp(a, 17)); g.setStroke(Math.max(1, dp(1)), 0x0FFFFFFF); x.setBackground(g); return x;
     }
-    private TextView pill(String s, int bg, int fg) {
+    TextView pill(String s, int bg, int fg) {
         TextView x = t(s, 14, fg, 600); x.setGravity(Gravity.CENTER);
         GradientDrawable g = new GradientDrawable(); g.setColor(bg); g.setCornerRadius(HealthViews.dp(a, 22)); x.setBackground(g); return x;
     }
-    private LinearLayout.LayoutParams lp(int w, int hgt, int top) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, hgt); p.topMargin = dp(top); return p; }
-    private File dir() { return a.getExternalFilesDir(null); }
+    LinearLayout.LayoutParams lp(int w, int hgt, int top) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, hgt); p.topMargin = dp(top); return p; }
+    File dir() { return a.getExternalFilesDir(null); }
     private String pref(String k, String d) { return pr.getString(k, d); }
 
-    private void fail(String step, Throwable e) {
+    // ------------------------------------------------------------------ 0.51.0: scale lab (Lab S) and the silent research notes
+    private SimLabSheet sim; private boolean simRun, simAutoBefore = true;
+    boolean isRunning() { return running; }
+    /** A free reading for the scale lab: Auto-stop off for the run (restored at its end), no guided run, then START. */
+    void startSimReading() {
+        try {
+            if (running) return;
+            simAutoBefore = pr.getBoolean("auto_stop", true); simRun = true;
+            pr.edit().putBoolean("auto_stop", false).putString("run_id", "").apply();
+            a.cancelAutoCountdown(); readyCancelled = true; readyLeft = 0;
+            if (start != null && start.getText().toString().startsWith("START")) start.performClick(); else { simRun = false; pr.edit().putBoolean("auto_stop", simAutoBefore).apply(); if (sim != null) sim.active = false; a.toast("The reading could not start."); }
+        } catch (Throwable e) { fail("scale lab start", e); }
+    }
+    void simCue(String s) { try { if (cueView == null) return; cuePill.setVisibility(View.VISIBLE); cueView.setText(s); } catch (Throwable ignored) { } }
+
+    /** After a reading, off the main thread: console catalogue notes, strap settings scan stats, the spectrum block, R17 / R16 and event 118 cross-checks. Notes only. */
+    private void startResearchNotes(final long startSec, final File d, final double dur) {
+        final android.content.Context ctx = a.getApplicationContext(); final long endMs = System.currentTimeMillis();
+        Thread th = new Thread(new Runnable() { @Override public void run() {
+            try {
+                try { Thread.sleep(8000L); } catch (InterruptedException ignored) { }
+                try { for (java.util.Map.Entry<String, String> e : ConsoleCatalog.endReading(d, startSec, System.currentTimeMillis()).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); } catch (Throwable ignored) { }
+                try { long[] cs = StrapConfigScan.fileStats(d); if (cs != null) { ReadingNotes.put(d, startSec, "strap_cfg_keys", String.valueOf(cs[0])); ReadingNotes.put(d, startSec, "strap_cfg_flags", String.valueOf(cs[1])); ReadingNotes.put(d, startSec, "strap_cfg_scan_s", String.valueOf(cs[2])); } } catch (Throwable ignored) { }
+                double[] meanFull = null;
+                try {
+                    File bin = ProReportMaker.findBin(d, startSec);
+                    if (bin != null && bin.length() < 80L * 1024 * 1024) {
+                        byte[] b = java.nio.file.Files.readAllBytes(bin.toPath());
+                        try {
+                            SpectrumBlock.Out so = SpectrumBlock.reading(SpectrumBlock.r16(b));
+                            for (java.util.Map.Entry<String, String> e : so.notes.entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue());
+                            if (so.psd != null) try (java.io.FileWriter w = new java.io.FileWriter(new File(d, "ecg_psd_" + startSec + ".csv"), false)) { w.write(SpectrumBlock.csv(so)); }
+                        } catch (Throwable e) { ReadingNotes.put(d, startSec, "psd_skipped", "error_" + e.getClass().getSimpleName()); }
+                        try { for (java.util.Map.Entry<String, String> e : CrossChecks.r17(b).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); } catch (Throwable ignored) { }
+                        try { ProAnalysis.Result pa = ProAnalysis.analyse(b); if (pa != null) meanFull = pa.meanFull; } catch (Throwable ignored) { }
+                    } else ReadingNotes.put(d, startSec, "psd_skipped", "no_live_raw_file");
+                } catch (Throwable ignored) { }
+                for (int i = 0; i < 40; i++) {                                     // event 118 comes about 5 s after the reading, stored by the next pull
+                    List<StrapEvents.Raw> ev = StrapEvents.raw(ctx, 118, startSec - 20, startSec + (long) dur + 150, 5);
+                    if (!ev.isEmpty()) { for (java.util.Map.Entry<String, String> e : CrossChecks.ev118(ev.get(ev.size() - 1).in, meanFull).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); break; }
+                    try { Thread.sleep(5000L); } catch (InterruptedException ignored) { }
+                }
+                long wait = endMs + 160000L - System.currentTimeMillis(); if (wait > 0) try { Thread.sleep(wait); } catch (InterruptedException ignored) { }
+                try { for (java.util.Map.Entry<String, String> e : ConsoleCatalog.endReading(d, startSec, System.currentTimeMillis()).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); } catch (Throwable ignored) { }      // the console window closes 150 s after the stop
+            } catch (Throwable ignored) { }
+        } }, "research-notes");
+        th.setPriority(Thread.MIN_PRIORITY); th.start();
+    }
+
+    void fail(String step, Throwable e) {
         failures += (failures.isEmpty() ? "" : "; ") + step + ": " + e.getClass().getSimpleName();
         try { pr.edit().putString("page_fail", failures).apply(); } catch (Throwable ignored) { }
         if (footer != null) { footer.setText("Page note: " + failures + " (the rest works)"); footer.setVisibility(View.VISIBLE); }
@@ -413,7 +464,7 @@ final class EcgPage {
 
     // ------------------------------------------------------------------ setup sheet and Lab sheet
     /** A small bottom sheet in the same glass look. The content is taken back out when the sheet closes, so it can be shown again. */
-    private Dialog sheet(String title, final View content) {
+    Dialog sheet(String title, final View content) {
         final Dialog d = new Dialog(a);
         d.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout box = glass(18); box.setBackground(HealthViews.glass(a, 26));
@@ -612,6 +663,17 @@ final class EcgPage {
                 row.addView(go, gp);
                 box.addView(row, lp(-1, -2, 8));
             }
+            if (pr.getBoolean("research_lab_s", false)) {      // 0.51.0: behind You > Settings > Research
+                LinearLayout row = hrow(); row.setBackground(HealthViews.glass(a, 16)); row.setPadding(dp(16), dp(12), dp(12), dp(12));
+                LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.VERTICAL);
+                mid.addView(t("S   Scale and corner (needs the divider)", 15, INK, 400), new LinearLayout.LayoutParams(-2, -2));
+                TextView pl = t("Wiring is in MG_simulator_test_v3.pdf (Part 2A / 2B / 3).", 12, MUT, 400); pl.setLineSpacing(0, 1.2f); mid.addView(pl, lp(-2, -2, 3));
+                row.addView(mid, new LinearLayout.LayoutParams(0, -2, 1f));
+                TextView go = pill("Open", BLUE, DARK); go.setPadding(dp(18), 0, dp(18), 0);
+                go.setOnClickListener(v -> { if (dd[0] != null) dd[0].dismiss(); if (sim == null) sim = new SimLabSheet(this, a); sim.openChooser(); });
+                LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, dp(42)); gp.leftMargin = dp(10); row.addView(go, gp);
+                box.addView(row, lp(-1, -2, 8));
+            }
             TextView cue = chip("Test the cue (buzz, beep, voice)"); cue.setOnClickListener(v -> testCue());
             box.addView(cue, lp(-1, -2, 14));
             dd[0] = sheet("Lab", box); dd[0].show();
@@ -710,10 +772,12 @@ final class EcgPage {
                 stTitle.setText("Settling"); stTitle.setTextColor(INK); stSub.setText("The strap needs about 12 s.");
                 if (scrollRef != null) scrollRef.post(new Runnable() { @Override public void run() { try { scrollRef.scrollTo(0, 0); } catch (Throwable ignored) { } } });
                 ReadingNotes.put(dir(), startMs / 1000L, "app", appVer());
+                try { ConsoleCatalog.begin(dir(), startMs / 1000L); } catch (Throwable ignored) { }      // 0.51.0: new console templates are counted per reading
+                if (simRun && sim != null) ReadingNotes.put(dir(), startMs / 1000L, "run", "S" + sim.mode);
                 ReadingNotes.put(dir(), startMs / 1000L, "where", pref("where_tag", ""));
                 ReadingNotes.put(dir(), startMs / 1000L, "pos", a.positionTag);
                 ReadingNotes.put(dir(), startMs / 1000L, "tag", a.readingTag);
-                ReadingNotes.put(dir(), startMs / 1000L, "run", d.id);
+                if (!(simRun && sim != null)) ReadingNotes.put(dir(), startMs / 1000L, "run", d.id);
                 ReadingNotes.put(dir(), startMs / 1000L, "pro", Live500.pro ? "1" : "0");
                 applyMode(RUN);
             } else if (!nowRunning && was) {
@@ -730,6 +794,7 @@ final class EcgPage {
             if (isRunning != running) onRunning(isRunning);
             if (!isRunning) return;
             long now = System.currentTimeMillis(); long el = now - Live500.startMs;
+            if (simRun && sim != null && sim.active) { try { if (sim.tick(el, startMs) && start != null && start.getText().toString().startsWith("STOP")) { stopReason = 2; start.performClick(); return; } } catch (Throwable e) { fail("scale lab tick", e); } }
             double[] b = LiveBands.rms(); lastBands = b;
             double est = Live500.meanBeatNoiseEstimate(), nz = Live500.recentNoise(3);
             // the signal light is the status card; the strap's own check is its second line
@@ -934,6 +999,11 @@ final class EcgPage {
             SendFlow.attach(a, stPill, startSec, null);
             startNoteTick(startSec);
         } catch (Throwable e) { fail("result", e); }
+        try { startResearchNotes(startSec, d, dur); } catch (Throwable e) { fail("research notes", e); }      // 0.51.0: items 2, 3, 5 of the build brief (notes only)
+        if (simRun) {
+            simRun = false; pr.edit().putBoolean("auto_stop", simAutoBefore).apply();
+            try { if (cuePill != null) cuePill.setVisibility(View.GONE); if (sim != null) sim.finished(startSec, d); } catch (Throwable e) { fail("scale lab end", e); }
+        }
         if (guidedThisRun) {
             guidedThisRun = false; pr.edit().putString("run_id", "").apply();      // a guided run is one-shot; it kept stopping every later reading at 45 s (23:10 reading of 5 Nov)
             if (stopReason == 2) { try { SendFlow.autoSend(a, startSec); a.toast("Done: sending"); } catch (Throwable e) { fail("auto send", e); } }

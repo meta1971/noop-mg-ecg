@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.20.0 (27 Oct 2026): what the strap is sending, live. Pure Java (no Android), tested off the phone on real frames.
+// 0.51.0 (10 Nov 2026): console frames also feed ConsoleCatalog (AfeDecode); lastLive16(). FILE VERSION 0.20.0 (27 Oct 2026): what the strap is sending, live. Pure Java (no Android), tested off the phone on real frames.
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
@@ -91,7 +91,7 @@ final class FrameMonitor {
     static void note(long nowMs, String ch, byte[] f) {
         if (f == null || f.length == 0) return;
         int key = keyOf(f);
-        if (capDir != null && ch != null) { int ty = key >>> 24; if (ty == 50 && nowMs <= capUntil) capture(nowMs, ch, f, 1); else if (ty == 53 || ty == 54 || ty == 55) capture(nowMs, ch, f, 2); else if (imuCapture && ty != 40 && ty != 43 && ty != 48 && ty != 50) capture(nowMs, ch, f, 3); }
+        if (capDir != null && ch != null) { int ty = key >>> 24; if (ty == 50 && nowMs <= capUntil) { capture(nowMs, ch, f, 1); try { ConsoleCatalog.feed(capDir, f, nowMs); } catch (Throwable ignored) { } } /* 0.51.0: console catalogue and register lines */ else if (ty == 53 || ty == 54 || ty == 55) capture(nowMs, ch, f, 2); else if (imuCapture && ty != 40 && ty != 43 && ty != 48 && ty != 50) capture(nowMs, ch, f, 3); }
         Entry e = new Entry(nowMs, ch, f.length, Arrays.copyOf(f, Math.min(f.length, HEAD)));
         int type = key >>> 24;
         synchronized (LOCK) {
@@ -103,6 +103,15 @@ final class FrameMonitor {
             q.addFirst(e);
             int cap = q == live ? LIVE_LINES : HIST_LINES;
             while (q.size() > cap) q.removeLast();
+        }
+    }
+
+    /** 0.51.0: {phone ms of arrival, strap time in s} of the newest live R16 frame, or null (the scale lab dates the audio start on the strap clock). */
+    static double[] lastLive16() {
+        synchronized (LOCK) {
+            Row best = null; for (Row r : rows.values()) if ((r.key >>> 24) == 43 && ((r.key >>> 16) & 0xFF) == 16 && r.last != null && (best == null || r.lastMs > best.lastMs)) best = r;
+            if (best == null || best.last.head.length < 21) return null;
+            byte[] h = best.last.head; return new double[] { best.last.ms, u32(h, 15) + u16(h, 19) / 32768.0 };
         }
     }
 

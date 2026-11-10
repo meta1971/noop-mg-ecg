@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// 0.51.0 (10 Nov 2026): requestStrapConfigScan() (read-only 115-118 / 121 / 128) and the reply hook for it.
+
 import android.Manifest;
 import android.app.Activity;
 import android.bluetooth.*;
@@ -1367,6 +1369,7 @@ public class MainActivity extends NewLookActivity {
             int envType = value[8] & 0xff;
             int envCmd = value[10] & 0xff;
             censusNote(envType, value);                                                          // 0.16.0 TEST
+            if (envType == 0x24) { try { StrapConfigScan.onReply(envCmd, value); } catch (Throwable ignored) { } }      // 0.51.0: read-only settings scan (no-op when none runs)
 
             if (envType == 0x2F) {
                 /*
@@ -10820,6 +10823,23 @@ public class MainActivity extends NewLookActivity {
                 sendPuffinPayload(121, p, "GET_DEVICE_CONFIG_VALUE(" + key + ")");
             }, 700L * i);
         }
+    }
+
+    /** 0.51.0 (build brief item 1): read-only scan of the strap's own setting names and values. 0 = started, 1 = not connected, 2 = a reading runs, 3 = a scan runs. */
+    static int requestStrapConfigScan() {
+        final MainActivity m = instance != null ? instance : headless;
+        if (m == null || m.gatt == null || m.cmdWrite == null) return 1;
+        if (m.ecgSessionRunning) return 2;
+        if (StrapConfigScan.active()) return 3;
+        final java.io.File dir = m.getExternalFilesDir(null);
+        m.mainH.post(new Runnable() { @Override public void run() {
+            StrapConfigScan.start(dir, new StrapConfigScan.Io() {
+                @Override public void send(int cmd, byte[] body, String name) { if (cmd == 115 || cmd == 116 || cmd == 117 || cmd == 118 || cmd == 121 || cmd == 128) m.sendPuffinPayload(cmd, body, name); }      // nothing else is ever sent from here
+                @Override public void later(Runnable r, long ms) { m.mainH.postDelayed(r, ms); }
+                @Override public void cancel(Runnable r) { m.mainH.removeCallbacks(r); }
+            });
+        } });
+        return 0;
     }
 
     static boolean requestDeviceSettings() {

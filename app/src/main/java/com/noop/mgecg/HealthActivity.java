@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// 0.51.0 (10 Nov 2026): You > Settings > RESEARCH fold: Read strap settings (read-only) and the Lab S switch.
+
 // 0.42.1 (5 Nov 2026): the ECG tab shows this week and the streak, with a Reminders button under it (Sync now on the Today tab is the pull; no second button). 0.39.0 (3 Nov): Settings switches "Research: averaged beat, QT and HRV from 12.8 s" and "Write reconstructed_waveform files". FILE VERSION 0.9.0 (23 Oct): the heart-first personal health app. Research only.
 
 import android.app.Activity;
@@ -1800,6 +1802,24 @@ public class HealthActivity extends Activity {
         TextView imuNote = tv("Test, off by default. During an ECG reading it asks the strap for its live accelerometer and gyro stream (START_RAW_DATA, then TOGGLE_IMU_MODE, as the NOOP app does) and shows a motion warning on the reading page when your arm moves (0.46.1; the sensor cannot see finger tremor). The frames are kept in the live-frame file. It could disturb the ECG: turn it off if a reading ever looks different, and tell me.", 11.5f, MUT, 400);
         imuNote.setPadding(0, 0, 0, dpi(6));
         st.addView(imuNote);
+        LinearLayout rf = explainerCard("RESEARCH", "Strap settings reader and the scale lab");      // 0.51.0: build brief items 1 and 4
+        expandable("e_research", rf, new Filler() { @Override public void fill(LinearLayout q) {
+            q.addView(pillButton("Read strap settings (read-only)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) {
+                int r = MainActivity.requestStrapConfigScan();
+                if (r != 0) { android.widget.Toast.makeText(HealthActivity.this, r == 1 ? "The strap is not connected." : r == 2 ? "A reading is running: try after it." : "A scan is already running.", android.widget.Toast.LENGTH_SHORT).show(); return; }
+                android.widget.Toast.makeText(HealthActivity.this, "Asking the strap for its setting names and values (read-only, about 10-30 s)...", android.widget.Toast.LENGTH_LONG).show();
+                final android.os.Handler hh = new android.os.Handler(android.os.Looper.getMainLooper()); final long t0 = System.currentTimeMillis();
+                hh.postDelayed(new Runnable() { @Override public void run() {
+                    if (isFinishing()) return;
+                    if (!StrapConfigScan.lastDone && System.currentTimeMillis() - t0 < 180000L) { hh.postDelayed(this, 1000L); return; }
+                    new android.app.AlertDialog.Builder(HealthActivity.this).setTitle("Strap settings").setMessage(StrapConfigScan.lastDone ? StrapConfigScan.lastSummary : "No answer within 3 minutes.").setPositiveButton("OK", null).show();
+                } }, 1500L);
+            } }), lp(-1, dpi(44), 10));
+            TextView sn = tv("Sends only the strap's own name lists and value reads (115 / 116 / 121 and 117 / 118 / 128). Nothing is written. The newest scan goes into the Full pull as strap_config.csv.", 11.5f, MUT, 400); sn.setLineSpacing(0, 1.2f); q.addView(sn, lp(-1, -2, 6));
+            q.addView(toggleRow("Scale lab (S) in the ECG Lab", ctl, "research_lab_s", false), lp(-1, dpi(52), 6));
+            TextView ln = tv("Adds \"S: Scale and corner (needs the divider)\" to ECG > Lab. Wiring: MG_simulator_test_v3.pdf (Part 2A, 2B, 3).", 11.5f, MUT, 400); ln.setLineSpacing(0, 1.2f); q.addView(ln, lp(-1, -2, 2));
+        } }, "Open");
+        st.addView(rf, lp(-1, -2, 10));
         st.addView(toggleRow("Show the 500 Hz graph when live raw frames arrive", ctl, "ecg_view500"), lp(-1, dpi(52), 0));
         final TextView smv = tv(smoothText(ctl), 14, BLUE, 600);
         st.addView(valueRow("500 Hz graph smoothing (display only)", smv, new View.OnClickListener() {
