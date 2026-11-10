@@ -389,6 +389,7 @@ final class SummaryExport {
                 } finally { q.close(); }
                 files.put("mg_idx_runs.csv", ExportCatalog.filterSince(ir.finish(), 1, 1, since));
                 files.put("mg_r18_minutes.csv", r18Minutes(db, since));
+                files.put("mg_rhythm_screen.csv", IrregularWatch.csv(db, since));      // 0.50.0: every 5-minute pulse-regularity window (flags 1 rest, 2 irregular, 4 clean signal, 8 asleep)
                 info.append("r18_records,").append(n).append('\n').append("idx_runs,").append(ir.rows).append('\n');
                 q = db.rawQuery("SELECT MIN(ts), MAX(ts) FROM r18", null);
                 try { if (q.moveToFirst() && !q.isNull(0)) info.append("r18_first_ts,").append(q.getLong(0)).append('\n').append("r18_last_ts,").append(q.getLong(1)).append('\n'); } finally { q.close(); }

@@ -57,6 +57,21 @@ final class TrendSeries {
         return out;
     }
 
+    /** 0.50.0: Sleep pulse scatter, one point per night: the median normalised successive difference of the optical pulse intervals (percent) over the night's usable asleep windows (IrregularWatch, at least 6 of them). Neutral colouring: it is YOUR line that matters. Reads daylog.db: call off the main thread when the table is large. */
+    static Series rhythm(Context c, HealthModel.Data d) {
+        List<TodayModel.NightStat> all = Trends.allNights(d);
+        Series s = new Series("Sleep pulse scatter", "%", "NIGHTS", 1, 0xFF7FD6FF, 0, 0.8, 0.4, false);
+        List<double[]> pts = new ArrayList<>();
+        for (TodayModel.NightStat n : all) {
+            double hours = Double.isNaN(n.tstH) ? 8.0 : n.tstH; long from = n.bed, to = n.bed + Math.round((hours + 1.0) * 3600.0);
+            double[] r = IrregularWatch.sleepScatter(c, from, to);
+            if (!Double.isNaN(r[0])) pts.add(new double[] { n.bed, r[0] });
+        }
+        int k = pts.size(); s.day = new double[k]; s.v = new double[k]; s.ts = new long[k]; s.bucket = new int[k];
+        for (int i = 0; i < k; i++) { s.day[i] = pts.get(i)[0] / 86400.0; s.v[i] = pts.get(i)[1]; s.ts[i] = (long) pts.get(i)[0]; s.bucket[i] = -1; }
+        return s;
+    }
+
     // ------------------------------------------------------------------ ECG readings
     /** One point per saved reading, oldest first. Reads the report files: call off the main thread. */
     static List<EcgPoint> loadEcg(Context c, HealthModel.Data d, int max) {

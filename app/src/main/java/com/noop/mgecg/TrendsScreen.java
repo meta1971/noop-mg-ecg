@@ -89,6 +89,7 @@ final class TrendsScreen {
         ft.setLineSpacing(0, 1.25f); foot.addView(ft, HeartGraph.lp(a, -1, -2, 6)); col.addView(foot, HeartGraph.lp(a, -1, -2, 20));
 
         final List<TrendSeries.Series> night = TrendSeries.nights(d);
+        try { TrendSeries.Series rs = TrendSeries.rhythm(a, d); if (rs != null && rs.size() >= 1) night.add(rs); } catch (Throwable ignored) { }      // 0.50.0: Sleep pulse scatter (IrregularWatch windows)
         final List<TrendSeries.Series>[] ecgHolder = new List[] { null };
         final Runnable[] render = new Runnable[1];
         render[0] = new Runnable() { @Override public void run() {

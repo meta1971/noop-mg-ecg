@@ -30,7 +30,9 @@ import java.util.List;
 import java.util.Locale;
 
 final class EcgPage {
-    static final String VERSION = "0.49.0-pro";
+    static final String VERSION = "0.50.0-pro";
+    /** 0.50.0: the notes, the Full pull manifest and build.gradle now give one version (the installed versionName; VERSION is the fallback). */
+    private String appVer() { try { String v = a.getPackageManager().getPackageInfo(a.getPackageName(), 0).versionName; return v == null || v.isEmpty() ? VERSION : v; } catch (Throwable t) { return VERSION; } }
     static final int REST = 0, RUN = 1, DONE = 2;
     private static final int BLUE = HealthViews.BLUE, INK = HealthViews.INK, MUT = HealthViews.MUT, GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE, VIOLET = HealthViews.VIOLET, DARK = 0xFF05131E;
 
@@ -702,12 +704,12 @@ final class EcgPage {
                 if (avgView != null) avgView.set(null);
                 String rid = pref("run_id", ""); if (!rid.isEmpty() && pr.getLong("run_armed_ms", 0L) + 90000L < System.currentTimeMillis()) { rid = ""; pr.edit().putString("run_id", "").apply(); }
                 GuidedRun.Def d = GuidedRun.byId(rid);
-                guidedThisRun = !d.id.isEmpty(); runStopSec = d.stopSec;
+                guidedThisRun = !d.id.isEmpty(); runStopSec = d.stopSec; MainActivity.imuPlannedSec = d.stopSec;
                 if (!d.id.isEmpty()) { cueCount = 0; initTts(); guide.start(d, startMs, sink); cuePill.setVisibility(View.VISIBLE); cueView.setText("Keep still and relaxed"); cueLine.set(0f); } else { guide.cancel(); cuePill.setVisibility(View.GONE); }
                 setRing(0, 0f, ROSE, "--", "HEART RATE", "live"); setRing(1, 0f, BLUE, "--", "NOISE", "uV, usual 15-27"); setRing(2, 0f, VIOLET, "0%", "STRAP CHECK", "its own analysis"); drawRings();
                 stTitle.setText("Settling"); stTitle.setTextColor(INK); stSub.setText("The strap needs about 12 s.");
                 if (scrollRef != null) scrollRef.post(new Runnable() { @Override public void run() { try { scrollRef.scrollTo(0, 0); } catch (Throwable ignored) { } } });
-                ReadingNotes.put(dir(), startMs / 1000L, "app", VERSION);
+                ReadingNotes.put(dir(), startMs / 1000L, "app", appVer());
                 ReadingNotes.put(dir(), startMs / 1000L, "where", pref("where_tag", ""));
                 ReadingNotes.put(dir(), startMs / 1000L, "pos", a.positionTag);
                 ReadingNotes.put(dir(), startMs / 1000L, "tag", a.readingTag);
@@ -882,7 +884,11 @@ final class EcgPage {
             ReadingNotes.put(d, startSec, "dur_s", String.format(Locale.US, "%.0f", dur));
             ReadingNotes.put(d, startSec, "stop", stopReason == 1 ? "auto" : stopReason == 2 ? "run" : stopReason == 3 ? "lift" : "hand");
             ReadingNotes.put(d, startSec, "clean_beats_live", String.valueOf(Live500.cleanBeats()));
-            if (pr.getBoolean("imu_live_test", false)) { ReadingNotes.put(d, startSec, "imu_live_test", "1"); ReadingNotes.put(d, startSec, "imu_frames_live", String.valueOf(LiveMotion.frames())); ReadingNotes.put(d, startSec, "motion_moving_s", String.valueOf(LiveMotion.movingSeconds())); }      // 0.46.0 TEST: the live IMU request was on for this reading; 0.46.1: frames seen and seconds above the movement thresholds
+            boolean imuTest = pr.getBoolean("imu_live_test", false); int imuFr = LiveMotion.frames();
+            if (imuTest) ReadingNotes.put(d, startSec, "imu_live_test", "1");
+            if (imuTest || imuFr > 0) { ReadingNotes.put(d, startSec, "imu_frames_live", String.valueOf(imuFr)); ReadingNotes.put(d, startSec, "motion_moving_s", String.valueOf(LiveMotion.movingSeconds())); }      // 0.50.0: also without the test switch (a stale stream shows here)
+            if (imuFr > 0 && MainActivity.imuBeforeCmd) ReadingNotes.put(d, startSec, "imu_stream_before_cmd", "1");
+            if (imuTest && MainActivity.imuRev > 0) ReadingNotes.put(d, startSec, "raw_start", "rev" + MainActivity.imuRev + "_ms" + MainActivity.imuRawMs + "_resp" + MainActivity.imuRawResp + "_frames" + imuFr);      // 0.46.0 TEST: the live IMU request was on for this reading; 0.46.1: frames seen and seconds above the movement thresholds
             ReadingNotes.put(d, startSec, "live_template_beats", String.valueOf(Live500.tplBeats));      // 0.46.0: beats behind the live template veto (0 = none)
             ReadingNotes.put(d, startSec, "peaks_raw_live", String.valueOf(Live500.beatsSeen()));      // 0.46.0: raw detector peaks (accepted beats are beats_live); a large gap means a noisy reading
             if (autoCleanSec > 0) ReadingNotes.put(d, startSec, "autoclean_s", String.valueOf(autoCleanSec));

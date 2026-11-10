@@ -55,6 +55,10 @@ public class MainActivity extends NewLookActivity {
     private Button ecgStartStopButton;
     private boolean ecgScreenActive = false;
     private boolean ecgSessionRunning = false;
+    private boolean imuGuardDone = false;                                           // 0.50.0: the stale-stream guard runs once per connection
+    static volatile int imuPlannedSec = 0;                                      // 0.50.0: planned reading length (0 = free reading), set by the ECG page
+    static volatile boolean imuCmdSent = false, imuBeforeCmd = false;           // 0.50.0: live IMU frames seen before the app's own ON command
+    static volatile int imuRev = 0, imuRawMs = 0, imuRawResp = -1;              // 0.50.0: START_RAW_DATA revision used, its duration, the strap's result byte
     private long ecgSessionStartMs = 0L;
     private final java.util.List<Integer> ecgLiveBeatIntervalsMs =
             new java.util.ArrayList<>();
@@ -788,6 +792,7 @@ public class MainActivity extends NewLookActivity {
                 logRaw("GATT_CONNECTED");
                 liveRxCount = 0;
                 clockRetried = false;
+                imuGuardDone = false;
                 lastStrapRxMs = System.currentTimeMillis();   // 0.7.3: link watchdog
                 BtRecovery.ok("strap");
                 updateStatus("● CONNECTED");
@@ -1805,6 +1810,7 @@ public class MainActivity extends NewLookActivity {
                 if (envCmd == 145 && resultCode == 1) {
                     mainH.post(this::cleanupLeftoverEcgSessionIfGuarded);
                 }
+                if (envCmd == 81) imuRawResp = resultCode;                                                // 0.50.0: the strap's answer to START_RAW_DATA (0 on 9 Nov with revision 1)
                 if (envCmd == 34 && resultCode == 1 && value.length == 84) noteDataRange(value);          // 0.16.0: flash ring pointers
                 if (envCmd == 11 && resultCode == 1) noteClockCheck(value);                              // 0.16.0: how far the strap clock is from the phone after a set
 
@@ -5645,10 +5651,14 @@ public class MainActivity extends NewLookActivity {
             mainH.postDelayed(() -> { if (ecgSessionRunning) { logCensus("with126"); logRaw("LIVE_RAW_STAGE off"); send(0x7E, 0, "TOGGLE_RAW_ECG_LIVE_OFF [TEST 126, staged]"); } }, 41000);
         }
         if (testGates.getBoolean("ecg_savefiltered", false)) mainH.postDelayed(() -> send(0x7F, 1, "TOGGLE_FILTERED_ECG_SAVE_ON [TEST 127]"), 1300);
+        LiveMotion.reset(); imuCmdSent = false; imuBeforeCmd = false; imuRev = 0; imuRawMs = 0; imuRawResp = -1;      // 0.50.0: per reading, so imu_frames_live counts this reading only
         if (testGates.getBoolean("imu_live_test", false)) {      // 0.46.0 TEST, off unless switched on in You > Settings: ask the strap for its live accelerometer and gyro stream (NOOP's order that works on hardware, decode log 102: START_RAW_DATA 81 [01], then TOGGLE_IMU_MODE 106 [01 01]) once the ECG has settled; the frames are saved raw for decoding
             FrameMonitor.imuCapture = true; FrameMonitor.captureReset(); LiveMotion.reset();
-            mainH.postDelayed(() -> { if (ecgSessionRunning) { logRaw("IMU_LIVE_TEST start (81 then 106)"); sendPuffinPayload(81, new byte[] { 1 }, "START_RAW_DATA [TEST IMU]"); } }, 15000);
-            mainH.postDelayed(() -> { if (ecgSessionRunning) sendPuffinPayload(106, new byte[] { 1, 1 }, "TOGGLE_IMU_MODE_ON [TEST IMU]"); }, 15600);
+            // 0.50.0: START_RAW_DATA revision 2 = [02][u32 LE duration ms] (planned length + 30 s, at most 600000; free reading 330000). Revision 1 has no duration and, per OpenStrap, runs 24 h (INFERRED; the 9 Nov stale stream). If no live IMU frame arrives 4 s after the ON command, revision 1 is tried once.
+            final int rawMs = Math.max(1000, Math.min(600000, (imuPlannedSec > 0 ? imuPlannedSec + 30 : 330) * 1000));
+            mainH.postDelayed(() -> { if (ecgSessionRunning) { imuRev = 2; imuRawMs = rawMs; logRaw("IMU_LIVE_TEST start (81 rev 2, ms=" + rawMs + ", then 106)"); sendPuffinPayload(81, new byte[] { 2, (byte) rawMs, (byte) (rawMs >> 8), (byte) (rawMs >> 16), (byte) (rawMs >> 24) }, "START_RAW_DATA [TEST IMU rev2 " + rawMs + " ms]"); } }, 15000);
+            mainH.postDelayed(() -> { if (ecgSessionRunning) { imuCmdSent = true; sendPuffinPayload(106, new byte[] { 1, 1 }, "TOGGLE_IMU_MODE_ON [TEST IMU]"); } }, 15600);
+            mainH.postDelayed(() -> { if (ecgSessionRunning && LiveMotion.frames() == 0) { imuRev = 1; logRaw("IMU_LIVE_TEST rev 2 gave no live frames; revision 1 fallback"); sendPuffinPayload(81, new byte[] { 1 }, "START_RAW_DATA [TEST IMU rev1 fallback]"); mainH.postDelayed(() -> { if (ecgSessionRunning) sendPuffinPayload(106, new byte[] { 1, 1 }, "TOGGLE_IMU_MODE_ON [TEST IMU rev1]"); }, 600); } }, 19800);
         }
 
         mainH.postDelayed(() -> {
@@ -7968,6 +7978,14 @@ public class MainActivity extends NewLookActivity {
         runOnUiThread(() -> getWindow().addFlags(
                 android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
 
+        // 0.50.0 stale-stream guard (decode log 140.3, 141.5): once per connection, with no reading running and the live IMU test switch OFF, tell the strap to stop any raw / IMU stream an earlier test left on (106 [01 00], then 82 [01]).
+        try {
+            if (!imuGuardDone && !ecgSessionRunning && !getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("imu_live_test", false)) {
+                imuGuardDone = true;
+                sendPuffinPayload(106, new byte[] { 1, 0 }, "TOGGLE_IMU_MODE_OFF [GUARD]");
+                mainH.postDelayed(() -> { try { if (!ecgSessionRunning) sendPuffinPayload(82, new byte[] { 1 }, "STOP_RAW_DATA [GUARD]"); } catch (Throwable ignored) { } }, 400);
+            }
+        } catch (Throwable ignored) { }
         if (!skipClock) {
             sendRealSetClock();
             sendZeroArg(0x0B, "GET_CLOCK");
@@ -9136,7 +9154,7 @@ public class MainActivity extends NewLookActivity {
             byte[] value) {
 
         if (value.length >= 1584 && value.length > 9 && (value[9] & 0xff) == 16) { handleLiveRawR16(value); return; }     // 0.16.0 TEST: live raw 500 Hz (command 126)
-        if (value.length == 1244 && (value[9] & 0xff) == 21) { LiveMotion.feed(value, System.currentTimeMillis()); saveRealtimeEcgFragment(value); return; }      // 0.46.1: live IMU (R21), only arrives when the test switch asked for it; kept in the live-frame file, not fed to the ECG fragment path
+        if (value.length == 1244 && (value[9] & 0xff) == 21) { if (!imuCmdSent) imuBeforeCmd = true; LiveMotion.feed(value, System.currentTimeMillis()); saveRealtimeEcgFragment(value); return; }      // 0.46.1: live IMU (R21), only arrives when the test switch asked for it; kept in the live-frame file, not fed to the ECG fragment path
         realtimeEcgFragments.add(value);
         realtimeEcgTotalBytes += value.length;
         saveRealtimeEcgFragment(value);
