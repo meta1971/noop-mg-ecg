@@ -670,8 +670,8 @@ final class EcgPage {
             if (pr.getBoolean("research_lab_s", false)) {      // 0.51.0: behind You > Settings > Research
                 LinearLayout row = hrow(); row.setBackground(HealthViews.glass(a, 16)); row.setPadding(dp(16), dp(12), dp(12), dp(12));
                 LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.VERTICAL);
-                mid.addView(t("S   Scale and corner (needs the divider)", 15, INK, 400), new LinearLayout.LayoutParams(-2, -2));
-                TextView pl = t("Wiring is in MG_simulator_test_v3.pdf (Part 2A / 2B / 3).", 12, MUT, 400); pl.setLineSpacing(0, 1.2f); mid.addView(pl, lp(-2, -2, 3));
+                mid.addView(t("S   Simulator and scale lab", 15, INK, 400), new LinearLayout.LayoutParams(-2, -2));
+                TextView pl = t("Phone-audio runs straight to the strap (wiring check, meter calibration, tones, ECG scenarios, AF replay) and the divider runs (MG_simulator_test_v3.pdf).", 12, MUT, 400); pl.setLineSpacing(0, 1.2f); mid.addView(pl, lp(-2, -2, 3));
                 row.addView(mid, new LinearLayout.LayoutParams(0, -2, 1f));
                 TextView go = pill("Open", BLUE, DARK); go.setPadding(dp(18), 0, dp(18), 0);
                 go.setOnClickListener(v -> { if (dd[0] != null) dd[0].dismiss(); if (sim == null) sim = new SimLabSheet(this, a); sim.openChooser(); });

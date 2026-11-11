@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.52.1 (11 Nov 2026): the DIRECT phone-audio Lab runs (decode log 151, 152, 154, 155): no divider and no DC. The strap input is high impedance, so the phone's headphone output can drive the two
+// FILE VERSION 0.52.2 (11 Nov 2026): W wiring check and the strap's own contact verdict in every direct result. FILE VERSION 0.52.1 (11 Nov 2026): the DIRECT phone-audio Lab runs (decode log 151, 152, 154, 155): no divider and no DC. The strap input is high impedance, so the phone's headphone output can drive the two
 // pods directly when the signal is made small DIGITALLY: 1 mV of ECG = 0.001 of full scale (-60 dBFS); nothing played into the strap exceeds -48 dBFS (a few millivolts). The phone's full-scale voltage is
 // measured once with a multimeter on the calibration tones (mode M, cable on the METER) and scaled by the exact digital ratio. Pure Java (no Android): generator, ground truth and analysis, tested off the phone.
 //   M  calibration tones for the meter: 5 s silence, 12 s 1 kHz at -20 dBFS, 3 s, 12 s 100 Hz at -20 dBFS, 3 s, 12 s 1 kHz at -30 dBFS, 3 s. NEVER into the strap.
@@ -30,8 +30,8 @@ final class SimDirect {
     static final class Seg { String name = "", kind = ""; double start, end, param = Double.NaN; double[] beats = new double[0]; }
     static final class Track { char mode; double seconds; float[] ecg; final List<Seg> segs = new ArrayList<>(); }
 
-    static boolean isDirect(char m) { return m == 'D' || m == 'E' || m == 'F' || m == 'G'; }
-    static String title(char m) { return m == 'M' ? "Meter calibration" : m == 'D' ? "Direct tones" : m == 'E' ? "ECG scenarios A" : m == 'F' ? "ECG scenarios B" : m == 'G' ? "AF replay" : "?"; }
+    static boolean isDirect(char m) { return m == 'D' || m == 'E' || m == 'F' || m == 'G' || m == 'W'; }
+    static String title(char m) { return m == 'W' ? "Wiring check" : m == 'M' ? "Meter calibration" : m == 'D' ? "Direct tones" : m == 'E' ? "ECG scenarios A" : m == 'F' ? "ECG scenarios B" : m == 'G' ? "AF replay" : "?"; }
 
     // ------------------------------------------------------------------ tone tracks (analytic)
     private static double db(double d) { return Math.pow(10.0, d / 20.0); }
@@ -143,13 +143,39 @@ final class SimDirect {
         return 2.0 * Math.hypot(si / (b - a), sq / (b - a));
     }
 
+    /** 0.52.2: what the strap itself says about the contact (decode log 157: the simulator attempt of 8 Nov recorded an OPEN electrode, leads on in 4 % and 21 % of the samples and a contact value of
+     *  about 350 where a finger gives about 78). share[0] = share of samples with the lead-on flag, share[1] = median of the contact value (lead-off I, frame bytes 1535..), share[2] = 50 Hz amplitude in uV. */
+    static double[] contact(List<byte[]> fr) {
+        long on = 0, tot = 0; List<Double> iv = new ArrayList<>();
+        for (byte[] x : fr) { int n = Math.min(500, ProAnalysis.u16(x, 32)); for (int k = 0; k < n; k++) { if ((x[34 + 3 * k] & 0x80) != 0) on++; tot++; }
+            if (x.length >= 1557 && (x[1534] & 0xFF) == 11) for (int k = 0; k < 11; k++) iv.add((double) (short) ((x[1535 + 2 * k] & 0xFF) | (x[1536 + 2 * k] << 8))); }
+        double[] c = counts(fr); double hum = Double.NaN; if (c.length >= 10 * FS) hum = lockIn(c, 50.0, Math.max(0, c.length / (double) FS - 10.0), c.length / (double) FS) * ProAnalysis.UV;
+        double med = Double.NaN; if (!iv.isEmpty()) { double[] a = toArr(iv); Arrays.sort(a); med = a[a.length / 2]; }
+        return new double[] { tot == 0 ? Double.NaN : on / (double) tot, med, hum };
+    }
+    static boolean contactOpen(double[] c) { return !Double.isNaN(c[0]) && c[0] < 0.6; }
+    private static void contactNotes(Result R, double[] c) {
+        R.notes.put("simd_lead_on", f(c[0], 3)); R.notes.put("simd_contact_I", f(c[1], 0)); R.notes.put("simd_hum50_uV", f(c[2], 0));
+        if (contactOpen(c)) R.card.add(0, "OPEN CONTACT: the strap had its leads on in only " + f(100 * c[0], 0) + " % of the run (contact value " + f(c[1], 0) + "; a finger gives about 78, an open electrode about 350). The result below is not a measurement: fix the wiring and run W first.");
+    }
+    /** Mode W: a short reading with the wiring in place and NO signal: does the strap see a closed contact? */
+    static Result wiring(List<byte[]> fr) {
+        Result R = new Result(); R.notes.put("simd_mode", "W"); if (fr == null || fr.size() < 8) { R.card.add("The record is too short for a wiring check."); return R; }
+        double[] c = contact(fr); R.notes.put("simd_lead_on", f(c[0], 3)); R.notes.put("simd_contact_I", f(c[1], 0)); R.notes.put("simd_hum50_uV", f(c[2], 0));
+        boolean open = contactOpen(c), weak = !open && (c[0] < 0.95 || c[1] > 120);
+        R.card.add(open ? "OPEN: the strap does not see a closed contact." : weak ? "WEAK: the contact comes and goes." : "GOOD: the strap sees a steady contact. The direct runs can start.");
+        R.card.add("Leads on in " + f(100 * c[0], 0) + " % of the samples; contact value " + f(c[1], 0) + " (a finger gives about 78, an open electrode about 350); 50 Hz pick-up " + f(c[2], 0) + " uV.");
+        if (open || weak) R.card.add("Check, in this order: the clip on the clasp (bare metal on the clasp contact, clipped, not taped); the foil on the LEFT index fingertip (the strap arm), pressed flat; the strap snug on the left wrist; the plug fully in.");
+        R.ok = true; return R;
+    }
+
     /** Mode D. vfsPkMv = the phone's full-scale peak voltage in mV (NaN when no calibration is stored: amplitudes in counts only). */
     static Result analyseTones(List<byte[]> fr, double vfsPkMv) {
         Result R = new Result(); R.notes.put("simd_mode", "D"); double[] c = counts(fr);
         if (c.length < 60 * FS) { R.card.add("The record is shorter than 60 s: no result."); return R; }
         int nA = (int) ((c.length / (double) FS - 2.0) / 0.1); double[] A = new double[nA]; for (int i = 0; i < nA; i++) { double t = 1.0 + 0.1 * i; A[i] = lockIn(c, 10.0, t - 0.5, t + 0.5); }
         double[] base = Arrays.copyOf(A, Math.min(60, nA)); Arrays.sort(base); double b0 = base[base.length / 2]; int i0 = -1; for (int i = 0; i < nA; i++) if (A[i] > 8 * Math.max(b0, 1e-9) && A[i] > 20) { i0 = i; break; }
-        if (i0 < 0) { R.card.add("No 10 Hz tone was found in the record. Was the cable on the strap and the media volume up?"); return R; }
+        if (i0 < 0) { R.card.add("No 10 Hz tone was found in the record. Was the cable on the strap and the media volume up?"); contactNotes(R, contact(fr)); return R; }
         double[] pl = Arrays.copyOfRange(A, Math.min(nA - 1, i0 + 15), Math.min(nA, i0 + 45)); Arrays.sort(pl); double plateau = pl.length == 0 ? A[i0] : pl[pl.length / 2]; int j = i0; while (j < nA - 1 && A[j] < 0.5 * plateau) j++;      // the 1 s window is half full of tone exactly at the block start
         double s0 = 1.0 + 0.1 * j; R.notes.put("simd_onset_s", f(s0, 2)); boolean cal = !Double.isNaN(vfsPkMv) && vfsPkMv > 0; if (cal) R.notes.put("simd_vfs_mV", f(vfsPkMv, 1));
         double[] ks = new double[5]; double[] amp = new double[4]; int nk = 0; double a10 = Double.NaN;
@@ -164,7 +190,7 @@ final class SimDirect {
         else R.card.add("No calibration stored: amplitudes are in counts only (" + f(amp[2], 0) + " counts at -54 dBFS). Run M (meter calibration) and analyse again from the Full pull.");
         R.card.add("Linearity over -66 to -48 dBFS: largest deviation " + f(lin, 1) + " %");
         R.card.add("R16 gain against 10 Hz: 0.5 Hz " + f(gain[0], 2) + ", 1 Hz " + f(gain[1], 2) + ", 2 Hz " + f(gain[2], 2) + ", 5 Hz " + f(gain[3], 2) + ", 20 Hz " + f(gain[5], 2) + ", 40 Hz " + f(gain[6], 2) + " (below 2 Hz the phone's own output response is included)");
-        R.card.add("These are measurements of this wiring and this phone output; nothing is applied to the app."); R.ok = true; return R;
+        R.card.add("These are measurements of this wiring and this phone output; nothing is applied to the app."); contactNotes(R, contact(fr)); R.ok = true; return R;
     }
 
     private static double[] band(double[] x) { double[] y = ProDsp.filtfilt(x, ProDsp.butterLow(4, 40, FS)); return ProDsp.filtfilt(y, ProDsp.butterHigh2(5, FS)); }
@@ -194,6 +220,6 @@ final class SimDirect {
         else if (!cal) R.card.add("No calibration stored: the scale cannot be given. The match of every segment is still in the notes.");
         R.card.add("The played signal was found " + f(lag / (double) FS, 2) + " s into the reading; " + tr.segs.size() + " segments compared with the strap's record (5-40 Hz).");
         if (low.length() > 0) R.card.add("Segments matching under 0.90: " + low.toString().trim());
-        R.card.add("Beat timing, the strap's heart rate and its quality marks against the known beats are worked out from the Full pull. Nothing is applied to the app."); R.ok = true; return R;
+        R.card.add("Beat timing, the strap's heart rate and its quality marks against the known beats are worked out from the Full pull. Nothing is applied to the app."); contactNotes(R, contact(fr)); R.ok = true; return R;
     }
 }

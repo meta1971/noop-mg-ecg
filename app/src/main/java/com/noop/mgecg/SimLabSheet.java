@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.52.1 (11 Nov 2026): direct runs M, D, E, F, G added (SimDirect: this phone's audio straight to the pods, no divider; rows in the chooser, a branch in tick() and finished(), and the block "direct runs" near the end). FILE VERSION 0.51.0 (10 Nov 2026): Lab "S: Scale and corner" (build brief 0.51.0 item 4): the sheets, the audio ladder and the run control. The analysis is SimLadder.
+// FILE VERSION 0.52.2 (11 Nov 2026): the direct runs come FIRST in the sheet, W wiring check added, wiring text. FILE VERSION 0.52.1 (11 Nov 2026): direct runs M, D, E, F, G added (SimDirect: this phone's audio straight to the pods, no divider; rows in the chooser, a branch in tick() and finished(), and the block "direct runs" near the end). FILE VERSION 0.51.0 (10 Nov 2026): Lab "S: Scale and corner" (build brief 0.51.0 item 4): the sheets, the audio ladder and the run control. The analysis is SimLadder.
 
 import android.app.Dialog;
 import android.content.ContentValues;
@@ -47,18 +47,20 @@ final class SimLabSheet {
         TextView in = p.t("Known voltages through the divider give the scale (uV per count), the high-pass corner, linearity and the floor. Wiring: MG_simulator_test_v3.pdf (Part 2A, 2B, 3). One run per tap; the results are measurements of this wiring and are not applied.", 12, HealthViews.MUT, 400);
         in.setLineSpacing(0, 1.2f); box.addView(in, new LinearLayout.LayoutParams(-1, -2));
         final Dialog[] d = new Dialog[1];
-        row(box, "A   Audio ladder", "DC steps, 10 Hz levels, tones 0.5-40 Hz. 3 min. Needs a phone output that passes DC (Part 2A).", () -> { d[0].dismiss(); startA(); });
-        row(box, "B   Cell steps", "Clip ON at 1:00, 3:00, 5:00, OFF at 2:00, 4:00, 6:00, STOP 7:00. For an AC-coupled phone (Part 2B).", () -> { d[0].dismiss(); start('B', 425_000L); });
-        row(box, "C   Floor only", "180 s with no source (Part 3).", () -> { d[0].dismiss(); start('C', 180_000L); });
         // 0.52.1: DIRECT runs (SimDirect): this phone's audio straight to the pods, no divider, no DC; nothing over -48 dBFS reaches the strap
         TextView dh = p.t("DIRECT RUNS, NO DIVIDER", 11, 0xFF6EC3FF, 600); dh.setLetterSpacing(0.12f); box.addView(dh, p.lp(-1, -2, 18));
-        TextView di = p.t("This phone's audio straight to the two pods: small signals made digitally (1 mV = -60 dBFS), no resistors, no DC. Calibrate once with the meter (M), then run D to G. " + calText(), 12, HealthViews.MUT, 400);
+        TextView di = p.t("This phone's audio straight to the two pods: small signals made digitally (1 mV = -60 dBFS), no resistors, no DC. Wiring: cable tip to the clasp contact (bare metal, CLIPPED on, not taped), cable sleeve to foil on the LEFT index fingertip (the strap arm, so your own heartbeat is not added), strap snug on the left wrist. Run W first, calibrate once with the meter (M), then D to G. " + calText(), 12, HealthViews.MUT, 400);
         di.setLineSpacing(0, 1.2f); box.addView(di, p.lp(-1, -2, 4));
+        row(box, "W   Wiring check", "25 s with the wiring in place and no signal: does the strap see a closed contact? Run this before D to G.", () -> { d[0].dismiss(); startWiring(); });
         row(box, "M   Meter calibration", "Cable on the METER (AC mV), NOT on the strap. 1 kHz and 100 Hz at -20 dBFS, 1 kHz at -30 dBFS. 50 s.", () -> { d[0].dismiss(); startCal(); });
         row(box, "D   Direct tones", "Scale (uV per count), linearity and frequency response from 10 Hz levels and 0.5-40 Hz tones. 2 min.", () -> { d[0].dismiss(); startDirect('D'); });
         row(box, "E   ECG scenarios A", "Known beats: regular rhythm, muscle and electrode noise at set levels, set jitter. 6.5 min.", () -> { d[0].dismiss(); startDirect('E'); });
         row(box, "F   ECG scenarios B", "Amplitude ladder, rate ramp and step, premature beats, pauses, hum, wander. 7.5 min.", () -> { d[0].dismiss(); startDirect('F'); });
         row(box, "G   AF replay", "A real atrial-fibrillation record, 2 minutes: the strap's and the app's verdict against a known rhythm. 2.5 min.", () -> { d[0].dismiss(); startDirect('G'); });
+        TextView vh = p.t("DIVIDER RUNS", 11, 0xFF6EC3FF, 600); vh.setLetterSpacing(0.12f); box.addView(vh, p.lp(-1, -2, 18));
+        row(box, "A   Audio ladder", "DC steps, 10 Hz levels, tones 0.5-40 Hz. 3 min. Needs a phone output that passes DC (Part 2A).", () -> { d[0].dismiss(); startA(); });
+        row(box, "B   Cell steps", "Clip ON at 1:00, 3:00, 5:00, OFF at 2:00, 4:00, 6:00, STOP 7:00. For an AC-coupled phone (Part 2B).", () -> { d[0].dismiss(); start('B', 425_000L); });
+        row(box, "C   Floor only", "180 s with no source (Part 3).", () -> { d[0].dismiss(); start('C', 180_000L); });
         TextView ex = p.chip("Export the ladder WAV to Download/sim (for the old phone)"); ex.setOnClickListener(v -> exportWav());
         box.addView(ex, p.lp(-1, -2, 14));
         d[0] = p.sheet("Scale lab", box); d[0].show();
@@ -109,6 +111,7 @@ final class SimLabSheet {
             double ps = elMs / 1000.0 - SimDirect.AUDIO_AT_S; String seg = "";
             if (dtrack != null && ps >= 0) for (SimDirect.Seg sg : dtrack.segs) if (ps >= sg.start && ps < sg.end) { seg = sg.name; break; }
             int left = (int) Math.max(0, (planMs - elMs) / 1000);
+            if (mode == 'W') { p.simCue("Wiring check, no signal  \u00b7  " + left + " s left. Keep still."); return elMs >= planMs; }
             p.simCue(ps < 0 ? "Signal starts in " + (int) Math.ceil(-ps) + " s. Keep still, no touching the wiring." : SimDirect.title(mode) + (seg.isEmpty() ? "" : "  \u00b7  " + seg) + String.format(Locale.UK, "  \u00b7  %d:%02d left", left / 60, left % 60));
             return elMs >= planMs;
         }
@@ -246,6 +249,12 @@ final class SimLabSheet {
             .setNegativeButton("Cancel", null).show();
     }
 
+    private void startWiring() {
+        if (p.isRunning()) { a.toast("A reading is running."); return; }
+        playGen++; if (mode == 'M') stopAudio();
+        internalAudio = false; dtrack = null; start('W', 25_000L);
+    }
+
     private void startCal() {
         if (p.isRunning()) { a.toast("A reading is running."); return; }
         if (!hasWiredOut()) { a.toast("Plug the audio cable in first."); return; }
@@ -309,7 +318,7 @@ final class SimLabSheet {
                 if (bin == null) err = "No live raw file was found for this run.";
                 else {
                     List<byte[]> fr = SpectrumBlock.r16(java.nio.file.Files.readAllBytes(bin.toPath()));
-                    R = m == 'D' ? SimDirect.analyseTones(fr, vfs) : SimDirect.analyseEcg(tr != null ? tr : SimDirect.track(m), fr, vfs, pr);
+                    R = m == 'W' ? SimDirect.wiring(fr) : m == 'D' ? SimDirect.analyseTones(fr, vfs) : SimDirect.analyseEcg(tr != null ? tr : SimDirect.track(m), fr, vfs, pr);
                     if (!Double.isNaN(pr)) R.notes.put("sim_play_rel_s", String.format(Locale.US, "%.2f", pr));
                     R.notes.put("simd_cal_ts", String.valueOf(ctl().getLong("sim_cal_ts", 0L) / 1000L));
                     for (Map.Entry<String, String> e : R.notes.entrySet()) ReadingNotes.put(dir, startSec, e.getKey(), e.getValue());
