@@ -114,4 +114,37 @@ final class R18Codec {
         }
         return n;
     }
+
+    /** 0.52.1: the same as scan(byte[]) (same frames, same order), but the file is read in pieces of about 4 MB, so a large history file never has to fit in memory
+     *  (the All data export read every history file whole and the app died; decode log 155). */
+    static int scanFile(java.io.File file, Visitor v) throws java.io.IOException { return scanFile(file, v, 4 << 20); }
+
+    static int scanFile(java.io.File file, Visitor v, int chunk) throws java.io.IOException {
+        final int MAXF = 8 + 65535;                                   // the longest frame the length field allows
+        byte[] d = new byte[Math.max(chunk, 2 * MAXF) + MAXF]; int have = 0, n = 0; boolean eof = false;
+        try (java.io.InputStream in = new java.io.FileInputStream(file)) {
+            while (true) {
+                while (!eof && have < d.length) { int r = in.read(d, have, d.length - have); if (r < 0) eof = true; else have += r; }
+                int i = 0, limit = eof ? have : have - MAXF;       // before limit every frame that starts is wholly in the buffer
+                while (i + 8 <= have && (eof || i < limit)) {
+                    if ((d[i] & 0xff) != 0xAA || d[i + 1] != 1) { i++; continue; }
+                    int len = (d[i + 2] & 0xff) | ((d[i + 3] & 0xff) << 8);
+                    int tot = 8 + len;
+                    if (len < 8 || i + tot > have) { i++; continue; }
+                    CRC32 c = new CRC32();
+                    c.update(d, i + 8, tot - 12);
+                    long want = (d[i + tot - 4] & 0xffL) | ((d[i + tot - 3] & 0xffL) << 8) | ((d[i + tot - 2] & 0xffL) << 16) | ((d[i + tot - 1] & 0xffL) << 24);
+                    if (c.getValue() != want) { i++; continue; }
+                    byte[] f = new byte[tot];
+                    System.arraycopy(d, i, f, 0, tot);
+                    v.frame(f);
+                    n++;
+                    i += tot;
+                }
+                if (eof) break;
+                System.arraycopy(d, i, d, 0, have - i); have -= i;
+            }
+        }
+        return n;
+    }
 }

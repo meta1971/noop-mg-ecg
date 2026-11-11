@@ -596,9 +596,11 @@ final class SummaryExport {
         final TreeMap<Long, String> v16 = new TreeMap<>();
         final TreeMap<Long, String> v26 = new TreeMap<>();
         final TreeMap<Long, byte[]> v16raw = new TreeMap<>();   // newest 4,000 stored-ECG frames, for the real-frame fixture
+        int binErr = 0; long binBytes = 0;
         for (File f : bins) {
-            byte[] data = Files.readAllBytes(f.toPath());
-            R18Codec.scan(data, new R18Codec.Visitor() {
+            binBytes += f.length();
+            try {                                                   // 0.52.1: read in pieces (R18Codec.scanFile); one bad or huge file no longer ends the export
+            R18Codec.scanFile(f, new R18Codec.Visitor() {
                 @Override public void frame(byte[] fr) {
                     if (R18Codec.u8(fr, 8) != 47) return;
                     long ts = R18Codec.ts(fr);
@@ -612,7 +614,9 @@ final class SummaryExport {
                     }
                 }
             });
+            } catch (Throwable t) { binErr++; info.append("error_history_file,").append(Rows.q(f.getName() + ": " + t)).append('\n'); }
         }
+        info.append("history_bytes_read,").append(binBytes).append('\n'); if (binErr > 0) info.append("history_files_failed,").append(binErr).append('\n');
         info.append("history_files_read,").append(bins.size()).append('\n');
         StringBuilder b16 = new StringBuilder(Rows.V16_HEADER).append('\n');
         for (String s : v16.values()) b16.append(s).append('\n');

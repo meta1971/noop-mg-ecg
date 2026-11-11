@@ -419,10 +419,20 @@ final class ProAnalysis {
 
     static Hrv hrv(double[] rrIn) { return hrv(rrIn, null); }
 
+    /** 0.52.1: running median whose window SHIFTS at the ends (its start is clamped to 0 .. n - w) instead of repeating the edge value. ProDsp.runMedian repeats the edge, so for the first and the
+     *  last interval 6 of the 11 values were the interval itself: it was its own median and the 20 % rule could never remove it (decode log 154.3: a compensatory pause left at the start read RMSSD 55 ms
+     *  where the rest of the series had 1.8 ms). Away from the ends the result is the same as before. */
+    static double[] medianShift(double[] x, int w) {
+        int n = x.length; double[] r = new double[n]; if (n == 0) return r;
+        int ww = Math.min(w, n); double[] t = new double[ww];
+        for (int i = 0; i < n; i++) { int s = Math.max(0, Math.min(n - ww, i - ww / 2)); System.arraycopy(x, s, t, 0, ww); java.util.Arrays.sort(t); r[i] = (ww % 2 == 1) ? t[ww / 2] : 0.5 * (t[ww / 2 - 1] + t[ww / 2]); }
+        return r;
+    }
+
     /** 0.27.1: gap-aware. t[i] = time (s) of the beat that ends interval i; a successive difference is used only when the two intervals touch
      *  (no contact gap or dropped stretch between them). In the 29 Oct 23:03 reading one cross-gap pair had lifted RMSSD from 12.7 to 24.3 ms. */
     static Hrv hrv(double[] rrIn, double[] t) {
-        Hrv h = new Hrv(); int n = rrIn.length; double[] med = ProDsp.runMedian(rrIn, 11); boolean[] keep = new boolean[n]; int kn = 0;
+        Hrv h = new Hrv(); int n = rrIn.length; double[] med = medianShift(rrIn, 11); boolean[] keep = new boolean[n]; int kn = 0;      // 0.52.1: edge-safe (see medianShift)
         for (int i = 0; i < n; i++) { keep[i] = Math.abs(rrIn[i] - med[i]) < 0.2 * med[i]; if (keep[i]) kn++; }
         double[] rr = new double[kn]; int c = 0; for (int i = 0; i < n; i++) if (keep[i]) rr[c++] = rrIn[i];
         List<Double> dl = new ArrayList<>(); for (int i = 0; i + 1 < n; i++) if (keep[i] && keep[i + 1] && (t == null || Math.abs((t[i + 1] - t[i]) * 1000.0 - rrIn[i + 1]) < 50.0)) dl.add(rrIn[i + 1] - rrIn[i]);
@@ -430,7 +440,8 @@ final class ProAnalysis {
         h.rrAll = rrIn; h.keep = keep; h.n = kn + 1; h.removed = n - kn; h.meanRr = ProDsp.mean(rr); h.hr = 60000 / h.meanRr; h.sdnn = ProDsp.std(rr, 1);
         double ss = 0; int p50 = 0; for (double v : d) { ss += v * v; if (Math.abs(v) > 50) p50++; } h.rmssd = Math.sqrt(ss / d.length); h.pnn50 = 100.0 * p50 / d.length;
         double vd = Math.pow(ProDsp.std(d, 1), 2), vr = Math.pow(h.sdnn, 2); h.sd1 = Math.sqrt(0.5) * ProDsp.std(d, 1); h.sd2 = Math.sqrt(Math.max(0, 2 * vr - 0.5 * vd));
-        double[] md = ProDsp.runMedian(rrIn, 41); double[] dt = new double[kn]; c = 0; for (int i = 0; i < n; i++) if (keep[i]) dt[c++] = rrIn[i] - md[i]; h.sdnnDetr = ProDsp.std(dt, 1);
+        double[] rc = new double[n]; for (int i = 0; i < n; i++) rc[i] = keep[i] ? rrIn[i] : med[i];
+        double[] md = ProDsp.runMedian(rc, 41); double[] dt = new double[kn]; c = 0; for (int i = 0; i < n; i++) if (keep[i]) dt[c++] = rrIn[i] - md[i]; h.sdnnDetr = ProDsp.std(dt, 1);      // 0.52.1: the trend is taken from the series with the removed intervals replaced by their local median, so an outlier first interval is no longer the 'trend' of the first 20 (unchanged when nothing is removed)
         double[] tc = new double[kn]; double acc = 0; for (int i = 0; i < kn; i++) { acc += rr[i] / 1000.0; tc[i] = acc; } for (int i = kn - 1; i >= 0; i--) tc[i] -= tc[0];
         int m = (int) Math.floor(tc[kn - 1] / 0.25); double[] ti = new double[m]; for (int i = 0; i < m; i++) ti[i] = i * 0.25;
         double[] ri = ProDsp.detrend(ProDsp.spline(tc, rr, ti)); double[][] w = ProDsp.welch(ri, 4.0, 256); h.psdF = w[0]; h.psdP = w[1]; double df = w[0][1] - w[0][0];

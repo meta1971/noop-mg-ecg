@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.52.0 (10 Nov 2026): fit-to-beat scale with hold (LiveScale), the scroll on the screen-refresh clock (FrameClock + Choreographer), no wait on the data thread, one glow pass. FILE VERSION 0.48.0 (9 Nov 2026): polished look. Slate grid instead of the maroon one, a soft plot background, a trace that fades in from the left with a layered glow and a bright leading dot, small amber R ticks, rounded card, header tiles (heart rate with a pulse dot, small-caps labels over bold values, a progress bar for the clean beats), a footer for the picture notes and the noise advice. Everything is still outside the waveform: header above, footer below.
+// FILE VERSION 0.52.1 (11 Nov 2026): the scale ignores the strap's poor-quality samples when enough good ones are in the window; frame meter (long-press on the full-screen graph). FILE VERSION 0.52.0 (10 Nov 2026): fit-to-beat scale with hold (LiveScale), the scroll on the screen-refresh clock (FrameClock + Choreographer), no wait on the data thread, one glow pass. FILE VERSION 0.48.0 (9 Nov 2026): polished look. Slate grid instead of the maroon one, a soft plot background, a trace that fades in from the left with a layered glow and a bright leading dot, small amber R ticks, rounded card, header tiles (heart rate with a pulse dot, small-caps labels over bold values, a progress bar for the clean beats), a footer for the picture notes and the noise advice. Everything is still outside the waveform: header above, footer below.
 // FILE VERSION 0.47.0 (9 Nov 2026): a calmer, bigger graph. The waveform has its own plot area; the information sits in a band above and a band below it instead of over the trace. The scroll is snapped to whole pixels (no sub-pixel shimmer), the scale eases smoothly (fast to open, slow to close, with a dead band), the per-frame allocations are gone.
 // FILE VERSION 0.44.0 (7 Nov 2026): the trace is coloured by the strap's per-second quality (3 normal, 2 amber, 0-1 grey, lead-off gap) with a small legend; tap opens the landscape full screen (long press switches auto / fixed scale); own window length for the full screen.
 
@@ -45,6 +45,10 @@ public class Live500View extends View {
     private final LiveScale sc = new LiveScale();         // 0.52.0 items 1-2: fit to beat and hold on baseline unrest
     private final FrameClock clock = new FrameClock();    // 0.52.0 item 4a: the scroll runs on the screen-refresh time, not on the moment onDraw happens to run
     private long lastScaleMs, frameNs; private boolean fcActive;
+    private final float[] vq = new float[Live500.CAP];    // 0.52.1: the window with the strap's poor-quality samples (quality under 2) blanked, for the scale only
+    // 0.52.1: frame meter (long-press on the full-screen graph): what the drawing really does on this phone, 2 s averages
+    static boolean meter; private static boolean meterLoaded; private final Paint meterP = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private long mPrevNs, mWinNs; private int mFrames, mDrops; private float mDrawSum, mDrawMax, mGapMax; private String meterText = "";
     private int snapM, nbCache; private boolean haveSnap, liveCache; private double dueCache = Double.NaN;      // 0.52.0 item 4b: what the last frame had, reused while the data thread holds the lock
     private Runnable staleCb;
     private boolean wasLive;
@@ -77,7 +81,11 @@ public class Live500View extends View {
         valP.setTextSize(14f * dp); valP.setTypeface(HealthViews.font(c, 600)); valP.setSubpixelText(true);
         capP.setTextSize(8.5f * dp); capP.setTypeface(HealthViews.font(c, 600)); capP.setLetterSpacing(0.10f);
         setOnClickListener(x -> { if (openFull) openFullScreen(); else { autoScale = !autoScale; invalidate(); } });
-        setOnLongClickListener(x -> { if (!openFull) return false; autoScale = !autoScale; invalidate(); return true; });
+        setOnLongClickListener(x -> {
+            if (!openFull) { meter = !meter; try { getContext().getSharedPreferences("labrador_ecg_control", Context.MODE_PRIVATE).edit().putBoolean("graph_meter", meter).apply(); } catch (Throwable ignored) { } meterText = ""; mWinNs = 0; invalidate(); return true; }
+            autoScale = !autoScale; invalidate(); return true; });
+        if (!meterLoaded) { meterLoaded = true; try { meter = c.getSharedPreferences("labrador_ecg_control", Context.MODE_PRIVATE).getBoolean("graph_meter", false); } catch (Throwable ignored) { } }
+        meterP.setTextSize(10.5f * dp); meterP.setTypeface(HealthViews.font(c, 500));
     }
 
     /** 0.44.0: window length for this view in ms (0 = the You > Settings value). */
@@ -140,8 +148,12 @@ public class Live500View extends View {
     private void updateScale(long now, int m) {
         if (now - lastScaleMs < 300 || m < 250) return;
         lastScaleMs = now;
+        // 0.52.1: when the window holds at least 250 samples the strap rates 2 or 3, the scale is taken from those only, so the first seconds of a reading (quality 1, excursions of several mV) no longer keep
+        // the scale wide until they have left the window (on the 1794351028 reading that lasted to about 25 s). With fewer good samples everything counts, as before.
+        int good = 0; for (int i = 0; i < m; i++) if (!Float.isNaN(v[i]) && qv[i] >= 2) good++;
+        final boolean gq = good >= 250;
         int k = 0;
-        for (int i = 0; i < m; i++) if (!Float.isNaN(v[i])) tmp[k++] = v[i] / 1000f;
+        for (int i = 0; i < m; i++) if (!Float.isNaN(v[i]) && (!gq || qv[i] >= 2)) tmp[k++] = v[i] / 1000f;
         if (k < 250) return;
         java.util.Arrays.sort(tmp, 0, k);
         float hi = tmp[Math.min(k - 1, (int) (k * 0.997f))], lo = tmp[(int) (k * 0.003f)];
@@ -151,7 +163,11 @@ public class Live500View extends View {
         qrsMv = qrsMv <= 0f ? h0 : qrsMv * 0.6f + h0 * 0.4f;
         if (!autoScale) return;
         // 0.52.0: LiveScale. The floors follow the R height (fit to beat); while the baseline moves by more than max(0.25 mV, 0.35 x R) between the seconds of the window the scale may only open (hold, 4 s).
-        float un = 0f; try { un = LiveScale.unrestMv(v, t, m, tmp); } catch (RuntimeException ignored) { }
+        float un = 0f;
+        try {
+            if (gq) { for (int i = 0; i < m; i++) vq[i] = qv[i] >= 2 ? v[i] : Float.NaN; un = LiveScale.unrestMv(vq, t, m, tmp); }
+            else un = LiveScale.unrestMv(v, t, m, tmp);
+        } catch (RuntimeException ignored) { }
         sc.update(now, hi, lo, qrsMv, un);
     }
 
@@ -202,6 +218,7 @@ public class Live500View extends View {
     @Override protected void onDraw(Canvas canvas) {
         int w = getWidth(), h = getHeight();
         if (!fcActive) startFrames();
+        final long drawT0 = meter ? System.nanoTime() : 0L;
         final double nowD = clock.wallMs(frameNs != 0 ? frameNs : System.nanoTime(), System.currentTimeMillis());      // 0.52.0 item 4a
         long now = (long) nowD; final boolean busyNow = Live500.busy;                                                     // 0.52.0 item 4b
         final double win = winOverrideMs > 0 ? winOverrideMs : windowMs;
@@ -339,6 +356,21 @@ public class Live500View extends View {
             for (int i = 0; i < 3; i++) { dot.setColor(cc[i]); canvas.drawCircle(lx + rad, fy - 3.5f * dp, rad, dot); lx += rad * 2f + 4f * dp; canvas.drawText(NM[i], lx, fy, label); lx += label.measureText(NM[i]) + gap; }
         }
         canvas.restore();
+        if (meter) {
+            // one line of 2 s averages: frames per second, frames whose gap to the previous frame was over 1.5 refresh periods, and the time this onDraw took
+            if (meterText.length() > 0) { meterP.setColor(paper ? 0xCC14171F : 0xCCEAF0F8); canvas.drawText(meterText, 10f * dp, pt + 13f * dp, meterP); }
+            long nowNs = frameNs != 0 ? frameNs : System.nanoTime(); float drawMs = (System.nanoTime() - drawT0) / 1e6f; float period = 16.67f;
+            try { android.view.Display dsp = getDisplay(); if (dsp != null && dsp.getRefreshRate() > 1f) period = 1000f / dsp.getRefreshRate(); } catch (Throwable ignored) { }
+            if (mWinNs == 0) { mWinNs = nowNs; mPrevNs = nowNs; mFrames = 0; mDrops = 0; mDrawSum = 0f; mDrawMax = 0f; mGapMax = 0f; }
+            else if (nowNs != mPrevNs) {
+                float gap = (nowNs - mPrevNs) / 1e6f; mPrevNs = nowNs; mFrames++; if (gap > 1.5f * period) mDrops++; if (gap > mGapMax) mGapMax = gap; mDrawSum += drawMs; if (drawMs > mDrawMax) mDrawMax = drawMs;
+                float el = (nowNs - mWinNs) / 1e9f;
+                if (el >= 2f && mFrames > 0) {
+                    meterText = String.format(java.util.Locale.UK, "%.1f fps of %.0f  \u00b7  late %d of %d (longest gap %.0f ms)  \u00b7  draw %.1f ms, max %.1f", mFrames / el, 1000f / period, mDrops, mFrames, mGapMax, mDrawSum / mFrames, mDrawMax);
+                    mWinNs = nowNs; mFrames = 0; mDrops = 0; mDrawSum = 0f; mDrawMax = 0f; mGapMax = 0f;
+                }
+            }
+        }
         if (radius > 0f) { rect.set(0.6f * dp, 0.6f * dp, w - 0.6f * dp, h - 0.6f * dp); canvas.drawRoundRect(rect, radius, radius, border); } else canvas.drawRect(1, 1, w - 1, h - 1, border);
     }
 }
