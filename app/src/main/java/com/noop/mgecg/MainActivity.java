@@ -8931,6 +8931,21 @@ public class MainActivity extends NewLookActivity {
         line(realtimeEcgBinaryFile.getAbsolutePath());
     }
 
+    private java.io.File liveImuFile;                                   // 0.53.0: live IMU frames that arrive with no ECG capture open no longer start an ECG-named file
+    private void saveLiveImuFragment(byte[] data) {
+        try {
+            java.io.File dir = getExternalFilesDir(null); if (dir == null) return;
+            if (liveImuFile == null || liveImuFile.length() > 3L * 1024 * 1024) { liveImuFile = new java.io.File(dir, "live_imu_" + (System.currentTimeMillis() / 1000L) + ".bin"); pruneLiveImu(dir); }
+            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(liveImuFile, true)) { fos.write(data); }
+        } catch (Exception ignored) { }
+    }
+    private static void pruneLiveImu(java.io.File dir) {                 // keeps the newest 5 files (3 MB each, about 40 minutes of the stream)
+        java.io.File[] fs = dir.listFiles(); if (fs == null) return; java.util.ArrayList<java.io.File> l = new java.util.ArrayList<>();
+        for (java.io.File f : fs) if (f.getName().startsWith("live_imu_") && f.getName().endsWith(".bin")) l.add(f);
+        java.util.Collections.sort(l, new java.util.Comparator<java.io.File>() { @Override public int compare(java.io.File a, java.io.File b) { return a.getName().compareTo(b.getName()); } });
+        for (int i = 0; i < l.size() - 5; i++) l.get(i).delete();
+    }
+
     private void saveRealtimeEcgFragment(byte[] data) {
 
         if (realtimeEcgBinaryFile == null) {
@@ -9157,7 +9172,7 @@ public class MainActivity extends NewLookActivity {
             byte[] value) {
 
         if (value.length >= 1584 && value.length > 9 && (value[9] & 0xff) == 16) { handleLiveRawR16(value); return; }     // 0.16.0 TEST: live raw 500 Hz (command 126)
-        if (value.length == 1244 && (value[9] & 0xff) == 21) { if (!imuCmdSent) imuBeforeCmd = true; LiveMotion.feed(value, System.currentTimeMillis()); saveRealtimeEcgFragment(value); return; }      // 0.46.1: live IMU (R21), only arrives when the test switch asked for it; kept in the live-frame file, not fed to the ECG fragment path
+        if (value.length == 1244 && (value[9] & 0xff) == 21) { if (!imuCmdSent) imuBeforeCmd = true; LiveMotion.feed(value, System.currentTimeMillis()); if (realtimeEcgBinaryFile != null) saveRealtimeEcgFragment(value); else saveLiveImuFragment(value); return; }      // 0.46.1: live IMU (R21), only arrives when the test switch asked for it; kept in the live-frame file, not fed to the ECG fragment path
         realtimeEcgFragments.add(value);
         realtimeEcgTotalBytes += value.length;
         saveRealtimeEcgFragment(value);

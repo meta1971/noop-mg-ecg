@@ -15,7 +15,8 @@ import java.util.zip.CRC32;
 final class ProAnalysis {
     private ProAnalysis() {}
     static final int FS = 500, PRE = 250, POST = 400, QW0 = PRE - 20, QW1 = PRE + 30;
-    static final double UV = 0.0621;
+    static final double UV = 0.06358;      // 0.53.0 (decode log 161): 1 V / (2^17 x total gain 120), confirmed by the strap's own microvolt stream to 0.1 %; was the design value 0.0621 (2.33 % low)
+    static final double UV_OLD = 0.0621;   // every microvolt figure stored before 0.53.0 used this
     static final boolean OWN_DEFAULT = true;                    // 0.45.0 (e): beats are chosen by template correlation and amplitude; false = the strap's quality-3 seconds only, as before. When the own selection leaves fewer than 30 beats (45 s guided runs: 9 of 66 real readings did on 9 Nov) analyse() runs the old selection instead and sets Result.oldSelection
     static final int QRS_LP_HZ = 40, QRS_W_LP_HZ = 100, QRS_MIN_BEATS = 100;     // 0.45.1: delineation on a 40 Hz low-pass (0.45.0 used 100 Hz, which was noisier and farther from the cardiologists on LUDB at 500 Hz); the R wave widths and nothing else use the 100 Hz trace
     static final double QRS_SLOPE = 0.04, QRS_SLOPE_ALT = 0.08;      // 0.45.1: 4 % (QT Database: 3-5 % agree best with the first cardiologist, 8 % is the farthest); the 8 % width stays as a second figure

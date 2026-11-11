@@ -125,7 +125,7 @@ final class ProPdf {
     }
 
     static void pageSummary(Pen p, ProAnalysis.Result r, Info info) {
-        header(p, "ECG evaluation: summary", "Single lead, 500 Hz, " + info.when + "  |  design scale 0.0621 microvolts per count", info, 2);
+        header(p, "ECG evaluation: summary", "Single lead, 500 Hz, " + info.when + "  |  scale 0.06358 microvolts per count", info, 2);
         double sx0 = 36; double mmw = 250 * MM; int a0 = 0; double startS = 0; if (r.stripY != null) { paper(p, sx0, 84, 10, 4); stripRow(p, r, sx0, 84, 0, 10, true); }
         p.text("25 mm/s, 10 mm/mV, 0.5 to 40 Hz; red marks: R waves; blue: R-R in ms", sx0, 84 + 4 * 10 * MM + 12, 7.5, GREY, false, 0);
         drawBeat(p, r, 36, 224, 430, 215, false);
@@ -401,7 +401,7 @@ final class ProPdf {
         header(p, "Methods and limitations", null, info, 9);
         double y = 96, w = W - 72; p.text("Methods in brief", 36, y, 12, BLUE, true, 0); y += 16;
         String[] m = {
-            "Record: live raw ECG frames (type 43, layout 16, 500 samples a second, 18-bit signed, CRC checked) at the design scale of 0.0621 microvolts per count. Seconds with the strap quality flag 3 and no flagged or railed samples form the clean segments (0.5 s trimmed at each end).",
+            "Record: live raw ECG frames (type 43, layout 16, 500 samples a second, 18-bit signed, CRC checked) at 0.06358 microvolts per count (the strap's own conversion; 0.0621 before app 0.53.0). Seconds with the strap quality flag 3 and no flagged or railed samples form the clean segments (0.5 s trimmed at each end).",
             "Beats: 0.5 Hz high-pass and 50 Hz notch (zero phase); R apexes from the 5 to 20 Hz energy envelope refined to the sample maximum; windows of 500 ms before to 800 ms after the apex; sub-sample alignment by cross-correlation using only the 5 to 30 Hz band; beats with a correlation under 0.9 to the median beat are dropped.",
             "Delineation: QRS onset and end where the absolute slope falls under 5 % of its maximum around the R wave; isoelectric level at the end of the PR segment; P wave as the largest upright deflection 230 to 40 ms before the QRS (15 % boundaries); T end by the tangent method on the steepest descent after the T peak (15 Hz low-pass). Ranges: 300 bootstrap resamples of the beats.",
             "Variability: artifact filter, SDNN of the detrended series, RMSSD, pNN50, Poincare SD1 and SD2; spectrum from the series resampled at 4 Hz (cubic spline), linear trend removed, Welch with 64 s Hann segments, LF 0.04 to 0.15 Hz and HF 0.15 to 0.40 Hz.",

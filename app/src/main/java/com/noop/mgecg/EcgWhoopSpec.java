@@ -77,7 +77,7 @@ public final class EcgWhoopSpec {
      * So the constant stays at the design value with NO established error bound (an Apple Watch comparison by another contributor read R16 x 0.0621
      * about 6% low), and whether R16 has a high-pass of its own is OPEN. The 0.5 Hz corner below belongs to R17 relative to R16.
      */
-    public static final double R16_UV_PER_COUNT = 0.0621;
+    public static final double R16_UV_PER_COUNT = 0.06358;      // 0.53.0 (decode log 161): the strap's own microvolts (filtered-stream plateau 1.0228-1.0243 x 0.0621) = 1 V / (2^17 x gain 120); was 0.0621
     public static final int R16_RAIL = 126976;
 
     // ------------------------------------------------------------ R16 words

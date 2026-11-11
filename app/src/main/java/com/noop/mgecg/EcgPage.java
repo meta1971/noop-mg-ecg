@@ -776,6 +776,7 @@ final class EcgPage {
                 stTitle.setText("Settling"); stTitle.setTextColor(INK); stSub.setText("The strap needs about 12 s.");
                 if (scrollRef != null) scrollRef.post(new Runnable() { @Override public void run() { try { scrollRef.scrollTo(0, 0); } catch (Throwable ignored) { } } });
                 ReadingNotes.put(dir(), startMs / 1000L, "app", appVer());
+                ReadingNotes.put(dir(), startMs / 1000L, "uv_per_count", "0.06358");      // 0.53.0: the scale every microvolt note of this reading uses (earlier readings: 0.0621)
                 try { ConsoleCatalog.begin(dir(), startMs / 1000L); } catch (Throwable ignored) { }      // 0.51.0: new console templates are counted per reading
                 if (simRun && sim != null) ReadingNotes.put(dir(), startMs / 1000L, "run", "S" + sim.mode);
                 ReadingNotes.put(dir(), startMs / 1000L, "where", pref("where_tag", ""));

@@ -20,7 +20,7 @@ package com.noop.mgecg;
 final class Live500 {
     private Live500() {}
 
-    static final double UV_PER_COUNT = 0.0621;
+    static final double UV_PER_COUNT = 0.06358;      // 0.53.0 (decode log 161); was 0.0621
     static final int FS = 500;
     static final int CAP = 8192;                   // samples kept (16 s); a power of two
     static final int RAIL = 126900;                // the clamp is at +-126,976 counts

@@ -21,7 +21,7 @@ import java.util.Map;
  * MODE B (cell steps, AC-coupled phone): ON / OFF edges over 1 mV in 150 ms at the design scale, matched to the plan (ON 1:00, 3:00, 5:00, OFF 2:00, 4:00,
  * 6:00 +-15 s), K = median over ON edges of (V_ON - V_OFF from the R2 meter readings) / step (fit), tau from every edge, missing OFF edges listed.
  * MODE C (no source, 180 s): SpectrumBlock floor and a one-line verdict.
- * Everything is a measurement of THIS wiring. Nothing is applied: ProAnalysis.UV stays 0.0621.
+ * Everything is a measurement of THIS wiring. From 0.53.0 ProAnalysis.UV is 0.06358 (decode log 161); these runs are the physical check of it.
  */
 final class SimLadder {
     private SimLadder() {}
@@ -205,7 +205,7 @@ final class SimLadder {
         for (int s = 0; s < secs; s++) { double p = (s * FS - t0) / (double) FS + 4; allow[s] = (p >= 157.5 && p + 1 <= 173) || (p >= 98.5 && p + 1 <= 101.5); }
         SpectrumBlock.Out so = SpectrumBlock.analyse(fr, allow, 8, "sim_floor_", false, false); R.notes.putAll(so.notes);
         // card
-        if (dc) R.card.add(String.format(Locale.UK, "Scale %.4f uV per count (design 0.0621): %+.1f %%", R.Kfit, 100 * (R.Kfit / DESIGN - 1)));
+        if (dc) R.card.add(String.format(Locale.UK, "Scale %.4f uV per count (app scale 0.06358): %+.1f %%", R.Kfit, 100 * (R.Kfit / DESIGN - 1)));
         else R.card.add("AC-coupled output (the meter read under 95 % at 0:22 against 0:06): the scale is not reported. Use mode B.");
         R.card.add(!dc ? "High-pass corner: not reported (the phone output adds its own decay)" : Double.isNaN(R.fc) ? "High-pass corner: none found (DC-coupled within 12 s)" : String.format(Locale.UK, "High-pass corner %.3f Hz (tau %.2f s)", R.fc, tm));
         R.card.add(String.format(Locale.UK, "Linearity: within %.1f %% over 0.05-0.80 FS%s", md, sat ? " (some samples saturated)" : ""));
@@ -236,7 +236,7 @@ final class SimLadder {
         double tauOn = tOn.isEmpty() ? Double.NaN : ProDsp.median(toArr(tOn)), tauOff = tOff.isEmpty() ? Double.NaN : ProDsp.median(toArr(tOff));
         R.notes.put("sim_tau_on_s", f("%.3f", tauOn)); R.notes.put("sim_tau_off_s", f("%.3f", tauOff));
         double tm = !Double.isNaN(tauOn) ? tauOn : tauOff; R.fc = tm > 0 && tm < 1000 ? 1 / (2 * Math.PI * tm) : Double.NaN; R.notes.put("sim_corner_hz", f("%.4f", R.fc));
-        R.card.add(Double.isNaN(R.Kfit) ? "Scale: no ON edge with meter readings" : String.format(Locale.UK, "Scale %.4f uV per count (design 0.0621): %+.1f %%  (%d ON edges)", R.Kfit, 100 * (R.Kfit / DESIGN - 1), ks.size()));
+        R.card.add(Double.isNaN(R.Kfit) ? "Scale: no ON edge with meter readings" : String.format(Locale.UK, "Scale %.4f uV per count (app scale 0.06358): %+.1f %%  (%d ON edges)", R.Kfit, 100 * (R.Kfit / DESIGN - 1), ks.size()));
         R.card.add(Double.isNaN(R.fc) ? "High-pass corner: not found" : String.format(Locale.UK, "High-pass corner %.3f Hz (tau ON %.2f s, OFF %s)", R.fc, tauOn, Double.isNaN(tauOff) ? "none" : String.format(Locale.UK, "%.2f s", tauOff)));
         R.card.add("Edges found: ON " + nOn + " of 3, OFF " + nOff + " of 3" + (miss.length() > 0 ? " (missing OFF at " + miss.toString().replace(";", ", ") + " s)" : ""));
         R.card.add("These are measurements of THIS wiring. They are not applied.");

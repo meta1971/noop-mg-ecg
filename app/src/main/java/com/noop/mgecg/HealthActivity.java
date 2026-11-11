@@ -796,7 +796,7 @@ public class HealthActivity extends Activity {
         ringOpen = i;
         ringPanel.removeAllViews();
         LinearLayout c = card(16);
-        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else fillSleep(c, d.day);
+        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else if (i == 3) fillStress(c, d); else fillSleep(c, d.day);
         ringPanel.addView(c, lp(-1, -2, 0));
         ringPanel.setVisibility(View.VISIBLE);
     }
@@ -864,6 +864,25 @@ public class HealthActivity extends Activity {
         rows(c, Explain.effortScale());
     }
 
+    /** 0.53.0: how the stress ring is worked out (StressModel). */
+    private void fillStress(LinearLayout c, HealthModel.Data d) {
+        c.addView(caps("STRESS: TODAY"));
+        StressModel.Result r = d.stress;
+        if (r == null || Double.isNaN(r.baseline)) { note(c, "Not enough still, awake time in the last two days to set your baseline yet. It needs about an hour of sitting or standing still with the strap on."); return; }
+        kv(c, "Your still baseline", Math.round(r.baseline) + " bpm" + (r.baselineFromNights ? "  (from your nights, for now)" : "  (lowest fifth of " + r.baseBins + " still stretches, last 48 h)"));
+        if (r.today < 0) { note(c, "No still, awake stretch since 04:00 yet."); }
+        else {
+            kv(c, "Today, while still", r.today + " of 100  (" + r.level() + ")");
+            if (r.now >= 0) kv(c, "Last 20 minutes", r.now + " of 100");
+            kv(c, "Time low / medium / high", HealthModel.hmShort(r.lowMin * 60L) + " / " + HealthModel.hmShort(r.medMin * 60L) + " / " + HealthModel.hmShort(r.highMin * 60L));
+        }
+        kv(c, "Moving (not scored)", HealthModel.hmShort(r.movingMin * 60L) + (r.guardedMin > 0 ? "  + " + HealthModel.hmShort(r.guardedMin * 60L) + " settling after it" : ""));
+        StringBuilder hi = new StringBuilder();
+        for (StressModel.Bin b : r.bins) if (b.score >= 50 && b.t >= r.dayStart) { if (hi.length() > 0) hi.append(", "); hi.append(hhmm(b.t)); if (hi.length() > 90) { hi.append(" \u2026"); break; } }
+        if (hi.length() > 0) kv(c, "High stretches (5 min each)", hi.toString());
+        note(c, "The score is how far your heart rate sits above your own still baseline while you are not moving: 3 % above reads 0, 25 % above reads 100. Walking, steps and the 10 minutes after them are left out. In a public wrist-sensor data set (20 people) this separated mental tasks from relaxing in every person; emotion without a heart-rate rise is not seen, and illness, heat, caffeine, alcohol or a meal raise it too. An estimate, not a medical measure.");
+    }
+
     private void fillSleep(LinearLayout c, TodayModel.Day day) {
         SleepNight.Night n = day.night;
         c.addView(caps("SLEEP: LAST NIGHT"));
@@ -927,9 +946,16 @@ public class HealthActivity extends Activity {
         float[] rf = {Double.isNaN(rec) ? 0f : (float) (rec / 100.0), (float) (day.effort / 21.0), Double.isNaN(day.sleepPct) ? 0f : (float) Math.min(1.0, day.sleepPct / 100.0)};
         int[] rc = {DailyViews.recoveryColor(rec), BLUE, VIOLET};
         String[] rb = {Double.isNaN(rec) ? "\u2014" : Math.round(rec) + "%", String.format(Locale.UK, "%.1f", day.effort), Double.isNaN(day.sleepPct) ? "\u2014" : Math.round(day.sleepPct) + "%"};
-        String[] rl = {"RECOVERY", "EFFORT", "SLEEP"};
+        final StressModel.Result stx = d.stress;                    // 0.53.0: stress ring (heart rate above your own still baseline while not moving)
+        final boolean hasStress = stx != null && stx.today >= 0;
+        rf = new float[] {rf[0], rf[1], rf[2], hasStress ? Math.max(0.02f, stx.today / 100f) : 0f};
+        rc = new int[] {rc[0], rc[1], rc[2], !hasStress ? 0xFF8A93A0 : stx.today < 20 ? 0xFF4ADE80 : stx.today < 50 ? 0xFFF5B942 : 0xFFF2685A};
+        rb = new String[] {rb[0], rb[1], rb[2], hasStress ? String.valueOf(stx.today) : "\u2014"};
+        String[] rl = {"RECOVERY", "EFFORT", "SLEEP", "STRESS"};
         String[] rcap = {Double.isNaN(rec) ? "needs " + TodayModel.MIN_BASELINE + " nights" : "vs your last " + day.baselineNights + " nights", "of 21 today",
-                n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h goal"};
+                n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h goal",
+                hasStress ? stx.level() + " today" : "needs a day"};
+        rcap[0] = Double.isNaN(rec) ? "needs nights" : "vs " + day.baselineNights + " nights"; rcap[2] = n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h";      // shorter captions: four rings share the row
         DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
         final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(android.view.MotionEvent e) { return true; }
@@ -937,12 +963,12 @@ public class HealthActivity extends Activity {
         rings.setClickable(true);
         rings.setOnTouchListener(new View.OnTouchListener() {
             @Override public boolean onTouch(View v, android.view.MotionEvent e) {                // 0.20.0: tap a ring to open how it is worked out
-                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) toggleRing(Math.max(0, Math.min(2, (int) (e.getX() / (v.getWidth() / 3f)))));
+                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) toggleRing(Math.max(0, Math.min(3, (int) (e.getX() / (v.getWidth() / 4f)))));
                 return false;
             }
         });
         col.addView(rings, lp(-1, dpi(196), 6));
-        TextView ringHint = tv("Tap Recovery, Effort or Sleep to see how it is worked out.", 11, MUT, 400);
+        TextView ringHint = tv("Tap Recovery, Effort, Sleep or Stress to see how it is worked out.", 11, MUT, 400);
         ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
         col.addView(ringHint, lp(-1, -2, 0));
         ringPanel = new LinearLayout(this);
@@ -1588,6 +1614,28 @@ public class HealthActivity extends Activity {
         w.addView(new WeekBarsView(this, d.lastSeven, d.lastSevenBed, goal), lp(-1, dpi(140), 12));
         expandable("r_week", w, new Filler() { @Override public void fill(LinearLayout p) { fillSleepWeekPanel(p); } });
         col.addView(w, lp(-1, -2, 12));
+
+        // 0.53.0: every stored night before the latest one, newest first
+        if (d.nights != null && d.nights.size() > 1) {
+            LinearLayout pn = card(16);
+            pn.addView(caps("PREVIOUS NIGHTS"));
+            SimpleDateFormat nf = new SimpleDateFormat("EEE d MMM", Locale.UK); int shown = 0;
+            for (int i = d.nights.size() - 2; i >= 0 && shown < 30; i--) {
+                TodayModel.NightStat s = d.nights.get(i); if (Double.isNaN(s.tstH)) continue;
+                StringBuilder v = new StringBuilder(HealthModel.hm(s.tstH));
+                double df = s.tstH - goal; v.append(df < 0 ? "  (" + HealthModel.hm(-df) + " under)" : "  (" + HealthModel.hm(df) + " over)");
+                StringBuilder x = new StringBuilder();
+                if (!Double.isNaN(s.hrLow5)) x.append("lowest HR ").append(Math.round(s.hrLow5));
+                if (!Double.isNaN(s.rmssd)) x.append(x.length() > 0 ? "  \u00b7  " : "").append("HRV ").append(Math.round(s.rmssd)).append(" ms");
+                if (!Double.isNaN(s.br)) x.append(x.length() > 0 ? "  \u00b7  " : "").append(String.format(Locale.UK, "%.1f", s.br)).append(" br/min");
+                if (!Double.isNaN(s.skin)) x.append(x.length() > 0 ? "  \u00b7  " : "").append(String.format(Locale.UK, "%.1f", s.skin)).append(" \u00b0C");
+                if (s.spo2Median > 0) x.append(x.length() > 0 ? "  \u00b7  " : "").append("SpO2 ").append(s.spo2Median).append(" %");
+                kv(pn, nf.format(new Date(s.bed * 1000L)) + ", in bed " + hhmm(s.bed), v.toString());
+                if (x.length() > 0) { TextView xt = tv(x.toString(), 11.5f, MUT, 400); pn.addView(xt, lp(-1, -2, 2)); }
+                shown++;
+            }
+            if (shown > 0) col.addView(pn, lp(-1, -2, 12));
+        }
 
         long tot = 0;
         for (long s : d.stageSecs) tot += s;

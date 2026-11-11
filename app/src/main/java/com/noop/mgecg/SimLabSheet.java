@@ -27,7 +27,7 @@ import java.util.Map;
 /**
  * One run per tap. Mode A plays the ladder v3 through this phone's wired / USB-C output (or the old phone plays the exported WAV), mode B shows the clip
  * clock plan, mode C records 180 s with no source. Each mode starts a FREE reading with Auto-stop off for the run (restored afterwards), stops it at the
- * planned end, asks for the meter numbers, analyses the live raw file and writes sim_* / floor_* notes. Nothing is applied: the scale stays 0.0621.
+ * planned end, asks for the meter numbers, analyses the live raw file and writes sim_* / floor_* notes. From 0.53.0 the app scale is 0.06358.
  * Read-only toward the strap: the only strap commands are the ones of an ordinary reading.
  */
 final class SimLabSheet {
@@ -53,7 +53,7 @@ final class SimLabSheet {
         di.setLineSpacing(0, 1.2f); box.addView(di, p.lp(-1, -2, 4));
         row(box, "W   Wiring check", "25 s with the wiring in place and no signal: does the strap see a closed contact? Run this before D to G.", () -> { d[0].dismiss(); startWiring(); });
         row(box, "M   Meter calibration", "Cable on the METER (AC mV), NOT on the strap. 1 kHz and 100 Hz at -20 dBFS, 1 kHz at -30 dBFS. 50 s.", () -> { d[0].dismiss(); startCal(); });
-        row(box, "D   Direct tones", "Scale (uV per count), linearity and frequency response from 10 Hz levels and 0.5-40 Hz tones. 2 min.", () -> { d[0].dismiss(); startDirect('D'); });
+        row(box, "D   Direct tones", "Scale (uV per count), linearity and frequency response from 10 Hz levels and 0.5-200 Hz tones. 2.5 min.", () -> { d[0].dismiss(); startDirect('D'); });
         row(box, "E   ECG scenarios A", "Known beats: regular rhythm, muscle and electrode noise at set levels, set jitter. 6.5 min.", () -> { d[0].dismiss(); startDirect('E'); });
         row(box, "F   ECG scenarios B", "Amplitude ladder, rate ramp and step, premature beats, pauses, hum, wander. 7.5 min.", () -> { d[0].dismiss(); startDirect('F'); });
         row(box, "G   AF replay", "A real atrial-fibrillation record, 2 minutes: the strap's and the app's verdict against a known rhythm. 2.5 min.", () -> { d[0].dismiss(); startDirect('G'); });

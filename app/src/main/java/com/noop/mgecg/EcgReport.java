@@ -120,7 +120,7 @@ public final class EcgReport {
             b.append("<h2>Verdict check</h2><p class=\"hint\">Measures that separated the strap's results on 51 earlier readings (sinus 1, inconclusive 6, unreadable 2).</p>");
             for (String[] rw : StrapBeatCheck.checkRows(c)) b.append(row(esc(rw[0]), esc(rw[1])));
             b.append("<p class=\"cap\">The strap's HRV is a sliding RMSSD over about 32 beats, refreshed about every 15 beats. It first appears once about 26 beats the strap accepted have gathered after its first beat B, so a noisy start only delays it (decode log 105.3, 115.2).</p>");
-            b.append("<p class=\"cap\">Amplitudes use the design scale of 0.0621 uV per count; the absolute scale is not yet calibrated. Not a diagnosis.</p></section>");
+            b.append("<p class=\"cap\">Amplitudes use 0.06358 uV per count (the strap's own microvolt conversion, in use from app 0.53.0; reports made before it used 0.0621, 2.3 % lower). Not a diagnosis.</p></section>");
             return b.toString();
         } catch (Throwable t) {
             return "";
@@ -172,7 +172,7 @@ public final class EcgReport {
             StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><h2>All readings together</h2><span class=\"pill\">Research</span></div>");
             b.append("<p class=\"hint\">One short reading has too few clean beats for the intervals. The average beats of readings with a similar R wave height (within 25%) are pooled here, each reading once, with 95% ranges from resampling the readings, so these numbers firm up as you take more readings." + (like ? "" : " Too few similar readings yet: all readings are pooled instead.") + "</p>");
             for (String[] rw : rows) b.append(row(esc(rw[0]), esc(rw[1])));
-            b.append("<p class=\"cap\">Wrist lead. On 4 Nov the S dip was about 100 uV in readings with a small R wave (before 17:00) and almost none with a large R wave (after 17:00); a chest placement shows about 220 uV. The PR interval is a lower bound. Amplitudes use the design scale of 0.0621 uV per count; the absolute scale is not yet calibrated. Not a diagnosis.</p></section>");
+            b.append("<p class=\"cap\">Wrist lead. On 4 Nov the S dip was about 100 uV in readings with a small R wave (before 17:00) and almost none with a large R wave (after 17:00); a chest placement shows about 220 uV. The PR interval is a lower bound. Amplitudes use 0.06358 uV per count (the strap's own microvolt conversion, in use from app 0.53.0; reports made before it used 0.0621, 2.3 % lower). Not a diagnosis.</p></section>");
             return b.toString();
         } catch (Throwable t) {
             return "";

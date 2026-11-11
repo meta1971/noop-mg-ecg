@@ -31,7 +31,7 @@ final class ReadingPull {
     private ReadingPull() {}
     static final String FOLDER = "MGpull";
     private static volatile boolean busy;
-    private static final double UV = 0.0621;
+    private static final double UV = ProAnalysis.UV;      // 0.53.0: 0.06358 (was 0.0621)
 
     private static int s24(byte[] f, int o) { int r = (f[o] & 0xFF) | ((f[o + 1] & 0xFF) << 8) | ((f[o + 2] & 0xFF) << 16); return (r & 0x800000) != 0 ? r - 0x1000000 : r; }
     private static float f32(byte[] f, int o) { return Float.intBitsToFloat((int) ProAnalysis.u32(f, o)); }
@@ -121,7 +121,7 @@ final class ReadingPull {
     private static long parseLong(String s) { try { return Long.parseLong(s); } catch (NumberFormatException e) { return -1; } }
 
     static final String README = "Columns and units (all times are strap time, unix seconds).\n"
-        + "ecg_500hz_live.csv: the live 500 Hz ECG (layout 16), microvolts at the design scale 0.0621 uV per count; lead_on 1 = electrode contact, fast_recovery 1 = the strap's recovery flag, rail 1 = amplifier limit; quality = the strap's 0 to 3 per second.\n"
+        + "ecg_500hz_live.csv: the live 500 Hz ECG (layout 16), microvolts at 0.06358 uV per count (from app 0.53.0; earlier pulls used 0.0621); lead_on 1 = electrode contact, fast_recovery 1 = the strap's recovery flag, rail 1 = amplifier limit; quality = the strap's 0 to 3 per second.\n"
         + "ecg_100hz_filtered_live.csv: the strap's own filtered 100 Hz stream (layout 17), 1 uV per count.\n"
         + "ecg_500hz_stored_r16.csv: the stored copy of layout 16 delivered by the history pull (fills gaps in the live stream).\n"
         + "per_second_r18.csv: one row a second: heart rate, up to four beat intervals in ms (optical), accel_step_g, gravity vector, step counter, optical quality, skin temperature, activity class, sleep state, bytes 33 and 36 (flags, not decoded).\n"
@@ -131,7 +131,7 @@ final class ReadingPull {
         + "events.txt and app_log_excerpt.txt: the strap events and the app log lines around the reading (bulk packet lines left out).\n"
         + "firmware_console.txt: the strap firmware's own log (type 50 frames joined; each frame carries 50 characters), addresses masked: command names, ECG start sequence, state changes, battery, history pulls.\n"
         + "unknown_frames_*.hex: raw copies of frames of kinds that are not decoded yet (console log type 50, the device-info channel); one frame per line: time ms, channel, length, hex.\n"
-        + "ecg_psd_<start>.csv (0.51.0): Welch spectrum of the reading at the design scale 0.0621 uV per count, uV^2/Hz per 1 Hz bin (psd = after the mean beat is subtracted, psd_full = without); reading_notes psd_* hold the band densities in uV/rtHz.\n"
+        + "ecg_psd_<start>.csv (0.51.0): Welch spectrum of the reading at 0.06358 uV per count (from app 0.53.0; earlier 0.0621), uV^2/Hz per 1 Hz bin (psd = after the mean beat is subtracted, psd_full = without); reading_notes psd_* hold the band densities in uV/rtHz.\n"
         + "console_templates.csv / console_new.txt / afe_regs.csv (0.51.0): firmware console lines as templates (numbers replaced by #), the templates first seen during this reading, and MAX86176 register lines (strap time, name, value).\n"
         + "strap_config.csv (0.51.0): the newest read-only scan of the strap's setting names and values (115 / 116 / 121, 117 / 118 / 128), raw replies in hex.\n";
 

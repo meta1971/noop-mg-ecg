@@ -4,12 +4,12 @@ package com.noop.mgecg;
 // pods directly when the signal is made small DIGITALLY: 1 mV of ECG = 0.001 of full scale (-60 dBFS); nothing played into the strap exceeds -48 dBFS (a few millivolts). The phone's full-scale voltage is
 // measured once with a multimeter on the calibration tones (mode M, cable on the METER) and scaled by the exact digital ratio. Pure Java (no Android): generator, ground truth and analysis, tested off the phone.
 //   M  calibration tones for the meter: 5 s silence, 12 s 1 kHz at -20 dBFS, 3 s, 12 s 100 Hz at -20 dBFS, 3 s, 12 s 1 kHz at -30 dBFS, 3 s. NEVER into the strap.
-//   D  direct tones: 10 Hz at -66 / -60 / -54 / -48 dBFS (6 s each, 2 s gaps), then 0.5 1 2 5 10 20 40 Hz at -54 dBFS: the scale (uV per count), its linearity and the frequency response of R16.
+//   D  direct tones: 10 Hz at -66 / -60 / -54 / -48 dBFS (6 s each, 2 s gaps), then 0.5 1 2 5 10 20 40 60 100 150 200 Hz at -54 dBFS: the scale (uV per count), its linearity and the frequency response of R16.
 //   E  ECG scenarios A (40 s each): regular 70 bpm; muscle-artefact noise at +12 +6 0 -6 dB; electrode-motion noise at -6 dB; jitter with RMSSD 15 40 100 ms.
 //   F  ECG scenarios B: amplitude x0.25 x0.5 x1.5 x2.5 (30 s each); rate ramp (60 s); rate step 60-110-60 bpm (60 s); premature beats (40 s); pauses (40 s); 50 Hz hum 0.01 0.03 0.1 mV (20 s each); wander and steps (40 s).
 //   G  AF replay: 120 s of a real atrial-fibrillation record (SimData.AF).
 // The ECG tracks are built from the average beat of a real record on EXACT beat times (SimData.TEMPLATE), with real noise records (SimData.MA, SimData.EM); every beat time is known.
-// Nothing here is applied to the app: the design scale 0.0621 stays. The results describe the wiring and the strap as measured.
+// Nothing here is applied to the app. From 0.53.0 the app scale is 0.06358 uV per count (decode log 161); these runs are the physical check of it.
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -23,9 +23,9 @@ final class SimDirect {
 
     static final int SR = 48000, FS = 500;
     static final double FS_PER_MV = 0.001, MAX_STRAP_FS = 0.0041, AUDIO_AT_S = 10.0, TAIL_S = 6.0;
-    static final double[] LEVEL_DB = { -66, -60, -54, -48 }, FREQ = { 0.5, 1, 2, 5, 10, 20, 40 };
+    static final double[] LEVEL_DB = { -66, -60, -54, -48 }, FREQ = { 0.5, 1, 2, 5, 10, 20, 40, 60, 100, 150, 200 };      // 0.53.0: 60-200 Hz added for the raw stream's upper response
     static final double TONE_DB = -54, EDGE_S = 0.002;
-    static final String[] FREQ_KEY = { "0p5", "1", "2", "5", "10", "20", "40" };
+    static final String[] FREQ_KEY = { "0p5", "1", "2", "5", "10", "20", "40", "60", "100", "150", "200" };
 
     static final class Seg { String name = "", kind = ""; double start, end, param = Double.NaN; double[] beats = new double[0]; }
     static final class Track { char mode; double seconds; float[] ecg; final List<Seg> segs = new ArrayList<>(); }
@@ -36,7 +36,7 @@ final class SimDirect {
     // ------------------------------------------------------------------ tone tracks (analytic)
     private static double db(double d) { return Math.pow(10.0, d / 20.0); }
     private static double env(double u, double len) { return u < 0 || u >= len ? 0 : u < EDGE_S ? 0.5 * (1 - Math.cos(Math.PI * u / EDGE_S)) : len - u < EDGE_S ? 0.5 * (1 - Math.cos(Math.PI * (len - u) / EDGE_S)) : 1; }
-    static final double CAL_S = 50.0, TONES_S = 34 + 7 * 8 + TAIL_S;
+    static final double CAL_S = 50.0, TONES_S = 34 + 11 * 8 + TAIL_S;
 
     /** Calibration tones (full-scale units). */
     static double calValue(double t) {
@@ -49,7 +49,7 @@ final class SimDirect {
     static double toneValue(double t) {
         if (t < 0) return 0;
         if (t < 32) { int i = (int) (t / 8); double u = t - 8 * i; return u < 6 ? db(LEVEL_DB[i]) * env(u, 6) * Math.sin(2 * Math.PI * 10 * u) : 0; }
-        double r = t - 34; if (r < 0) return 0; int j = (int) (r / 8); if (j > 6) return 0; double u = r - 8 * j; return u < 6 ? db(TONE_DB) * env(u, 6) * Math.sin(2 * Math.PI * FREQ[j] * u) : 0;
+        double r = t - 34; if (r < 0) return 0; int j = (int) (r / 8); if (j >= FREQ.length) return 0; double u = r - 8 * j; return u < 6 ? db(TONE_DB) * env(u, 6) * Math.sin(2 * Math.PI * FREQ[j] * u) : 0;
     }
 
     // ------------------------------------------------------------------ ECG tracks (constructed at 500 Hz, millivolts)
@@ -75,7 +75,7 @@ final class SimDirect {
     static synchronized Track track(char mode) {
         load(); Track tr = new Track(); tr.mode = mode;
         if (mode == 'M') { tr.seconds = CAL_S; return tr; }
-        if (mode == 'D') { tr.seconds = TONES_S; for (int i = 0; i < 4; i++) { Seg s = new Seg(); s.name = "L" + (int) -LEVEL_DB[i]; s.kind = "level"; s.start = 8 * i; s.end = 8 * i + 6; s.param = LEVEL_DB[i]; tr.segs.add(s); } for (int j = 0; j < 7; j++) { Seg s = new Seg(); s.name = "F" + FREQ_KEY[j]; s.kind = "tone"; s.start = 34 + 8 * j; s.end = s.start + 6; s.param = FREQ[j]; tr.segs.add(s); } return tr; }
+        if (mode == 'D') { tr.seconds = TONES_S; for (int i = 0; i < 4; i++) { Seg s = new Seg(); s.name = "L" + (int) -LEVEL_DB[i]; s.kind = "level"; s.start = 8 * i; s.end = 8 * i + 6; s.param = LEVEL_DB[i]; tr.segs.add(s); } for (int j = 0; j < FREQ.length; j++) { Seg s = new Seg(); s.name = "F" + FREQ_KEY[j]; s.kind = "tone"; s.start = 34 + 8 * j; s.end = s.start + 6; s.param = FREQ[j]; tr.segs.add(s); } return tr; }
         if (mode == 'G') { tr.seconds = af.length / (double) FS + TAIL_S; tr.ecg = Arrays.copyOf(af, (int) (tr.seconds * FS)); Seg s = new Seg(); s.name = "AF"; s.kind = "af"; s.start = 0; s.end = af.length / (double) FS; tr.segs.add(s); return tr; }
         Object[][] spec = mode == 'E'
             ? new Object[][] { { "REF", "regular", 40.0, 0.0 }, { "MA12", "ma", 40.0, 12.0 }, { "MA6", "ma", 40.0, 6.0 }, { "MA0", "ma", 40.0, 0.0 }, { "MAm6", "ma", 40.0, -6.0 }, { "EMm6", "em", 40.0, -6.0 }, { "JIT15", "jitter", 40.0, 15.0 }, { "JIT40", "jitter", 40.0, 40.0 }, { "JIT100", "jitter", 40.0, 100.0 } }
@@ -180,16 +180,16 @@ final class SimDirect {
         double s0 = 1.0 + 0.1 * j; R.notes.put("simd_onset_s", f(s0, 2)); boolean cal = !Double.isNaN(vfsPkMv) && vfsPkMv > 0; if (cal) R.notes.put("simd_vfs_mV", f(vfsPkMv, 1));
         double[] ks = new double[5]; double[] amp = new double[4]; int nk = 0; double a10 = Double.NaN;
         for (int i = 0; i < 4; i++) { double st = s0 + 8 * i; amp[i] = lockIn(c, 10.0, st + 1, st + 5); R.notes.put("simd_counts_L" + (int) -LEVEL_DB[i], f(amp[i], 0)); if (cal) { double k = vfsPkMv * 1000.0 * db(LEVEL_DB[i]) / amp[i]; R.notes.put("simd_K_L" + (int) -LEVEL_DB[i], f(k, 5)); ks[nk++] = k; } }
-        double[] gain = new double[7]; double[] af = new double[7];
-        for (int q = 0; q < 7; q++) { double st = s0 + 34 + 8 * q; af[q] = lockIn(c, FREQ[q], st + 1, st + 5); if (FREQ[q] == 10.0) a10 = af[q]; }
-        for (int q = 0; q < 7; q++) { gain[q] = af[q] / a10; R.notes.put("simd_gain_" + FREQ_KEY[q], f(gain[q], 3)); }
+        final int NF = FREQ.length; double[] gain = new double[NF]; double[] af = new double[NF];
+        for (int q = 0; q < NF; q++) { double st = s0 + 34 + 8 * q; af[q] = lockIn(c, FREQ[q], st + 1, st + 5); if (FREQ[q] == 10.0) a10 = af[q]; }
+        for (int q = 0; q < NF; q++) { gain[q] = af[q] / a10; R.notes.put("simd_gain_" + FREQ_KEY[q], f(gain[q], 3)); }
         if (cal && !Double.isNaN(a10)) ks[nk++] = vfsPkMv * 1000.0 * db(TONE_DB) / a10;
         double lin = Double.NaN; { double r0 = amp[0] / db(LEVEL_DB[0]), mx = 0, mean = 0; for (int i = 0; i < 4; i++) mean += amp[i] / db(LEVEL_DB[i]) / 4; for (int i = 0; i < 4; i++) mx = Math.max(mx, Math.abs(amp[i] / db(LEVEL_DB[i]) / mean - 1) * 100); lin = mx; R.notes.put("simd_linearity_pct", f(lin, 2)); }
         if (cal && nk > 0) { double m = 0; for (int i = 0; i < nk; i++) m += ks[i] / nk; double sd = 0; for (int i = 0; i < nk; i++) sd += (ks[i] - m) * (ks[i] - m); sd = Math.sqrt(sd / nk); R.notes.put("simd_K_uV_per_count", f(m, 5)); R.notes.put("simd_K_sd", f(sd, 5));
-            R.card.add("Scale " + f(m, 4) + " uV per count from five 10 Hz blocks (spread " + f(sd, 4) + "); design " + f(ProAnalysis.UV, 4) + ": " + String.format(Locale.US, "%+.1f", 100 * (m / ProAnalysis.UV - 1)) + " %"); }
+            R.card.add("Scale " + f(m, 4) + " uV per count from five 10 Hz blocks (spread " + f(sd, 4) + "); app scale " + f(ProAnalysis.UV, 4) + ": " + String.format(Locale.US, "%+.1f", 100 * (m / ProAnalysis.UV - 1)) + " %"); }
         else R.card.add("No calibration stored: amplitudes are in counts only (" + f(amp[2], 0) + " counts at -54 dBFS). Run M (meter calibration) and analyse again from the Full pull.");
         R.card.add("Linearity over -66 to -48 dBFS: largest deviation " + f(lin, 1) + " %");
-        R.card.add("R16 gain against 10 Hz: 0.5 Hz " + f(gain[0], 2) + ", 1 Hz " + f(gain[1], 2) + ", 2 Hz " + f(gain[2], 2) + ", 5 Hz " + f(gain[3], 2) + ", 20 Hz " + f(gain[5], 2) + ", 40 Hz " + f(gain[6], 2) + " (below 2 Hz the phone's own output response is included)");
+        R.card.add("R16 gain against 10 Hz: 0.5 Hz " + f(gain[0], 2) + ", 1 Hz " + f(gain[1], 2) + ", 2 Hz " + f(gain[2], 2) + ", 5 Hz " + f(gain[3], 2) + ", 20 Hz " + f(gain[5], 2) + ", 40 Hz " + f(gain[6], 2) + ", 60 Hz " + f(gain[7], 2) + ", 100 Hz " + f(gain[8], 2) + ", 150 Hz " + f(gain[9], 2) + ", 200 Hz " + f(gain[10], 2) + " (below 2 Hz the phone's own output response is included)");
         R.card.add("These are measurements of this wiring and this phone output; nothing is applied to the app."); contactNotes(R, contact(fr)); R.ok = true; return R;
     }
 
@@ -216,7 +216,7 @@ final class SimDirect {
             if (corr < 0.9) low.append(s.name).append(' ').append(f(corr, 2)).append("; ");
         }
         if (cal && !ks.isEmpty()) { double[] k = toArr(ks); Arrays.sort(k); double med = k[k.length / 2]; R.notes.put("simd_K_uV_per_count", f(med, 5)); R.notes.put("simd_K_min", f(k[0], 5)); R.notes.put("simd_K_max", f(k[k.length - 1], 5));
-            R.card.add("Scale " + f(med, 4) + " uV per count (median of " + k.length + " segments, " + f(k[0], 4) + " to " + f(k[k.length - 1], 4) + "); design " + f(ProAnalysis.UV, 4) + ": " + String.format(Locale.US, "%+.1f", 100 * (med / ProAnalysis.UV - 1)) + " %"); }
+            R.card.add("Scale " + f(med, 4) + " uV per count (median of " + k.length + " segments, " + f(k[0], 4) + " to " + f(k[k.length - 1], 4) + "); app scale " + f(ProAnalysis.UV, 4) + ": " + String.format(Locale.US, "%+.1f", 100 * (med / ProAnalysis.UV - 1)) + " %"); }
         else if (!cal) R.card.add("No calibration stored: the scale cannot be given. The match of every segment is still in the notes.");
         R.card.add("The played signal was found " + f(lag / (double) FS, 2) + " s into the reading; " + tr.segs.size() + " segments compared with the strap's record (5-40 Hz).");
         if (low.length() > 0) R.card.add("Segments matching under 0.90: " + low.toString().trim());

@@ -50,6 +50,7 @@ final class HealthModel {
         double[] lastSeven = new double[7];
         long[] lastSevenBed = new long[7];
         List<TodayModel.NightStat> nights = new ArrayList<>();
+        StressModel.Result stress;                    // 0.53.0: daytime stress estimate (null when it could not be worked out)
         List<Reading> readings = new ArrayList<>();
         List<Spo2.Window> spo2Windows = new ArrayList<>();
     }
@@ -183,6 +184,7 @@ final class HealthModel {
             // last seven nights
             d.nights = DayLog.nightStats(c);
             if (d.day != null && d.day.night != null) d.nights.add(TodayModel.statOf(d.day.night, d.day.spo2));
+            try { if (newest > 0) d.stress = StressModel.load(db, newest, d.nights); } catch (Throwable ignored) { }      // 0.53.0
             java.util.Arrays.fill(d.lastSeven, Double.NaN);
             Collections.sort(d.nights, new Comparator<TodayModel.NightStat>() {
                 @Override public int compare(TodayModel.NightStat a, TodayModel.NightStat b) { return Long.compare(a.bed, b.bed); }

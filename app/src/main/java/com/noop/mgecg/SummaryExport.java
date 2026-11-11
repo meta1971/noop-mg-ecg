@@ -148,7 +148,7 @@ final class SummaryExport {
                     .append(',').append(u16(f, 29)).append(',').append(n)
                     .append(',').append(n > 0 ? num(si / n, 1) : "").append(',').append(n > 0 ? num(sq / n, 1) : "")
                     .append(',').append(cnt > 0 ? num(contact / (double) cnt, 3) : "").append(',').append(cnt > 0 ? num(fast / (double) cnt, 3) : "")
-                    .append(',').append(hn > 20 ? num(Math.sqrt(hs / hn / 6.0) * 0.0621, 1) : "");
+                    .append(',').append(hn > 20 ? num(Math.sqrt(hs / hn / 6.0) * ProAnalysis.UV, 1) : "");
             return b.toString();
         }
 
