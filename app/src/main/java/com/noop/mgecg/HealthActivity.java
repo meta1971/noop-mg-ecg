@@ -19,6 +19,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
@@ -1576,17 +1577,104 @@ public class HealthActivity extends Activity {
     }
 
     // ------------------------------------------------------------------ REST
+    // 0.53.1: the Rest page shows ONE night at a time: the latest (restSel 0) or an earlier one; swipe left for the previous night, right for the next; the ‹ › buttons and the date do the same
+    private int restSel = 0; private HealthModel.Data nightOwner; private final java.util.HashMap<Long, HealthModel.Data> nightCache = new java.util.HashMap<>(); private final java.util.HashSet<Long> nightMiss = new java.util.HashSet<>(); private long nightLoading = 0;
+
+    private List<TodayModel.NightStat> restNights() {
+        List<TodayModel.NightStat> out = new ArrayList<>();
+        if (data == null) return out;
+        for (TodayModel.NightStat s : Trends.allNights(data)) if (!Double.isNaN(s.tstH)) out.add(s);
+        return out;                                                   // oldest first; the latest night is last
+    }
+
     private View restTab() {
-        LinearLayout col = screen();
-        HealthModel.Data d = data;
-        if (d == null || d.day == null || d.day.night == null) {
+        HealthModel.Data base = data;
+        if (base == null || base.day == null || base.day.night == null) {
+            LinearLayout col = screen();
             col.addView(head("Last night", "Rest", null));
             col.addView(tv("No complete night in the records yet.", 14, MUT, 400), lp(-2, -2, 16));
             return wrap(col);
         }
+        if (nightOwner != base) { nightCache.clear(); nightMiss.clear(); nightOwner = base; nightLoading = 0; }
+        List<TodayModel.NightStat> all = restNights();
+        if (restSel >= all.size()) restSel = Math.max(0, all.size() - 1);
+        if (restSel > 0) {
+            final TodayModel.NightStat tgt = all.get(all.size() - 1 - restSel);
+            HealthModel.Data nd = nightCache.get(tgt.bed);
+            if (nd != null) return restPage(nd, false, all);
+            if (!nightMiss.contains(tgt.bed)) loadNight(tgt.bed);
+            LinearLayout col = screen();
+            col.addView(head(dayName(tgt.bed), "Rest", null));
+            col.addView(restNav(all, tgt.bed), lp(-1, -2, 14));
+            col.addView(tv(nightMiss.contains(tgt.bed) ? "That night could not be read from the day log." : "Reading that night\u2026", 14, MUT, 400), lp(-2, -2, 16));
+            return swipeWrap(col);
+        }
+        return restPage(base, true, all);
+    }
+
+    private static String dayName(long bed) { return new SimpleDateFormat("EEEE d MMMM", Locale.UK).format(new Date(bed * 1000L)); }
+
+    private void loadNight(final long bed) {
+        if (nightLoading == bed) return;
+        nightLoading = bed; final HealthModel.Data base = data; final double g = goal();
+        new Thread(new Runnable() { @Override public void run() {
+            final HealthModel.Data nd = HealthModel.forNight(getApplicationContext(), base, bed, g);
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (nightOwner != base) return;
+                if (nd != null) nightCache.put(bed, nd); else nightMiss.add(bed);
+                if (nightLoading == bed) nightLoading = 0;
+                if (!isFinishing() && tab == 3) render();
+            } });
+        } }, "night-load").start();
+    }
+
+    private void restShift(int olderBy) {
+        List<TodayModel.NightStat> all = restNights(); int ns = Math.max(0, Math.min(all.size() - 1, restSel + olderBy));
+        if (ns == restSel) return;
+        restSel = ns; if (tab == 3) render();
+    }
+
+    /** The date strip of the Rest page: previous night, the date (tap = latest night), next night. */
+    private View restNav(final List<TodayModel.NightStat> all, long bed) {
+        LinearLayout nav = hrow(); nav.setGravity(Gravity.CENTER_VERTICAL); nav.setPadding(dpi(6), dpi(4), dpi(6), dpi(4)); nav.setBackground(glass(this, 22));
+        TextView prev = tv("\u2039", 26, restSel < all.size() - 1 ? INK : 0xFF4A5362, 400); prev.setGravity(Gravity.CENTER);
+        prev.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { restShift(1); } });
+        nav.addView(prev, new LinearLayout.LayoutParams(dpi(52), dpi(44)));
+        LinearLayout mid = new LinearLayout(this); mid.setOrientation(LinearLayout.VERTICAL); mid.setGravity(Gravity.CENTER);
+        TextView lab = tv(new SimpleDateFormat("EEE d MMM", Locale.UK).format(new Date(bed * 1000L)), 16, INK, 600); lab.setGravity(Gravity.CENTER); mid.addView(lab);
+        TextView sub = tv(restSel == 0 ? "latest night" : "night " + (all.size() - restSel) + " of " + all.size() + "  \u00b7  tap for the latest", 11, MUT, 400); sub.setGravity(Gravity.CENTER); mid.addView(sub);
+        mid.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { restShift(-restSel); } });
+        nav.addView(mid, new LinearLayout.LayoutParams(0, dpi(44), 1f));
+        TextView next = tv("\u203a", 26, restSel > 0 ? INK : 0xFF4A5362, 400); next.setGravity(Gravity.CENTER);
+        next.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { restShift(-1); } });
+        nav.addView(next, new LinearLayout.LayoutParams(dpi(52), dpi(44)));
+        return nav;
+    }
+
+    /** A scroll view that turns a quick horizontal swipe into night navigation: left = the previous (older) night, right = the next (newer) one. */
+    private View swipeWrap(LinearLayout col) {
+        ScrollView sv = new ScrollView(this) {
+            private float x0, y0; private long t0;
+            @Override public boolean dispatchTouchEvent(MotionEvent ev) {
+                int a = ev.getActionMasked();
+                if (a == MotionEvent.ACTION_DOWN) { x0 = ev.getX(); y0 = ev.getY(); t0 = ev.getEventTime(); }
+                else if (a == MotionEvent.ACTION_UP && ev.getEventTime() - t0 < 800) {
+                    float dx = ev.getX() - x0, dy = ev.getY() - y0;
+                    if (Math.abs(dx) > dpi(90) && Math.abs(dx) > 1.7f * Math.abs(dy)) { if (dx < 0) restShift(1); else restShift(-1); return true; }
+                }
+                return super.dispatchTouchEvent(ev);
+            }
+        };
+        sv.setFillViewport(true); sv.setVerticalScrollBarEnabled(false); sv.addView(col, new ViewGroup.LayoutParams(-1, -2));
+        return sv;
+    }
+
+    private View restPage(final HealthModel.Data d, boolean latest, List<TodayModel.NightStat> all) {
+        LinearLayout col = screen();
         SleepNight.Night n = d.day.night;
         double goal = goal();
-        col.addView(head("Last night", "Rest", chip(hhmm(n.bedTs) + " to " + hhmm(n.endTs), 0)));
+        col.addView(head(latest ? "Last night" : dayName(n.bedTs), "Rest", chip(hhmm(n.bedTs) + " to " + hhmm(n.endTs), 0)));
+        col.addView(restNav(all, n.bedTs), lp(-1, -2, 14));
         int rs = Math.min(screenW(), dpi(290));
         double need = Math.min(1.0, n.tstH / goal);
         View ring = new StageRingView(this, ringSegments(d, need), HealthModel.hm(n.tstH).replace(" ", ""), "ASLEEP");
@@ -1602,41 +1690,7 @@ public class HealthActivity extends Activity {
         TextView capt = tv("the ring closes at your need \u00b7 " + HealthModel.hm(goal), 12, MUT, 400);
         capt.setGravity(Gravity.CENTER);
         col.addView(capt, lp(-1, -2, d.day.napH > 0 ? 4 : 28));
-        if (d.day.napH > 0) { TextView napT = tv("Nap " + HealthModel.hmShort((long) (d.day.napH * 3600)), 13, BLUE, 600); napT.setGravity(Gravity.CENTER); col.addView(napT, lp(-1, -2, 20)); }          // 0.44.0: not in this ring (the night's own stages)
-        col.addView(rowCard("The ring is " + Math.round(100 * need) + "% closed. See what the night was made of", "Stages are estimates from heart rate and movement", null), lp(-1, -2, 14));
-        LinearLayout ringc = explainerCard("ABOUT THE RING", "What it fills towards and how the stages are estimated");
-        final double goalF = goal;
-        expandable("r_ring", ringc, new Filler() { @Override public void fill(LinearLayout p) { rows(p, Explain.sleepRing(goalF)); } });
-        col.addView(ringc, lp(-1, -2, 10));
-
-        LinearLayout w = card(16);
-        w.addView(caps("YOUR LAST SEVEN"));
-        w.addView(new WeekBarsView(this, d.lastSeven, d.lastSevenBed, goal), lp(-1, dpi(140), 12));
-        expandable("r_week", w, new Filler() { @Override public void fill(LinearLayout p) { fillSleepWeekPanel(p); } });
-        col.addView(w, lp(-1, -2, 12));
-
-        // 0.53.0: every stored night before the latest one, newest first
-        if (d.nights != null && d.nights.size() > 1) {
-            LinearLayout pn = card(16);
-            pn.addView(caps("PREVIOUS NIGHTS"));
-            SimpleDateFormat nf = new SimpleDateFormat("EEE d MMM", Locale.UK); int shown = 0;
-            for (int i = d.nights.size() - 2; i >= 0 && shown < 30; i--) {
-                TodayModel.NightStat s = d.nights.get(i); if (Double.isNaN(s.tstH)) continue;
-                StringBuilder v = new StringBuilder(HealthModel.hm(s.tstH));
-                double df = s.tstH - goal; v.append(df < 0 ? "  (" + HealthModel.hm(-df) + " under)" : "  (" + HealthModel.hm(df) + " over)");
-                StringBuilder x = new StringBuilder();
-                if (!Double.isNaN(s.hrLow5)) x.append("lowest HR ").append(Math.round(s.hrLow5));
-                if (!Double.isNaN(s.rmssd)) x.append(x.length() > 0 ? "  \u00b7  " : "").append("HRV ").append(Math.round(s.rmssd)).append(" ms");
-                if (!Double.isNaN(s.br)) x.append(x.length() > 0 ? "  \u00b7  " : "").append(String.format(Locale.UK, "%.1f", s.br)).append(" br/min");
-                if (!Double.isNaN(s.skin)) x.append(x.length() > 0 ? "  \u00b7  " : "").append(String.format(Locale.UK, "%.1f", s.skin)).append(" \u00b0C");
-                if (s.spo2Median > 0) x.append(x.length() > 0 ? "  \u00b7  " : "").append("SpO2 ").append(s.spo2Median).append(" %");
-                kv(pn, nf.format(new Date(s.bed * 1000L)) + ", in bed " + hhmm(s.bed), v.toString());
-                if (x.length() > 0) { TextView xt = tv(x.toString(), 11.5f, MUT, 400); pn.addView(xt, lp(-1, -2, 2)); }
-                shown++;
-            }
-            if (shown > 0) col.addView(pn, lp(-1, -2, 12));
-        }
-
+        if (d.day.napH > 0) { TextView napT = tv("Nap " + HealthModel.hmShort((long) (d.day.napH * 3600)), 13, BLUE, 600); napT.setGravity(Gravity.CENTER); col.addView(napT, lp(-1, -2, 20)); }
         long tot = 0;
         for (long s : d.stageSecs) tot += s;
         LinearLayout sh = card(16);
@@ -1683,21 +1737,35 @@ public class HealthActivity extends Activity {
                 r.addView(tm, new LinearLayout.LayoutParams(dpi(48), -2));
                 wn.addView(r, lp(-1, dpi(30), i == 0 ? 8 : 0));
             }
-            int sure = 0, all = 0;
-            for (int i = 0; i < d.binStage.length; i++) if (d.binStage[i] >= 0) { all++; if (d.binSure[i]) sure++; }
-            TextView note = tv("Solid blocks are where two staging methods agree (" + (all == 0 ? 0 : Math.round(100.0 * sure / all)) + "% of the night). Dashed blocks are where they differ. Nothing in a wrist band sees brain activity, so these are estimates, not a sleep study.", 11, MUT, 400);
+            int sure = 0, allBins = 0;
+            for (int i = 0; i < d.binStage.length; i++) if (d.binStage[i] >= 0) { allBins++; if (d.binSure[i]) sure++; }
+            TextView note = tv("Solid blocks are where two staging methods agree (" + (allBins == 0 ? 0 : Math.round(100.0 * sure / allBins)) + "% of the night). Dashed blocks are where they differ. Nothing in a wrist band sees brain activity, so these are estimates, not a sleep study.", 11, MUT, 400);
             note.setLineSpacing(0, 1.2f);
             note.setPadding(0, dpi(10), 0, 0);
             wn.addView(note);
             expandable("r_night", wn, new Filler() { @Override public void fill(LinearLayout p) { fillWholeNightPanel(p); } });
             col.addView(wn, lp(-1, -2, 12));
+        }
+        col.addView(rowCard("The ring is " + Math.round(100 * need) + "% closed. See what the night was made of", "Stages are estimates from heart rate and movement", null), lp(-1, -2, 14));
+        LinearLayout ringc = explainerCard("ABOUT THE RING", "What it fills towards and how the stages are estimated");
+        final double goalF = goal;
+        expandable("r_ring", ringc, new Filler() { @Override public void fill(LinearLayout p) { rows(p, Explain.sleepRing(goalF)); } });
+        col.addView(ringc, lp(-1, -2, 10));
+
+        LinearLayout w = card(16);
+        w.addView(caps("YOUR LAST SEVEN"));
+        w.addView(new WeekBarsView(this, d.lastSeven, d.lastSevenBed, goal), lp(-1, dpi(140), 12));
+        expandable("r_week", w, new Filler() { @Override public void fill(LinearLayout p) { fillSleepWeekPanel(p); } });
+        col.addView(w, lp(-1, -2, 12));
+
+        if (tot > 0) {
             // 0.34.0: stage confidence and age check, architecture, and the by-night screen
             final double ageF = getSharedPreferences("healthspan", MODE_PRIVATE).getFloat("age", 53f);
             LinearLayout cf = card(16); cf.addView(caps("STAGE CONFIDENCE AND AGE CHECK"));
             for (String[] row : SleepArch.confidenceRows(d, ageF)) { if (row[0].equals("Reading")) note(cf, row[1]); else kv(cf, row[0], row[1]); }
             note(cf, "Totals are the app's estimate from heart rate and movement. Sure minutes are where a second pass using the strap's beat intervals agrees. Usual ranges: Ohayon 2004 (slow-wave share falls about 3 points a decade from 40; the age values are from a secondary summary) and Ebrahim 2013 for REM. On this strap the staging tends to over-call deep and REM, so read changes between nights rather than totals.");
             col.addView(cf, lp(-1, -2, 12));
-            LinearLayout ar = card(16); ar.addView(caps("ARCHITECTURE: LAST NIGHT"));
+            LinearLayout ar = card(16); ar.addView(caps(latest ? "ARCHITECTURE: LAST NIGHT" : "ARCHITECTURE: " + new SimpleDateFormat("EEE d MMM", Locale.UK).format(new Date(n.bedTs * 1000L)).toUpperCase(Locale.UK)));
             for (String[] row : SleepArch.architectureRows(d, n.bedTs, n.endTs)) { if (row[0].equals("Read with care")) note(ar, row[1]); else kv(ar, row[0], row[1]); }
             col.addView(ar, lp(-1, -2, 12));
             col.addView(pillButton("Sleep architecture by night and alcohol check", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) SleepArch.show(HealthActivity.this, data); } }), lp(-1, dpi(44), 8));
@@ -1729,7 +1797,18 @@ public class HealthActivity extends Activity {
             wc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } });
             col.addView(wc, lp(-1, -2, 12));
         }
-        return wrap(col);
+        View pv = swipeWrap(col);
+        if (restSel + 1 < all.size()) { TodayModel.NightStat nx = all.get(all.size() - 2 - restSel); if (!nightCache.containsKey(nx.bed) && !nightMiss.contains(nx.bed) && nightLoading == 0) prefetchNight(nx.bed); }
+        return pv;
+    }
+
+    /** Reads the next older night in the background so the next swipe is instant (no redraw when it arrives). */
+    private void prefetchNight(final long bed) {
+        nightLoading = bed; final HealthModel.Data base = data; final double g = goal();
+        new Thread(new Runnable() { @Override public void run() {
+            final HealthModel.Data nd = HealthModel.forNight(getApplicationContext(), base, bed, g);
+            runOnUiThread(new Runnable() { @Override public void run() { if (nightOwner != base) return; if (nd != null) nightCache.put(bed, nd); else nightMiss.add(bed); if (nightLoading == bed) nightLoading = 0; } });
+        } }, "night-prefetch").start();
     }
 
     /** Segments for the ring: {stage, from, to, sure}. Fractions of the closed part of the ring, merged and de-confettied. */

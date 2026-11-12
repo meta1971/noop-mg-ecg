@@ -202,6 +202,30 @@ final class HealthModel {
         return d;
     }
 
+    /** 0.53.1: the full Data of an EARLIER night (night numbers, stages, the shape of it, SpO2) for the pager on the Rest page; everything else is shared with [base]. Reads the day log: call off the main thread.
+     *  [bed] is the NightStat.bed of the night (the start of its sleep cluster). Returns null when the night cannot be rebuilt. */
+    static Data forNight(Context c, Data base, long bed, double goalH) {
+        try {
+            SQLiteDatabase db = DayLog.db(c);
+            Cursor q = db.rawQuery("SELECT ts FROM r18 WHERE state = 2 AND ts BETWEEN ? AND ? ORDER BY ts", new String[] {String.valueOf(bed - 3600L), String.valueOf(bed + 24 * 3600L)});
+            List<Long> tl = new ArrayList<>(); while (q.moveToNext()) tl.add(q.getLong(0)); q.close();
+            long[] st = new long[tl.size()]; for (int i = 0; i < st.length; i++) st[i] = tl.get(i);
+            long[] cc = null; for (long[] x : SleepNight.clusters(st)) if (Math.abs(x[0] - bed) <= 3600L) { cc = x; break; }
+            if (cc == null) return null;
+            q = db.rawQuery("SELECT rec FROM r18 WHERE ts BETWEEN ? AND ? ORDER BY ts", new String[] {String.valueOf(cc[0] - 7200L), String.valueOf(cc[1] + 600L)});
+            List<byte[]> recs = new ArrayList<>(); while (q.moveToNext()) recs.add(q.getBlob(0)); q.close();
+            SleepNight.Night n = SleepNight.analyse(recs); if (n == null) return null;
+            Data d = new Data(); d.nowHr = base.nowHr; d.nowTs = base.nowTs; d.zoneSec = base.zoneSec; d.hr24Min = base.hr24Min; d.hr24Max = base.hr24Max; d.hr24Mean = base.hr24Mean;
+            d.lastSeven = base.lastSeven; d.lastSevenBed = base.lastSevenBed; d.nights = base.nights; d.stress = base.stress; d.readings = base.readings;
+            TodayModel.Day dy = new TodayModel.Day(); dy.sleepGoalH = goalH; dy.maxHr = base.day != null ? base.day.maxHr : 167; dy.night = n; dy.spo2 = Spo2.summarize(Spo2.windows(recs)); dy.napH = 0; dy.sleepPct = 100.0 * n.tstH / goalH;
+            d.day = dy; d.spo2Windows = Spo2.windows(recs);
+            q = db.rawQuery("SELECT rec FROM r18 WHERE ts BETWEEN ? AND ? ORDER BY ts", new String[] {String.valueOf(n.bedTs - 600L), String.valueOf(n.endTs + 600L)});
+            List<byte[]> nr = new ArrayList<>(); while (q.moveToNext()) nr.add(q.getBlob(0)); q.close();
+            stagesFor(nr, n.bedTs, n.endTs, d);
+            return d;
+        } catch (Throwable t) { return null; }
+    }
+
     private static long dayIndex(long unix) {
         return (unix + new java.util.GregorianCalendar().getTimeZone().getOffset(unix * 1000L) / 1000L - 12 * 3600L) / 86400L;
     }
