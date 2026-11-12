@@ -175,8 +175,8 @@ final class StrapData {
         r.add(row(H, "Heart-rate quality flags", String.valueOf(R18Codec.u8(f, 36)), "byte 36: bit 7 is set in almost every second (OpenStrap: the two heart-rate estimates agree), bit 4 = infrared source (never set in 88,209 s); other bits open"));
         String M = "MOTION";
         double gx = R18Codec.f32(f, 45), gy = R18Codec.f32(f, 49), gz = R18Codec.f32(f, 53);
-        r.add(row(M, "Largest acceleration step", String.format(L, "%.4f g", R18Codec.f32(f, 41)), "bytes 41 to 44; about 0.002 at rest, 0.3 jogging"));
-        r.add(row(M, "Gravity direction", String.format(L, "x %.3f  y %.3f  z %.3f", gx, gy, gz) + String.format(L, "  (%.3f g)", Math.sqrt(gx * gx + gy * gy + gz * gz)), "bytes 45 to 56; which way the strap's axes point"));
+        r.add(row(M, "Largest acceleration step", String.format(L, "%.4f g", R18Codec.f32(f, 41)), "bytes 41 to 44: the largest change of the acceleration magnitude between two samples of the 100 Hz motion record in this second (exact against the raw record); about 0.002 at rest, 0.3 jogging"));
+        r.add(row(M, "Gravity direction", String.format(L, "x %.3f  y %.3f  z %.3f", gx, gy, gz) + String.format(L, "  (%.3f g)", Math.sqrt(gx * gx + gy * gy + gz * gz)), "bytes 45 to 56: the mean of the 100 raw accelerometer samples of the second / 4,096 counts per g; which way the strap's axes point"));
         r.add(row(M, "Step counter", String.valueOf(R18Codec.steps(f)), "bytes 57 and 58; running total"));
         r.add(row(M, "Step cadence", String.valueOf(R18Codec.u16(f, 59)), "byte 59"));
         int act = R18Codec.u8(f, 63);
@@ -192,6 +192,7 @@ final class StrapData {
         int b82 = R18Codec.u8(f, 82);
         r.add(row(S, "Blood-oxygen byte", b82 == 0 ? "no window" : String.valueOf(b82), "byte 82; a percentage only inside the sleep-only window (about every 20 minutes), other values are status codes"));
         r.add(row(S, "Optical sampling", (R18Codec.u8(f, 10) & 0x80) != 0 ? "25 Hz" : "50 Hz", "byte 10 bit 7; 50 Hz only while an ECG runs"));
+        r.add(row(S, "Battery pack", R18Codec.packAttached(f) ? "attached" : "not attached", "byte 10 bit 1; set in every second of a battery-pack session (25,039 of them, 24 Oct to 12 Nov). Take ECG readings with the pack off"));
         r.add(row(S, "Optical gain word", String.format("0x%04X", R18Codec.u16(f, 75)), "bytes 75 and 76, the only live one of three: bits 4-7 photodiode offsets, 8-11 green LED step, 12-15 saturation flags (decoded in the Heart section)"));
         String R = "THIS RECORD";
         r.add(row(R, "Strap time", clock(R18Codec.ts(f)), "bytes 15 to 18"));

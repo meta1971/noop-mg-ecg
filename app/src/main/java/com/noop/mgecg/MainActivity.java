@@ -11175,20 +11175,25 @@ public class MainActivity extends NewLookActivity {
             case 45: return "BLE_SYSTEM_INITIALIZED";
             case 46: return "RAW_DATA_COLLECTION_ON";
             case 47: return "RAW_DATA_COLLECTION_OFF";
+            case 21: return "BATTERY_PACK_CONNECTED_21";      // 0.53.6: names from decode log 138.8, 165.2
+            case 22: return "BATTERY_PACK_REMOVED_22";
+            case 100: return "HAPTICS_ENDED_100?";
+            case 109: return "BATTERY_PACK_IDENTITY_109";
+            case 117: return "CHARGER_STATE_117";
             case 60: return "HAPTICS_FIRED";
             case 63: return "EXTENDED_BATTERY_INFORMATION";
             case 96: return "HIGH_FREQ_SYNC_PROMPT";
             case 97: return "HIGH_FREQ_SYNC_ENABLED";
             case 98: return "HIGH_FREQ_SYNC_DISABLED";
             case 108: return "SESSION_PARAM_108? (50 at start, 25 at stop)";
-            case 110: return "PERIODIC_10MIN_110?";
+            case 110: return "TEN_MINUTE_REPORT_110";
             case 113: return "ECG_SESSION_START?";
             case 114: return "ECG_SESSION_STOP?";
             case 115: return "ECG_RECORD_START?";
             case 116: return "ECG_RECORD_STOP?";
             case 118: return "ECG_END_RESULT_A?";
             case 119: return "ECG_END_RESULT_B?";
-            case 120: return "PERIODIC_60S_120?";
+            case 120: return "TWO_HOUR_REPORT_120";
             case 123: return "GENERIC_FIRMWARE_EVENT";
             case 124: return "ECG_STATE_124? (float at end)";
             default: return "UNKNOWN";

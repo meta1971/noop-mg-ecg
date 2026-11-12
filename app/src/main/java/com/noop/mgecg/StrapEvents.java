@@ -33,6 +33,7 @@ final class StrapEvents {
             case 1: return "Error"; case 2: return "Console output"; case 3: return "Battery level"; case 4: return "System control";
             case 7: return "Charging on"; case 8: return "Charging off"; case 9: return "Wrist on"; case 10: return "Wrist off";
             case 11: return "Bluetooth up"; case 12: return "Bluetooth down"; case 13: return "Clock lost"; case 14: return "Double tap";
+            case 21: return "Battery pack connected"; case 22: return "Battery pack removed"; case 100: return "Haptics ended";      // 0.53.6
             case 15: return "Boot"; case 16: return "Clock set"; case 17: return "Temperature level"; case 23: return "Bonded";
             case 26: return "Trim data"; case 27: return "Trim ended"; case 28: return "Flash ready"; case 29: return "Condition report";
             case 30: return "Boot report"; case 32: return "Touch threshold"; case 33: return "Live heart rate on"; case 34: return "Live heart rate off";

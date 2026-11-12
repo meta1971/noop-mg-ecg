@@ -47,6 +47,8 @@ final class R18Codec {
     static String activityName(int code) { return code == 0 ? "none" : code == 1 ? "walk" : code == 2 ? "run" : "code" + code; }
     static boolean spo2Window(byte[] f) { return u8(f, 78) == 11 && u8(f, 79) == 114 && u8(f, 80) == 7; }
     static boolean rawActive(byte[] f) { return (u8(f, 10) & 0x80) == 0; }
+    /** 0.53.6: byte 10 bit 1 = the battery pack is attached (25,039 s, all inside pack sessions; decode log 169.1). */
+    static boolean packAttached(byte[] f) { return (u8(f, 10) & 0x02) != 0; }
     static int steps(byte[] f) { return u16(f, 57); }
     /** Extra heart-rate estimates (0 = none). On the 141 h of records examined they were present in most seconds until 26 Sep 2026 07:25 UTC and are zero in
      *  every record since (about 330,000), so this is NOT a per-second validity signal. Whenever present they were within about 1 bpm of the main HR (byte 22).

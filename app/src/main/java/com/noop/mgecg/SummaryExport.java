@@ -51,7 +51,7 @@ final class SummaryExport {
     static final class Rows {
         private Rows() {}
 
-        static final String V26_HEADER = "ts,idx,ctr,u32_23,i32_23,first,last,min,max,mean,sd,sum,mean_abs_step,acc_delta_g,agc79,b81,b82,flags10,"
+        static final String V26_HEADER = "ts,idx,run_number,level_u32,level,first,last,min,max,mean,sd,sum,mean_abs_step,acc_step_g,gain_word,poor_signal,good_pulse,mode10,"      // 0.53.6: named after decode log 169.2 (24 pulse-wave samples a second, 40 s every 20 minutes)
                 + "r18_hr,r18_det106,r18_psnr108,r18_psnr109";
         static final String V16_HEADER = "ts,sub_s,idx,b10,quality,b22,result,state,progress,mask,avg_hr,live_hr,hrv,n_leadoff,lead_i,lead_q,"
                 + "contact_frac,fastrec_frac,hf_uv";

@@ -143,6 +143,7 @@ final class EcgPage {
                             if (so.psd != null) try (java.io.FileWriter w = new java.io.FileWriter(new File(d, "ecg_psd_" + startSec + ".csv"), false)) { w.write(SpectrumBlock.csv(so)); }
                         } catch (Throwable e) { ReadingNotes.put(d, startSec, "psd_skipped", "error_" + e.getClass().getSimpleName()); }
                         try { for (java.util.Map.Entry<String, String> e : CrossChecks.r17(b).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); } catch (Throwable ignored) { }
+                        try { int[] pf = PackWatch.inFrames(ProAnalysis.frames(b)); ReadingNotes.put(d, startSec, "pack_live_frames", pf[0] + "/" + pf[1]); } catch (Throwable ignored) { }      // 0.53.6
                         try { ProAnalysis.Result pa = ProAnalysis.analyse(b); if (pa != null) meanFull = pa.meanFull; } catch (Throwable ignored) { }
                     } else ReadingNotes.put(d, startSec, "psd_skipped", "no_live_raw_file");
                 } catch (Throwable ignored) { }
@@ -776,6 +777,10 @@ final class EcgPage {
                 stTitle.setText("Settling"); stTitle.setTextColor(INK); stSub.setText("The strap needs about 12 s.");
                 if (scrollRef != null) scrollRef.post(new Runnable() { @Override public void run() { try { scrollRef.scrollTo(0, 0); } catch (Throwable ignored) { } } });
                 ReadingNotes.put(dir(), startMs / 1000L, "app", appVer());
+                try {                                                                          // 0.53.6: the battery pack (PackWatch): a warning, never a gate, and a note with every reading
+                    long[] pk = PackWatch.lastRecord(a); ReadingNotes.put(dir(), startMs / 1000L, "pack_last_record", pk == null ? "unknown" : pk[0] + "@" + pk[1] + "s");
+                    String pw = PackWatch.warning(pk); if (pw != null) { a.toast(pw); if (stSub != null) stSub.setText(pw); }
+                } catch (Throwable ignored) { }
                 ReadingNotes.put(dir(), startMs / 1000L, "uv_per_count", "0.06358");      // 0.53.0: the scale every microvolt note of this reading uses (earlier readings: 0.0621)
                 try { ConsoleCatalog.begin(dir(), startMs / 1000L); } catch (Throwable ignored) { }      // 0.51.0: new console templates are counted per reading
                 if (simRun && sim != null) ReadingNotes.put(dir(), startMs / 1000L, "run", "S" + sim.mode);
