@@ -226,6 +226,60 @@ final class ExportCatalog {
         return Uri.fromFile(f);
     }
 
+    /** 0.53.4: zips [files] straight into [out] (64 KB at a time, nothing held in memory). The raw history of an All-data export is about 310 MB: the old code built the zip in a ByteArrayOutputStream and died with
+     *  "Failed to allocate a 149684240 byte allocation" on 12 Nov (decode log 166). Returns the number of input bytes read. */
+    static long zipFiles(OutputStream out, List<File> files) throws Exception {
+        ZipOutputStream z = new ZipOutputStream(new java.io.BufferedOutputStream(out, 1 << 16));
+        z.setLevel(java.util.zip.Deflater.BEST_SPEED);                         // the history compresses well even at the fastest level; the phone stays responsive
+        byte[] buf = new byte[65536]; long read = 0;
+        for (File f : files) {
+            z.putNextEntry(new ZipEntry(f.getName()));
+            FileInputStream in = new FileInputStream(f);
+            try { int n; while ((n = in.read(buf)) > 0) { z.write(buf, 0, n); read += n; } } finally { in.close(); }
+            z.closeEntry();
+        }
+        z.finish(); z.flush();
+        return read;
+    }
+
+    /** Streams the raw-history zip to the Download folder (size[0] = bytes written). */
+    static Uri writeRawZip(Context c, String sub, String name, List<File> files, final long[] size) throws Exception {
+        final long[] cnt = {0};
+        if (Build.VERSION.SDK_INT >= 29) {
+            ContentResolver cr = c.getContentResolver();
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+            v.put(MediaStore.MediaColumns.MIME_TYPE, "application/zip");
+            v.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/" + ROOT + "/" + sub + "/");
+            v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            Uri u = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+            if (u == null) throw new Exception("could not create " + name);
+            OutputStream os = cr.openOutputStream(u);
+            if (os == null) throw new Exception("could not open " + name);
+            try { zipFiles(new CountingOut(os, cnt), files); } finally { os.close(); }
+            ContentValues done = new ContentValues();
+            done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            cr.update(u, done, null, null);
+            size[0] = cnt[0];
+            return u;
+        }
+        File dir = new File(c.getExternalFilesDir(null), ROOT + "/" + sub);
+        dir.mkdirs();
+        File f = new File(dir, name);
+        java.io.FileOutputStream fo = new java.io.FileOutputStream(f);
+        try { zipFiles(new CountingOut(fo, cnt), files); } finally { fo.close(); }
+        size[0] = cnt[0];
+        return Uri.fromFile(f);
+    }
+
+    /** Counts the bytes that pass through. */
+    private static final class CountingOut extends java.io.FilterOutputStream {
+        private final long[] n;
+        CountingOut(OutputStream o, long[] n) { super(o); this.n = n; }
+        @Override public void write(int b) throws java.io.IOException { out.write(b); n[0]++; }
+        @Override public void write(byte[] b, int off, int len) throws java.io.IOException { out.write(b, off, len); n[0] += len; }
+    }
+
     private static boolean idTaken(Context c, String id) {
         try {
             Cursor q = table(c).rawQuery("SELECT 1 FROM export_catalog WHERE id = ?", new String[] {id});
@@ -284,19 +338,10 @@ final class ExportCatalog {
             en.bytes = zb.length;
             if (zu != null) res.uris.add(zu);
             if (raw) {
-                ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                ZipOutputStream z = new ZipOutputStream(bo);
-                byte[] buf = new byte[65536];
-                for (File f : rawFiles) {
-                    z.putNextEntry(new ZipEntry(f.getName()));
-                    FileInputStream in = new FileInputStream(f);
-                    try { int n; while ((n = in.read(buf)) > 0) z.write(buf, 0, n); } finally { in.close(); }
-                    z.closeEntry();
-                }
-                z.close();
-                Uri ru = write(app, id, id + "_raw_history.zip", "application/zip", bo.toByteArray());
+                long[] rawSize = new long[1];                                   // 0.53.4: streamed to the file, not built in memory
+                Uri ru = writeRawZip(app, id, id + "_raw_history.zip", rawFiles, rawSize);
                 en.rawUri = ru == null ? null : ru.toString();
-                en.bytes += bo.size();
+                en.bytes += rawSize[0];
             }
         } catch (Throwable t) { err.append(" FAILED: ").append(t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage()); }
         if (en.zipUri != null) save(app, en);

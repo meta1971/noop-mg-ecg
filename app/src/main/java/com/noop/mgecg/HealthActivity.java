@@ -865,23 +865,55 @@ public class HealthActivity extends Activity {
         rows(c, Explain.effortScale());
     }
 
-    /** 0.53.0: how the stress ring is worked out (StressModel). */
+    /** 0.53.5: the stress panel (StressModel version 2): headline, the day in bars, heart rate against what movement and the clock explain, time by level, highest stretches, your baselines, the method. */
     private void fillStress(LinearLayout c, HealthModel.Data d) {
-        c.addView(caps("STRESS: TODAY"));
         StressModel.Result r = d.stress;
-        if (r == null || Double.isNaN(r.baseline)) { note(c, "Not enough still, awake time in the last two days to set your baseline yet. It needs about an hour of sitting or standing still with the strap on."); return; }
-        kv(c, "Your still baseline", Math.round(r.baseline) + " bpm" + (r.baselineFromNights ? "  (from your nights, for now)" : "  (lowest fifth of " + r.baseBins + " still stretches, last 48 h)"));
-        if (r.today < 0) { note(c, "No still, awake stretch since 04:00 yet."); }
-        else {
-            kv(c, "Today, while still", r.today + " of 100  (" + r.level() + ")");
-            if (r.now >= 0) kv(c, "Last 20 minutes", r.now + " of 100");
-            kv(c, "Time low / medium / high", HealthModel.hmShort(r.lowMin * 60L) + " / " + HealthModel.hmShort(r.medMin * 60L) + " / " + HealthModel.hmShort(r.highMin * 60L));
+        c.addView(caps("STRESS: TODAY"));
+        if (r == null || Double.isNaN(r.baseline)) { note(c, "Not enough awake time with the strap on to set your baseline yet. It needs about two days of heart rate with your steps."); return; }
+        LinearLayout head = hrow();
+        head.addView(tv(r.today >= 0 ? String.valueOf(r.today) : "\u2014", 46, r.today >= 0 ? StressViews.levelColor(r.today) : MUT, 600));
+        LinearLayout side = new LinearLayout(this); side.setOrientation(LinearLayout.VERTICAL); side.setPadding(dpi(14), 0, 0, 0);
+        side.addView(tv(r.today >= 0 ? r.level() + " so far today" : "not scored yet", 16, INK, 600));
+        side.addView(tv(r.today >= 0 ? "out of 100, from " + HealthModel.hmShort((r.lowMin + r.medMin + r.highMin) * 60L) + " of scored time" : "needs about 30 minutes after your first hour awake", 11.5f, MUT, 400));
+        head.addView(side);
+        c.addView(head, lp(-1, -2, 10));
+        StringBuilder cmp = new StringBuilder();
+        if (!Double.isNaN(r.yesterday)) cmp.append("yesterday ").append(Math.round(r.yesterday));
+        if (!Double.isNaN(r.week)) { if (cmp.length() > 0) cmp.append("  \u00b7  "); cmp.append("your last week ").append(Math.round(r.week)); }
+        if (r.today >= 0 && !Double.isNaN(r.week)) { long df = Math.round(r.today - r.week); cmp.append("  \u00b7  ").append(Math.abs(df) <= 3 ? "about your usual" : df > 0 ? df + " above your usual" : (-df) + " below your usual"); }
+        if (cmp.length() > 0) c.addView(tv(cmp.toString(), 12, MUT, 400), lp(-2, -2, 6));
+        if (r.today >= 0) {
+            kv(c, "Last 20 minutes", r.now >= 0 ? String.valueOf(r.now) : "\u2014");
+            kv(c, "Highest 5 minutes", r.peak >= 0 ? r.peak + " at " + hhmm(r.peakT) : "\u2014");
         }
-        kv(c, "Moving (not scored)", HealthModel.hmShort(r.movingMin * 60L) + (r.guardedMin > 0 ? "  + " + HealthModel.hmShort(r.guardedMin * 60L) + " settling after it" : ""));
-        StringBuilder hi = new StringBuilder();
-        for (StressModel.Bin b : r.bins) if (b.score >= 50 && b.t >= r.dayStart) { if (hi.length() > 0) hi.append(", "); hi.append(hhmm(b.t)); if (hi.length() > 90) { hi.append(" \u2026"); break; } }
-        if (hi.length() > 0) kv(c, "High stretches (5 min each)", hi.toString());
-        note(c, "The score is how far your heart rate sits above your own still baseline while you are not moving: 3 % above reads 0, 25 % above reads 100. Walking, steps and the 10 minutes after them are left out. In a public wrist-sensor data set (20 people) this separated mental tasks from relaxing in every person; emotion without a heart-rate rise is not seen, and illness, heat, caffeine, alcohol or a meal raise it too. An estimate, not a medical measure.");
+        if (!r.bins.isEmpty()) {
+            TextView h1 = caps("THE DAY"); c.addView(h1, lp(-2, -2, 18));
+            c.addView(new StressViews.DayStrip(this, r.bins, r.dayStart, r.nowT), lp(-1, dpi(130), 8));
+            note(c, "Each bar is 5 minutes: green under 20, amber 20 to 49, red 50 and over. Bars are dimmer while you were moving. The blue line is now.");
+            TextView h2 = caps("HEART RATE AGAINST WHAT YOU WOULD EXPECT"); c.addView(h2, lp(-2, -2, 14));
+            c.addView(new StressViews.HrAgainstExpected(this, r.bins, r.nowT, 12), lp(-1, dpi(150), 8));
+            note(c, "Blue: your heart rate. Grey: what your steps and the time of day explain. Amber between them: the part the score counts. Last 12 hours.");
+            TextView h3 = caps("TIME BY LEVEL"); c.addView(h3, lp(-2, -2, 14));
+            c.addView(new StressViews.LevelBar(this, r.lowMin, r.medMin, r.highMin), lp(-1, dpi(14), 8));
+            kv(c, "Low (under 20)", HealthModel.hmShort(r.lowMin * 60L));
+            kv(c, "Medium (20 to 49)", HealthModel.hmShort(r.medMin * 60L));
+            kv(c, "High (50 and over)", HealthModel.hmShort(r.highMin * 60L));
+            kv(c, "While still", r.stillScore >= 0 ? r.stillScore + "  (" + HealthModel.hmShort(r.stillMin * 60L) + ")" : "\u2014");
+            kv(c, "While moving", r.movingScore >= 0 ? r.movingScore + "  (" + HealthModel.hmShort(r.movingMin * 60L) + ")" : "\u2014");
+            // the hours of today with the highest mean
+            double[] hs = new double[24]; int[] hn = new int[24]; int[] hp = new int[24];
+            for (StressModel.Bin b : r.bins) { if (b.score < 0) continue; int hh = Integer.parseInt(new SimpleDateFormat("H", Locale.UK).format(new Date(b.t * 1000L))); hs[hh] += b.score; hn[hh]++; hp[hh] = Math.max(hp[hh], b.score); }
+            List<Integer> order = new ArrayList<>(); for (int hh = 0; hh < 24; hh++) if (hn[hh] >= 6 && hs[hh] / hn[hh] >= 30) order.add(hh);
+            java.util.Collections.sort(order, new java.util.Comparator<Integer>() { @Override public int compare(Integer a, Integer b) { return Double.compare(hs[b] / hn[b], hs[a] / hn[a]); } });
+            if (!order.isEmpty()) { TextView h4 = caps("YOUR HIGHEST HOURS TODAY"); c.addView(h4, lp(-2, -2, 14)); for (int k = 0; k < Math.min(3, order.size()); k++) { int hh = order.get(k); kv(c, String.format(Locale.UK, "%02d:00 to %02d:00", hh, (hh + 1) % 24), "mean " + Math.round(hs[hh] / hn[hh]) + ", peak " + hp[hh]); } }
+        }
+        TextView h5 = caps("YOUR BASELINE (LAST 14 DAYS)"); c.addView(h5, lp(-2, -2, 16));
+        String[] bl = {"Still, under 0.5 steps a minute", "Light, 0.5 to 5", "Steady, 5 to 20", "Brisk, 20 to 40", "Fast, over 40"};
+        if (r.fallback) kv(c, "Still", Math.round(r.baseline) + " bpm  (provisional)");
+        else for (int j = 0; j < 5; j++) if (!Double.isNaN(r.bandBase[j])) kv(c, bl[j], Math.round(r.bandBase[j]) + " bpm  (" + r.bandN[j] + ")");
+        double mx = -99, mn = 99; int hmx = 0, hmn = 0; for (int hh = 0; hh < 24; hh++) { if (r.hourOffset[hh] > mx) { mx = r.hourOffset[hh]; hmx = hh; } if (r.hourOffset[hh] < mn) { mn = r.hourOffset[hh]; hmn = hh; } }
+        if (mx - mn >= 1.0) kv(c, "The clock adds", String.format(Locale.UK, "%+.0f bpm at %02d:00, %+.0f at %02d:00", mx, hmx, mn, hmn));
+        note(c, "The expected heart rate is your own lowest fifth at that many steps a minute, over the last 14 days, plus what the hour of the day usually adds for you; the heart rate lags movement, so it falls over the 10 minutes after you stop. The score is how far you sit above it: 3 % above reads 0, 25 % above reads 100. The first hour after you wake is not scored (the waking surge). In a public wrist-sensor data set of 20 people this separated mental tasks from relaxing in every person; emotion without a heart-rate rise is not seen, and illness, heat, caffeine, alcohol, a meal or heavy lifting raise it too. An estimate, not a medical measure.");
     }
 
     private void fillSleep(LinearLayout c, TodayModel.Day day) {
@@ -950,12 +982,12 @@ public class HealthActivity extends Activity {
         final StressModel.Result stx = d.stress;                    // 0.53.0: stress ring (heart rate above your own still baseline while not moving)
         final boolean hasStress = stx != null && stx.today >= 0;
         rf = new float[] {rf[0], rf[1], rf[2], hasStress ? Math.max(0.02f, stx.today / 100f) : 0f};
-        rc = new int[] {rc[0], rc[1], rc[2], !hasStress ? 0xFF8A93A0 : stx.today < 20 ? 0xFF4ADE80 : stx.today < 50 ? 0xFFF5B942 : 0xFFF2685A};
+        rc = new int[] {rc[0], rc[1], rc[2], !hasStress ? 0xFF8A93A0 : StressViews.levelColor(stx.today)};
         rb = new String[] {rb[0], rb[1], rb[2], hasStress ? String.valueOf(stx.today) : "\u2014"};
         String[] rl = {"RECOVERY", "EFFORT", "SLEEP", "STRESS"};
         String[] rcap = {Double.isNaN(rec) ? "needs " + TodayModel.MIN_BASELINE + " nights" : "vs your last " + day.baselineNights + " nights", "of 21 today",
                 n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h goal",
-                hasStress ? stx.level() + " today" : "needs a day"};
+                hasStress ? (Double.isNaN(stx.week) ? stx.level() + " today" : "usual " + Math.round(stx.week)) : "not scored yet"};      // 0.53.5: against your own usual of the last week
         rcap[0] = Double.isNaN(rec) ? "needs nights" : "vs " + day.baselineNights + " nights"; rcap[2] = n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h";      // shorter captions: four rings share the row
         DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
         final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
