@@ -295,11 +295,43 @@ final class EcgPage {
     /** The three rings of the Home page: the same view, real measures. */
     private void buildRings(LinearLayout col) {
         rings = new DailyViews.RingsView(a, rFrac, rCol, rBig, rLab, rCap);
+        final android.view.GestureDetector ringTap = new android.view.GestureDetector(a, new android.view.GestureDetector.SimpleOnGestureListener() {      // 0.53.7: tap a ring for its graphs (RingDetail)
+            @Override public boolean onSingleTapUp(MotionEvent e) { return true; }
+        });
+        rings.setClickable(true);
+        rings.setOnTouchListener(new View.OnTouchListener() {
+            @Override public boolean onTouch(View v, MotionEvent e) {
+                if (ringTap.onTouchEvent(e) && e.getAction() == MotionEvent.ACTION_UP) openRingDetail(Math.max(0, Math.min(2, (int) (e.getX() / (v.getWidth() / 3f)))));
+                return false;
+            }
+        });
         col.addView(rings, lp(-1, dp(196), 12));
+        TextView ringHint = t("Tap Heart rate, HRV or the third ring for graphs by time of day.", 11, MUT, 400); ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.addView(ringHint, lp(-1, -2, 0));
         planView = t("", 14, INK, 400); planView.setLineSpacing(0, 1.25f);
         col.addView(planView, lp(-2, -2, 8));
         noteView = t("Research only: not a diagnosis. The strap's own check and your report show how reliable each reading was.", 11, MUT, 400); noteView.setLineSpacing(0, 1.2f);
         col.addView(noteView, lp(-2, -2, 6));
+    }
+
+    /** 0.53.7: the sheet behind a ring: 0 heart rate by time of day, 1 HRV by time of day, 2 reading quality. The numbers are read off the main thread; not while a reading runs. */
+    private void openRingDetail(final int ring) {
+        try {
+            if (running) { a.toast("Details open after the reading ends."); return; }
+            final String[] titles = { "Heart rate through the day", "HRV through the day", "Reading quality" };
+            final LinearLayout box = new LinearLayout(a); box.setOrientation(LinearLayout.VERTICAL);
+            box.addView(t(ring == 1 ? "Reading your beat intervals (the first time can take up to a minute)..." : "Reading the last 14 days...", 13, MUT, 400));
+            final Dialog d = sheet(titles[ring], box); d.show();
+            Thread th = new Thread(new Runnable() { @Override public void run() {
+                try {
+                    final RingDetail.Data data = RingDetail.load(a, a.loadReports(), a.getExternalFilesDir(null));
+                    a.runOnUiThread(new Runnable() { @Override public void run() {
+                        try { if (!d.isShowing()) return; box.removeAllViews(); box.addView(ring == 0 ? RingDetail.hrView(a, data) : ring == 1 ? RingDetail.hrvView(a, data) : RingDetail.qualityView(a, data)); } catch (Throwable e) { fail("ring detail", e); }
+                    } });
+                } catch (Throwable e) { final Throwable ee = e; try { a.runOnUiThread(new Runnable() { @Override public void run() { fail("ring detail", ee); } }); } catch (Throwable ignored) { } }
+            } });
+            th.setDaemon(true); th.start();
+        } catch (Throwable e) { fail("ring detail", e); }
     }
 
     private void setRing(int i, float f, int col, String big, String lab, String cap) { rFrac[i] = f; rCol[i] = col; rBig[i] = big; rLab[i] = lab; rCap[i] = cap; }

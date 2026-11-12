@@ -39,7 +39,8 @@ final class StressModel {
         double yesterday = Double.NaN, week = Double.NaN, baseline = Double.NaN;      // baseline = the still band's expected heart rate
         double[] bandBase = new double[5]; int[] bandN = new int[5]; double[] bandCentre = new double[5]; double[] hourOffset = new double[24];      // hourOffset: bpm added to the movement baseline at each clock hour
         boolean fallback, baselineFromNights;
-        final List<Bin> bins = new ArrayList<>();
+        final List<Bin> bins = new ArrayList<>();      // today's scored bins
+        final List<Bin> all = new ArrayList<>();       // 0.53.8: every bin of the 14-day window, scored where it can be (the full-screen graphs)
         String level() { return levelOf(today); }
     }
 
@@ -76,7 +77,7 @@ final class StressModel {
     static Result score(List<Bin> all, long dayStart, long now, double nightsLowHr, int zoneSec) {
         Result R = new Result(); R.dayStart = dayStart; R.nowT = now;
         long from = now - WINDOW_DAYS * 86400L; List<Bin> bins = new ArrayList<>(); for (Bin b : all) if (b.t >= from) bins.add(b);
-        int n = bins.size(); if (n == 0) return R;
+        int n = bins.size(); if (n == 0) return R; R.all.addAll(bins);
         java.util.HashMap<Long, Long> firstAwake = new java.util.HashMap<>();             // the first awake stretch of each day (04:00 to 04:00): its first hour is the waking surge
         for (Bin b : bins) if (b.awake) { long dk = Math.floorDiv(b.t + zoneSec - 4 * 3600L, 86400L); if (!firstAwake.containsKey(dk)) firstAwake.put(dk, b.t); }
         for (Bin b : bins) { Long f = firstAwake.get(Math.floorDiv(b.t + zoneSec - 4 * 3600L, 86400L)); b.waking = f != null && b.t < f + 3600L; }

@@ -888,13 +888,19 @@ public class HealthActivity extends Activity {
         }
         if (!r.bins.isEmpty()) {
             TextView h1 = caps("THE DAY"); c.addView(h1, lp(-2, -2, 18));
-            c.addView(new StressViews.DayStrip(this, r.bins, r.dayStart, r.nowT), lp(-1, dpi(130), 8));
-            note(c, "Each bar is 5 minutes: green under 20, amber 20 to 49, red 50 and over. Bars are dimmer while you were moving. The blue line is now.");
+            View strip = new StressViews.DayStrip(this, r.bins, r.dayStart, r.nowT); strip.setClickable(true);
+            strip.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { StressFullActivity.open(HealthActivity.this, StressFullActivity.MODE_TIME, 24); } });      // 0.53.8: full screen, zoom and scroll
+            c.addView(strip, lp(-1, dpi(130), 8));
+            note(c, "Each bar is 5 minutes: green under 20, amber 20 to 49, red 50 and over. Bars are dimmer while you were moving. The blue line is now. Tap the graph to open it full screen: pinch to zoom, drag to scroll back through 14 days.");
             TextView h2 = caps("HEART RATE AGAINST WHAT YOU WOULD EXPECT"); c.addView(h2, lp(-2, -2, 14));
-            c.addView(new StressViews.HrAgainstExpected(this, r.bins, r.nowT, 12), lp(-1, dpi(150), 8));
-            note(c, "Blue: your heart rate. Grey: what your steps and the time of day explain. Amber between them: the part the score counts. Last 12 hours.");
+            View hrc = new StressViews.HrAgainstExpected(this, r.bins, r.nowT, 12); hrc.setClickable(true);
+            hrc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { StressFullActivity.open(HealthActivity.this, StressFullActivity.MODE_TIME, 12); } });
+            c.addView(hrc, lp(-1, dpi(150), 8));
+            note(c, "Blue: your heart rate. Grey: what your steps and the time of day explain. Amber between them: the part the score counts. Last 12 hours. Tap the graph for the full screen version with zoom and scroll.");
             TextView h3 = caps("TIME BY LEVEL"); c.addView(h3, lp(-2, -2, 14));
-            c.addView(new StressViews.LevelBar(this, r.lowMin, r.medMin, r.highMin), lp(-1, dpi(14), 8));
+            View lvl = new StressViews.LevelBar(this, r.lowMin, r.medMin, r.highMin); lvl.setClickable(true);
+            lvl.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { StressFullActivity.open(HealthActivity.this, StressFullActivity.MODE_DAYS, 24); } });      // tap: every day's minutes at each level
+            c.addView(lvl, lp(-1, dpi(14), 8));
             kv(c, "Low (under 20)", HealthModel.hmShort(r.lowMin * 60L));
             kv(c, "Medium (20 to 49)", HealthModel.hmShort(r.medMin * 60L));
             kv(c, "High (50 and over)", HealthModel.hmShort(r.highMin * 60L));
