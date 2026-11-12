@@ -54,6 +54,7 @@ final class ExportCatalog {
     static String shortName(String fileKey) { return fileKey.startsWith("mg_") ? fileKey.substring(3) : fileKey; }
 
     static String what(String shortName) {
+        if (shortName.startsWith("v26_p")) shortName = "v26.csv";      // 0.53.3: the pulse packets come in parts of 20,000 rows
         switch (shortName) {
             case "ecg_readings.csv": return "ECG readings saved by the app: time, heart rate, HRV, rhythm, grade";
             case "nights.csv": return "One row per night: sleep, resting heart rate, optical HRV, skin, breathing, SpO2";
@@ -72,6 +73,7 @@ final class ExportCatalog {
 
     /** {first time column, last time column, unit: 0 none, 1 seconds, 2 milliseconds} for the time span shown in the index. */
     static int[] timeCols(String shortName) {
+        if (shortName.startsWith("v26_p")) shortName = "v26.csv";
         switch (shortName) {
             case "ecg_readings.csv": return new int[] {1, 1, 1};
             case "nights.csv": return new int[] {3, 4, 1};

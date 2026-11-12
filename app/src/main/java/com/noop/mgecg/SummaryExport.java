@@ -628,29 +628,48 @@ final class SummaryExport {
             info.append("r16_fixture,").append(Rows.q(fxo[2])).append('\n');
         } catch (Throwable t) { info.append("error_r16_fixture,").append(Rows.q(String.valueOf(t))).append('\n'); }
 
-        Map<Long, long[]> r18 = new HashMap<>();
-        if (db != null && !v26.isEmpty()) {
+        // 0.53.3: the pulse packets are joined with the per-second heart rate WITHOUT holding every second in memory. Until 0.53.2 a HashMap with one entry per second between the first and the last packet
+        // (1.7 million seconds on 12 Nov, about 160 MB) filled the 192 MB heap: OutOfMemoryError in this step, no pulse-packet file in the export (export_info error_bins, decode log 165).
+        v16.clear(); v16raw.clear();
+        if (!v26.isEmpty()) {
             long lo = v26.firstKey() / 65536L, hi = v26.lastKey() / 65536L;
-            Cursor q = db.rawQuery("SELECT ts, hr, substr(rec,107,2), substr(rec,109,2) FROM r18 WHERE ts BETWEEN ? AND ?",
-                    new String[] {String.valueOf(lo), String.valueOf(hi)});
+            Cursor q = null;
             try {
-                while (q.moveToNext()) {
-                    byte[] d1 = q.getBlob(2), d2 = q.getBlob(3);
-                    long det = d1 != null && d1.length >= 2 ? ((d1[0] & 0xff) | ((d1[1] & 0xff) << 8)) : -1;
-                    long p8 = d2 != null && d2.length >= 2 ? d2[0] : -999, p9 = d2 != null && d2.length >= 2 ? d2[1] : -999;
-                    r18.put(q.getLong(0), new long[] {q.getLong(1), det, p8, p9});
-                }
-            } finally { q.close(); }
+                if (db != null) q = db.rawQuery("SELECT ts, hr, substr(rec,107,2), substr(rec,109,2) FROM r18 WHERE ts BETWEEN ? AND ? ORDER BY ts", new String[] {String.valueOf(lo), String.valueOf(hi)});
+                final Cursor qf = q; final boolean[] has = { q != null && q.moveToNext() };
+                joinV26(v26, new SecondSource() {
+                    @Override public boolean next() { has[0] = qf != null && qf.moveToNext(); return has[0]; }
+                    @Override public boolean valid() { return has[0]; }
+                    @Override public long ts() { return qf.getLong(0); }
+                    @Override public long hr() { return qf.getLong(1); }
+                    @Override public long det() { byte[] d1 = qf.getBlob(2); return d1 != null && d1.length >= 2 ? ((d1[0] & 0xff) | ((d1[1] & 0xff) << 8)) : -1; }
+                    @Override public long p8() { byte[] d2 = qf.getBlob(3); return d2 != null && d2.length >= 2 ? d2[0] : -999; }
+                    @Override public long p9() { byte[] d2 = qf.getBlob(3); return d2 != null && d2.length >= 2 ? d2[1] : -999; }
+                }, files);
+            } finally { if (q != null) q.close(); }
         }
-        StringBuilder b26 = new StringBuilder(Rows.V26_HEADER).append('\n');
-        for (Map.Entry<Long, String> e : v26.entrySet()) {
-            long[] r = r18.get(e.getKey() / 65536L);
-            b26.append(e.getValue());
-            if (r == null) b26.append(",,,,\n");
-            else b26.append(',').append(r[0]).append(',').append(r[1]).append(',').append(r[2]).append(',').append(r[3]).append('\n');
-        }
-        files.put("mg_v26.csv", b26.toString());
         info.append("v26_rows,").append(v26.size()).append('\n');
+    }
+
+    /** One per-second record source in time order (the r18 table). Pure interface so that the join can be tested without a database. */
+    interface SecondSource { boolean next(); boolean valid(); long ts(); long hr(); long det(); long p8(); long p9(); }
+
+    static final int V26_PART_ROWS = 20000;
+
+    /** Joins the packet rows (key = ts x 65536 + counter, ascending) with the per-second source (ascending ts, positioned on its first row) and puts the CSV into [files]: one file mg_v26.csv, or mg_v26_p1.csv, mg_v26_p2.csv ...
+     *  of 20,000 rows each, so no single string needs a big contiguous allocation. */
+    static void joinV26(java.util.TreeMap<Long, String> v26, SecondSource src, Map<String, String> files) {
+        int total = v26.size(), nparts = (total + V26_PART_ROWS - 1) / V26_PART_ROWS, rows = 0, part = 0;
+        StringBuilder b = new StringBuilder(Rows.V26_HEADER).append('\n');
+        for (Map.Entry<Long, String> e : v26.entrySet()) {
+            long ts = e.getKey() / 65536L;
+            while (src.valid() && src.ts() < ts) src.next();
+            b.append(e.getValue());
+            if (src.valid() && src.ts() == ts) b.append(',').append(src.hr()).append(',').append(src.det()).append(',').append(src.p8()).append(',').append(src.p9()).append('\n');
+            else b.append(",,,,\n");
+            rows++;
+            if (rows % V26_PART_ROWS == 0 || rows == total) { part++; files.put(nparts == 1 ? "mg_v26.csv" : "mg_v26_p" + part + ".csv", b.toString()); b = new StringBuilder(Rows.V26_HEADER).append('\n'); }
+        }
     }
 
     private static void events(Context app, long since, Map<String, String> files, StringBuilder info) throws Exception {
