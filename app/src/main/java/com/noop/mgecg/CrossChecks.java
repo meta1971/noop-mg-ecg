@@ -44,7 +44,7 @@ final class CrossChecks {
         }
         if (segX.isEmpty()) { m.put("r17_r16_skipped", "no_r16_stretch"); return m; }
         // filtered R16
-        double[] hp = ProDsp.hp2(0.51, FS, ProDsp.Q2);
+        double[] hp = ProDsp.hp2(EcgWhoopSpec.R17_HP_CORNER_HZ, FS, EcgWhoopSpec.R17_HP_Q);      // 0.53.2: the measured R17 high-pass (0.53 Hz, Q 0.72; was 0.51 Hz, Q 0.7071)
         List<double[]> segY = new ArrayList<>();
         for (double[] x : segX) { double[] y = ProDsp.sos(x, new double[][] { hp }, 1.0); y = ProDsp.filtfilt(y, ProDsp.butterLow(4, 40, FS)); segY.add(y); }
         // R17 points
@@ -149,7 +149,7 @@ final class CrossChecks {
         if (amp.size() < 3) return m;
         double s = 0, mn = 1e18, mx = -1e18; for (double v : amp) { s += v; mn = Math.min(mn, v); mx = Math.max(mx, v); } double mean = s / amp.size();
         m.put("ev118_mean_ours", String.format(Locale.US, "%.0f", mean)); m.put("ev118_min_ours", String.format(Locale.US, "%.0f", mn)); m.put("ev118_max_ours", String.format(Locale.US, "%.0f", mx));
-        m.put("ev118_E_over_mean", String.format(Locale.US, "%.4f", E / mean)); m.put("ev118_C_over_min", String.format(Locale.US, "%.4f", C / mn)); m.put("ev118_D_over_max", String.format(Locale.US, "%.4f", D / mx));
+        m.put("ev118_E_over_mean", String.format(Locale.US, "%.4f", E / mean)); m.put("ev118_E_over_mean_0p0621", String.format(Locale.US, "%.4f", E / (mean * ProAnalysis.UV_OLD / ProAnalysis.UV)));      // 0.53.2: the same ratio at the old scale 0.0621 (the series before 0.53.0 is on that scale) m.put("ev118_C_over_min", String.format(Locale.US, "%.4f", C / mn)); m.put("ev118_D_over_max", String.format(Locale.US, "%.4f", D / mx));
         return m;
     }
     private static long u32(byte[] b, int o) { return (b[o] & 0xFFL) | ((b[o + 1] & 0xFFL) << 8) | ((b[o + 2] & 0xFFL) << 16) | ((b[o + 3] & 0xFFL) << 24); }
