@@ -180,7 +180,7 @@ final class ConsoleCatalog {
             m.put("console_templates_n", String.valueOf(cat.size()));
             if (readingStart == startSec) {
                 m.put("console_new_n", String.valueOf(newN)); m.put("console_fragments_n", String.valueOf(fragments));
-                for (Map.Entry<String, String> e : regsNow.entrySet()) { m.put("afe_" + e.getKey().trim().replaceAll("[^A-Za-z0-9]+", "_"), e.getValue()); if (AfeDecode.norm(e.getKey()).endsWith("ecg config 1")) m.put("afe_ecg_cfg1_decode", AfeDecode.describe(e.getKey(), e.getValue())); }
+                for (Map.Entry<String, String> e : regsNow.entrySet()) { m.put("afe_" + e.getKey().trim().replaceAll("[^A-Za-z0-9]+", "_"), e.getValue()); { String nk = AfeDecode.norm(e.getKey()); for (int q = 1; q <= 3; q++) if (nk.endsWith("ecg config " + q)) m.put("afe_ecg_cfg" + q + "_decode", AfeDecode.describe(e.getKey(), e.getValue())); } }
                 if (dir != null && !newList.isEmpty()) { try (FileWriter w = new FileWriter(new File(dir, "console_new_" + startSec + ".txt"), false)) { for (String s : newList) w.write(s + "\n"); } catch (Exception ignored) { } }
             }
         }

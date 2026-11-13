@@ -78,7 +78,10 @@ public final class EcgWhoopSpec {
      * about 6% low), and whether R16 has a high-pass of its own is OPEN. The 0.5 Hz corner below belongs to R17 relative to R16.
      */
     public static final double R16_UV_PER_COUNT = 0.06358;      // 0.53.0 (decode log 161): the strap's own microvolts (filtered-stream plateau 1.0228-1.0243 x 0.0621) = 1 V / (2^17 x gain 120); was 0.0621
-    public static final int R16_RAIL = 126976;
+    public static final int R16_RAIL = 126976;      // 0.53.9: = 62 x 2048 = 62 / 64 of the 131,072 full scale; OBSERVED as a hard limit over 9.24 million stored samples (72,547 on it, none beyond except 96 at +126,977); the fast-recovery threshold reading of it is INFERRED
+    public static final int ECG_TOTAL_GAIN_ASSUMED = 120;       // INFERRED (decode log 184, 185): INA 30 x PGA 4 or INA 60 x PGA 2
+    public static final double ECG_VREF_V_ASSUMED = 1.0;        // INFERRED: the data sheet cover's 15.6 ENOB with 0.6 uV rms fixes a full scale of 100 +- 4 mV p-p at the lowest gain (20 V/V), i.e. 1.0 V
+    public static final int ECG_ADC_CLOCK_HZ = 32000;           // OBSERVED effective: divider 64 (register 0x90 = 0x82) and 500 samples a second; the mains line falls at 49.97 Hz at 500 a second (33 of 116 clean stretches, 12 Nov)
 
     /*
      * 0.53.2 (11-12 Nov 2026, decode log 158, 159, 161, 164). SCALE: 0.06358 uV per count is 1 V / (2^17 x total gain 120), the only value of the chip's gain table (INA 20/30/40/60 x PGA 1/2/4/8/16, ADC reference ASSUMED 1.000 V)
@@ -87,6 +90,11 @@ public final class EcgWhoopSpec {
      * event 118 reads E = R16 x 0.0621 x 1.002 (+-0.009, 3 readings, decode log 143.14), i.e. the firmware's beat analyser seems to work at about 0.0621; with 0.06358 the same check reads 0.98. E's definition (S window, filter)
      * is uncertain by 1-2 %, so it cannot separate the two (the app writes E over our mean at BOTH scales); the difference is 2.3 %. NOT yet confirmed by a known source (Lab S runs D to G).
      * FILTERED STREAM R17 (100 Hz, int16, the strap's own microvolts), measured: second-order high-pass 0.53 Hz (Q 0.72), low-pass -1 dB 37.4 Hz and -3 dB 41.0 Hz (steep), flat within about 1 % from 3 to 25 Hz, delay 264.5 ms.
+     * 0.53.9 (12 Nov 2026, decode log 182-186): STATE OF THE EVIDENCE FOR 0.06358. FOR: the firmware's own constant (above); the public data sheet cover (15.6 ENOB at 0.6 uV rms = full scale 100 +- 4 mV p-p at the
+     * lowest gain = 1.0 V reference); the chip's gain table has no 100 V/V (a third party's 76.29 nV per count needs 100 V/V at 1.0 V or 120 V/V at 1.2 V); the step bound (at most 0.068 with the largest edge, 0.072 with the
+     * full model of decode log 159.2: the bound depends on how the edge is fitted and is weak). AGAINST: one third party (sennnen/maverick ADR-034) compared WHOOP's printed report with decoded counts of one 29 s recording
+     * and found 0.842 mV printed for 11,089 counts = 75.9 nV per count (+19 %); no chip setting reproduces it, and the report's amplitude definition is unknown. An Apple Watch comparison by another contributor read
+     * R16 x 0.0621 about 6 % low (scale about 0.066). NOT settled: the data sheet's register pages (83-166) are under NDA; a known-voltage test is the decider.
      * RAW STREAM R16: decays after steps with time constants of 2 to 9 s (corners 0.02-0.08 Hz, median 0.03 Hz, contact dependent); the chip's analog high-pass with about 10 uF is the best reading (INFERRED).
      */
     public static final double R17_HP_CORNER_HZ = 0.53, R17_HP_Q = 0.72, R17_LP_MINUS1DB_HZ = 37.4, R17_LP_MINUS3DB_HZ = 41.0, R17_DELAY_MS = 264.5;

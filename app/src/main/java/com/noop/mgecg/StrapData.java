@@ -194,6 +194,11 @@ final class StrapData {
         r.add(row(S, "Optical sampling", (R18Codec.u8(f, 10) & 0x80) != 0 ? "25 Hz" : "50 Hz", "byte 10 bit 7; 50 Hz only while an ECG runs"));
         r.add(row(S, "Battery pack", R18Codec.packAttached(f) ? "attached" : "not attached", "byte 10 bit 1; set in every second of a battery-pack session (25,039 of them, 24 Oct to 12 Nov). Take ECG readings with the pack off"));
         r.add(row(S, "Optical gain word", String.format("0x%04X", R18Codec.u16(f, 75)), "bytes 75 and 76, the only live one of three: bits 4-7 photodiode offsets, 8-11 green LED step, 12-15 saturation flags (decoded in the Heart section)"));
+        String E = "ECG FRONT END";      // 0.53.9: what is known and what is inferred about the ECG chain (decode log 182-186); not read from this second's record
+        r.add(row(E, "Sampling", "500 a second", "register 0x90 = 0x82 (the 6 Nov console dump): ECG on, divide by 64, so a 32,000 Hz clock. Measured, not assumed: the mains line falls at 49.97 Hz at 500 a second (33 clean stretches); at 512 it would be at 48.8 Hz"));
+        r.add(row(E, "Gain and reference (inferred)", "120 V/V, 1.0 V", "1 count = 0.06358 uV = 1.0 V / (2^17 x 120); full scale +-8.33 mV. From the strap's own microvolt stream, the data sheet cover's full scale and the chip's gain table. A third party's comparison with WHOOP's printed report suggests up to 19 % higher; a known voltage has not been applied yet"));
+        r.add(row(E, "Output limit", "+-126,976 counts", "= +-8.07 mV = 62 / 64 of full scale; a hard limit (72,547 stored samples sit on it, none beyond). Probably the chip's fast-recovery threshold (register 0x92 low six bits = 62, inferred)"));
+        r.add(row(E, "Gain registers", "0x91, 0x92", "0x91: polarity bit 7, PGA code bits 6:4 (x1 x2 x4 x8, 7 = x16), INA code bits 1:0 (20, then 30 / 40 / 60 inferred); total = INA x PGA. 0x92: fast-recovery mode bits 7:6, threshold bits 5:0 (n / 64 of full scale). The strap's own bytes are not printed by its console"));
         String R = "THIS RECORD";
         r.add(row(R, "Strap time", clock(R18Codec.ts(f)), "bytes 15 to 18"));
         r.add(row(R, "Record counter", String.valueOf(R18Codec.u32(f, 11)), "bytes 11 to 14; +1 per second"));
