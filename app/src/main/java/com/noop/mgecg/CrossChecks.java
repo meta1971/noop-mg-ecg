@@ -38,7 +38,7 @@ final class CrossChecks {
             if (ProAnalysis.u16(f16.get(s), 32) != 500) { s++; continue; }                 // every reading opens with an empty and a ~245-sample frame (138.8)
             int e = s + 1; while (e < S && ProAnalysis.u32(f16.get(e), 11) == ProAnalysis.u32(f16.get(e - 1), 11) + 1 && ProAnalysis.u16(f16.get(e), 32) == 500) e++;
             double[] x = new double[(e - s) * 500]; boolean[] q = new boolean[e - s]; boolean bad = false;
-            for (int i = s; i < e; i++) { byte[] f = f16.get(i); q[i - s] = (f[21] & 0xFF) == 3; for (int k = 0; k < 500; k++) { if (!SpectrumBlock.sampleOk(f, k)) { q[i - s] = false; } x[(i - s) * 500 + k] = SpectrumBlock.counts(f, k) * ProAnalysis.UV; } }
+            for (int i = s; i < e; i++) { byte[] f = f16.get(i); q[i - s] = (f[21] & 0xFF) == 3; for (int k = 0; k < 500; k++) { if (!SpectrumBlock.sampleOk(f, k)) { q[i - s] = false; } x[(i - s) * 500 + k] = SpectrumBlock.counts(f, k) * ProAnalysis.uv(); } }
             if (e - s >= 20 && !bad) { segX.add(x); segT0.add((double) ProAnalysis.u32(f16.get(s), 11)); segQ.add(q); }      // 0.51.1: times from the frame COUNTER (the frame time stamps jitter in 10 ms steps, sd up to 4.7 ms)
             s = e;
         }
@@ -110,7 +110,7 @@ final class CrossChecks {
         double G = sg / sw;
         m.put("r17_gain_f6_30", String.format(Locale.US, "%.4f", G));
         m.put("r17_coh_f6_30", String.format(Locale.US, "%.4f", sc / nc));
-        m.put("r17_uV_per_count", String.format(Locale.US, "%.5f", G * ProAnalysis.UV));
+        m.put("r17_uV_per_count", String.format(Locale.US, "%.5f", G * ProAnalysis.uv()));
         m.put("r17_windows", String.valueOf(nw));
     }
 
@@ -130,7 +130,7 @@ final class CrossChecks {
         long A = u32(in, 5), B = u32(in, 9); int C = u16(in, 13), D = u16(in, 15), E = u16(in, 17); long n1 = u32(in, 23);
         long c0 = ProAnalysis.u32(f16.get(0), 11); int S = (int) Math.min(900, ProAnalysis.u32(f16.get(f16.size() - 1), 11) - c0 + 1); if (S < 40) return m;
         double[] x = new double[S * 500]; int i0 = -1;
-        for (byte[] f : f16) { long s = ProAnalysis.u32(f, 11) - c0; if (s < 0 || s >= S) continue; int n = Math.min(500, ProAnalysis.u16(f, 32)); for (int k = 0; k < n; k++) if (SpectrumBlock.sampleOk(f, k)) { int i = (int) s * 500 + k; x[i] = SpectrumBlock.counts(f, k) * ProAnalysis.UV; if (i0 < 0 || i < i0) i0 = i; } }
+        for (byte[] f : f16) { long s = ProAnalysis.u32(f, 11) - c0; if (s < 0 || s >= S) continue; int n = Math.min(500, ProAnalysis.u16(f, 32)); for (int k = 0; k < n; k++) if (SpectrumBlock.sampleOk(f, k)) { int i = (int) s * 500 + k; x[i] = SpectrumBlock.counts(f, k) * ProAnalysis.uv(); if (i0 < 0 || i < i0) i0 = i; } }
         if (i0 < 0) return m;
         int end = Math.min(x.length, i0 + 40 * FS); double[] xs = java.util.Arrays.copyOfRange(x, 0, end);
         double[] z = ProDsp.sos(xs, new double[][] { ProDsp.hp2(0.51, FS, ProDsp.Q2) }, 0.0);
@@ -149,7 +149,7 @@ final class CrossChecks {
         if (amp.size() < 3) return m;
         double s = 0, mn = 1e18, mx = -1e18; for (double v : amp) { s += v; mn = Math.min(mn, v); mx = Math.max(mx, v); } double mean = s / amp.size();
         m.put("ev118_mean_ours", String.format(Locale.US, "%.0f", mean)); m.put("ev118_min_ours", String.format(Locale.US, "%.0f", mn)); m.put("ev118_max_ours", String.format(Locale.US, "%.0f", mx));
-        m.put("ev118_E_over_mean", String.format(Locale.US, "%.4f", E / mean)); m.put("ev118_E_over_mean_0p0621", String.format(Locale.US, "%.4f", E / (mean * ProAnalysis.UV_OLD / ProAnalysis.UV)));      // 0.53.2: the same ratio at the old scale 0.0621 (the series before 0.53.0 is on that scale) m.put("ev118_C_over_min", String.format(Locale.US, "%.4f", C / mn)); m.put("ev118_D_over_max", String.format(Locale.US, "%.4f", D / mx));
+        m.put("ev118_E_over_mean", String.format(Locale.US, "%.4f", E / mean)); m.put("ev118_E_over_mean_0p0621", String.format(Locale.US, "%.4f", E / (mean * ProAnalysis.UV_OLD / ProAnalysis.uv())));      // 0.53.2: the same ratio at the old scale 0.0621 (the series before 0.53.0 is on that scale) m.put("ev118_C_over_min", String.format(Locale.US, "%.4f", C / mn)); m.put("ev118_D_over_max", String.format(Locale.US, "%.4f", D / mx));
         return m;
     }
     private static long u32(byte[] b, int o) { return (b[o] & 0xFFL) | ((b[o + 1] & 0xFFL) << 8) | ((b[o + 2] & 0xFFL) << 16) | ((b[o + 3] & 0xFFL) << 24); }

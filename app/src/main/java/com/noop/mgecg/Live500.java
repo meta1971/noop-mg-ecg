@@ -20,7 +20,7 @@ package com.noop.mgecg;
 final class Live500 {
     private Live500() {}
 
-    static final double UV_PER_COUNT = 0.06358;      // 0.53.0 (decode log 161); was 0.0621
+    static double uvPerCount() { return ScaleSetting.uv(); }      // 0.54.0: the one scale setting (default 0.06358, decode log 161; 0.0621 before 0.53.0)
     static final int FS = 500;
     static final int CAP = 8192;                   // samples kept (16 s); a power of two
     static final int RAIL = 126900;                // the clamp is at +-126,976 counts
@@ -135,7 +135,7 @@ final class Live500 {
     static volatile int lastCode, lastState, lastProgress = 255, lastMask, lastAvgHr;      // 0.27.1: status bytes 23 to 27 of the newest live frame
     private static void noteNoise(byte[] f, int n) {
         int q = f[21] & 0xFF; double[] v = new double[n]; int m = 0;
-        for (int i = 0; i < n; i++) { int b0 = f[34 + 3 * i] & 0xFF; if ((b0 & 0x80) == 0 || (b0 & 0x40) != 0) continue; int r = ((b0 & 3) << 16) | ((f[35 + 3 * i] & 0xFF) << 8) | (f[36 + 3 * i] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; v[m++] = r * UV_PER_COUNT; }
+        for (int i = 0; i < n; i++) { int b0 = f[34 + 3 * i] & 0xFF; if ((b0 & 0x80) == 0 || (b0 & 0x40) != 0) continue; int r = ((b0 & 3) << 16) | ((f[35 + 3 * i] & 0xFF) << 8) | (f[36 + 3 * i] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; v[m++] = r * uvPerCount(); }
         if (m < 400) { lastNoiseUv = Double.NaN; return; }
         double[] d = new double[m - 1]; for (int i = 1; i < m; i++) d[i - 1] = v[i] - v[i - 1];
         double md = med(d); double[] a = new double[d.length]; for (int i = 0; i < d.length; i++) a[i] = Math.abs(d[i] - md);
@@ -333,7 +333,7 @@ final class Live500 {
                 if ((raw & 0x20000) != 0) raw -= 0x40000;
                 boolean ok = (b0 & 0x80) != 0 && (b0 & 0x40) == 0 && Math.abs(raw) < RAIL;
                 if (!ok) bad++;
-                append(ok, raw * UV_PER_COUNT, startMs + k * step);
+                append(ok, raw * uvPerCount(), startMs + k * step);
             }
             nextDue = startMs + n * step;
             invalidInFrame = bad;
@@ -416,11 +416,17 @@ final class Live500 {
         int i = bN & (NB - 1);
         bApex[i] = pendApex; bPr[i] = pendPr; bPrDue[i] = due[p(pendApex - 42)]; bDue[i] = due[p(pendApex)]; bAmp[i] = (float) pendAmp; bOk[i] = true;
         bN++;
+        synchronized (ACC) { if (accN < accDue.length) accDue[accN++] = bDue[i]; }      // 0.54.0: the accepted-beat log (stand test)
         LiveBands.beat(pendApex + 18);
         if (testBeatSink != null) testBeatSink.add(pendApex);
     }
     static final double ACCEPT_FRAC = 0.45;                          // a beat candidate counts as a beat when its height is at least this fraction of the 90th percentile of the last 40 candidate heights (as the offline detector of decode log 50.4)
-    private static void proReset() { bN = 0; pkDone = 0; winNext = 0; wins.clear(); candN = 0; havePend = false; lastAccApex = Long.MIN_VALUE / 2; cleanBeatN = 0; }
+    /** 0.54.0: every accepted beat of this reading as its display time (ms on the phone clock, incl. the display delay); acceptedBeatSec() turns it into seconds from a reference. */
+    private static final Object ACC = new Object(); private static final double[] accDue = new double[4096]; private static int accN;
+    static double[] acceptedBeatSec(long refMs) { synchronized (ACC) { double[] r = new double[accN]; double bm = bufferMs; for (int i = 0; i < accN; i++) r[i] = (accDue[i] - bm - refMs) / 1000.0; return r; } }
+    /** Seconds the strap marked quality 3 (its best) since the reading began. */
+    static int q3Sec() { synchronized (NQ) { return cleanSec; } }
+    private static void proReset() { synchronized (ACC) { accN = 0; } bN = 0; pkDone = 0; winNext = 0; wins.clear(); candN = 0; havePend = false; lastAccApex = Long.MIN_VALUE / 2; cleanBeatN = 0; }
     /** 0.45.0 (c): beats whose window matches the running template (correlation 0.95 or more, R height 60 to 140 % of the template's). The live counter toward the clean-beat target; the same rule as the report's beat selection (e). */
     private static volatile int cleanBeatN;
     static int cleanBeats() { return cleanBeatN; }

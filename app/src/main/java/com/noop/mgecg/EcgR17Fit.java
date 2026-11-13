@@ -57,7 +57,7 @@ final class EcgR17Fit {
             if (f.length != 1584) continue;
             long k = u32(f, 11) - first;
             if (k < 0 || k >= n || EcgWhoopSpec.r16Count(f) != 500) continue;
-            for (int i = 0; i < 500; i++) uv[(int) k * 500 + i] = EcgWhoopSpec.r16Sample(f, i) * EcgWhoopSpec.R16_UV_PER_COUNT;
+            for (int i = 0; i < 500; i++) uv[(int) k * 500 + i] = EcgWhoopSpec.r16Sample(f, i) * ScaleSetting.uv();
         }
         double[] rep = EcgWhoopSpec.whoopLiveReplica(uv);
         // real R17 by record, only where it is clean
@@ -107,7 +107,7 @@ final class EcgR17Fit {
             }
         }
         if (Double.isNaN(res.gain)) { res.why = "no usable overlap"; return res; }
-        res.scale = EcgWhoopSpec.R16_UV_PER_COUNT * res.gain;
+        res.scale = ScaleSetting.uv() * res.gain;
         return res;
     }
 }

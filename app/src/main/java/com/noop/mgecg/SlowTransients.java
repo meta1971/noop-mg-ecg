@@ -50,7 +50,7 @@ final class SlowTransients {
             for (int k = 0; k < cnt; k++) {
                 int v = EcgWhoopSpec.r16Sample(f, k);
                 if (!EcgWhoopSpec.r16LeadOn(f, k) || EcgWhoopSpec.r16FastRecovery(f, k) || Math.abs(v) >= Live500.RAIL) continue;
-                uv[base + k] = v * EcgWhoopSpec.R16_UV_PER_COUNT;
+                uv[base + k] = v * ScaleSetting.uv();
             }
         }
         if (origin < 0) return out;

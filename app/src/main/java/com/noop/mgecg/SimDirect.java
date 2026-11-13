@@ -149,7 +149,7 @@ final class SimDirect {
         long on = 0, tot = 0; List<Double> iv = new ArrayList<>();
         for (byte[] x : fr) { int n = Math.min(500, ProAnalysis.u16(x, 32)); for (int k = 0; k < n; k++) { if ((x[34 + 3 * k] & 0x80) != 0) on++; tot++; }
             if (x.length >= 1557 && (x[1534] & 0xFF) == 11) for (int k = 0; k < 11; k++) iv.add((double) (short) ((x[1535 + 2 * k] & 0xFF) | (x[1536 + 2 * k] << 8))); }
-        double[] c = counts(fr); double hum = Double.NaN; if (c.length >= 10 * FS) hum = lockIn(c, 50.0, Math.max(0, c.length / (double) FS - 10.0), c.length / (double) FS) * ProAnalysis.UV;
+        double[] c = counts(fr); double hum = Double.NaN; if (c.length >= 10 * FS) hum = lockIn(c, 50.0, Math.max(0, c.length / (double) FS - 10.0), c.length / (double) FS) * ProAnalysis.uv();
         double med = Double.NaN; if (!iv.isEmpty()) { double[] a = toArr(iv); Arrays.sort(a); med = a[a.length / 2]; }
         return new double[] { tot == 0 ? Double.NaN : on / (double) tot, med, hum };
     }
@@ -186,7 +186,7 @@ final class SimDirect {
         if (cal && !Double.isNaN(a10)) ks[nk++] = vfsPkMv * 1000.0 * db(TONE_DB) / a10;
         double lin = Double.NaN; { double r0 = amp[0] / db(LEVEL_DB[0]), mx = 0, mean = 0; for (int i = 0; i < 4; i++) mean += amp[i] / db(LEVEL_DB[i]) / 4; for (int i = 0; i < 4; i++) mx = Math.max(mx, Math.abs(amp[i] / db(LEVEL_DB[i]) / mean - 1) * 100); lin = mx; R.notes.put("simd_linearity_pct", f(lin, 2)); }
         if (cal && nk > 0) { double m = 0; for (int i = 0; i < nk; i++) m += ks[i] / nk; double sd = 0; for (int i = 0; i < nk; i++) sd += (ks[i] - m) * (ks[i] - m); sd = Math.sqrt(sd / nk); R.notes.put("simd_K_uV_per_count", f(m, 5)); R.notes.put("simd_K_sd", f(sd, 5));
-            R.card.add("Scale " + f(m, 4) + " uV per count from five 10 Hz blocks (spread " + f(sd, 4) + "); app scale " + f(ProAnalysis.UV, 4) + ": " + String.format(Locale.US, "%+.1f", 100 * (m / ProAnalysis.UV - 1)) + " %"); }
+            R.card.add("Scale " + f(m, 4) + " uV per count from five 10 Hz blocks (spread " + f(sd, 4) + "); app scale " + f(ProAnalysis.uv(), 4) + ": " + String.format(Locale.US, "%+.1f", 100 * (m / ProAnalysis.uv() - 1)) + " %"); }
         else R.card.add("No calibration stored: amplitudes are in counts only (" + f(amp[2], 0) + " counts at -54 dBFS). Run M (meter calibration) and analyse again from the Full pull.");
         R.card.add("Linearity over -66 to -48 dBFS: largest deviation " + f(lin, 1) + " %");
         R.card.add("R16 gain against 10 Hz: 0.5 Hz " + f(gain[0], 2) + ", 1 Hz " + f(gain[1], 2) + ", 2 Hz " + f(gain[2], 2) + ", 5 Hz " + f(gain[3], 2) + ", 20 Hz " + f(gain[5], 2) + ", 40 Hz " + f(gain[6], 2) + ", 60 Hz " + f(gain[7], 2) + ", 100 Hz " + f(gain[8], 2) + ", 150 Hz " + f(gain[9], 2) + ", 200 Hz " + f(gain[10], 2) + " (below 2 Hz the phone's own output response is included)");
@@ -216,7 +216,7 @@ final class SimDirect {
             if (corr < 0.9) low.append(s.name).append(' ').append(f(corr, 2)).append("; ");
         }
         if (cal && !ks.isEmpty()) { double[] k = toArr(ks); Arrays.sort(k); double med = k[k.length / 2]; R.notes.put("simd_K_uV_per_count", f(med, 5)); R.notes.put("simd_K_min", f(k[0], 5)); R.notes.put("simd_K_max", f(k[k.length - 1], 5));
-            R.card.add("Scale " + f(med, 4) + " uV per count (median of " + k.length + " segments, " + f(k[0], 4) + " to " + f(k[k.length - 1], 4) + "); app scale " + f(ProAnalysis.UV, 4) + ": " + String.format(Locale.US, "%+.1f", 100 * (med / ProAnalysis.UV - 1)) + " %"); }
+            R.card.add("Scale " + f(med, 4) + " uV per count (median of " + k.length + " segments, " + f(k[0], 4) + " to " + f(k[k.length - 1], 4) + "); app scale " + f(ProAnalysis.uv(), 4) + ": " + String.format(Locale.US, "%+.1f", 100 * (med / ProAnalysis.uv() - 1)) + " %"); }
         else if (!cal) R.card.add("No calibration stored: the scale cannot be given. The match of every segment is still in the notes.");
         R.card.add("The played signal was found " + f(lag / (double) FS, 2) + " s into the reading; " + tr.segs.size() + " segments compared with the strap's record (5-40 Hz).");
         if (low.length() > 0) R.card.add("Segments matching under 0.90: " + low.toString().trim());

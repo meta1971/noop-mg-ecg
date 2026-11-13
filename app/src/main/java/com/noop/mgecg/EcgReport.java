@@ -120,7 +120,7 @@ public final class EcgReport {
             b.append("<h2>Verdict check</h2><p class=\"hint\">Measures that separated the strap's results on 51 earlier readings (sinus 1, inconclusive 6, unreadable 2).</p>");
             for (String[] rw : StrapBeatCheck.checkRows(c)) b.append(row(esc(rw[0]), esc(rw[1])));
             b.append("<p class=\"cap\">The strap's HRV is a sliding RMSSD over about 32 beats, refreshed about every 15 beats. It first appears once about 26 beats the strap accepted have gathered after its first beat B, so a noisy start only delays it (decode log 105.3, 115.2).</p>");
-            b.append("<p class=\"cap\">Amplitudes use 0.06358 uV per count (the strap's own microvolt conversion, in use from app 0.53.0; reports made before it used 0.0621, 2.3 % lower; the absolute scale is inferred and not yet checked with a known voltage). Not a diagnosis.</p></section>");
+            b.append("<p class=\"cap\">Amplitudes use " + String.format(java.util.Locale.US, "%.5f", ScaleSetting.uv()) + " uV per count (the strap's own microvolt conversion, in use from app 0.53.0; reports made before it used 0.0621, 2.3 % lower; the absolute scale is inferred and not yet checked with a known voltage" + (ScaleSetting.verified() ? "" : ": " + ScaleSetting.SCALE_TAG) + "). Not a diagnosis.</p></section>");
             return b.toString();
         } catch (Throwable t) {
             return "";

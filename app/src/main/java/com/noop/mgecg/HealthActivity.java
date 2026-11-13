@@ -53,12 +53,15 @@ public class HealthActivity extends Activity {
     private TextView todayHrNum, todayHrSub; private String todayHrSubTail = "";               // 0.13.4: the Today heart-rate card follows the live frames
     private volatile List<ActivityDetector.Bout> actBouts = new ArrayList<ActivityDetector.Bout>();
     private volatile String actLine = "";          // today's activity in one line, read off the main thread
+    private volatile int actMin = -1, actGoal = 240;           // 0.54.0: moving minutes today and the goal, for the ACTIVE ring (-1 = no data)
+    private volatile ActivityPlus.DayStats actToday; private volatile long actStatsAt;      // 0.54.0: today's all-day figures (moving, still stretches, by the hour)
+    private volatile List<TrustData.Day> trustDays = new ArrayList<TrustData.Day>(); private volatile List<String> trustIngests = new ArrayList<String>(); private volatile long trustAt;      // 0.54.0: what to trust in the last two days
     private volatile String syncRange = "", syncBattery = "";     // 0.21.0: for the sync card's explainer, read off the main thread
     private final java.util.HashSet<String> openCards = new java.util.HashSet<>();     // 0.21.0: which explainers are open (they stay open when the screen refreshes)
     static volatile int pendingTab = -1;               // 0.22.0: set by the old screens when they hand back to a tab (onNewIntent is not always called)
     private volatile String syncSub = "";           // 0.20.0: the strap line of the sync strip (pages behind, battery), read off the main thread
     private TextView syncTitleTv, syncSubTv;
-    private int ringOpen = -1;                       // 0.20.0: which ring on Today is expanded (0 recovery, 1 effort, 2 sleep), -1 none
+    private int ringOpen = -1;                       // 0.20.0: which ring on Today is expanded (0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress), -1 none
     private LinearLayout ringPanel;
     private TextView liveNum, liveUnit;
     private HealthModel.Data liveData;
@@ -87,6 +90,7 @@ public class HealthActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         FrameMonitor.captureTo(getExternalFilesDir(null));          // 0.25.0: raw copies of undecoded frames
+        ScaleSetting.load(this);                                    // 0.54.0
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         root.addView(new GlowBg(this), new FrameLayout.LayoutParams(-1, -1));
@@ -169,6 +173,18 @@ public class HealthActivity extends Activity {
                     actLine = (ad != null && ad.hasData && ad.r != null)
                             ? "Active " + HealthModel.hmShort(ad.r.activeMin * 60L) + (ad.r.longestBoutMin > 0 ? " \u00b7 longest " + HealthModel.hmShort(ad.r.longestBoutMin * 60L) : "") + " \u00b7 load " + Math.round(ad.r.load)
                             : "No logged data yet today";
+                } catch (Throwable ignored) { }
+                try {                                                    // 0.54.0: all-day figures for the ACTIVE ring and card (at most every 2 minutes)
+                    ActivityStore.DayData ad2 = ActivityStore.glanceDay(app);
+                    if (ad2 != null && ad2.hasData && ad2.r != null) {
+                        actMin = ad2.r.activeMin; actGoal = ActivityStore.settings(app).activeGoalMin;
+                        long nowMs2 = System.currentTimeMillis();
+                        if (actToday == null || nowMs2 - actStatsAt > 120000L) { actToday = ActivityPlus.stats(ad2.r.epochs, ad2.dayStart, ActivityPlus.asleepMinutes(app, ad2.dayStart, ad2.dayEnd)); actStatsAt = nowMs2; }
+                    } else { actMin = -1; actToday = null; }
+                } catch (Throwable ignored) { }
+                try {                                                    // 0.54.0: what to trust in the last two days (at most every 5 minutes)
+                    long nowMs3 = System.currentTimeMillis();
+                    if (nowMs3 - trustAt > 300000L) { trustDays = TrustData.days(app, 2); trustIngests = TrustData.ingests(app, 4); trustAt = nowMs3; }
                 } catch (Throwable ignored) { }
                 try {                                                    // 0.20.0: strap line of the sync strip, from the last condition report (every 10 minutes)
                     String cond = StrapEvents.lastDec(app, 29), pages = "", bat = "";
@@ -590,20 +606,36 @@ public class HealthActivity extends Activity {
     private void fillActivityPanel(LinearLayout p) {
         HealthModel.Data d = data;
         yours(p);
+        ActivityPlus.DayStats s = actToday;
+        if (s != null && s.awakeMin >= 30) {
+            kv(p, "Moving", ActivityPlus.hm(s.movingMin));
+            kv(p, "Still while awake", ActivityPlus.hm(s.stillMin));
+            kv(p, "Longest still stretch", s.longestStillMin == 0 ? "none" : ActivityPlus.hm(s.longestStillMin));
+            kv(p, "Still stretches of an hour or more", String.valueOf(s.stillStretches60));
+            kv(p, "Active hours (10 min or more moving)", String.valueOf(s.activeHours));
+        }
         if (d != null && d.day != null) {
             kv(p, "Steps today", String.valueOf(d.day.steps));
             kv(p, "Walking / running (strap's class)", d.day.walkMin + " / " + d.day.runMin + " min");
         }
-        int shown = 0;
-        for (ActivityDetector.Bout b : actBouts) {
-            LinearLayout r = hrow();
-            r.addView(tv(hhmm(b.start) + "  " + b.durationMin + " min" + (b.label == null || b.label.isEmpty() ? "" : "  \u00b7  " + b.label), 12.5f, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
-            r.addView(tv("avg " + Math.round(b.avgHr) + " \u00b7 peak " + Math.round(b.peakHr), 12, MUT, 400));
-            p.addView(r, lp(-1, -2, 8));
-            if (++shown >= 12) break;
-        }
-        if (shown == 0) note(p, "No bout found yet today.");
+        note(p, "Tap the card for the whole Activity screen: the hour-by-day map, your usual days and the rhythm of your active minutes.");
         rows(p, Explain.activity());
+    }
+
+    /** 0.54.0: the ACTIVE ring opened. */
+    private void fillActiveRing(LinearLayout c) {
+        c.addView(caps("ACTIVE: HOW IT IS WORKED OUT"));
+        ActivityPlus.DayStats s = actToday;
+        if (actMin < 0 || s == null) { note(c, "Not shown yet. It needs today's per-second records from the day logger."); return; }
+        kv(c, "Moving today", ActivityPlus.hm(actMin));
+        kv(c, "Goal (set on the Activity screen)", ActivityPlus.hm(Math.max(30, actGoal)));
+        kv(c, "Still while awake", ActivityPlus.hm(s.stillMin) + (Double.isNaN(s.stillShare()) ? "" : String.format(Locale.UK, " (%.0f %%)", 100.0 * s.stillShare())));
+        kv(c, "Longest still stretch", s.longestStillMin == 0 ? "none" : ActivityPlus.hm(s.longestStillMin));
+        kv(c, "Active hours (10 min or more moving)", String.valueOf(s.activeHours));
+        c.addView(new ActivityPlus.HourBars(this, s.movingByHour, 60, TEAL), lp(-1, dpi(90), 10));
+        note(c, "Moving minutes by hour, from 04:00.");
+        note(c, "A minute counts as moving when your heart rate is above 10 % of the way from resting to maximum and your wrist is moving, or when your wrist is clearly moving. Sleep is left out. The ring fills towards the goal and counts the whole day, not workouts.");
+        c.addView(pillButton("Open Activity", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, ActivityActivity.class)); } }), lp(-1, dpi(42), 12));
     }
 
     private void fillJournalPanel(LinearLayout p) {
@@ -797,7 +829,7 @@ public class HealthActivity extends Activity {
         ringOpen = i;
         ringPanel.removeAllViews();
         LinearLayout c = card(16);
-        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else if (i == 3) fillStress(c, d); else fillSleep(c, d.day);
+        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else if (i == 2) fillActiveRing(c); else if (i == 4) fillStress(c, d); else fillSleep(c, d.day);      // 0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress
         ringPanel.addView(c, lp(-1, -2, 0));
         ringPanel.setVisibility(View.VISIBLE);
     }
@@ -991,10 +1023,16 @@ public class HealthActivity extends Activity {
         rc = new int[] {rc[0], rc[1], rc[2], !hasStress ? 0xFF8A93A0 : StressViews.levelColor(stx.today)};
         rb = new String[] {rb[0], rb[1], rb[2], hasStress ? String.valueOf(stx.today) : "\u2014"};
         String[] rl = {"RECOVERY", "EFFORT", "SLEEP", "STRESS"};
+        final boolean hasAct = actMin >= 0; final int goalMin = Math.max(30, actGoal);      // 0.54.0: ACTIVE, all-day moving time against the goal set on the Activity screen
         String[] rcap = {Double.isNaN(rec) ? "needs " + TodayModel.MIN_BASELINE + " nights" : "vs your last " + day.baselineNights + " nights", "of 21 today",
                 n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h goal",
-                hasStress ? (Double.isNaN(stx.week) ? stx.level() + " today" : "usual " + Math.round(stx.week)) : "not scored yet"};      // 0.53.5: against your own usual of the last week
+                hasStress ? (Double.isNaN(stx.week) ? stx.level() + " today" : "usual " + Math.round(stx.week)) : "not scored"};      // 0.53.5: against your own usual of the last week
         rcap[0] = Double.isNaN(rec) ? "needs nights" : "vs " + day.baselineNights + " nights"; rcap[2] = n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h";      // shorter captions: four rings share the row
+        rf = new float[] {rf[0], rf[1], hasAct ? Math.max(0.02f, Math.min(1f, actMin / (float) goalMin)) : 0f, rf[2], rf[3]};
+        rc = new int[] {rc[0], rc[1], hasAct ? TEAL : 0xFF8A93A0, rc[2], rc[3]};
+        rb = new String[] {rb[0], rb[1], hasAct ? ActivityPlus.hmClock(actMin) : "\u2014", rb[2], rb[3]};
+        rl = new String[] {"RECOVERY", "EFFORT", "ACTIVE", "SLEEP", "STRESS"};
+        rcap = new String[] {rcap[0], rcap[1], hasAct ? "goal " + (goalMin % 60 == 0 ? (goalMin / 60) + " h" : ActivityPlus.hmClock(goalMin)) : "no data", rcap[2], rcap[3]};
         DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
         final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(android.view.MotionEvent e) { return true; }
@@ -1002,12 +1040,12 @@ public class HealthActivity extends Activity {
         rings.setClickable(true);
         rings.setOnTouchListener(new View.OnTouchListener() {
             @Override public boolean onTouch(View v, android.view.MotionEvent e) {                // 0.20.0: tap a ring to open how it is worked out
-                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) toggleRing(Math.max(0, Math.min(3, (int) (e.getX() / (v.getWidth() / 4f)))));
+                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) toggleRing(Math.max(0, Math.min(4, (int) (e.getX() / (v.getWidth() / 5f)))));
                 return false;
             }
         });
         col.addView(rings, lp(-1, dpi(196), 6));
-        TextView ringHint = tv("Tap Recovery, Effort, Sleep or Stress to see how it is worked out.", 11, MUT, 400);
+        TextView ringHint = tv("Tap a ring to see how it is worked out. Active is your moving time all day, not workouts.", 11, MUT, 400);
         ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
         col.addView(ringHint, lp(-1, -2, 0));
         ringPanel = new LinearLayout(this);
@@ -1021,24 +1059,39 @@ public class HealthActivity extends Activity {
         col.addView(tv("Estimates from this strap's own records, built on your own recent nights. Not WHOOP's scores and not a medical measure.", 11, MUT, 400), lp(-2, -2, 4));
         try { col.addView(alarmCard(), lp(-1, -2, 16)); } catch (Throwable ignored) { }      // 0.43.5: a morning and an evening buzz alarm
 
-        // ---- workouts and activity found in today's records (0.20.0: moved up, under the rings)
+        // ---- 0.54.0: all-day activity (not workouts): moving time, still stretches and the hours of the day
         LinearLayout wkc = card(16);
-        wkc.addView(caps("ACTIVITY TODAY"));
-        wkc.addView(tv(actLine.isEmpty() ? "Steps, time on your feet and workouts found today" : actLine + (day.steps > 0 ? "  \u00b7  " + day.steps + " steps" : ""), 12, INK, 400), lp(-2, -2, 6));
-        int shownBouts = 0;
-        List<ActivityDetector.Bout> bs = actBouts;
-        for (ActivityDetector.Bout b : bs) {
-            if (b.durationMin < 10) continue;
-            LinearLayout wr = hrow();
-            wr.addView(tv(hhmm(b.start) + "  " + b.durationMin + " min" + (b.label == null || b.label.isEmpty() ? "" : "  \u00b7  " + b.label), 13, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
-            wr.addView(tv("avg " + Math.round(b.avgHr) + " \u00b7 peak " + Math.round(b.peakHr), 12, MUT, 400));
-            wkc.addView(wr, lp(-1, -2, 10));
-            if (++shownBouts >= 6) break;
+        LinearLayout wkh = hrow();
+        wkh.addView(caps("ON YOUR FEET TODAY"));
+        wkh.addView(spacer());
+        if (actMin >= 0) wkh.addView(tv(ActivityPlus.hm(actMin) + " moving", 12, MUT, 400));
+        wkc.addView(wkh);
+        final ActivityPlus.DayStats ast = actToday;
+        if (ast != null && ast.awakeMin >= 30) {
+            wkc.addView(tv("Still while awake " + ActivityPlus.hm(ast.stillMin) + "  \u00b7  longest still stretch " + (ast.longestStillMin == 0 ? "none" : ActivityPlus.hm(ast.longestStillMin)) + (day.steps > 0 ? "  \u00b7  " + day.steps + " steps" : ""), 12, INK, 400), lp(-2, -2, 6));
+            wkc.addView(new ActivityPlus.HourBars(this, ast.movingByHour, 60, TEAL), lp(-1, dpi(80), 10));
+            wkc.addView(tv("Moving minutes by hour, from 04:00", 11, MUT, 400), lp(-2, -2, 3));
+        } else {
+            wkc.addView(tv(actLine.isEmpty() ? "Moving time, still stretches and steps through the day" : actLine + (day.steps > 0 ? "  \u00b7  " + day.steps + " steps" : ""), 12, INK, 400), lp(-2, -2, 6));
         }
-        if (shownBouts == 0) wkc.addView(tv("No stretch of ten minutes or more found yet today.", 12, MUT, 400), lp(-2, -2, 8));
         wkc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, ActivityActivity.class)); } });
         expandable("t_act", wkc, new Filler() { @Override public void fill(LinearLayout p) { fillActivityPanel(p); } });
         col.addView(wkc, lp(-1, -2, 12));
+
+        // ---- 0.54.0: what to trust in today's data
+        final List<TrustData.Day> tdays = trustDays;
+        if (!tdays.isEmpty()) {
+            LinearLayout tc = card(16);
+            LinearLayout th = hrow();
+            th.addView(caps("DATA TRUST"));
+            th.addView(spacer());
+            th.addView(tv(tdays.get(0).liveHours + " h in range today", 12, MUT, 400));
+            tc.addView(th);
+            tc.addView(new ActivityPlus.TrustStrip(this, tdays.get(0)), lp(-1, dpi(36), 8));
+            tc.addView(tv(tdays.get(0).summary(), 11, MUT, 400), lp(-2, -2, 4));
+            expandable("t_trust", tc, new Filler() { @Override public void fill(LinearLayout p) { ActivityPlus.trustBody(HealthActivity.this, p, trustDays, trustIngests); } }, "Yesterday, gaps and history pulls");
+            col.addView(tc, lp(-1, -2, 12));
+        }
 
         // ---- heart rate now
         LinearLayout nowCard = card(14);
@@ -1784,6 +1837,57 @@ public class HealthActivity extends Activity {
             expandable("r_night", wn, new Filler() { @Override public void fill(LinearLayout p) { fillWholeNightPanel(p); } });
             col.addView(wn, lp(-1, -2, 12));
         }
+        // ---- 0.54.0: the strap's beat intervals for this night (500 ms filler, repeated beats, coverage) and the sleep-regularity card
+        {
+            final LinearLayout rrc = card(16);
+            LinearLayout rrh = hrow();
+            rrh.addView(caps("OVERNIGHT BEAT INTERVALS"));
+            rrh.addView(spacer());
+            final TextView rrBadge = tv("checking\u2026", 12, MUT, 600);
+            rrh.addView(rrBadge);
+            rrc.addView(rrh);
+            final TextView rrBody = tv("Checking the strap's beat intervals for this night.", 12.5f, MUT, 400);
+            rrBody.setLineSpacing(0, 1.25f);
+            rrc.addView(rrBody, lp(-2, -2, 8));
+            col.addView(rrc, lp(-1, -2, 12));
+            final long bedF = n.bedTs, endF = n.endTs; final double storedRm = n.rmssd; final Context appc = getApplicationContext();
+            new Thread(new Runnable() { @Override public void run() {
+                final RrHygiene.Result rr = TrustData.nightRr(appc, bedF, endF);
+                runOnUiThread(new Runnable() { @Override public void run() {
+                    if (isFinishing()) return;
+                    rrBadge.setText(rr.badge()); rrBadge.setTextColor(rr.grade == 1 ? GREEN : rr.grade == 2 ? BLUE : rr.grade == 3 ? GOLD : MUT);
+                    double ap = RrHygiene.chosenApp(rr), ap0 = rr.app0;
+                    String chg = (Double.isNaN(ap) || Double.isNaN(ap0) || ap0 <= 0) ? "" : String.format(Locale.UK, " (%+.0f %%)", 100.0 * (ap / ap0 - 1.0));
+                    rrBody.setText(rr.line() + "\nOvernight RMSSD (optical): stored figure " + (Double.isNaN(storedRm) ? "-" : Math.round(storedRm) + " ms")
+                            + (rr.fillerFlag || rr.repeatFlag ? "; the same rule with the pattern taken out " + (Double.isNaN(ap) ? "-" : Math.round(ap) + " ms") + chg : "; nothing to take out")
+                            + ". Recovery still uses the stored figure. Nothing is removed unless the pattern is present in this strap's own seconds.");
+                } });
+            } }, "night-rr").start();
+            rrc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { SleepResearch.show(HealthActivity.this); } });
+
+            final LinearLayout src = card(16);
+            LinearLayout srh = hrow();
+            srh.addView(caps("SLEEP REGULARITY"));
+            srh.addView(spacer());
+            final TextView srVal = tv("\u2026", 20, INK, 300);
+            srh.addView(srVal);
+            src.addView(srh);
+            final TextView srBody = tv("Reading the last 14 days.", 12.5f, MUT, 400);
+            srBody.setLineSpacing(0, 1.25f);
+            src.addView(srBody, lp(-2, -2, 6));
+            src.addView(tv("Tap for the regularity scale, your heart-rate rhythm and the twelve sources", 12, BLUE, 400), lp(-2, -2, 8));
+            col.addView(src, lp(-1, -2, 12));
+            src.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { SleepResearch.show(HealthActivity.this); } });
+            new Thread(new Runnable() { @Override public void run() {
+                final RhythmData.Bundle bb = RhythmData.bundleCached(appc);
+                runOnUiThread(new Runnable() { @Override public void run() {
+                    if (isFinishing()) return;
+                    if (bb == null || bb.sri == null || Double.isNaN(bb.sri.sri)) { srVal.setText("\u2014"); srBody.setText("Needs two days with minutes logged a day apart. " + (bb == null || bb.sri == null ? 0 : bb.sri.validMinutes) + " minutes logged in the last 14 days."); return; }
+                    srVal.setText(String.format(Locale.UK, "%.0f", bb.sri.sri));
+                    srBody.setText(SleepRegularity.describe(bb.sri.sri) + (Double.isNaN(bb.sri.midSd) ? "" : ". Mid-sleep moves by " + Math.round(bb.sri.midSd) + " min (SD) over " + bb.sri.nights.size() + " nights") + ". UK Biobank: 5th percentile 41, median 60, 95th percentile 75.");
+                } });
+            } }, "sleep-reg").start();
+        }
         col.addView(rowCard("The ring is " + Math.round(100 * need) + "% closed. See what the night was made of", "Stages are estimates from heart rate and movement", null), lp(-1, -2, 14));
         LinearLayout ringc = explainerCard("ABOUT THE RING", "What it fills towards and how the stages are estimated");
         final double goalF = goal;
@@ -2012,6 +2116,12 @@ public class HealthActivity extends Activity {
         }), lp(-1, dpi(52), 0));
         final TextView mxV = tv(maxHr() + " bpm", 14, INK, 600);
         st.addView(valueRow("Maximum heart rate", mxV, new View.OnClickListener() { @Override public void onClick(View v) { askMaxHr(mxV); } }), lp(-1, dpi(52), 0));
+        // 0.54.0: the ECG scale as one versioned setting, shown on every microvolt figure until a known voltage has decided it
+        final TextView scV = tv(String.format(Locale.UK, "%.5f", ScaleSetting.uv()), 14, BLUE, 600);
+        final TextView scNote = tv(ScaleSetting.status(), 11.5f, MUT, 400);
+        st.addView(valueRow("ECG scale, microvolts per count", scV, new View.OnClickListener() { @Override public void onClick(View v) { askScale(scV, scNote); } }), lp(-1, dpi(52), 0));
+        scNote.setLineSpacing(0, 1.2f); scNote.setPadding(0, 0, 0, dpi(6));
+        st.addView(scNote);
         col.addView(st, lp(-1, -2, 16));
 
         LinearLayout dt = card(16);
@@ -2030,6 +2140,7 @@ public class HealthActivity extends Activity {
         TextView bkNote = tv("Copies all the app's data every day at a time you choose into Download/MGbackup.  Backup: " + Backup.shortStatus(this), 11.5f, MUT, 400);
         bkNote.setPadding(0, dpi(6), 0, 0);
         dt.addView(bkNote);
+        dt.addView(pillButton("Sleep research: regularity, body clock, sources", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { SleepResearch.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));      // 0.54.0
         dt.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 8));
         dt.addView(pillButton("Live frames (watch the strap's packets arrive)", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, LiveFramesActivity.class)); } }), lp(-1, dpi(44), 8));
@@ -2112,6 +2223,34 @@ public class HealthActivity extends Activity {
             float r = h / 2f - dp(c, 3);
             cv.drawCircle(on ? w - h / 2f : h / 2f, h / 2f, r, p);
         }
+    }
+
+    /** 0.54.0: change the ECG scale. Each reading keeps the scale it was made with (note uv_per_count); the readings table shows older ones at the scale in use now. */
+    private void askScale(final TextView target, final TextView note) {
+        final EditText e = new EditText(this);
+        e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        e.setText(String.format(Locale.US, "%.5f", ScaleSetting.uv()));
+        new AlertDialog.Builder(this).setTitle("ECG scale, microvolts per count")
+                .setMessage("0.06358 is inferred (1 V / (2^17 x gain 120), about 80 % likely). Another contributor measured 0.0763 from WHOOP's printed report. Until a known-voltage run decides, every microvolt figure carries \"" + ScaleSetting.SCALE_TAG + "\". "
+                        + "Only mark it verified after that run. Heart rate, HRV and timing do not depend on it.")
+                .setView(e)
+                .setPositiveButton("Set (provisional)", new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface di, int w) { applyScale(e, false, target, note); }
+                })
+                .setNeutralButton("Set and mark verified", new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface di, int w) { applyScale(e, true, target, note); }
+                })
+                .setNegativeButton("Reset", new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface di, int w) { ScaleSetting.reset(HealthActivity.this); target.setText(String.format(Locale.UK, "%.5f", ScaleSetting.uv())); note.setText(ScaleSetting.status()); }
+                }).show();
+    }
+
+    private void applyScale(EditText e, boolean verified, TextView target, TextView note) {
+        try {
+            double v = Double.parseDouble(e.getText().toString().trim().replace(',', '.'));
+            if (v > 0.02 && v < 0.2) { ScaleSetting.set(this, v, verified); target.setText(String.format(Locale.UK, "%.5f", ScaleSetting.uv())); note.setText(ScaleSetting.status()); }
+            else android.widget.Toast.makeText(this, "A scale between 0.02 and 0.2 only.", android.widget.Toast.LENGTH_SHORT).show();
+        } catch (NumberFormatException ignored) { }
     }
 
     private void askMaxHr(final TextView target) {

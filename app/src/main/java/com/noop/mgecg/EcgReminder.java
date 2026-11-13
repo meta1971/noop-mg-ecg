@@ -65,6 +65,9 @@ final class EcgReminder {
     static boolean buzzMgOn(Context c) { return sp(c).getBoolean("buzz_mg", true); }
     static boolean buzzPhoneOn(Context c) { return sp(c).getBoolean("buzz_phone", false); }
     static int buzzReps(Context c) { return sp(c).getInt("buzz_reps", 3); }
+    /** 0.54.0 idea 4: the morning reminder offers the lying-to-standing test (run G) instead of the plain "Take ECG" action. */
+    static boolean standMorning(Context c) { return sp(c).getBoolean("stand_morning", false); }
+    static void setStandMorning(Context c, boolean on) { sp(c).edit().putBoolean("stand_morning", on).apply(); }
     static int buzzMethod(Context c) { return Math.max(0, Math.min(2, sp(c).getInt("buzz_method", 0))); }
 
     private static volatile boolean buzzing; private static volatile long buzzStart; private static volatile int buzzGen; private static volatile int buzzUsed;
@@ -164,10 +167,13 @@ final class EcgReminder {
         PendingIntent snooze = PendingIntent.getBroadcast(c, 7105, new Intent(c, DayLogReceiver.class).setAction(A_SNOOZE), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
         String part = hour < 12 ? "morning" : "evening";
+        boolean stand = hour < 12 && standMorning(c);
+        Intent so = new Intent(c, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT).putExtra("stay", true).putExtra("start_ecg", true).putExtra("stand_test", true);
+        PendingIntent standPi = PendingIntent.getActivity(c, 7107, so, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(c, CH2) : new Notification.Builder(c);
-        b.setSmallIcon(android.R.drawable.ic_menu_recent_history).setContentTitle(test ? "Test: time for an ECG reading" : "Time for your " + part + " ECG reading")
-            .setContentText(buzzMgOn(c) ? "Your MG buzzes until you double-tap it. Then sit at the table, forearm supported, two fingertips on the clasp." : "Sit at the table, forearm supported, two fingertips on the clasp. 45 s is enough.").setAutoCancel(true).setContentIntent(take)
-            .addAction(new Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_edit), "Take ECG", take).build())
+        b.setSmallIcon(android.R.drawable.ic_menu_recent_history).setContentTitle(test ? "Test: time for an ECG reading" : stand ? "Time for your morning stand test" : "Time for your " + part + " ECG reading")
+            .setContentText(stand ? "Stay lying flat. Tap Stand test: lie still 90 s, stand up at the cue, stand still 90 s." : buzzMgOn(c) ? "Your MG buzzes until you double-tap it. Then sit at the table, forearm supported, two fingertips on the clasp." : "Sit at the table, forearm supported, two fingertips on the clasp. 45 s is enough.").setAutoCancel(true).setContentIntent(take)
+            .addAction(new Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_edit), stand ? "Stand test (3 min)" : "Take ECG", stand ? standPi : take).build())
             .addAction(new Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_recent_history), "Snooze 30 min", snooze).build())
             .addAction(new Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_close_clear_cancel), "Stop buzz", stop).build());
         nm.notify(ID, b.build());
@@ -204,6 +210,8 @@ final class EcgReminder {
                         int cur = g.t[slot] < 0 ? (slot % 2 == 0 ? 8 * 60 + 30 : 19 * 60 + 30) : g.t[slot];
                         new TimePickerDialog(a, new TimePickerDialog.OnTimeSetListener() { @Override public void onTimeSet(TimePicker tp, int h, int m) { g.t[slot] = h * 60 + m; save(a, g); schedule(a); rebuild[0].run(); } }, cur / 60, cur % 60, true).show(); } }).show(); } }));
             }
+            col.addView(row(a, "Morning reminder offers", standMorning(a) ? "Stand test (3 min)" : "Plain ECG reading", new View.OnClickListener() { @Override public void onClick(View v) { setStandMorning(a, !standMorning(a)); rebuild[0].run(); } }));
+            col.addView(note(a, "The stand test: lie flat with the strap on, lie still 90 s, stand at the cue, stand still 90 s. It gives the heart-rate rise at 15 s, the 30:15 ratio and the HRV change, for you at the same hour. Evening reminders stay plain readings.", 12));
             long[] n = next(System.currentTimeMillis(), TimeZone.getDefault(), g);
             col.addView(note(a, n == null ? "Next reminder: none" : "Next reminder: " + new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(new java.util.Date(n[0])) + "  (" + SLOT[(int) n[1]] + ")", 13));
             col.addView(row(a, "Send a test reminder now", "Test", new View.OnClickListener() { @Override public void onClick(View v) {

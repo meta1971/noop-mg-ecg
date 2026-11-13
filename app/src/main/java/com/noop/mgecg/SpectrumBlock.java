@@ -58,7 +58,7 @@ final class SpectrumBlock {
             byte[] f = fr.get(s); ctr[s] = ProAnalysis.u32(f, 11);
             int n = ProAnalysis.u16(f, 32); boolean ok = f.length == 1584 && n == 500;
             for (int k = 0; k < 500; k++) {
-                if (k < n && sampleOk(f, k)) x[s * 500 + k] = counts(f, k) * ProAnalysis.UV; else { x[s * 500 + k] = Double.NaN; ok = false; }
+                if (k < n && sampleOk(f, k)) x[s * 500 + k] = counts(f, k) * ProAnalysis.uv(); else { x[s * 500 + k] = Double.NaN; ok = false; }
             }
             fin[s] = ok;
             base[s] = ok && s >= 13 && (!q3 || (f[21] & 0xFF) == 3) && (allow == null || (s < allow.length && allow[s]));

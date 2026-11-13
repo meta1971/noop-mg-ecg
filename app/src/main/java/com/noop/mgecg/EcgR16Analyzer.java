@@ -661,7 +661,7 @@ public final class EcgR16Analyzer {
             EcgAtrial.collect(x, pk, badM, inv, atrialSegs, atrialAbs);
             {   // beat windows (uV) for the averaged-beat QT measurement
                 double[] uvRun = new double[x.length];
-                for (int i = 0; i < uvRun.length; i++) uvRun[i] = x[i] * EcgWhoopSpec.R16_UV_PER_COUNT;
+                for (int i = 0; i < uvRun.length; i++) uvRun[i] = x[i] * ScaleSetting.uv();
                 qtWins.addAll(EcgIntervals.windows(uvRun, pk, badM, inv, qtRrs, qtWide));
             }
             if (measureAmplitude(x, pk, badM, inv, ampAll, noiseAll)) {
@@ -815,7 +815,7 @@ public final class EcgR16Analyzer {
     static boolean measureAmplitude(double[] counts, List<Integer> pk, java.util.Set<Integer> bad,
                                     boolean inv, List<Double> ampOut, List<Double> noiseOut) {
         double[] u = new double[counts.length];
-        for (int i = 0; i < u.length; i++) u[i] = counts[i] * EcgWhoopSpec.R16_UV_PER_COUNT;
+        for (int i = 0; i < u.length; i++) u[i] = counts[i] * ScaleSetting.uv();
         double[] z = EcgWhoopSpec.improvedFilter(u);
         int pre = (int) (0.30 * FS), post = (int) (0.55 * FS), srch = (int) (0.03 * FS);
         int b0 = (int) (0.20 * FS), b1 = (int) (0.08 * FS);
@@ -950,7 +950,7 @@ public final class EcgR16Analyzer {
             while (j < n && !Double.isNaN(raw[j])) j++;
             if (j - i >= FS) {
                 double[] uv = new double[j - i];
-                for (int k = 0; k < uv.length; k++) uv[k] = raw[i + k] * EcgWhoopSpec.R16_UV_PER_COUNT;
+                for (int k = 0; k < uv.length; k++) uv[k] = raw[i + k] * ScaleSetting.uv();
                 double[] z = EcgWhoopSpec.improvedFilter(uv);
                 for (int k = 0; k < z.length; k++) mv[i + k] = z[k] / 1000.0;
             }
@@ -971,7 +971,7 @@ public final class EcgR16Analyzer {
         s.mv = mv;
         s.quality = q;
         s.rawUv = new double[n];
-        for (int k = 0; k < n; k++) s.rawUv[k] = Double.isNaN(raw[k]) ? Double.NaN : raw[k] * EcgWhoopSpec.R16_UV_PER_COUNT;
+        for (int k = 0; k < n; k++) s.rawUv[k] = Double.isNaN(raw[k]) ? Double.NaN : raw[k] * ScaleSetting.uv();
         long firstWithSamples = -1;
         for (byte[] f : recs) {
             if (EcgWhoopSpec.r16Count(f) > 0 && firstWithSamples < 0) firstWithSamples = (u32(f, 11) & 0xffffffffL) - first;

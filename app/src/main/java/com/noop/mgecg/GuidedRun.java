@@ -20,7 +20,8 @@ final class GuidedRun {
         new Def("C", "C: light touch", SETUP, 45, new Step(15, "Ease off to a very light touch (no lifting)", "LIGHT"), new Step(25, "Press firmly again", "FIRM")),
         new Def("D", "D: forearm rotate", SETUP, 45, new Step(15, "Rotate the left forearm 45 degrees outward over 2 s", null), new Step(17, "Hold", null), new Step(20, "Rotate back over 2 s", null)),
         new Def("E", "E: still (morning or evening)", "Same chair, same fingers each time: once 08:00-10:00 and once 19:00-21:00. " + SETUP, 45),
-        new Def("F", "F: still (after work)", "Straight after work, before washing your hands, and once before work. " + SETUP, 45)
+        new Def("F", "F: still (after work)", "Straight after work, before washing your hands, and once before work. " + SETUP, 45),
+        new Def("G", "G: lying to standing (morning)", "Lie flat and still with the strap on, two right-hand fingers on the clasp. At the cue, stand up and stand still. 3 minutes in all.", 180, new Step(90, "Stand up now", null))
     };
 
     static Def byId(String id) { for (Def d : ALL) if (d.id.equals(id == null ? "" : id)) return d; return ALL[0]; }

@@ -15,7 +15,8 @@ import java.util.zip.CRC32;
 final class ProAnalysis {
     private ProAnalysis() {}
     static final int FS = 500, PRE = 250, POST = 400, QW0 = PRE - 20, QW1 = PRE + 30;
-    static final double UV = 0.06358;      // 0.53.0 (decode log 161): 1 V / (2^17 x total gain 120), confirmed by the strap's own microvolt stream to 0.1 %; was the design value 0.0621 (2.33 % low)
+    /** 0.54.0: the scale is ONE versioned setting (ScaleSetting; default 0.06358 = 1 V / (2^17 x total gain 120), decode log 161; 0.0621 before 0.53.0). Every analysis reads it here. */
+    static double uv() { return ScaleSetting.uv(); }
     static final double UV_OLD = 0.0621;   // every microvolt figure stored before 0.53.0 used this
     static final boolean OWN_DEFAULT = true;                    // 0.45.0 (e): beats are chosen by template correlation and amplitude; false = the strap's quality-3 seconds only, as before. When the own selection leaves fewer than 30 beats (45 s guided runs: 9 of 66 real readings did on 9 Nov) analyse() runs the old selection instead and sets Result.oldSelection
     static final int QRS_LP_HZ = 40, QRS_W_LP_HZ = 100, QRS_MIN_BEATS = 100;     // 0.45.1: delineation on a 40 Hz low-pass (0.45.0 used 100 Hz, which was noisier and farther from the cardiologists on LUDB at 500 Hz); the R wave widths and nothing else use the 100 Hz trace
@@ -110,11 +111,12 @@ final class ProAnalysis {
             byte[] f = fr.get(s); int n = (f[32] & 0xFF) | ((f[33] & 0xFF) << 8); q[s] = f[21] & 0xFF; if (q[s] < 4) R.qcount[q[s]]++;
             recT[s] = u32(f, 15) + u16(f, 19) / 32768.0;
             if (s == 0) R.t0 = (f[15] & 0xFFL) | ((f[16] & 0xFFL) << 8) | ((f[17] & 0xFFL) << 16) | ((f[18] & 0xFFL) << 24);
+            final double uvNow = uv();
             for (int k = 0; k < 500; k++) {
                 double v = Double.NaN;
                 if (k < n) {
                     int b0 = f[34 + 3 * k] & 0xFF, b1 = f[35 + 3 * k] & 0xFF, b2 = f[36 + 3 * k] & 0xFF; int r = ((b0 & 3) << 16) | (b1 << 8) | b2; if ((r & 0x20000) != 0) r -= 0x40000;
-                    if ((b0 & 0x80) != 0 && (b0 & 0x40) == 0 && Math.abs(r) < 126900) v = r * UV;
+                    if ((b0 & 0x80) != 0 && (b0 & 0x40) == 0 && Math.abs(r) < 126900) v = r * uvNow;
                 }
                 x[s * 500 + k] = v;
             }

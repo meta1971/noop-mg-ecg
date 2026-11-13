@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.42.0 (5 Nov 2026): this week and the streak, and your own typical range with the latest reading beside it, at the top of the screen. 0.41.0 (5 Nov 2026): the CSV also carries the strap's verdict, average HR, HRV release, the full event 118 / 119 numbers, the live noise by band and the notes of the reading page (where, run, why noisy). 0.33.0 (1 Nov 2026): "Your readings": one row per saved ECG reading with the measurements from its report (R, T, P, QRS, QTc, ST), the strap's own end-of-reading amplitude (event 118),
+// FILE VERSION 0.54.0 (13 Nov 2026): every microvolt figure is shown at the ECG scale in use now (ScaleSetting; each reading stores the scale it was made with, older ones are re-based), the scale tag, and the context of every reading without a tap (hours awake, previous 24 h asleep, steps 30 min, minutes since a carb meal, HR against resting) with the band of your own similar readings. 0.42.0 (5 Nov 2026): this week and the streak, and your own typical range with the latest reading beside it, at the top of the screen. 0.41.0 (5 Nov 2026): the CSV also carries the strap's verdict, average HR, HRV release, the full event 118 / 119 numbers, the live noise by band and the notes of the reading page (where, run, why noisy). 0.33.0 (1 Nov 2026): "Your readings": one row per saved ECG reading with the measurements from its report (R, T, P, QRS, QTc, ST), the strap's own end-of-reading amplitude (event 118),
 // and the context the strap recorded around it (steps in the previous hour, still share, skin temperature, wrist orientation), plus the Polar H10 chest R when its ECG file covers the reading.
 // Plotted against the clock hour, and exported as one CSV (Download/MGreports). Measurements are single-lead and informal; not a diagnosis.
 
@@ -54,6 +54,7 @@ final class ReadingsTable {
         double E = Double.NaN, steps1h = Double.NaN, still30 = Double.NaN, skin = Double.NaN, gravZ = Double.NaN, h10R = Double.NaN, clock = Double.NaN;
         double evB = Double.NaN, evC = Double.NaN, evD = Double.NaN, evN = Double.NaN, evN1 = Double.NaN, evN2 = Double.NaN, e119n2 = Double.NaN, e119q3 = Double.NaN;      // 0.41.0: event 118 / 119 numbers
         java.util.Map<String, String> nt = new java.util.HashMap<String, String>();                                                                              // 0.41.0: reading_notes.csv
+        double uvThen = ScaleSetting.OLD, steps30 = Double.NaN, sleep24 = Double.NaN, carbMin = Double.NaN, rhrDev = Double.NaN;      // 0.54.0
         String tag = ""; double hoursAwake = Double.NaN, expectedR = Double.NaN, rVsLine = Double.NaN;      // 0.37.0: posture and strap position tag, hours since the last sleep second, your own line R = 450 + 31 x hours awake, the percent difference from it
     }
 
@@ -122,19 +123,19 @@ final class ReadingsTable {
     private static void context(Context c, Row r) {
         try {
             Cursor cu = DayLog.db(c).rawQuery("SELECT ts, steps, state, skin, substr(rec,54,4) FROM r18 WHERE ts BETWEEN ? AND ? ORDER BY ts", new String[] { String.valueOf(r.ts - 3600L), String.valueOf(r.ts + (long) (Double.isNaN(r.dur) ? 120 : r.dur)) });
-            long lastTs = -1; int lastSteps = 0; double st1 = 0; int still = 0, tot = 0; List<Double> sk = new ArrayList<Double>(), gz = new ArrayList<Double>();
+            long lastTs = -1; int lastSteps = 0; double st1 = 0, st30 = 0; int still = 0, tot = 0; List<Double> sk = new ArrayList<Double>(), gz = new ArrayList<Double>();
             try {
                 while (cu.moveToNext()) {
                     long t = cu.getLong(0); int sp = cu.getInt(1), s = cu.getInt(2); double skin = cu.getDouble(3); byte[] g = cu.getBlob(4);
-                    if (t < r.ts) { if (lastTs >= 0 && t - lastTs == 1) { int d = sp - lastSteps; if (d > 0 && d < 50) st1 += d; } if (t >= r.ts - 1800L) { tot++; if (s >= 1) still++; } if (t >= r.ts - 600L && skin > 10) sk.add(skin); }
+                    if (t < r.ts) { if (lastTs >= 0 && t - lastTs == 1) { int d = sp - lastSteps; if (d > 0 && d < 50) { st1 += d; if (t >= r.ts - 1800L) st30 += d; } } if (t >= r.ts - 1800L) { tot++; if (s >= 1) still++; } if (t >= r.ts - 600L && skin > 10) sk.add(skin); }
                     else if (g != null && g.length == 4) gz.add((double) ByteBuffer.wrap(g).order(ByteOrder.LITTLE_ENDIAN).getFloat());
                     lastTs = t; lastSteps = sp;
                 }
             } finally { cu.close(); }
-            r.steps1h = st1; r.still30 = tot > 300 ? (double) still / tot : Double.NaN; r.skin = median(sk); r.gravZ = median(gz);
+            r.steps1h = st1; r.steps30 = tot > 300 ? st30 : Double.NaN; r.still30 = tot > 300 ? (double) still / tot : Double.NaN; r.skin = median(sk); r.gravZ = median(gz);
             try { Cursor sc = DayLog.db(c).rawQuery("SELECT MAX(ts) FROM r18 WHERE state = 2 AND ts BETWEEN ? AND ?", new String[] { String.valueOf(r.ts - 30L * 3600L), String.valueOf(r.ts) });
                 try { if (sc.moveToFirst() && !sc.isNull(0)) { double h = (r.ts - sc.getLong(0)) / 3600.0; if (h >= 0 && h <= 30) r.hoursAwake = h; } } finally { sc.close(); } } catch (Throwable ignored) { }
-            if (!Double.isNaN(r.hoursAwake)) { r.expectedR = LINE_A + LINE_B * r.hoursAwake; if (!Double.isNaN(r.R)) r.rVsLine = 100.0 * (r.R / r.expectedR - 1.0); }
+            if (!Double.isNaN(r.hoursAwake)) { r.expectedR = (LINE_A + LINE_B * r.hoursAwake) * ScaleSetting.uv() / ScaleSetting.OLD; if (!Double.isNaN(r.R)) r.rVsLine = 100.0 * (r.R / r.expectedR - 1.0); }
             Cursor ec = DayLog.db(c).rawQuery("SELECT ts, inner FROM strap_events WHERE id = 118 AND ts BETWEEN ? AND ? ORDER BY ts LIMIT 1", new String[] { String.valueOf(r.ts), String.valueOf(r.ts + 900L) });
             long evTs = -1;
             try { if (ec.moveToFirst()) { evTs = ec.getLong(0); byte[] b = hexBytes(ec.getString(1)); if (b != null && b.length >= 31 && b[0] == 2) {
@@ -147,6 +148,33 @@ final class ReadingsTable {
         } catch (Throwable ignored) { }
     }
 
+    /** 0.54.0: previous-24-h sleep, minutes since the last carb-meal marker (12 h), and the heart rate against your resting HR (median of the lowest five minutes of the last 8 nights, at least 3 nights). */
+    private static void context2(Context c, Row r) {
+        try {
+            Cursor q = DayLog.db(c).rawQuery("SELECT COUNT(*), SUM(CASE WHEN state = 2 THEN 1 ELSE 0 END) FROM r18 WHERE ts BETWEEN ? AND ?", new String[] { String.valueOf(r.ts - 86400L), String.valueOf(r.ts) });
+            try { if (q.moveToFirst() && q.getInt(0) >= 72000) r.sleep24 = q.getInt(1) / 3600.0; } finally { q.close(); }
+        } catch (Throwable ignored) { }
+        try {
+            Cursor q = DayLog.db(c).rawQuery("SELECT MAX(ms) FROM events WHERE kind = 'marker' AND text = 'carb_meal' AND ms BETWEEN ? AND ?", new String[] { String.valueOf(r.ts * 1000L - 12L * 3600000L), String.valueOf(r.ts * 1000L) });
+            try { if (q.moveToFirst() && !q.isNull(0)) r.carbMin = (r.ts * 1000L - q.getLong(0)) / 60000.0; } finally { q.close(); }
+        } catch (Throwable ignored) { }
+        try {
+            if (!Double.isNaN(r.hr)) {
+                List<Double> lows = new ArrayList<Double>();
+                Cursor q = DayLog.db(c).rawQuery("SELECT hr_low5 FROM night_stats WHERE bed BETWEEN ? AND ? AND hr_low5 > 30", new String[] { String.valueOf(r.ts - 8L * 86400L), String.valueOf(r.ts) });
+                try { while (q.moveToNext()) lows.add(q.getDouble(0)); } finally { q.close(); }
+                if (lows.size() >= 3) r.rhrDev = r.hr - median(lows);
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /** The reading's context as the table and the trend bands use it. */
+    static ReadingContext.Ctx ctxOf(Row r) {
+        ReadingContext.Ctx x = new ReadingContext.Ctx();
+        x.hoursAwake = r.hoursAwake; x.sleepPrevH = r.sleep24; x.steps30 = r.steps30; x.carbMin = r.carbMin; x.rhrDev = r.rhrDev;
+        return x;
+    }
+
     private static byte[] hexBytes(String h) { if (h == null || h.length() < 2) return null; int n = h.length() / 2; byte[] b = new byte[n]; try { for (int i = 0; i < n; i++) b[i] = (byte) Integer.parseInt(h.substring(2 * i, 2 * i + 2), 16); } catch (NumberFormatException e) { return null; } return b; }
 
     /** One row per reading, newest first (call off the main thread). */
@@ -157,7 +185,11 @@ final class ReadingsTable {
             String n = rd.file.getName(); long ts; try { ts = Long.parseLong(n.substring("ecg_report_".length(), n.length() - ".html".length())); } catch (Exception e) { continue; }
             Row r = new Row(); r.ts = ts; fromText(r, plain(rd.file)); if (Double.isNaN(r.hr)) { r.hr = parse(rd.hr); } if (Double.isNaN(r.rmssd)) { r.rmssd = parse(rd.hrv); } if (r.grade.equals("-")) r.grade = rd.grade;
             cal.setTimeInMillis(ts * 1000L); r.clock = cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60.0;
-            context(c, r); if (dir != null) { r.h10R = h10R(dir, ts, Double.isNaN(r.dur) ? 120 : r.dur); r.tag = ReadingTag.forReading(dir, ts); r.nt = ReadingNotes.forReading(dir, ts); }
+            if (dir != null) { r.nt = ReadingNotes.forReading(dir, ts); }
+            String un = r.nt == null ? null : r.nt.get("uv_per_count");      // 0.54.0: re-base the counts-linear figures (R, T, P, ST) to the scale in use now; E and the H10 are not made from counts
+            try { if (un != null && un.length() > 0) { double t0 = Double.parseDouble(un.trim()); if (t0 > 0.02 && t0 < 0.2) r.uvThen = t0; } } catch (NumberFormatException ignored) { }
+            double fct = ScaleSetting.factorFrom(un); if (Math.abs(fct - 1.0) > 1e-9) { r.R *= fct; r.T *= fct; r.P *= fct; r.ST *= fct; }
+            context(c, r); context2(c, r); if (dir != null) { r.h10R = h10R(dir, ts, Double.isNaN(r.dur) ? 120 : r.dur); r.tag = ReadingTag.forReading(dir, ts); }
             out.add(r);
         }
         return out;
@@ -165,12 +197,13 @@ final class ReadingsTable {
     private static double parse(String s) { return grab(s == null ? "" : s, "(\\d+(?:\\.\\d+)?)"); }
 
     static String csv(List<Row> rows) {
-        StringBuilder sb = new StringBuilder("time_local,grade,duration_s,hr,rmssd_ms,R_uV,T_uV,P_uV,QRS_ms,QT_ms,QTc_fridericia_ms,ST_uV,strap_E_uV,steps_previous_hour,still_share_previous_30min,skin_c,gravity_z,h10_R_uV,strap_over_h10,tag,hours_awake,expected_R_uV_your_line,R_vs_line_pct,result_code,strap_avg_hr,verdict_s,hrv_first_s,hrv_first_ms,ev_B_ms,ev_C,ev_D,ev_N,ev_n1,ev_n2,ev119_n2,ev119_q3_pct,where,position,run,why_noisy,stop,noise_0p5_5_uV,noise_8_25_uV,noise_25_48_uV,noise_mains_uV,noise_52_100_uV,contact_z,live_R_uV,live_QRS_ms,live_dip_uV,live_QT_ms,beats_live,app\n");
+        StringBuilder sb = new StringBuilder("time_local,grade,duration_s,hr,rmssd_ms,R_uV,T_uV,P_uV,QRS_ms,QT_ms,QTc_fridericia_ms,ST_uV,strap_E_uV,steps_previous_hour,still_share_previous_30min,skin_c,gravity_z,h10_R_uV,strap_over_h10,tag,hours_awake,expected_R_uV_your_line,R_vs_line_pct,result_code,strap_avg_hr,verdict_s,hrv_first_s,hrv_first_ms,ev_B_ms,ev_C,ev_D,ev_N,ev_n1,ev_n2,ev119_n2,ev119_q3_pct,where,position,run,why_noisy,stop,noise_0p5_5_uV,noise_8_25_uV,noise_25_48_uV,noise_mains_uV,noise_52_100_uV,contact_z,live_R_uV,live_QRS_ms,live_dip_uV,live_QT_ms,beats_live,app,scale_uv_per_count_reading,scale_uv_per_count_now,scale_provisional,asleep_previous_24h_h,steps_previous_30min,minutes_since_carb_meal,hr_minus_resting_bpm\n");
         SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.UK);
         for (Row r : rows) { sb.append(f.format(new Date(r.ts * 1000L))).append(',').append(r.grade).append(',').append(c0(r.dur)).append(',').append(c0(r.hr)).append(',').append(c0(r.rmssd)).append(',').append(c0(r.R)).append(',').append(c0(r.T)).append(',').append(c0(r.P)).append(',').append(c0(r.QRS)).append(',').append(c0(r.QT)).append(',').append(c0(r.QTcF)).append(',').append(c0(r.ST)).append(',').append(c0(r.E)).append(',').append(c0(r.steps1h)).append(',').append(c2(r.still30)).append(',').append(c1(r.skin)).append(',').append(c2(r.gravZ)).append(',').append(c0(r.h10R)).append(',').append(Double.isNaN(r.R) || Double.isNaN(r.h10R) ? "" : String.format(Locale.US, "%.2f", r.R / r.h10R)).append(',').append(r.tag.replace(',', ' ')).append(',').append(c1(r.hoursAwake)).append(',').append(c0(r.expectedR)).append(',').append(c1(r.rVsLine));
             for (String k : NOTE_KEYS_A) sb.append(',').append(nt(r, k));
             sb.append(',').append(c0(r.evB)).append(',').append(c0(r.evC)).append(',').append(c0(r.evD)).append(',').append(c0(r.evN)).append(',').append(c0(r.evN1)).append(',').append(c0(r.evN2)).append(',').append(c0(r.e119n2)).append(',').append(c1(r.e119q3));
             for (String k : NOTE_KEYS_B) sb.append(',').append(nt(r, k));
+            sb.append(',').append(String.format(Locale.US, "%.5f", r.uvThen)).append(',').append(String.format(Locale.US, "%.5f", ScaleSetting.uv())).append(',').append(ScaleSetting.verified() ? "no" : "yes").append(',').append(c1(r.sleep24)).append(',').append(c0(r.steps30)).append(',').append(c0(r.carbMin)).append(',').append(c1(r.rhrDev));
             sb.append('\n'); }
         return sb.toString();
     }
@@ -214,11 +247,23 @@ final class ReadingsTable {
     private static void fill(final Activity a, LinearLayout col, TextView status, final List<Row> rows) {
         if (rows == null || rows.isEmpty()) { status.setText("No saved readings with a report yet."); return; }
         col.removeView(status); int n = rows.size();
+        TextView scl = HeartGraph.label(a, "Microvolt figures (R, T, P, ST) are shown at " + String.format(Locale.UK, "%.5f", ScaleSetting.uv()) + " \u00b5V per count" + ScaleSetting.tag() + ". Each reading stores the scale it was made with; older readings are re-based from it. E (the strap's own value) and the H10 are not made from counts and are not re-based.", 11, MUT, 400); scl.setLineSpacing(0, 1.2f); col.addView(scl, HeartGraph.lp(a, -1, -2, 8));
         try {                                                                  // 0.42.0: this week, the streak and your typical range
             long[] st = new long[n]; for (int i = 0; i < n; i++) st[i] = rows.get(i).ts;
             EcgStreak.Out so = EcgStreak.compute(st, System.currentTimeMillis(), java.util.TimeZone.getDefault());
             TextView wk = HeartGraph.label(a, "THIS WEEK\n" + EcgStreak.strip(so) + "\n" + EcgStreak.summary(so), 13, INK, 400); wk.setLineSpacing(0, 1.2f); col.addView(wk, HeartGraph.lp(a, -1, -2, 10));
             TextView tp = HeartGraph.label(a, "YOUR TYPICAL RANGE (last " + Math.min(28, n) + " readings)\n" + typical(rows), 12, INK, 400); tp.setLineSpacing(0, 1.25f); col.addView(tp, HeartGraph.lp(a, -1, -2, 12));
+            try {                                                           // 0.54.0: the latest reading against your own readings taken in a similar context
+                ReadingContext.Ctx[] cx = new ReadingContext.Ctx[n]; for (int i = 0; i < n; i++) cx[i] = ctxOf(rows.get(i));
+                ReadingContext.Ctx target = cx[0]; int m1 = n - 1; ReadingContext.Ctx[] peers = new ReadingContext.Ctx[m1]; double[][] vals = new double[4][m1];
+                for (int i = 1; i < n; i++) { Row q = rows.get(i); peers[i - 1] = cx[i]; vals[0][i - 1] = q.R; vals[1][i - 1] = q.QRS; vals[2][i - 1] = q.hr; vals[3][i - 1] = q.rmssd; }
+                Row L = rows.get(0); StringBuilder cb = new StringBuilder("LATEST READING IN CONTEXT\n" + target.text() + "\n");
+                cb.append(ReadingContext.place("R (\u00b5V)", L.R, ReadingContext.band(vals[0], peers, m1, target), "%.0f")).append('\n');
+                cb.append(ReadingContext.place("QRS (ms)", L.QRS, ReadingContext.band(vals[1], peers, m1, target), "%.0f")).append('\n');
+                cb.append(ReadingContext.place("HR (bpm)", L.hr, ReadingContext.band(vals[2], peers, m1, target), "%.0f")).append('\n');
+                cb.append(ReadingContext.place("HRV RMSSD (ms)", L.rmssd, ReadingContext.band(vals[3], peers, m1, target), "%.0f"));
+                TextView cv = HeartGraph.label(a, cb.toString() + (L.R > 0 ? ScaleSetting.tag() : ""), 12, INK, 400); cv.setLineSpacing(0, 1.25f); col.addView(cv, HeartGraph.lp(a, -1, -2, 12));
+            } catch (Throwable ignored) { }
             final TextView how = HeartGraph.label(a, "How is this calculated?  (tap)", 12, MUT, 400); final TextView why = HeartGraph.label(a, Explain.asText(Explain.streakCard()) + "\n\n" + Explain.asText(Explain.typicalRange()), 12, MUT, 400); why.setVisibility(View.GONE);
             how.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { why.setVisibility(why.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE); } });
             col.addView(how, HeartGraph.lp(a, -1, -2, 6)); col.addView(why, HeartGraph.lp(a, -1, -2, 4));
@@ -243,7 +288,8 @@ final class ReadingsTable {
             sb.append(f.format(new Date(r.ts * 1000L))).append("  ").append(r.grade).append(r.tag.length() > 0 ? "  [" + r.tag + "]" : "").append("  HR ").append(fmt(r.hr, "%.0f")).append("  RMSSD ").append(fmt(r.rmssd, "%.0f")).append('\n')
               .append("   R ").append(fmt(r.R, "%.0f")).append("  T ").append(fmt(r.T, "%.0f")).append("  P ").append(fmt(r.P, "%.0f")).append("  QRS ").append(fmt(r.QRS, "%.0f")).append("  QTc ").append(fmt(r.QTcF, "%.0f")).append("  ST ").append(fmt(r.ST, "%+.0f"))
               .append("  E ").append(fmt(r.E, "%.0f")).append("  H10 R ").append(fmt(r.h10R, "%.0f")).append(Double.isNaN(r.R) || Double.isNaN(r.h10R) ? "" : String.format(Locale.UK, " (%.2f)", r.R / r.h10R)).append('\n')
-              .append("   steps 1 h ").append(fmt(r.steps1h, "%.0f")).append("  still ").append(fmt(r.still30, "%.2f")).append("  skin ").append(fmt(r.skin, "%.1f")).append("  gz ").append(fmt(r.gravZ, "%.2f")).append("\n   awake ").append(fmt(r.hoursAwake, "%.1f")).append(" h  your line ").append(fmt(r.expectedR, "%.0f")).append("  R vs line ").append(fmt(r.rVsLine, "%+.0f")).append(" %\n\n");
+              .append("   steps 1 h ").append(fmt(r.steps1h, "%.0f")).append("  still ").append(fmt(r.still30, "%.2f")).append("  skin ").append(fmt(r.skin, "%.1f")).append("  gz ").append(fmt(r.gravZ, "%.2f")).append("\n   awake ").append(fmt(r.hoursAwake, "%.1f")).append(" h  your line ").append(fmt(r.expectedR, "%.0f")).append("  R vs line ").append(fmt(r.rVsLine, "%+.0f")).append(" %\n")
+              .append("   asleep 24 h ").append(fmt(r.sleep24, "%.1f")).append(" h  steps 30 min ").append(fmt(r.steps30, "%.0f")).append("  carb ").append(Double.isNaN(r.carbMin) ? "-" : String.format(Locale.UK, "%.0f min ago", r.carbMin)).append("  HR vs rest ").append(fmt(r.rhrDev, "%+.0f")).append("\n\n");
         }
         TextView tv = HeartGraph.label(a, sb.toString().trim(), 11, MUT, 400); tv.setTypeface(android.graphics.Typeface.MONOSPACE); tv.setLineSpacing(0, 1.1f); col.addView(tv, HeartGraph.lp(a, -1, -2, 6));
         TextView ex = HeartGraph.pill(a, "Export the table as a CSV (Download/MGreports)", BLUE, 0xFF05131E);

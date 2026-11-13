@@ -75,7 +75,8 @@ final class EcgPage {
     // state
     private boolean running, autoStopped;
     private long startMs, lastRestMs; private String cueLog = "", lastHr = "", nextId = "";
-    private long cueUntil; private String lastCue = "";
+    private String endRuleUsed = "";
+    private long cueUntil, standCueMs; private String lastCue = "";      // 0.54.0: standCueMs = when the "Stand up now" cue of run G fired
     private LiveMeasure.Out lastOut; private double[] lastBands;
     private int stopReason;           // 0 by hand, 1 auto-stop, 2 guided run, 3 fingers lifted (0.45.0)
     private String failures = "";
@@ -583,6 +584,7 @@ final class EcgPage {
             bankNote.setText(sm.beats >= BeatBank.UNLOCK && P != null && P.kept > 0 ? String.format(Locale.UK, "%,d beats pooled, but the split-half test did not pass (%.2f in the QRS, %.2f in the quiet stretch): no detail view yet.", P.kept, P.splitQrs, P.splitCtl)
                 : "The 40 cleanest beats of each reading are kept on this phone and pooled. At 1,000 beats your own average beat appears here. Send does not include them.");
         }
+        try { CharSequence bn = bankNote.getText(); if (bn.toString().contains(" uV")) bankNote.setText(bn + ScaleSetting.tag()); } catch (Throwable ignored) { }
     }
 
     /** 0.45.0 (b): true while a lift of the fingers would end the reading (free reading, auto-stop on, at least 60 s and LIFT_MIN_CLEAN clean beats in). */
@@ -635,6 +637,7 @@ final class EcgPage {
     private static final String[] POSITION = { "Wrist", "Chest V2", "Chest V4", "Chest V5", "Chest V6", "Bicep L", "Bicep R", "H10 in hands" };
     private static final String[] WHERE = { "Not set", "Home", "Work", "Truck", "Outside", "Other" };
     private static final String[] AUTO = { "Off", "3 uV", "4 uV", "5 uV" };
+    private static final String[] ENDS = { "Report quality (the Auto-stop level)", "Enough data (60 s good signal, strap HRV)" };      // 0.54.0
 
     private void buildSetupRows() {
         setupBody = new LinearLayout(a); setupBody.setOrientation(LinearLayout.VERTICAL);
@@ -645,6 +648,7 @@ final class EcgPage {
         addRow(2, "Where", WHERE, () -> pref("where_tag", "").isEmpty() ? WHERE[0] : pref("where_tag", ""), i -> pr.edit().putString("where_tag", i == 0 ? "" : WHERE[i]).apply());
         addRow(4, "Auto-stop", AUTO, () -> { if (!pr.getBoolean("auto_stop", true)) return AUTO[0]; double tg = a.autoTargetValue(); return tg < 3.5 ? AUTO[1] : tg < 4.5 ? AUTO[2] : AUTO[3]; }, i -> {
             SharedPreferences.Editor e = pr.edit(); if (i == 0) e.putBoolean("auto_stop", false); else e.putBoolean("auto_stop", true).putFloat("auto_target", i == 1 ? 3f : i == 2 ? 4f : 5f); e.apply(); });
+        addRow(5, "Ends when (Auto-stop on)", ENDS, () -> ENDS["enough".equals(pref("end_rule", "quality")) ? 1 : 0], i -> pr.edit().putString("end_rule", i == 1 ? "enough" : "quality").apply());
     }
 
     private void openSetup() {
@@ -700,6 +704,17 @@ final class EcgPage {
                 row.addView(go, gp);
                 box.addView(row, lp(-1, -2, 8));
             }
+            {                                                                               // 0.54.0 idea 4: the morning lying-to-standing test (your own, not a lab run)
+                LinearLayout row = hrow(); row.setBackground(HealthViews.glass(a, 16)); row.setPadding(dp(16), dp(12), dp(12), dp(12));
+                LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.VERTICAL);
+                mid.addView(t("G   Lying to standing (3 min)", 15, INK, 400), new LinearLayout.LayoutParams(-2, -2));
+                TextView pl = t("Lie flat 90 s, stand at the cue, stand still 90 s. Heart-rate rise at 15 s, the 30:15 ratio and the HRV change. Stays on the phone; also offered by the morning reminder.", 12, MUT, 400); pl.setLineSpacing(0, 1.2f); mid.addView(pl, lp(-2, -2, 3));
+                row.addView(mid, new LinearLayout.LayoutParams(0, -2, 1f));
+                TextView go = pill("Start", BLUE, DARK); go.setPadding(dp(18), 0, dp(18), 0);
+                go.setOnClickListener(v -> { if (dd[0] != null) dd[0].dismiss(); startRun("G"); });
+                LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, dp(42)); gp.leftMargin = dp(10); row.addView(go, gp);
+                box.addView(row, lp(-1, -2, 8));
+            }
             if (pr.getBoolean("research_lab_s", false)) {      // 0.51.0: behind You > Settings > Research
                 LinearLayout row = hrow(); row.setBackground(HealthViews.glass(a, 16)); row.setPadding(dp(16), dp(12), dp(12), dp(12));
                 LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.VERTICAL);
@@ -722,8 +737,9 @@ final class EcgPage {
         try {
             if (running) return;
             GuidedRun.Def d = GuidedRun.byId(id); if (d.id.isEmpty()) return;
-            pr.edit().putString("run_id", id).putLong("run_armed_ms", System.currentTimeMillis()).putString("reading_tag", "Table").putString("reading_tag_last", "Table").putString("position_tag", "").apply();
-            a.readingTag = "Table"; a.positionTag = ""; refreshSummary();
+            String tg = "G".equals(id) ? "Lying" : "Table";      // 0.54.0: run G is the lying-to-standing test
+            pr.edit().putString("run_id", id).putLong("run_armed_ms", System.currentTimeMillis()).putString("reading_tag", tg).putString("reading_tag_last", tg).putString("position_tag", "").apply();
+            a.readingTag = tg; a.positionTag = ""; refreshSummary();
             a.cancelAutoCountdown();
             readyCancelled = false; readyLeft = 5; initTts();
             cuePill.setVisibility(View.VISIBLE); cueView.setText("Get ready: 5 s  \u00b7  " + d.title + "  (tap to cancel)"); cueLine.set(0f);
@@ -797,7 +813,7 @@ final class EcgPage {
         try {
             if (nowRunning && !was) {
                 startMs = Live500.sessionMs > 0 && System.currentTimeMillis() - Live500.sessionMs < 8000 ? Live500.sessionMs : System.currentTimeMillis();
-                cancelStop(false); noisyRun = 0; calmRun = 0; autoCleanSec = 0; longNoisy = 0; noisyPrompted = false; autoCleanOn = false; autoStopped = false; stopReason = 0; cueLog = ""; lastOut = null; lastBands = null; LiveMeasure.clear(); readyCancelled = true; readyLeft = 0; detailsOpen = false;
+                cancelStop(false); noisyRun = 0; calmRun = 0; autoCleanSec = 0; longNoisy = 0; noisyPrompted = false; autoCleanOn = false; autoStopped = false; stopReason = 0; standCueMs = 0L; cueLog = ""; lastOut = null; lastBands = null; LiveMeasure.clear(); readyCancelled = true; readyLeft = 0; detailsOpen = false;
                 applyDisplayPrefs();
                 if (rings != null) rings.setPulse(0);                                        // 0.44.0: the heart-rate number pulses at each detected R
                 if (avgView != null) avgView.set(null);
@@ -813,7 +829,7 @@ final class EcgPage {
                     long[] pk = PackWatch.lastRecord(a); ReadingNotes.put(dir(), startMs / 1000L, "pack_last_record", pk == null ? "unknown" : pk[0] + "@" + pk[1] + "s");
                     String pw = PackWatch.warning(pk); if (pw != null) { a.toast(pw); if (stSub != null) stSub.setText(pw); }
                 } catch (Throwable ignored) { }
-                ReadingNotes.put(dir(), startMs / 1000L, "uv_per_count", "0.06358");      // 0.53.0: the scale every microvolt note of this reading uses (earlier readings: 0.0621)
+                ReadingNotes.put(dir(), startMs / 1000L, "uv_per_count", String.format(Locale.US, "%.5f", ScaleSetting.uv()));      // 0.53.0: the scale every microvolt note of this reading uses (earlier readings: 0.0621)
                 try { ConsoleCatalog.begin(dir(), startMs / 1000L); } catch (Throwable ignored) { }      // 0.51.0: new console templates are counted per reading
                 if (simRun && sim != null) ReadingNotes.put(dir(), startMs / 1000L, "run", "S" + sim.mode);
                 ReadingNotes.put(dir(), startMs / 1000L, "where", pref("where_tag", ""));
@@ -888,10 +904,13 @@ final class EcgPage {
             // auto-stop (not during a guided run)
             boolean auto = pr.getBoolean("auto_stop", true) && !guide.active();
             int clean = Live500.cleanBeats();
-            boolean quality = !Double.isNaN(est) && est <= a.autoTargetValue() && clean >= CLEAN_MIN;
-            if (auto && !autoStopped && el > NewLookActivity.AUTO_MIN_MS && (quality || el > NewLookActivity.AUTO_MAX_MS)) {
-                autoStopped = true; stopReason = 1;
-                a.toast(quality ? String.format(Locale.UK, "Stopped: report quality %.1f uV, %d clean beats", est, clean) : "Stopped at 5 minutes (report quality " + (Double.isNaN(est) ? "-" : String.format(Locale.UK, "%.1f", est)) + " uV, " + clean + " clean beats)");
+            boolean enough = "enough".equals(pref("end_rule", "quality"));      // 0.54.0 idea 1: end when the data is banked
+            int endDec = enough ? ReadingEnd.decide(el, Live500.q3Sec(), clean, Live500.verdictMs, Live500.hrvMs, now) : 0;
+            boolean quality = enough ? endDec == 1 : (!Double.isNaN(est) && est <= a.autoTargetValue() && clean >= CLEAN_MIN);
+            boolean timeUp = enough ? endDec == 2 : el > NewLookActivity.AUTO_MAX_MS;
+            if (auto && !autoStopped && (enough ? (quality || timeUp) : el > NewLookActivity.AUTO_MIN_MS && (quality || timeUp))) {
+                autoStopped = true; stopReason = 1; endRuleUsed = enough ? (quality ? "enough" : "cap") : "quality";
+                a.toast(enough ? (quality ? String.format(Locale.UK, "Stopped: enough data (%d s good signal, %d clean beats)", Live500.q3Sec(), clean) : "Stopped at 5 minutes (" + ReadingEnd.waiting(Live500.q3Sec(), clean, Live500.verdictMs, Live500.hrvMs, now) + ")") : quality ? String.format(Locale.UK, "Stopped: report quality %.1f uV, %d clean beats", est, clean) : "Stopped at 5 minutes (report quality " + (Double.isNaN(est) ? "-" : String.format(Locale.UK, "%.1f", est)) + " uV, " + clean + " clean beats)");
                 if (start != null && start.getText().toString().startsWith("STOP")) start.performClick();
             }
             else if (!autoStopped && live && liftStopArmed() && Live500.openRun >= LIFT_STOP_S) {      // 0.45.0 (b): the fingers came off late in a reading: stop now instead of recording the lift
@@ -911,6 +930,7 @@ final class EcgPage {
     private void updateTarget(double est) {
         if (targetBtn == null) return;
         double tg = a.autoTargetValue(); boolean auto = pr.getBoolean("auto_stop", true);
+        if (auto && "enough".equals(pref("end_rule", "quality"))) { targetBtn.setText("Ends when enough: " + ReadingEnd.waiting(Live500.q3Sec(), Live500.cleanBeats(), Live500.verdictMs, Live500.hrvMs, System.currentTimeMillis()) + "  \u00b7  at most 5 min  (tap: Reading setup > Ends when)"); return; }
         String e = Double.isNaN(est) ? "settling" : String.format(Locale.UK, "%.1f uV", est);
         int cb = Live500.cleanBeats();
         targetBtn.setText(auto ? "Report quality " + e + "  \u2192  " + String.format(Locale.UK, "%.0f", tg) + " uV  \u00b7  clean beats " + cb + " of " + CLEAN_TARGET + "  (tap: 3, 4, 5)" : "Auto-stop off  \u00b7  quality " + e + "  \u00b7  clean beats " + cb + " of " + CLEAN_TARGET + "  (tap: 3, 4, 5 turns it on)");
@@ -923,12 +943,14 @@ final class EcgPage {
         if (!Double.isNaN(o.sDipUv)) s.append(String.format(Locale.UK, "  \u00b7  at +%.0f ms %.0f uV", o.sDipMs, o.sDipUv));
         if (!Double.isNaN(o.expectedSDipUv)) s.append(String.format(Locale.UK, "\nR %.0f uV  \u00b7  the +14 to +28 ms dip your R height predicts: %.0f uV (decode log 109.1)", o.rUv, o.expectedSDipUv));
         if (!Double.isNaN(o.qtMs)) s.append(String.format(Locale.UK, "  \u00b7  QT %.0f ms", o.qtMs));
-        return s.toString();
+        String r0 = s.toString();
+        return r0.contains(" uV") ? r0 + ScaleSetting.tag() : r0;
     }
 
     // ------------------------------------------------------------------ guided run sink
     private final GuidedRun.Sink sink = new GuidedRun.Sink() {
         @Override public void cue(String text, String mark, int sec) {
+            if (text != null && text.startsWith("Stand up")) standCueMs = System.currentTimeMillis();
             lastCue = text; cueUntil = System.currentTimeMillis() + 4000L; cueLog += (cueLog.isEmpty() ? "" : ";") + sec + ":" + text;
             if (cueView != null) { cuePill.setVisibility(View.VISIBLE); cueView.setText("NOW  " + text); }
             alertUser(text, 1 + (cueCount++ % 2));      // buzz (own vibrator), beep on the alarm stream and a spoken cue
@@ -991,6 +1013,8 @@ final class EcgPage {
             ReadingNotes.put(d, startSec, "dur_s", String.format(Locale.US, "%.0f", dur));
             ReadingNotes.put(d, startSec, "stop", stopReason == 1 ? "auto" : stopReason == 2 ? "run" : stopReason == 3 ? "lift" : "hand");
             ReadingNotes.put(d, startSec, "clean_beats_live", String.valueOf(Live500.cleanBeats()));
+            ReadingNotes.put(d, startSec, "q3_s_live", String.valueOf(Live500.q3Sec()));      // 0.54.0: the strap's best-quality seconds banked
+            if (stopReason == 1 && !endRuleUsed.isEmpty()) ReadingNotes.put(d, startSec, "end_rule", endRuleUsed);
             boolean imuTest = pr.getBoolean("imu_live_test", false); int imuFr = LiveMotion.frames();
             if (imuTest) ReadingNotes.put(d, startSec, "imu_live_test", "1");
             if (imuTest || imuFr > 0) { ReadingNotes.put(d, startSec, "imu_frames_live", String.valueOf(imuFr)); ReadingNotes.put(d, startSec, "motion_moving_s", String.valueOf(LiveMotion.movingSeconds())); }      // 0.50.0: also without the test switch (a stale stream shows here)
@@ -1029,7 +1053,7 @@ final class EcgPage {
             setRing(1, Live500.hrvMs != 0 ? clamp01(Live500.hrvVal / 100.0) : 0f, BLUE, Live500.hrvMs != 0 ? String.valueOf(Live500.hrvVal) : "--", "STRAP HRV", Live500.hrvMs != 0 ? String.format(Locale.UK, "ms, from %.0f s", (Live500.hrvMs - Live500.sessionMs) / 1000.0) : "not released");
             setRing(2, haveNoise ? clamp01(1.0 - b[1] / 60.0) : 0f, !haveNoise ? MUT : b[1] <= 27 ? GREEN : b[1] <= 40 ? GOLD : ROSE, haveNoise ? String.format(Locale.UK, "%.0f", b[1]) : "--", "NOISE", haveNoise ? "uV, " + lvl : "uV");
             drawRings();
-            if (o != null && o.avg != null) { t.append(t.length() > 0 ? "\n" : "").append(String.format(Locale.UK, "R %.0f uV", o.rUv)); if (!Double.isNaN(o.qrsMs)) t.append(String.format(Locale.UK, "  \u00b7  QRS %.0f ms", o.qrsMs)); if (!Double.isNaN(o.postDipUv)) t.append(String.format(Locale.UK, "  \u00b7  S/ST dip %.0f uV", o.postDipUv)); if (!Double.isNaN(o.qtMs)) t.append(String.format(Locale.UK, "  \u00b7  QT %.0f ms", o.qtMs)); }
+            if (o != null && o.avg != null) { t.append(t.length() > 0 ? "\n" : "").append(String.format(Locale.UK, "R %.0f uV", o.rUv)); if (!Double.isNaN(o.qrsMs)) t.append(String.format(Locale.UK, "  \u00b7  QRS %.0f ms", o.qrsMs)); if (!Double.isNaN(o.postDipUv)) t.append(String.format(Locale.UK, "  \u00b7  S/ST dip %.0f uV", o.postDipUv)); if (!Double.isNaN(o.qtMs)) t.append(String.format(Locale.UK, "  \u00b7  QT %.0f ms", o.qtMs)); t.append(ScaleSetting.tag()); }
             if (haveNoise) t.append("\n").append(String.format(Locale.UK, "Noise in the QRS band %.0f uV (usual 15-27): %s", b[1], lvl));
             t.append("\nStopped ").append(stopReason == 1 ? "by auto-stop" : stopReason == 2 ? "by the guided run" : stopReason == 3 ? "when your fingers lifted" : "by you").append(String.format(Locale.UK, " after %.0f s.", dur));
             resultBody.setText(t.toString());
@@ -1046,11 +1070,51 @@ final class EcgPage {
             simRun = false; pr.edit().putBoolean("auto_stop", simAutoBefore).apply();
             try { if (cuePill != null) cuePill.setVisibility(View.GONE); if (sim != null) sim.finished(startSec, d); } catch (Throwable e) { fail("scale lab end", e); }
         }
+        if (guidedThisRun && "G".equals(pref("run_id", ""))) { try { standResult(startSec, d); } catch (Throwable e) { fail("stand test", e); } }      // 0.54.0 idea 4
         if (guidedThisRun) {
-            guidedThisRun = false; pr.edit().putString("run_id", "").apply();      // a guided run is one-shot; it kept stopping every later reading at 45 s (23:10 reading of 5 Nov)
-            if (stopReason == 2) { try { SendFlow.autoSend(a, startSec); a.toast("Done: sending"); } catch (Throwable e) { fail("auto send", e); } }
+            guidedThisRun = false; boolean wasStand = "G".equals(pref("run_id", "")); pr.edit().putString("run_id", "").apply();      // a guided run is one-shot; it kept stopping every later reading at 45 s (23:10 reading of 5 Nov)
+            if (stopReason == 2 && !wasStand) { try { SendFlow.autoSend(a, startSec); a.toast("Done: sending"); } catch (Throwable e) { fail("auto send", e); } }
         }
         applyMode(DONE);
+    }
+
+    /** 0.54.0 idea 4: the lying-to-standing numbers from the reading's accepted beats and the cue time. Notes + the result card; nothing is sent. No clinical limits are quoted. */
+    private void standResult(long startSec, File d) {
+        double[] bt = Live500.acceptedBeatSec(startMs);
+        if (standCueMs <= 0L) { ReadingNotes.put(d, startSec, "stand_test", "not scored: the stand cue did not run"); return; }
+        double cueS = (standCueMs - startMs) / 1000.0;
+        StandTest.Result r = StandTest.analyse(bt, bt.length, cueS);
+        ReadingNotes.put(d, startSec, "stand_cue_s", String.format(Locale.US, "%.1f", cueS));
+        ReadingNotes.put(d, startSec, "stand_test", r.text().replace(',', ';'));
+        if (r.ok) {
+            ReadingNotes.put(d, startSec, "stand_hr_lie", String.format(Locale.US, "%.1f", r.hrLie)); ReadingNotes.put(d, startSec, "stand_hr15", String.format(Locale.US, "%.1f", r.hr15));
+            ReadingNotes.put(d, startSec, "stand_rise15", String.format(Locale.US, "%.1f", r.rise15)); ReadingNotes.put(d, startSec, "stand_peak_hr", String.format(Locale.US, "%.1f", r.hrPeak));
+            if (!Double.isNaN(r.ratio3015)) ReadingNotes.put(d, startSec, "stand_ratio3015", String.format(Locale.US, "%.3f", r.ratio3015));
+            if (!Double.isNaN(r.hrLate)) ReadingNotes.put(d, startSec, "stand_hr_late", String.format(Locale.US, "%.1f", r.hrLate));
+            if (!Double.isNaN(r.rmssdLie)) ReadingNotes.put(d, startSec, "stand_rmssd_lie", String.format(Locale.US, "%.1f", r.rmssdLie));
+            if (!Double.isNaN(r.rmssdStand)) ReadingNotes.put(d, startSec, "stand_rmssd_stand", String.format(Locale.US, "%.1f", r.rmssdStand));
+        }
+        ReadingNotes.put(d, startSec, "stand_beats", r.beatsLie + "+" + r.beatsStand);
+        StringBuilder sb = new StringBuilder(resultBody.getText()).append("\n\nSTAND TEST\n").append(r.text()).append(".");
+        String hist = standHistory(d, startSec);
+        if (!hist.isEmpty()) sb.append("\n\nEarlier stand tests (same strap, same posture)\n").append(hist);
+        sb.append("\nA trend for you at the same hour; no limits are quoted. Standing is taken to start 2 s after the cue.");
+        resultBody.setText(sb.toString());
+    }
+
+    private static String standHistory(File d, long excludeStart) {
+        try {
+            java.util.Map<Long, java.util.Map<String, String>> all = ReadingNotes.all(d);
+            java.util.List<Long> ks = new java.util.ArrayList<Long>(); for (Long k : all.keySet()) if (k != excludeStart && all.get(k).containsKey("stand_hr15")) ks.add(k);
+            java.util.Collections.sort(ks, java.util.Collections.reverseOrder());
+            StringBuilder sb = new StringBuilder(); java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK);
+            for (int i = 0; i < Math.min(5, ks.size()); i++) {
+                java.util.Map<String, String> m = all.get(ks.get(i));
+                if (sb.length() > 0) sb.append('\n');
+                sb.append(f.format(new java.util.Date(ks.get(i) * 1000L))).append("  lying ").append(m.get("stand_hr_lie")).append(", rise at 15 s ").append(m.get("stand_rise15")).append(m.containsKey("stand_ratio3015") ? ", 30:15 " + m.get("stand_ratio3015") : "");
+            }
+            return sb.toString();
+        } catch (Throwable t) { return ""; }
     }
 
     /** The one status line under the card: what the app is doing, or what is in the zip. Stops by itself when the page leaves the result. */

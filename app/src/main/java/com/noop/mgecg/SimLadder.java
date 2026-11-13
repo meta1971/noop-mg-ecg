@@ -27,7 +27,7 @@ final class SimLadder {
     private SimLadder() {}
 
     static final int FS = 500;
-    static final double DESIGN = ProAnalysis.UV;
+    static double design() { return ProAnalysis.uv(); }      // 0.54.0: the app scale in use (one setting)
     static final double LADDER_S = 168.0, DC = 0.30;
     static final double[] LEVELS = { 0.05, 0.10, 0.20, 0.40, 0.60, 0.80 };
     static final double[] TONES = { 0.5, 1, 2, 5, 10, 20, 40 };
@@ -153,7 +153,7 @@ final class SimLadder {
         R.notes.put("sim_meter_mV", f("%.2f", meterMv[0]) + ";" + f("%.2f", meterMv[1]) + ";" + f("%.2f", meterMv[2]) + ";" + f("%.2f", meterMv[3]));
         if (!Double.isNaN(playStartS)) R.notes.put("sim_play_start_s", f("%.2f", playStartS));
         double ratio = (r1 + r2) / r2;
-        List<int[]> ed = edges(r.c, 2 * FS, 200.0 / DESIGN, 50, FS);
+        List<int[]> ed = edges(r.c, 2 * FS, 200.0 / design(), 50, FS);
         if (ed.isEmpty()) { R.notes.put("sim_skipped", "no_dc_edge"); R.card.add("No step of 0.2 mV or more was found: the ladder did not reach the strap (check the plug, the volume and the wiring)."); return R; }
         int t0 = -1, pol = 1;                                                     // the first edge that has the opposite edge of the block end 20 s later
         for (int[] e : ed) { for (int[] g : ed) if (g[1] == -e[1] && Math.abs(g[0] - e[0] - 20 * FS) < FS / 2) { t0 = e[0]; pol = e[1]; break; } if (t0 >= 0) break; }
@@ -205,7 +205,7 @@ final class SimLadder {
         for (int s = 0; s < secs; s++) { double p = (s * FS - t0) / (double) FS + 4; allow[s] = (p >= 157.5 && p + 1 <= 173) || (p >= 98.5 && p + 1 <= 101.5); }
         SpectrumBlock.Out so = SpectrumBlock.analyse(fr, allow, 8, "sim_floor_", false, false); R.notes.putAll(so.notes);
         // card
-        if (dc) R.card.add(String.format(Locale.UK, "Scale %.4f uV per count (app scale 0.06358): %+.1f %%", R.Kfit, 100 * (R.Kfit / DESIGN - 1)));
+        if (dc) R.card.add(String.format(Locale.UK, "Scale %.4f uV per count (app scale 0.06358): %+.1f %%", R.Kfit, 100 * (R.Kfit / design() - 1)));
         else R.card.add("AC-coupled output (the meter read under 95 % at 0:22 against 0:06): the scale is not reported. Use mode B.");
         R.card.add(!dc ? "High-pass corner: not reported (the phone output adds its own decay)" : Double.isNaN(R.fc) ? "High-pass corner: none found (DC-coupled within 12 s)" : String.format(Locale.UK, "High-pass corner %.3f Hz (tau %.2f s)", R.fc, tm));
         R.card.add(String.format(Locale.UK, "Linearity: within %.1f %% over 0.05-0.80 FS%s", md, sat ? " (some samples saturated)" : ""));
@@ -220,7 +220,7 @@ final class SimLadder {
         Result R = new Result(); Rec r = rec(fr);
         R.notes.put("sim_mode", "B"); R.notes.put("sim_cell_mV", f("%.1f", cellMv));
         StringBuilder rs = new StringBuilder(); for (double v : r2Mv) rs.append(rs.length() > 0 ? ";" : "").append(f("%.3f", v)); R.notes.put("sim_r2_mV", rs.toString());
-        List<int[]> ed = edges(r.c, 2 * FS, 1000.0 / DESIGN, 75, FS);
+        List<int[]> ed = edges(r.c, 2 * FS, 1000.0 / design(), 75, FS);
         int[] want = { 60, 120, 180, 240, 300, 360 }; int[] at = new int[6]; Arrays.fill(at, -1);
         for (int j = 0; j < 6; j++) { int best = -1; double bd = 15.0; for (int[] e : ed) { double d = Math.abs(e[0] / (double) FS - want[j]); if (d < bd) { bd = d; best = e[0]; } } at[j] = best < 0 ? -1 : refine(r.c, best); }
         List<Double> ks = new ArrayList<>(), tOn = new ArrayList<>(), tOff = new ArrayList<>(); StringBuilder miss = new StringBuilder();
@@ -236,7 +236,7 @@ final class SimLadder {
         double tauOn = tOn.isEmpty() ? Double.NaN : ProDsp.median(toArr(tOn)), tauOff = tOff.isEmpty() ? Double.NaN : ProDsp.median(toArr(tOff));
         R.notes.put("sim_tau_on_s", f("%.3f", tauOn)); R.notes.put("sim_tau_off_s", f("%.3f", tauOff));
         double tm = !Double.isNaN(tauOn) ? tauOn : tauOff; R.fc = tm > 0 && tm < 1000 ? 1 / (2 * Math.PI * tm) : Double.NaN; R.notes.put("sim_corner_hz", f("%.4f", R.fc));
-        R.card.add(Double.isNaN(R.Kfit) ? "Scale: no ON edge with meter readings" : String.format(Locale.UK, "Scale %.4f uV per count (app scale 0.06358): %+.1f %%  (%d ON edges)", R.Kfit, 100 * (R.Kfit / DESIGN - 1), ks.size()));
+        R.card.add(Double.isNaN(R.Kfit) ? "Scale: no ON edge with meter readings" : String.format(Locale.UK, "Scale %.4f uV per count (app scale 0.06358): %+.1f %%  (%d ON edges)", R.Kfit, 100 * (R.Kfit / design() - 1), ks.size()));
         R.card.add(Double.isNaN(R.fc) ? "High-pass corner: not found" : String.format(Locale.UK, "High-pass corner %.3f Hz (tau ON %.2f s, OFF %s)", R.fc, tauOn, Double.isNaN(tauOff) ? "none" : String.format(Locale.UK, "%.2f s", tauOff)));
         R.card.add("Edges found: ON " + nOn + " of 3, OFF " + nOff + " of 3" + (miss.length() > 0 ? " (missing OFF at " + miss.toString().replace(";", ", ") + " s)" : ""));
         R.card.add("These are measurements of THIS wiring. They are not applied.");

@@ -10350,6 +10350,7 @@ public class MainActivity extends NewLookActivity {
     @Override
     protected void onCreate(Bundle b) {
         CrashLog.install(this);                       // 0.19.0
+        ScaleSetting.load(this);                      // 0.54.0: the ECG scale (one versioned setting)
 
         super.onCreate(b);
 
@@ -12322,7 +12323,7 @@ public class MainActivity extends NewLookActivity {
         p.setTextSize(20f);
         c.drawText(String.format(Locale.UK,
                 "%.0f s at 500 Hz, 0.67-40 Hz zero-phase, %.4f uV/count  |  HR %s bpm, RMSSD %s ms, %d R peaks",
-                totalSec, EcgWhoopSpec.R16_UV_PER_COUNT,
+                totalSec, ScaleSetting.uv(),
                 Double.isNaN(r.hr) ? "-" : String.format(Locale.UK, "%.1f", r.hr),
                 Double.isNaN(r.rmssd) ? "-" : String.format(Locale.UK, "%.1f", r.rmssd),
                 s.beats.length), 16, 68, p);

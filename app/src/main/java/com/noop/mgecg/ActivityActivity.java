@@ -64,6 +64,9 @@ public class ActivityActivity extends Activity {
     private ActivityStore.DayData day;
     private ActivityStore.History hist;
     private ActivityStore.Summary todaySummary;
+    private ActivityPlus.DayStats dayStats;             // 0.54.0: the viewed day, all-day figures
+    private TrustData.Day dayTrust;                     // 0.54.0: what to trust in the viewed day
+    private List<String> trustIngests = new ArrayList<String>();
     private int selected = -1;
     private TimelineView timeline;
     private TextView callout;
@@ -194,9 +197,13 @@ public class ActivityActivity extends Activity {
                 ActivityStore.DayData d = null;
                 try { d = ActivityStore.loadDay(app, ds, pp); } catch (Throwable ignored) { }
                 final ActivityStore.DayData dd = d;
+                ActivityPlus.DayStats st0 = null; TrustData.Day tr0 = null; List<String> ing0 = null;
+                try { if (dd != null && dd.hasData && dd.r != null) st0 = ActivityPlus.stats(dd.r.epochs, dd.dayStart, ActivityPlus.asleepMinutes(app, dd.dayStart, dd.dayEnd)); } catch (Throwable ignored) { }
+                try { tr0 = TrustData.forDay(app, ds); ing0 = TrustData.ingests(app, 4); } catch (Throwable ignored) { }
+                final ActivityPlus.DayStats stF = st0; final TrustData.Day trF = tr0; final List<String> ingF = ing0;
                 ui.post(new Runnable() { @Override public void run() {
                     if (isFinishing() || gen != generation) return;
-                    day = dd;
+                    day = dd; dayStats = stF; dayTrust = trF; if (ingF != null) trustIngests = ingF;
                     render();
                 } });
                 // the long views are read behind the main screen, a few days at a time, and cached as each finished day is done
@@ -288,6 +295,9 @@ public class ActivityActivity extends Activity {
         c.addView(callout, lp(-1, -2, 8));
         addCard(c);
 
+        // ---- 0.54.0: all-day view: on your feet, still stretches, by the hour (not workouts)
+        content.addView(ActivityPlus.dayCard(this, dayStats, day.dayStart, day.dayStart == todayStart()), lp(-1, -2, 12));
+
         // ---- intensity
         LinearLayout ic = card("INTENSITY");
         int[] lm = r.levelMin;
@@ -311,7 +321,7 @@ public class ActivityActivity extends Activity {
         addCard(stc);
 
         // ---- periods
-        LinearLayout pc = card("ACTIVITY PERIODS");
+        LinearLayout pc = card("ACTIVE STRETCHES");
         if (r.bouts.isEmpty()) {
             pc.addView(tv("No sustained period found. A period needs at least " + params.minBoutMin + " active minutes; pauses up to " + params.mergeGapMin + " minutes stay inside it.", 13, MUTED, false), lp(-1, -2, 8));
         } else {
@@ -592,6 +602,26 @@ public class ActivityActivity extends Activity {
             }
         }
         addCard(sc);
+
+        // ---- 0.54.0: the long all-day views: hour-by-day map, usual days, rhythm of the active minutes
+        if (hist == null) {
+            LinearLayout lc2 = card("YOUR USUAL DAYS");
+            lc2.addView(tv("Reading your history\u2026", 12, MUTED, false), lp(-1, -2, 8));
+            addCard(lc2);
+        } else {
+            List<ActivityStore.Summary> fin = new ArrayList<ActivityStore.Summary>(hist.days.subList(0, Math.max(0, hist.days.size() - 1)));      // today is partial: left out
+            int from = Math.max(0, fin.size() - 28);
+            final ActivityPlus.Habit hab = ActivityPlus.habit(fin.subList(from, fin.size()));
+            content.addView(ActivityPlus.mapCard(this, new ArrayList<ActivityStore.Summary>(hist.days), 28), lp(-1, -2, 12));
+            content.addView(ActivityPlus.habitCard(this, hab, settings.activeGoalMin), lp(-1, -2, 12));
+            content.addView(ActivityPlus.rhythmCard(this, hab), lp(-1, -2, 12));
+            if (hist.missing > 0) content.addView(tv("Still reading " + hist.missing + " older days; these three cards sharpen as they are read.", 11, DIM, false), lp(-1, -2, 8));
+        }
+        if (dayTrust != null) {
+            LinearLayout tl = new LinearLayout(this); tl.setOrientation(LinearLayout.VERTICAL);
+            tl.addView(ActivityPlus.trustCard(this, java.util.Collections.singletonList(dayTrust), trustIngests));
+            content.addView(tl, lp(-1, -2, 12));
+        }
     }
 
     private void addExplanations(ActivityDetector.Result r) {

@@ -113,6 +113,7 @@ public class NewLookActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        ScaleSetting.load(this);                                       // 0.54.0
         EcgReport.reportDir = getExternalFilesDir(null);
         EcgReport.appCtx = getApplicationContext();                    // 0.39.0
         try { EcgReminder.schedule(getApplicationContext()); EcgWidget.refreshAll(getApplicationContext()); publishShortcuts(); } catch (Throwable ignored) { }      // 0.42.0
@@ -231,10 +232,19 @@ public class NewLookActivity extends Activity {
             ui.postDelayed(() -> openReport(new File(rp)), 700);
         } else if (in.getBooleanExtra("start_ecg", false)) {
             in.removeExtra("start_ecg");
+            if (in.getBooleanExtra("stand_test", false)) { in.removeExtra("stand_test"); armStand(); }      // 0.54.0 idea 4: the morning reminder's Stand test action
             fromNew = true;
             showStarting("Getting your strap ready\u2026", "");
             ui.postDelayed(() -> takeEcg(), 250);
         }
+    }
+
+    /** 0.54.0: arms run G (lying to standing, 3 min) for the reading that starts after the strap is ready. The arming stamp is set 4 minutes ahead so the connect wait and the 5 s countdown do not expire it (a run is valid 90 s after its stamp); it is one-shot and cleared when the reading ends. */
+    private void armStand() {
+        try {
+            getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit().putString("run_id", "G").putLong("run_armed_ms", System.currentTimeMillis() + 240000L).putString("reading_tag", "Lying").putString("reading_tag_last", "Lying").putString("position_tag", "").apply();
+            readingTag = "Lying"; positionTag = "";
+        } catch (Throwable ignored) { }
     }
 
     /** Set by HealthActivity just before it brings this (already running) screen forward; read in onResume, which always runs. */

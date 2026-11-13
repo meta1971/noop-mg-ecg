@@ -60,7 +60,7 @@ final class ReplayData {
             for (int k = 0; k < cnt; k++) {
                 int v = EcgWhoopSpec.r16Sample(f, k);
                 if (!EcgWhoopSpec.r16LeadOn(f, k) || EcgWhoopSpec.r16FastRecovery(f, k) || Math.abs(v) >= Live500.RAIL) continue;
-                uv[base + off + k] = v * EcgWhoopSpec.R16_UV_PER_COUNT;
+                uv[base + off + k] = v * ScaleSetting.uv();
             }
         }
         int firstV = -1, lastV = -1;

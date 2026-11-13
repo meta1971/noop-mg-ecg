@@ -67,10 +67,10 @@ final class DailyViews {
         @Override protected void onDraw(Canvas cv) {
             Context c = getContext();
             final float pulse = pulseScale();
-            final int nr = Math.max(1, frac.length); final boolean small = nr > 3;      // 0.53.0: four rings (stress) are drawn smaller
+            final int nr = Math.max(1, frac.length); final boolean small = nr > 3, tiny = nr > 4;      // 0.53.0: four rings (stress) are drawn smaller; 0.54.0: five (active) smaller still
             float w = getWidth(), cellW = w / nr;
-            float dia = Math.min(cellW - dp(c, small ? 10 : 14), dp(c, 104));
-            float sw = dp(c, small ? 7.5f : 9);
+            float dia = Math.min(cellW - dp(c, tiny ? 8 : small ? 10 : 14), dp(c, 104));
+            float sw = dp(c, tiny ? 6.5f : small ? 7.5f : 9);
             for (int i = 0; i < nr; i++) {
                 float cx = cellW * (i + 0.5f), top = dp(c, 4);
                 RectF r = new RectF(cx - dia / 2f + sw / 2f, top + sw / 2f, cx + dia / 2f - sw / 2f, top + dia - sw / 2f);
@@ -82,11 +82,11 @@ final class DailyViews {
                     Paint pr = new Paint(tr); pr.setColor(col[i]);
                     cv.drawArc(r, -90, 360f * f, false, pr);
                 }
-                Paint t = paint(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 300)); t.setTextSize(dp(c, small ? (big[i].length() > 3 ? 17 : 22) : (big[i].length() > 3 ? 22 : 28)) * (i == pulseRing && !"--".equals(big[i]) ? pulse : 1f));
+                Paint t = paint(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 300)); t.setTextSize(dp(c, tiny ? (big[i].length() > 3 ? 15 : 19) : small ? (big[i].length() > 3 ? 17 : 22) : (big[i].length() > 3 ? 22 : 28)) * (i == pulseRing && !"--".equals(big[i]) ? pulse : 1f));
                 cv.drawText(big[i], cx, top + dia / 2f + dp(c, 9), t);
-                Paint l = paint(INK); l.setTextAlign(Paint.Align.CENTER); l.setTypeface(font(c, 400)); l.setTextSize(dp(c, small ? 9.5f : 11)); l.setLetterSpacing(small ? 0.10f : 0.14f);
+                Paint l = paint(INK); l.setTextAlign(Paint.Align.CENTER); l.setTypeface(font(c, 400)); l.setTextSize(dp(c, tiny ? 8.5f : small ? 9.5f : 11)); l.setLetterSpacing(tiny ? 0.05f : small ? 0.10f : 0.14f);
                 cv.drawText(label[i], cx, top + dia + dp(c, 20), l);
-                Paint k = paint(MUT); k.setTextAlign(Paint.Align.CENTER); k.setTypeface(font(c, 400)); k.setTextSize(dp(c, small ? 9f : 10.5f));
+                Paint k = paint(MUT); k.setTextAlign(Paint.Align.CENTER); k.setTypeface(font(c, 400)); k.setTextSize(dp(c, tiny ? 8.5f : small ? 9f : 10.5f));
                 cv.drawText(cap[i], cx, top + dia + dp(c, 36), k);
             }
         }

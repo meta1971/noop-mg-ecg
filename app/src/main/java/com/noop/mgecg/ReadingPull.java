@@ -31,7 +31,7 @@ final class ReadingPull {
     private ReadingPull() {}
     static final String FOLDER = "MGpull";
     private static volatile boolean busy;
-    private static final double UV = ProAnalysis.UV;      // 0.53.0: 0.06358 (was 0.0621)
+    private static double uvNow() { return ProAnalysis.uv(); }      // 0.54.0: the one scale setting (0.06358 by default; was 0.0621 before 0.53.0)
 
     private static int s24(byte[] f, int o) { int r = (f[o] & 0xFF) | ((f[o + 1] & 0xFF) << 8) | ((f[o + 2] & 0xFF) << 16); return (r & 0x800000) != 0 ? r - 0x1000000 : r; }
     private static float f32(byte[] f, int o) { return Float.intBitsToFloat((int) ProAnalysis.u32(f, o)); }
@@ -62,10 +62,10 @@ final class ReadingPull {
             } catch (Throwable ignored) { }
             out.put("reading_notes.txt", notes.getBytes("UTF-8"));
         } catch (Throwable ignored) { }      // 0.42.3: where, run, cue times, noise bands, verdict timing
-        out.put("README.txt", README.getBytes("UTF-8"));
+        out.put("README.txt", README.replace("0.06358 uV per count", String.format(java.util.Locale.US, "%.5f", ScaleSetting.uv()) + " uV per count" + ScaleSetting.tag()).getBytes("UTF-8"));
         // ECG 500 Hz live
         StringBuilder sb = new StringBuilder("unix_time_s,sample,microvolts,lead_on,fast_recovery,rail,quality\n");
-        for (byte[] f : live16) { double t = ft(f); int n = ProAnalysis.u16(f, 32); int q = f[21] & 0xFF; for (int k = 0; k < n && k < 500; k++) { int b0 = f[34 + 3 * k] & 0xFF; int r = ((b0 & 3) << 16) | ((f[35 + 3 * k] & 0xFF) << 8) | (f[36 + 3 * k] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; sb.append(String.format(Locale.UK, "%.4f,%d,%.2f,%d,%d,%d,%d\n", t + k / 500.0, k, r * UV, (b0 & 0x80) != 0 ? 1 : 0, (b0 & 0x40) != 0 ? 1 : 0, Math.abs(r) >= 126900 ? 1 : 0, q)); } }
+        for (byte[] f : live16) { double t = ft(f); int n = ProAnalysis.u16(f, 32); int q = f[21] & 0xFF; for (int k = 0; k < n && k < 500; k++) { int b0 = f[34 + 3 * k] & 0xFF; int r = ((b0 & 3) << 16) | ((f[35 + 3 * k] & 0xFF) << 8) | (f[36 + 3 * k] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; sb.append(String.format(Locale.UK, "%.4f,%d,%.2f,%d,%d,%d,%d\n", t + k / 500.0, k, r * uvNow(), (b0 & 0x80) != 0 ? 1 : 0, (b0 & 0x40) != 0 ? 1 : 0, Math.abs(r) >= 126900 ? 1 : 0, q)); } }
         out.put("ecg_500hz_live.csv", sb.toString().getBytes("UTF-8"));
         // R17 100 Hz filtered live
         sb = new StringBuilder("unix_time_s,sample,microvolts_filtered\n");
@@ -85,7 +85,7 @@ final class ReadingPull {
         out.put("motion_100hz_r21.csv", sb.toString().getBytes("UTF-8"));
         // stored 500 Hz copy (gap filler) and pulse packets, raw
         sb = new StringBuilder("unix_time_s,layout,hex\n"); for (byte[] f : S.r26) sb.append(String.format(Locale.UK, "%.4f,26,%s\n", ft(f), hex(f))); out.put("pulse_packets_r26_hex.csv", sb.toString().getBytes("UTF-8"));
-        sb = new StringBuilder("unix_time_s,sample,microvolts\n"); for (byte[] f : S.r16) { double t = ft(f); int n = ProAnalysis.u16(f, 32); for (int k = 0; k < n && k < 500; k++) { int r = ((f[34 + 3 * k] & 3) << 16) | ((f[35 + 3 * k] & 0xFF) << 8) | (f[36 + 3 * k] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; sb.append(String.format(Locale.UK, "%.4f,%d,%.2f\n", t + k / 500.0, k, r * UV)); } }
+        sb = new StringBuilder("unix_time_s,sample,microvolts\n"); for (byte[] f : S.r16) { double t = ft(f); int n = ProAnalysis.u16(f, 32); for (int k = 0; k < n && k < 500; k++) { int r = ((f[34 + 3 * k] & 3) << 16) | ((f[35 + 3 * k] & 0xFF) << 8) | (f[36 + 3 * k] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; sb.append(String.format(Locale.UK, "%.4f,%d,%.2f\n", t + k / 500.0, k, r * uvNow())); } }
         out.put("ecg_500hz_stored_r16.csv", sb.toString().getBytes("UTF-8"));
         // log lines and events from the app logs
         StringBuilder ev = new StringBuilder(), lg = new StringBuilder();
