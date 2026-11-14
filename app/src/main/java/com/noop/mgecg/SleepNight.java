@@ -25,6 +25,8 @@ final class SleepNight {
         double hrMean = Double.NaN, hrLow5 = Double.NaN, hrFirst30 = Double.NaN, hrLast30 = Double.NaN;
         long hrLow5Ts;
         double rmssd = Double.NaN;
+        double rmssdAll = Double.NaN;      // 0.54.1: the same rule over every second (no gate); rmssd is the gated figure
+        double rrKeptPct = Double.NaN;     // 0.54.1: gated intervals as a share of all intervals, percent
         double[] rmssdByHour = new double[0];
         double skinMedian = Double.NaN, skinMin = Double.NaN, skinMax = Double.NaN;
         int windows, validN, b82Median, b82Min;
@@ -203,20 +205,18 @@ final class SleepNight {
             else nt.hrByHour[hh] = Double.NaN;
         }
         // R-R words -> RMSSD overall and by hour
-        List<double[]> rr = new ArrayList<>();
-        for (int q = bed; q <= end; q++) {
-            byte[] f = recs.get(q);
-            int c = Math.min(R18Codec.u8(f, 23), 4);
-            for (int w = 0; w < c; w++) { double v = R18Codec.rr(f, w); if (v > 300 && v < 2000) rr.add(new double[] {ts[q] + w * 0.01, v}); }
-        }
-        nt.rmssd = rmssd(rr, 0, rr.size(), 100);
+        List<double[]> rr = rrWords(recs, ts, bed, end, false);      // every interval (the breathing estimate keeps using these)
+        List<double[]> rrG = rrWords(recs, ts, bed, end, true);      // 0.54.1: only seconds the strap does not mark as degraded or pulse-lock-lost (the RMSSD uses these)
+        nt.rmssd = rmssd(rrG, 0, rrG.size(), 100);
+        nt.rmssdAll = rmssd(rr, 0, rr.size(), 100);
+        nt.rrKeptPct = rr.isEmpty() ? Double.NaN : 100.0 * rrG.size() / rr.size();
         int hours = (int) nt.tibH + 1;
         nt.rmssdByHour = new double[hours];
         for (int hh = 0; hh < hours; hh++) {
             long a = ts[bed] + hh * 3600L, b = a + 3600;
             int lo = -1, hi = -1;
-            for (int q = 0; q < rr.size(); q++) { double t = rr.get(q)[0]; if (t >= a && t < b) { if (lo < 0) lo = q; hi = q + 1; } }
-            nt.rmssdByHour[hh] = (lo >= 0 && hi - lo > 200) ? rmssd(rr, lo, hi, 100) : Double.NaN;
+            for (int q = 0; q < rrG.size(); q++) { double t = rrG.get(q)[0]; if (t >= a && t < b) { if (lo < 0) lo = q; hi = q + 1; } }
+            nt.rmssdByHour[hh] = (lo >= 0 && hi - lo > 200) ? rmssd(rrG, lo, hi, 100) : Double.NaN;
         }
         // breathing rate from the R-R tachogram
         List<double[]> clear = breathing(rr, ts[bed], ts[end] + 1);
@@ -401,6 +401,7 @@ final class SleepNight {
         int[] hc = new int[n], kc = new int[n];
         int[][] sc = new int[n][4];
         List<double[]> rr = new ArrayList<>();
+        List<double[]> rrG = new ArrayList<>();                  // 0.54.1: gated intervals for the RMSSD windows
         for (byte[] f : recs) {
             long t = R18Codec.ts(f);
             if (t < t0 || t > t1) continue;
@@ -412,7 +413,8 @@ final class SleepNight {
             if (k > 20 && k < 45 && kc[m] < 60) kv[m][kc[m]++] = (float) k;
             sc[m][R18Codec.state(f)]++;
             int c = Math.min(R18Codec.u8(f, 23), 4);
-            for (int w = 0; w < c; w++) { double v = R18Codec.rr(f, w); if (v > 300 && v < 2000) rr.add(new double[] {t + w * 0.01, v}); }
+            boolean gOk = rrGateOk(f);
+            for (int w = 0; w < c; w++) { double v = R18Codec.rr(f, w); if (v > 300 && v < 2000) { double[] e = new double[] {t + w * 0.01, v}; rr.add(e); if (gOk) rrG.add(e); } }
         }
         for (int m = 0; m < n; m++) {
             se.hr[m] = hc[m] >= 20 ? medianF(hv[m], hc[m]) : Float.NaN;
@@ -426,10 +428,10 @@ final class SleepNight {
         int lo = 0;
         for (int b = 0; b + 5 <= n; b += 5) {
             long a = t0 + b * 60L, e = a + 300L;
-            while (lo < rr.size() && rr.get(lo)[0] < a) lo++;
+            while (lo < rrG.size() && rrG.get(lo)[0] < a) lo++;
             int hi = lo;
-            while (hi < rr.size() && rr.get(hi)[0] < e) hi++;
-            double v = hi - lo > 100 ? rmssd(rr, lo, hi, 100) : Double.NaN;
+            while (hi < rrG.size() && rrG.get(hi)[0] < e) hi++;
+            double v = hi - lo > 100 ? rmssd(rrG, lo, hi, 100) : Double.NaN;
             if (!Double.isNaN(v)) for (int q = b; q < b + 5; q++) se.rmssd[q] = (float) v;
         }
         // breathing rate in the clear 5-minute windows (the same estimator as the report)
@@ -444,6 +446,25 @@ final class SleepNight {
         float[] t = java.util.Arrays.copyOf(v, c);
         java.util.Arrays.sort(t);
         return c % 2 == 1 ? t[c / 2] : 0.5f * (t[c / 2 - 1] + t[c / 2]);
+    }
+
+    /**
+     * 0.54.1: the strap's own mark on a second's pulse signal. Byte 33 high nibble non-zero = graded degradation, byte 108 = -128 = pulse lock lost (log 101, 141.2; the same gate MgCalibrations.hrv uses).
+     * MG_rr_check3.py on this strap (23 sleeps, 14 Nov 2026): without those seconds the nightly RMSSD is a median 0.94 of the all-seconds figure (0.82-1.00), and the 20 % local-median rule reads
+     * 1.08 times the 12 % rule (1.03-1.17) instead of 1.19 times (1.09-1.73); those seconds are 5 % of the pairs but 68 % of the pairs the 12 % rule rejects.
+     */
+    static boolean rrGateOk(byte[] f) { return (R18Codec.u8(f, 33) & 0xF0) == 0 && R18Codec.u8(f, 108) != 0x80; }
+
+    /** The R-R words (time, ms) of recs[bed..end], 300 to 2000 ms; with gated true only seconds that pass [rrGateOk]. */
+    static List<double[]> rrWords(List<byte[]> recs, long[] ts, int bed, int end, boolean gated) {
+        List<double[]> rr = new ArrayList<>();
+        for (int q = bed; q <= end; q++) {
+            byte[] f = recs.get(q);
+            if (gated && !rrGateOk(f)) continue;
+            int c = Math.min(R18Codec.u8(f, 23), 4);
+            for (int w = 0; w < c; w++) { double v = R18Codec.rr(f, w); if (v > 300 && v < 2000) rr.add(new double[] {ts[q] + w * 0.01, v}); }
+        }
+        return rr;
     }
 
     /** Successive differences kept when under this share of the interval. 0.12 (was 0.20): on the night of 21-22 Oct 2026, against an

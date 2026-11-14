@@ -1850,17 +1850,16 @@ public class HealthActivity extends Activity {
             rrBody.setLineSpacing(0, 1.25f);
             rrc.addView(rrBody, lp(-2, -2, 8));
             col.addView(rrc, lp(-1, -2, 12));
-            final long bedF = n.bedTs, endF = n.endTs; final double storedRm = n.rmssd; final Context appc = getApplicationContext();
+            final long bedF = n.bedTs, endF = n.endTs; final double storedRm = n.rmssd, allRm = n.rmssdAll, keptPct = n.rrKeptPct; final Context appc = getApplicationContext();
             new Thread(new Runnable() { @Override public void run() {
                 final RrHygiene.Result rr = TrustData.nightRr(appc, bedF, endF);
                 runOnUiThread(new Runnable() { @Override public void run() {
                     if (isFinishing()) return;
                     rrBadge.setText(rr.badge()); rrBadge.setTextColor(rr.grade == 1 ? GREEN : rr.grade == 2 ? BLUE : rr.grade == 3 ? GOLD : MUT);
-                    double ap = RrHygiene.chosenApp(rr), ap0 = rr.app0;
-                    String chg = (Double.isNaN(ap) || Double.isNaN(ap0) || ap0 <= 0) ? "" : String.format(Locale.UK, " (%+.0f %%)", 100.0 * (ap / ap0 - 1.0));
                     rrBody.setText(rr.line() + "\nOvernight RMSSD (optical): stored figure " + (Double.isNaN(storedRm) ? "-" : Math.round(storedRm) + " ms")
-                            + (rr.fillerFlag || rr.repeatFlag ? "; the same rule with the pattern taken out " + (Double.isNaN(ap) ? "-" : Math.round(ap) + " ms") + chg : "; nothing to take out")
-                            + ". Recovery still uses the stored figure. Nothing is removed unless the pattern is present in this strap's own seconds.");
+                            + ", from seconds the strap does not mark as degraded or pulse-lock-lost" + (Double.isNaN(keptPct) ? "" : " (" + Math.round(keptPct) + " % of the intervals)")
+                            + (Double.isNaN(allRm) ? "" : "; with every second " + Math.round(allRm) + " ms")
+                            + ". The 500 ms filler does not change the stored figure (checked on 23 sleeps of this strap). Recovery uses the stored figure.");
                 } });
             } }, "night-rr").start();
             rrc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { SleepResearch.show(HealthActivity.this); } });
