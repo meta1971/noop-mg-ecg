@@ -232,7 +232,7 @@ final class DayLog {
         List<TodayModel.NightStat> out = new ArrayList<>();
         try {
             SQLiteDatabase d = db(c);
-            try { android.content.SharedPreferences mp = c.getApplicationContext().getSharedPreferences("daylog_meta", Context.MODE_PRIVATE); if (mp.getInt("night_rule", 0) < 5) { d.execSQL("DELETE FROM night_stats"); mp.edit().putInt("night_rule", 5).apply(); } } catch (Throwable ignored) { }     // 0.33.0: cached nights are rebuilt once with the new sleep-time rule; 0.44.0 (rule 3): naps no longer merge into the night; 0.54.1 (rule 4): the nightly RMSSD skips seconds the strap marks as degraded (SleepNight.rrGateOk); 0.54.2 (rule 5): a night broken by a 30-60 minute wake is one night (SleepNight.clusters)
+            try { android.content.SharedPreferences mp = c.getApplicationContext().getSharedPreferences("daylog_meta", Context.MODE_PRIVATE); if (mp.getInt("night_rule", 0) < 6) { d.execSQL("DELETE FROM night_stats"); mp.edit().putInt("night_rule", 6).apply(); } } catch (Throwable ignored) { }     // 0.33.0: cached nights are rebuilt once with the new sleep-time rule; 0.44.0 (rule 3): naps no longer merge into the night; 0.54.1 (rule 4): the nightly RMSSD skips seconds the strap marks as degraded (SleepNight.rrGateOk); 0.54.2 (rule 5): a night broken by a 30-60 minute wake is one night (SleepNight.clusters); 0.54.3 (rule 6): the RMSSD keep share is 0.05 instead of 0.12 (SleepNight.RMSSD_KEEP_SHARE)
             Cursor q = d.rawQuery("SELECT ts FROM r18 WHERE state = 2 ORDER BY ts", null);
             List<Long> tl = new ArrayList<>();
             while (q.moveToNext()) tl.add(q.getLong(0));

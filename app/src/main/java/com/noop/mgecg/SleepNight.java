@@ -483,10 +483,12 @@ final class SleepNight {
         return rr;
     }
 
-    /** Successive differences kept when under this share of the interval. 0.12 (was 0.20): on the night of 21-22 Oct 2026, against an
-     *  H10 chest strap in 97 five-minute windows, the strap's optical intervals gave RMSSD +26.6 ms too high with 0.20 and +7.2 ms
-     *  with 0.12 (correlation 0.69 either way). The value is still an optical estimate that reads high; see TodayModel. */
-    static final double RMSSD_KEEP_SHARE = 0.12;
+    /** Successive differences kept when under this share of the interval. 0.05 from 0.54.3 (14 Nov 2026, Ame's decision); 0.12 until 0.54.2; 0.20 before that.
+     *  0.12 (was 0.20): on the night of 21-22 Oct 2026, against an H10 chest strap in 97 five-minute windows, the strap's optical intervals gave RMSSD +26.6 ms
+     *  too high with 0.20 and +7.2 ms with 0.12 (correlation 0.69 either way). 0.05 (log 187.13, 14 Nov 2026, 5 nights, 474 windows, gated seconds): within 25 % of the
+     *  H10 in 68 % of the windows against 55 % at 0.12 (70 % at 0.04); est/H10 median 1.193 at 0.12, 1.067 at 0.04. NOT validated out of sample (one person, five nights);
+     *  it may clip real high-HRV differences; behaviour below 0.04 is untested. The value is still an optical estimate that reads high; see TodayModel. */
+    static final double RMSSD_KEEP_SHARE = 0.05;
 
     /** RMSSD over rr[from..to): successive differences kept when under [RMSSD_KEEP_SHARE] of the interval and under 2.5 s apart. */
     static double rmssd(List<double[]> rr, int from, int to, int minDiffs) {

@@ -1,15 +1,15 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.54.1 (14 Nov 2026; comment only): NEW in 0.54.0 (13 Nov 2026). Beat-interval hygiene for the strap's per-second records (R18 bytes 23-31: a count 0-4 and four u16 intervals in ms), the three checks of MG_rr_check.py:
+// FILE VERSION 0.54.3 (14 Nov 2026; comments only): NEW in 0.54.0 (13 Nov 2026). Beat-interval hygiene for the strap's per-second records (R18 bytes 23-31: a count 0-4 and four u16 intervals in ms), the three checks of MG_rr_check.py:
 //   1. an exact 500 ms filler interval at rest (count at 500 against the mean of the 20 neighbours 490-510, with 488 and 512 as controls);
 //   2. a second that repeats the last beat(s) of the second before it (against a +30 s control that cannot overlap);
 //   3. coverage (sum of intervals / seconds) and night RMSSD with and without the cleaning.
 // Reference values from OTHER people's straps (whoop-rs): healthy coverage 0.93-1.10, a doubled stream 1.49-2.40. Nothing is removed unless this strap's own numbers show the pattern. Pure Java.
 // 14 Nov 2026 (MG_rr_check output of 36 nights, this strap): exact-500 filler ratio 581 asleep under 100 bpm (other strap 44 falling to 4); repeats 2.20 % at +1 s against 1.24 % at +30 s (not a pattern: rule needs
 // over 3 % and 4 x the control); night coverage 0.87-0.94 (median 0.91, 0.88 after cleaning), never doubled; median RMSSD change with the filler out -1.9 % (20-percent local-median rule), 7 of 20 nights over 5 %, largest 26 %.
-// The app's STORED night RMSSD (SleepNight.rmssd) keeps a difference only when it is under 12 % of the interval, which already drops the filler pairs: with the filler out the app figure changes by a median of x1.00
+// The app's STORED night RMSSD (SleepNight.rmssd) kept a difference only when it was under 12 % of the interval (RMSSD_KEEP_SHARE 0.12 until 0.54.2, 0.05 from 0.54.3), which already dropped the filler pairs: with the filler out the app figure changed by a median of x1.00
 // (MG_rr_check2, 23 sleeps, 14 Nov 2026). The gap to the check's 20 % rule is the keep rule, not the filler or the seconds used; 0.54.1 also skips seconds the strap marks as degraded (SleepNight.rrGateOk).
-// app0 / app1 / app2 below are the app's 12 % rule applied to the all-intervals, filler-out and filler-and-repeats-out streams of the asleep seconds (kept for the tests; the card no longer quotes them).
+// app0 / app1 / app2 below are the app's keep rule (SleepNight.RMSSD_KEEP_SHARE) applied to the all-intervals, filler-out and filler-and-repeats-out streams of the asleep seconds (kept for the tests; the card no longer quotes them).
 
 import java.util.Arrays;
 import java.util.Locale;
@@ -23,7 +23,7 @@ final class RrHygiene {
         int seconds;                                    // seconds used (strap state asleep)
         double cov0 = Double.NaN, cov2 = Double.NaN;    // coverage before and after cleaning
         double rmssd0 = Double.NaN, rmssd1 = Double.NaN, rmssd2 = Double.NaN;
-        double app0 = Double.NaN, app1 = Double.NaN, app2 = Double.NaN;      // the same three streams under the app's own stored-RMSSD rule (difference under 12 % of the interval)
+        double app0 = Double.NaN, app1 = Double.NaN, app2 = Double.NaN;      // the same three streams under the app's own stored-RMSSD rule (difference under SleepNight.RMSSD_KEEP_SHARE of the interval)
         int n500, tested, hits, ctested, chits;
         double fillerRatio = Double.NaN, ratio488 = Double.NaN, ratio512 = Double.NaN;
         double repeatRate = Double.NaN, repeatCtl = Double.NaN;      // percent
@@ -113,7 +113,7 @@ final class RrHygiene {
         return r;
     }
 
-    /** The app's own variant of the quote (same choice rule, app's 12 % rule). */
+    /** The app's own variant of the quote (same choice rule, the app's keep rule). */
     static double chosenApp(Result r) {
         if (r.fillerFlag && r.repeatFlag) return r.app2;
         if (r.fillerFlag) return r.app1;
@@ -121,7 +121,7 @@ final class RrHygiene {
         return r.app0;
     }
 
-    /** SleepNight.rmssd on a stream: successive differences kept when under 12 % of the interval, not across a break; NaN under 100 differences. */
+    /** SleepNight.rmssd on a stream: successive differences kept when under SleepNight.RMSSD_KEEP_SHARE of the interval, not across a break; NaN under 100 differences. */
     static double appRmssd(double[] vals, boolean[] brk, int m) {
         double ss = 0; int c = 0;
         for (int i = 1; i < m; i++) {

@@ -4,7 +4,7 @@ package com.noop.mgecg;
 // a 24-hour chart with today on it. HRV: the ECG readings by time of day and the strap's own resting 5-minute windows by clock hour, plus the night values. The third ring: the quality of the last readings.
 // Rules (all stated on the screens): a 5-minute stretch counts as "still" when awake with under 5 steps a minute (the stress model's bins, StressModel); a resting HRV window is 5 minutes with at least 90 % of its seconds
 // without an activity class, at most 25 steps, at most 10 % of seconds with the strap's movement bit, a 90th-percentile acceleration step under 0.02 g, optical quality 255 in at least 95 % of seconds, the pulse lock lost in at most 5 %,
-// and at least 100 successive beat differences kept by the night rule (SleepNight.rmssd: under 12 % change, under 2.5 s apart). Tested on the 12 Nov export: without the extra guards the daytime windows read 40 ms against 14 at night (movement bit rho +0.70). Bands: morning 05-11, daytime 11-17, evening 17-23, night 23-05 local.
+// and at least 100 successive beat differences kept by the night rule (SleepNight.rmssd: under SleepNight.RMSSD_KEEP_SHARE change, 0.05 from 0.54.3, 0.12 before; under 2.5 s apart). Tested on the 12 Nov export, at 0.12: without the extra guards the daytime windows read 40 ms against 14 at night (movement bit rho +0.70). Bands: morning 05-11, daytime 11-17, evening 17-23, night 23-05 local.
 
 import android.content.Context;
 import android.database.Cursor;
@@ -35,7 +35,7 @@ final class RingDetail {
     static final String[] BAND = { "Morning", "Daytime", "Evening", "Night" };
     static final String[] SPAN = { "05\u201311", "11\u201317", "17\u201323", "23\u201305" };
     static final int DAYS = 14, MIN_BIN_SEC = 150, MIN_HOUR_N = 3;
-    static final double QUIET_SPM = 5.0; static final int RULES = 2;      // RULES: bump when the resting-window rules change; the stored windows are then rebuilt
+    static final double QUIET_SPM = 5.0; static final int RULES = 3;      // RULES: bump when the resting-window rules change; the stored windows are then rebuilt (3 = 0.54.3: SleepNight.RMSSD_KEEP_SHARE 0.05 instead of 0.12)
     private static final int GREEN = HealthViews.GREEN, GOLD = HealthViews.GOLD, BLUE = HealthViews.BLUE, ROSE = HealthViews.ROSE, VIOLET = HealthViews.VIOLET, INK = HealthViews.INK, MUT = HealthViews.MUT;
     private static final int TRACK = 0xFF161B22, GRID = 0x22FFFFFF, GREY = 0xFF8A93A0;
 
