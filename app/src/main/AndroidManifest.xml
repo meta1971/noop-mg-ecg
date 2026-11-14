@@ -125,6 +125,15 @@
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
             android:exported="false" />
 
+        <!-- 0.55.0: the Activity day graph full screen, landscape (the Portrait button turns it), zoom and scroll; reads the day log, no new permission -->
+        <activity
+            android:name=".ActivityDayFullActivity"
+            android:label="MG Heart"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+            android:exported="false" />
+
         <activity
             android:name=".TodayActivity"
             android:label="MG Today"
