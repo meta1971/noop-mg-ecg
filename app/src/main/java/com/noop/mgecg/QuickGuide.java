@@ -25,7 +25,7 @@ final class QuickGuide {
             col.setPadding(pad, (int) (8 * dn), pad, (int) (8 * dn));
             col.addView(head(a, "The five tabs"));
             for (String[] t : GuideText.TABS) col.addView(line(a, t[0], INK, t[1]));
-            col.addView(head(a, "The six rings"));
+            col.addView(head(a, "The seven rings"));
             for (int i = 0; i < GuideText.RINGS.length; i++) col.addView(line(a, DailyViews.RING_NAMES[i], DailyViews.RING_COLORS[i], GuideText.RINGS[i]));
             col.addView(head(a, "Good to know"));
             col.addView(plain(a, "Tap a ring to see how it is worked out."));

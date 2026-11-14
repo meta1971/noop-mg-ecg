@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.56.0 (14 Nov 2026): a window is irregular only when the robust statistic rob (median |successive difference| / 0.6745 / mean interval) is at least 0.09 as well as nr above 0.12; a window with a high nr and a low rob (isolated early beats) is flagged with bit 16 (ectopy pattern) and is NOT irregular. Nothing else changed. flags: 1 rest, 2 irregular, 4 usable, 8 asleep, 16 ectopy pattern.
 // FILE VERSION 0.50.1 (10 Nov 2026): the one-time rhythm_win backfill no longer starts after a history ingest (it slowed the opening screen); it starts when the Trends screen is opened, and waits 40 ms between 6-hour blocks.
 // FILE VERSION 0.50.0 (10 Nov 2026): the rule and the alert keep the 0.30.0 behaviour and gain what the held data showed (decode log 141): a window also needs a clean pulse signal (median pulse SNR 20 or more), little movement, no activity flag, lock lost in at most 10 % of seconds and an interval median that matches the heart rate (double-counted beats); an alert whose windows ended during sleep waits until the strap says awake (or 9 hours); every window is stored in daylog.db table rhythm_win (Trends row, export mg_rhythm_screen.csv).
 // FILE VERSION 0.30.0 (31 Oct 2026): irregular rhythm watch (rest gate = the strap's own STILL flag). Runs after every history ingest of the day logger. Research only, not a medical device.
@@ -43,7 +44,9 @@ final class IrregularWatch {
     static final double THR = 0.12, FILTER = 0.40, MIN_STILL = 0.80;
     private static final String PREFS = "irrwatch", CH = "irregular_watch";
 
-    static final class Win { long start; int n; double nr; int hr; boolean rest, flag; double mot = 1, lost = 1, sleep, snr = -999, medm; boolean act, gate; }
+    static final class Win { long start; int n; double nr, rob; int hr; boolean rest, flag, ecto; double mot = 1, lost = 1, sleep, snr = -999, medm; boolean act, gate; }
+    /** 0.56.0: robust companion of nr = median |successive difference| / 0.6745 / mean interval. Isolated early beats raise nr but not rob; an irregular rhythm raises both. A window counts as irregular only when rob >= ROB_MIN (held data: largest rob in 1,816 clean rest windows 0.082; synthetic AF-like variability with a 8 % spread has median 0.113; decode log 202). */
+    static final double ROB_MIN = 0.09;
     static final double SNR_MIN = 20, MOT_MAX = 0.10, LOST_MAX = 0.10, MOT_G = 0.05, CONSIST = 0.2, SLEEP_SHARE = 0.80;
     static final int MIN_RECS = 270;
     /** 0.50.0: false = only windows in which the strap says asleep (state 2 in 80 % of seconds) can be irregular (default; held data: no alert in 42 nights); true = also still windows while awake (Settings below; more alerts). Set from the stored choice before each evaluation. */
@@ -86,6 +89,8 @@ final class IrregularWatch {
             double sum = 0, sq = 0; for (int i = 0; i < c; i++) sum += x[i]; double mean = sum / c;
             for (int i = 1; i < c; i++) { double d = x[i] - x[i - 1]; sq += d * d; }
             Win w1 = new Win(); w1.start = w; w1.n = c; w1.nr = Math.sqrt(sq / (c - 1)) / mean;
+            double[] ad = new double[c - 1]; for (int i = 1; i < c; i++) ad[i - 1] = Math.abs(x[i] - x[i - 1]);
+            w1.rob = median(ad, 0, c - 1) / 0.6745 / mean;
             List<Double> hrs = new ArrayList<Double>();
             for (int i = 0; i < s; i++) if (sts[i] >= w && sts[i] < w + WIN_S && shr[i] > 0) hrs.add((double) shr[i]);
             int tot = 0, still = 0, mo = 0, lo = 0, sl = 0; boolean ac = false; List<Double> sns = new ArrayList<Double>();
@@ -97,7 +102,8 @@ final class IrregularWatch {
             if (!sns.isEmpty()) { double[] sa = new double[sns.size()]; for (int i = 0; i < sa.length; i++) sa[i] = sns.get(i); w1.snr = median(sa, 0, sa.length); }
             w1.medm = w1.hr > 0 ? median(x, 0, c) * w1.hr / 60000.0 : 0;
             w1.gate = w1.rest && tot >= MIN_RECS && w1.mot <= MOT_MAX && w1.lost <= LOST_MAX && !w1.act && w1.snr >= SNR_MIN && Math.abs(w1.medm - 1) < CONSIST;
-            w1.flag = w1.gate && w1.nr > THR && (awakeToo || w1.sleep >= SLEEP_SHARE);
+            w1.ecto = w1.gate && w1.nr > THR && w1.rob < ROB_MIN;                                  // 0.56.0: high score from isolated early beats: not counted as irregular
+            w1.flag = w1.gate && w1.nr > THR && w1.rob >= ROB_MIN && (awakeToo || w1.sleep >= SLEEP_SHARE);
             out.add(w1);
         }
         return out;
@@ -149,7 +155,7 @@ final class IrregularWatch {
         } catch (Throwable ignored) { }
     }
 
-    static int flagsOf(Win w) { return (w.rest ? 1 : 0) | (w.flag ? 2 : 0) | (w.gate ? 4 : 0) | (w.sleep >= SLEEP_SHARE ? 8 : 0); }
+    static int flagsOf(Win w) { return (w.rest ? 1 : 0) | (w.flag ? 2 : 0) | (w.gate ? 4 : 0) | (w.sleep >= SLEEP_SHARE ? 8 : 0) | (w.ecto ? 16 : 0); }
 
     /** 0.50.0: an alert queued while the strap says asleep waits until the newest five minutes of records show it awake (or 9 hours); awake alerts go at once. */
     private static void deliver(Context c, SharedPreferences p, List<byte[]> recs, long now) {

@@ -53,6 +53,7 @@ final class HealthModel {
         StressModel.Result stress;                    // 0.53.0: daytime stress estimate (null when it could not be worked out)
         List<Reading> readings = new ArrayList<>();
         List<Spo2.Window> spo2Windows = new ArrayList<>();
+        AlertEngine.Result alert;                      // 0.56.0: the Heart Watch ring (null when it could not be worked out)
     }
 
     // ------------------------------------------------------------------ pure parts
@@ -189,6 +190,7 @@ final class HealthModel {
             Collections.sort(d.nights, new Comparator<TodayModel.NightStat>() {
                 @Override public int compare(TodayModel.NightStat a, TodayModel.NightStat b) { return Long.compare(a.bed, b.bed); }
             });
+            try { d.alert = AlertWatch.current(c, d.nights); } catch (Throwable ignored) { }      // 0.56.0: Heart Watch
             if (!d.nights.isEmpty()) {
                 long lastDay = dayIndex(d.nights.get(d.nights.size() - 1).bed);
                 for (TodayModel.NightStat s : d.nights) {

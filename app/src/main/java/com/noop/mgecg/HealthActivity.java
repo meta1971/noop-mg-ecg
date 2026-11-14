@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.56.0 (14 Nov 2026): the seventh ring, HEART WATCH (AlertEngine / AlertWatch): usual / WATCH / CHECK from the pulse rhythm at rest, the heart rate at rest and the night signs; detail panel with what to do.
 // 0.55.0 (14 Nov 2026): each ring has its own colour (DailyViews.RING_COLORS); a Quick guide link under the rings and a Quick guide row on You; plainer strap line on the sync strip ("pages not copied yet", "Strap link is on/off").
 // 0.51.0 (10 Nov 2026): You > Settings > RESEARCH fold: Read strap settings (read-only) and the Lab S switch.
 
@@ -62,7 +63,7 @@ public class HealthActivity extends Activity {
     static volatile int pendingTab = -1;               // 0.22.0: set by the old screens when they hand back to a tab (onNewIntent is not always called)
     private volatile String syncSub = "";           // 0.20.0: the strap line of the sync strip (pages behind, battery), read off the main thread
     private TextView syncTitleTv, syncSubTv;
-    private int ringOpen = -1;                       // 0.20.0: which ring on Today is expanded (0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress; 0.54.4: 5 fatigue), -1 none
+    private int ringOpen = -1;                       // 0.20.0: which ring on Today is expanded (0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress; 0.54.4: 5 fatigue; 0.56.0: 6 heart watch), -1 none
     private LinearLayout ringPanel;
     private TextView liveNum, liveUnit;
     private HealthModel.Data liveData;
@@ -830,7 +831,7 @@ public class HealthActivity extends Activity {
         ringOpen = i;
         ringPanel.removeAllViews();
         LinearLayout c = card(16);
-        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else if (i == 2) fillActiveRing(c); else if (i == 4) fillStress(c, d); else if (i == 5) fillFatigue(c, d); else fillSleep(c, d.day);      // 0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress; 0.54.4: 5 fatigue
+        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else if (i == 2) fillActiveRing(c); else if (i == 4) fillStress(c, d); else if (i == 5) fillFatigue(c, d); else if (i == 6) fillHeartWatch(c, d); else fillSleep(c, d.day);      // 0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress; 0.54.4: 5 fatigue
         ringPanel.addView(c, lp(-1, -2, 0));
         ringPanel.setVisibility(View.VISIBLE);
     }
@@ -992,6 +993,43 @@ public class HealthActivity extends Activity {
         rows(c, Explain.fatigue());
     }
 
+    private static String tierWord(int t) { return t == AlertEngine.CHECK ? "CHECK" : t == AlertEngine.WATCH ? "WATCH" : t == AlertEngine.GREEN ? "usual" : "not enough data"; }
+
+    /** 0.56.0: the Heart Watch ring (AlertEngine version 1): what it looked at, what it found, what to do. Research only, not a diagnosis. */
+    private void fillHeartWatch(LinearLayout c, HealthModel.Data d) {
+        c.addView(caps("HEART WATCH: WHAT IT LOOKS AT"));
+        final AlertEngine.Result r = d == null ? null : d.alert;
+        if (r == null) { note(c, "Not worked out yet. Press Sync now and open Today again."); return; }
+        LinearLayout head = hrow();
+        head.addView(tv(r.big(), 30, DailyViews.heartColor(r.tier), 600));
+        LinearLayout side = new LinearLayout(this); side.setOrientation(LinearLayout.VERTICAL); side.setPadding(dpi(14), 0, 0, 0);
+        side.addView(tv(r.headline, 16, INK, 600));
+        side.addView(tv("Three things are checked; the ring shows the highest level", 11.5f, MUT, 400));
+        head.addView(side);
+        c.addView(head, lp(-1, -2, 10));
+        kv(c, "Pulse rhythm at rest, last 48 hours", tierWord(r.rhythm.tier)); note(c, r.rhythm.line);
+        kv(c, "Heart rate at rest, now", tierWord(r.rest.tier)); note(c, r.rest.line);
+        kv(c, "Night signs against your usual", tierWord(r.drift.tier)); note(c, r.drift.line);
+        if (r.nightBed > 0 && r.signals > 0) {
+            c.addView(caps("THE NIGHT THAT BEGAN " + hhmm(r.nightBed) + ", AGAINST YOUR LAST NIGHTS"), lp(-2, -2, 16));
+            for (int k = 0; k < 5; k++) {
+                AlertEngine.Sig g = r.sig[k];
+                if (!g.ok()) { kv(c, g.name, "needs " + AlertEngine.MIN_BASE + " earlier nights (has " + g.nBase + ")"); continue; }
+                String now = k == 1 || k == 0 || k == 4 ? String.format(Locale.UK, "%.0f", g.now) : String.format(Locale.UK, "%.1f", g.now);
+                String usual = k == 1 || k == 0 || k == 4 ? String.format(Locale.UK, "%.0f", g.usual) : String.format(Locale.UK, "%.1f", g.usual);
+                String how = Math.abs(g.z) < 0.5 ? "as usual" : String.format(Locale.UK, "%.1f spreads %s", Math.abs(g.z), g.z > 0 ? "worse" : "better");
+                kv(c, g.name, now + " " + g.unit + "  (usual " + usual + ", " + how + ")");
+            }
+            note(c, "A spread is how much that sign normally varies from night to night for you (the median absolute deviation, with a floor). WATCH needs two signs at 2 spreads worse or more; CHECK needs three, or two on two nights running.");
+        }
+        c.addView(caps("WHAT TO DO"), lp(-2, -2, 16));
+        note(c, r.advice);
+        if (r.rhythm.tier >= AlertEngine.WATCH) c.addView(pillButton("Start an ECG now", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), lp(-1, dpi(46), 12));
+        final boolean on = AlertWatch.on(this);
+        c.addView(pillButton("Notify me on a CHECK of the heart rate or night signs: " + (on ? "On" : "Off"), 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { AlertWatch.setOn(HealthActivity.this, !on); showRing(6); } }), lp(-1, dpi(44), 8));
+        note(c, "How it works: each time the strap syncs, this compares you with your own recent record, never with other people. The pulse check uses only still, clean five-minute windows and ignores single early beats. Limits: the levels were chosen on one person's 21 days (no alert in them) and on synthetic rhythms; they are NOT validated against illness or heart events, and no wearable method is proven to predict a heart attack. The strap's ECG, read by a doctor, is what confirms a rhythm. A quiet ring does not rule anything out.");
+    }
+
     private void fillSleep(LinearLayout c, TodayModel.Day day) {
         SleepNight.Night n = day.night;
         c.addView(caps("SLEEP: LAST NIGHT"));
@@ -1081,6 +1119,12 @@ public class HealthActivity extends Activity {
         rl = new String[] {rl[0], rl[1], rl[2], rl[3], rl[4], "FATIGUE"};
         rcap = new String[] {rcap[0], rcap[1], rcap[2], rcap[3], rcap[4], hasFat ? fat.level() : "not scored"};
         rc = DailyViews.RING_COLORS.clone();      // 0.55.0: each ring keeps its own colour (green, blue, orange, violet, pink, yellow); the level is in the number and the caption
+        final AlertEngine.Result hw = d.alert;      // 0.56.0: the seventh ring, HEART WATCH (AlertEngine): usual / WATCH / CHECK, its colour follows the level; seven rings go four, then three
+        rf = java.util.Arrays.copyOf(rf, 7); rf[6] = hw == null || hw.tier == AlertEngine.NONE ? 0f : Math.max(0.02f, hw.fill());
+        rc[6] = DailyViews.heartColor(hw == null ? AlertEngine.NONE : hw.tier);
+        rb = java.util.Arrays.copyOf(rb, 7); rb[6] = hw == null ? "\u2014" : hw.big();
+        rl = java.util.Arrays.copyOf(rl, 7); rl[6] = "HEART WATCH";
+        rcap = java.util.Arrays.copyOf(rcap, 7); rcap[6] = hw == null ? "not scored" : hw.caption();
         DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
         final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(android.view.MotionEvent e) { return true; }
@@ -1093,7 +1137,7 @@ public class HealthActivity extends Activity {
             }
         });
         col.addView(rings, lp(-1, -2, 6));      // 0.54.4: the height follows the rows
-        TextView ringHint = tv("Tap a ring to see how it is worked out. Active is your moving time all day, not workouts. Fatigue is an estimate of what has built up over days.", 11, MUT, 400);
+        TextView ringHint = tv("Tap a ring to see how it is worked out. Active is your moving time all day, not workouts. Fatigue is an estimate of what has built up over days. Heart Watch flags anything unusual for you.", 11, MUT, 400);
         ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
         col.addView(ringHint, lp(-1, -2, 0));
         TextView guideLink = tv("Quick guide: what the colours and tabs mean \u203a", 12, BLUE, 400);      // 0.55.0

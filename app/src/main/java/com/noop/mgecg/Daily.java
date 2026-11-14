@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.56.0 (14 Nov 2026): tick() also runs AlertWatch.tick (Heart Watch) on its thread.
 // FILE VERSION 0.12.0 (26 Oct): the daily notifications: a morning summary once a night, and a strap-battery alert. Research only.
 
 import android.app.Notification;
@@ -41,6 +42,7 @@ final class Daily {
             @Override public void run() {
                 try { morning(app); } catch (Throwable ignored) { }
                 try { battery(app); } catch (Throwable ignored) { }
+                try { AlertWatch.tick(app); } catch (Throwable ignored) { }      // 0.56.0: Heart Watch (night signs, heart rate at rest)
             }
         }, "daily").start();
     }
