@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.21.0 (27 Oct 2026): the plain-language explanations behind every card, ring and graph. Pure Java (no Android), so the wording is reviewable and tested.
+// FILE VERSION 0.54.4 (14 Nov 2026): + fatigue(). 0.21.0 (27 Oct 2026): the plain-language explanations behind every card, ring and graph. Pure Java (no Android), so the wording is reviewable and tested.
 
 import java.util.Locale;
 
@@ -232,6 +232,22 @@ final class Explain {
         return new String[][] {
             {WHAT, "Your own typical range for each measure over your last 28 readings, and where the latest one sits."},
             {HOW, "The range is the middle half of those readings (25th to 75th percentile) around the median. It is not a normal range for other people; time of day, posture and noise move these numbers."}
+        };
+    }
+
+    /** 0.54.4: the in-depth wording behind the Fatigue ring (FatigueModel version 1). The numbers (weights, full-scale points) are the constants of FatigueModel. */
+    static String[][] fatigue() {
+        return new String[][] {
+            {WHAT, "One 0 to 100 estimate of how worn down you are: what has built up over the last few days (short sleep, a body running worse than your own usual, a run of stressful days) plus what today has added (effort and hours awake). 0 means nothing above your usual. 100 means a lot."},
+            {READ, "Under 30 is low, 30 to 59 moderate, 60 and over high. Read it against yesterday and against how you feel, not against other people. It climbs through an ordinary day because effort and hours awake count, and it drops after a night near your goal. The pattern worth noticing is a slow climb over several mornings. 60 at 22:00 after a hard day is not the same signal as 60 at 08:00; the screen splits the score into what built up and what today added so you can tell them apart."},
+            {"SLEEP DEBT, 30 %", "The shortfall of each of the last 7 nights against your sleep goal, with recent nights counting more (a night fades by 15 % a day). A longer night does not cancel a short one, so the part only ever adds. It reaches 100 at an average shortfall of 2 hours a night. It needs 3 nights in the 7 days; a night with no data counts as no information, not as zero sleep. Naps are not credited."},
+            {"BODY SIGNS OVERNIGHT, 25 %", "The last 3 nights' resting heart rate and overnight HRV against your own usual, the same comparison the Recovery ring makes, but over three nights with the newest counted most (3, 2, 1). Only the part worse than your usual counts: a lower resting rate or a higher HRV does not subtract. It reaches 100 at 2.5 spreads worse. A spread is your own night-to-night change, so it adapts to you. It needs 2 of the 3 nights and 4 earlier nights as a baseline."},
+            {"DAYTIME STRESS, 15 %", "The Stress ring's daily average over the last 3 finished days against the average of the days before them (up to 11). Only the part above your usual counts; it reaches 100 at 60 % above. It needs 2 of the 3 days with at least 2 hours scored and 3 earlier days. Stress here is heart rate above what your movement and the time of day explain, so it sees mental load, illness, heat, caffeine and alcohol, and it does not see emotion without a heart-rate rise."},
+            {"EFFORT TODAY, 10 %", "Today's effort on its own 0 to 21 scale, counted from waking. 21 is 100. A hard morning therefore shows at once, and a rest day adds nothing."},
+            {"TIME AWAKE, 20 %", "Hours since the night ended, a stand-in for the pressure to sleep that builds while you are awake. It is 0 up to 6 hours awake and 100 at 18 hours. If the last night ended more than a day ago, or none is known, this part is left out."},
+            {HOW, "Each part is turned into 0 to 100, then the five are added with the weights above. A part that cannot be worked out is left out and the others are scaled up to fill its share; the screen lists what is missing and why. The score needs sleep debt or body signs and at least two parts in all, otherwise the ring stays empty. The full-scale points (2 hours, 2.5 spreads, 60 %, 6 to 18 hours) and the weights are choices made by hand, not fitted to anyone's answers."},
+            {WATCH, "This has not been checked against how people feel. There is no measurement of fatigue on this strap: it is a transparent sum of five things the strap can see. It does not see mood, pain, illness before it shows in the heart, noise, light, caffeine taken today, or a bad night in a hotel bed. Its optical HRV reads about 1.5 times a chest strap's and is noisier, which your own baseline absorbs but a single odd night can still move. It is an estimate for research, not WHOOP's measure and not a medical one. If you feel unwell, trust that over the number."},
+            {"WHAT MOVES IT", "Sleep near your goal for a few nights lowers the sleep-debt part, because older shortfalls fade. Body signs follow resting heart rate and HRV, which alcohol, a late meal, illness, heat and a hard day all move. Stress moves only over days. Effort and hours awake reset each morning."}
         };
     }
 

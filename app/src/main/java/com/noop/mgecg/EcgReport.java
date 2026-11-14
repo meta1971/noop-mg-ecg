@@ -334,7 +334,7 @@ public final class EcgReport {
                 b.append(row("Q to S span", String.format(Locale.US, "%.0f ms between the dips either side of R", r.qt.qsSpanMs)));
             }
             if (r.inverted) b.append(row("Orientation", "Recording came in upside down; flipped for display and measurement"));
-            b.append(row("QT method", "Start = where the QRS begins (slope), end = 15 ms after the tangent on the T wave meets the baseline, measured on the beat as recorded (no high-pass is undone; whether the strap's stored ECG has its own high-pass is not settled); 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
+            b.append(row("QT method", "Start = where the QRS begins (slope), end = 15 ms after the tangent on the T wave meets the baseline, measured on the beat as recorded (no high-pass is undone; the chip's own input coupling is a very slow analog high-pass, inferred at 0.02 to 0.05 Hz, far below the band of the beat); 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
         }
         if (r.rhythm != null && r.rhythm.features != null) {
             b.append(row("Rhythm screen", String.format(Locale.US, "%d intervals, nRMSSD %.3f, sample entropy %.2f", r.rhythm.intervals, r.rhythm.features[0], r.rhythm.features[4])));

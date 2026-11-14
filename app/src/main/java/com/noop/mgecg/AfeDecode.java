@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.53.9 (12 Nov 2026): plain-words decode of the MAX86176 register lines in the firmware console (build brief 0.51.0 v2, item 2). 0.53.9: the ECG registers 0x90-0x92 and the calibration registers
+// FILE VERSION 0.54.4 (14 Nov 2026): + fullScaleMv, hpfCornerHz, fastRecoveryCounts, lsbTable, chainSummary (the ECG chain in numbers, decode log 189-191); ecg2 and ecg3 give the full scale and the trigger. 0.53.9 (12 Nov 2026): plain-words decode of the MAX86176 register lines in the firmware console (build brief 0.51.0 v2, item 2). 0.53.9: the ECG registers 0x90-0x92 and the calibration registers
 // 0xA0-0xA2 now use the MAX86176 field layout found in a smartwatch firmware's own driver (decode log 185); the sibling chip's layout is no longer applied to them. Pure Java.
 
 import java.util.Locale;
@@ -49,14 +49,49 @@ final class AfeDecode {
         int ipol = (v >> 7) & 1, pc = (v >> 4) & 7, ic = v & 3, mid = (v >> 2) & 3, pga = pgaOf(pc), ina = new int[] { 20, 30, 40, 60 }[ic];
         StringBuilder s = new StringBuilder("MAX86176 layout (watch driver): polarity " + (ipol == 1 ? "inverted" : "normal") + ", PGA code " + pc + (pga < 0 ? " (gain not listed)" : " = x" + pga) + ", INA code " + ic + " = " + (ic == 0 ? "20 V/V" : ina + " V/V if the table is 20 / 30 / 40 / 60 (inferred; a watch driver's comments say " + (20 << ic) + ")"));
         if (mid != 0) s.append(", bits 3:2 = ").append(mid).append(" (not named)");
-        if (pga > 0) s.append(String.format(Locale.US, "; total %d V/V = %.2f nV per count at a 1.0 V reference (inferred)", ina * pga, lsbNv(ina * pga, 1.0)));
+        if (pga > 0) s.append(String.format(Locale.US, "; total %d V/V = %.2f nV per count, full scale +-%.2f mV, at a 1.0 V reference (inferred)", ina * pga, lsbNv(ina * pga, 1.0), fullScaleMv(ina * pga, 1.0)));
         return s.toString();
     }
 
     /** ECG Config 3 (0x92): fast-recovery mode 7:6 and threshold 5:0 (n / 64 of full scale; the sibling chip's 0x3D is commented 95 %, 61 / 64). */
     static String ecg3(int v) {
         int m = (v >> 6) & 3, t = v & 0x3F;
-        return "MAX86176 layout (watch driver): fast-recovery enable bits 7:6 = " + m + " (that driver writes 2), threshold " + t + " / 64 of full scale = " + (t * 2048) + " counts" + (t == 62 ? " = the strap's raw output limit of +-126,976 counts" : "");
+        return "MAX86176 layout (watch driver): fast-recovery enable bits 7:6 = " + m + " (that driver writes 2), threshold " + t + " / 64 of full scale = " + (t * 2048) + " counts" + (t == 62 ? " = the strap's raw output limit of +-126,976 counts (the documented trigger is +-2048 x the code)" : "");
+    }
+
+    // ------------------------------------------------------------------ 0.54.4: the ECG chain in numbers (decode log 189 to 191). OBSERVED = read in a document or board of ADI's; INFERRED = derived; OPEN = not known.
+
+    /** Total gains of the INA x PGA table (INA 20 / 30 / 40 / 60 inferred, PGA 1 / 2 / 4 / 8 / 16): the distinct totals up to the 960 V/V of the data sheet cover. */
+    static final int[] TOTAL_GAINS = { 20, 30, 40, 60, 80, 120, 160, 240, 480, 960 };
+
+    /** Full scale, +- millivolts, of the 18-bit code for a total gain and a reference: VREF / gain (OBSERVED for the sister chips MAX30003 and MAX86178). */
+    static double fullScaleMv(int totalGain, double vref) { return vref * 1000.0 / totalGain; }
+
+    /** First-order corner (Hz) of an input coupling capacitor [capUf] with an internal resistor [rKohm]. 1 uF with 318.3 kohm is 0.5 Hz (ADI's own wrist board note). */
+    static double hpfCornerHz(double capUf, double rKohm) { return 1.0 / (2.0 * Math.PI * rKohm * 1e3 * capUf * 1e-6); }
+
+    /** Counts at which the documented automatic fast recovery triggers for a 6-bit threshold code: 2048 x code (MAXREFDES106 guide, MAX30003). */
+    static int fastRecoveryCounts(int code) { return code * 2048; }
+
+    /** One line per total gain: nanovolts a count and full scale, at the reference vref. */
+    static String lsbTable(double vref) {
+        StringBuilder s = new StringBuilder();
+        for (int g : TOTAL_GAINS) s.append(String.format(Locale.US, "%s%d V/V: %.2f nV, +-%.2f mV", s.length() > 0 ? "\n" : "", g, lsbNv(g, vref), fullScaleMv(g, vref)));
+        return s.toString();
+    }
+
+    /** The in-app summary of what is known about the strap's ECG chain, labelled OBSERVED / INFERRED / OPEN. */
+    static String chainSummary() {
+        return "ECG CHAIN, 14 Nov 2026 (decode log 189 to 191)\n\n"
+            + "SCALE. 1 count = VREF / (2^17 x total gain). OBSERVED on the sister chips MAX30001, MAX30003 and MAX86178: VREF 1.000 V, full scale = VREF / gain. INFERRED for this chip: VREF 1.0 V (not published; a VREF_ECG ball exists) and total gain 120 (INA 30 x PGA 4, or INA 60 x PGA 2), so 63.58 nV a count and +-8.33 mV. A third party's 76.29 nV matches no gain setting. A known-voltage run decides; until then +-20 %.\n\n"
+            + "NANOVOLTS A COUNT AND FULL SCALE AT 1.0 V (INFERRED):\n" + lsbTable(1.0) + "\n\n"
+            + "CROSS-CHECK (INFERRED, medium-low). The data sheet cover's 15.6 effective bits at 0.6 uV rms implies a full scale of about 100 mV peak to peak, which is 1.0 V / 20: the same reference. Good to about +-20 % in full scale.\n\n"
+            + "OUTPUT LIMIT. +-126,976 counts = 62 x 2048 = +-8.07 mV, exactly the documented fast-recovery trigger (+-2048 x the threshold code in register 0x92) with code 62 (INFERRED; the strap's own 0x92 byte is not printed). The strap flags the 250 samples after it.\n\n"
+            + "HIGH-PASS. OBSERVED for this chip: the input is AC-coupled through an EXTERNAL capacitor on balls CAPP and CAPN with an internal resistor; ADI's wrist board fits 1 uF there and its schematic says that sets 0.5 Hz (so the resistor is about 318 kohm). INFERRED for the strap: its raw stream decays after steps with time constants of 2 to 9 s, which needs 10 to 22 uF, a corner of 0.02 to 0.05 Hz. The 0.53 Hz second-order filter of the strap's R17 stream is firmware, not the chip. No digital DC-removal bit is known for this chip.\n\n"
+            + "INPUT RANGE (OBSERVED, data sheet cover). DC offset +-1300 mV, AC range above 90 mV p-p. The strap itself is limited to +-8.07 mV by the fast-recovery threshold.\n\n"
+            + "NOISE. No 0.5 to 40 Hz figure is published. The cover gives 0.6 uV rms over 0.05 to 40 Hz at a gain it does not state (9.4 counts at 63.58 nV). With a finger on, the strap shows 24 to 26 uV between beats: body, muscle or electrode, about 40 times the chip's figure. The no-finger floor has not been measured.\n\n"
+            + "TEST SOURCE. The chip has a built-in calibration source (registers 0xA0 to 0xA2); no command of the strap writes it, so it cannot be used.\n\n"
+            + "OPEN: the VREF_ECG voltage, the strap's 0x91 and 0x92 bytes, noise by gain, the register pages (under NDA). The known-voltage run measures the first and, with a slow source, the high-pass corner.";
     }
 
     /** One line in plain words, or "" when the register is not one of these. */

@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.39.0 (3 Nov): STRAP BATTERY block from event 63 (capacity, currents, temperatures). 0.13.0 (26 Oct): everything the strap sends while it is simply worn, on one page. Research only.
+// FILE VERSION 0.54.4 (14 Nov 2026): the ECG FRONT END rows carry the 14 Nov evidence (sister-chip formula, the exact fast-recovery match, the external high-pass capacitor, range and noise; decode log 189-191). 0.39.0 (3 Nov): STRAP BATTERY block from event 63 (capacity, currents, temperatures). 0.13.0 (26 Oct): everything the strap sends while it is simply worn, on one page. Research only.
 
 import android.app.Activity;
 import android.app.Dialog;
@@ -196,9 +196,12 @@ final class StrapData {
         r.add(row(S, "Optical gain word", String.format("0x%04X", R18Codec.u16(f, 75)), "bytes 75 and 76, the only live one of three: bits 4-7 photodiode offsets, 8-11 green LED step, 12-15 saturation flags (decoded in the Heart section)"));
         String E = "ECG FRONT END";      // 0.53.9: what is known and what is inferred about the ECG chain (decode log 182-186); not read from this second's record
         r.add(row(E, "Sampling", "500 a second", "register 0x90 = 0x82 (the 6 Nov console dump): ECG on, divide by 64, so a 32,000 Hz clock. Measured, not assumed: the mains line falls at 49.97 Hz at 500 a second (33 clean stretches); at 512 it would be at 48.8 Hz"));
-        r.add(row(E, "Gain and reference (inferred)", "120 V/V, 1.0 V", "1 count = 0.06358 uV = 1.0 V / (2^17 x 120); full scale +-8.33 mV. From the strap's own microvolt stream, the data sheet cover's full scale and the chip's gain table. A third party's comparison with WHOOP's printed report suggests up to 19 % higher; a known voltage has not been applied yet"));
-        r.add(row(E, "Output limit", "+-126,976 counts", "= +-8.07 mV = 62 / 64 of full scale; a hard limit (72,547 stored samples sit on it, none beyond). Probably the chip's fast-recovery threshold (register 0x92 low six bits = 62, inferred)"));
+        r.add(row(E, "Gain and reference (inferred)", "120 V/V, 1.0 V", "1 count = 0.06358 uV = 1.0 V / (2^17 x 120); full scale +-8.33 mV. The formula and the 1.000 V reference are documented for the sister chips (MAX30003, MAX86178); this chip's own reference is not published. Supports: the strap's own microvolt stream, the chip's gain table, and the data sheet cover (15.6 effective bits at 0.6 uV rms implies about 100 mV p-p at the lowest gain, which is 1.0 V / 20). A third party's comparison with WHOOP's printed report suggests up to 19 % higher (76.29 nV matches no gain setting); a known voltage has not been applied yet"));
+        r.add(row(E, "Output limit", "+-126,976 counts", "= +-8.07 mV = 62 x 2048, exactly the documented fast-recovery trigger (+-2048 x the six-bit threshold in register 0x92) with code 62; a hard limit (72,547 stored samples sit on it, none beyond). Inferred reading; the strap flags the 250 samples that follow"));
         r.add(row(E, "Gain registers", "0x91, 0x92", "0x91: polarity bit 7, PGA code bits 6:4 (x1 x2 x4 x8, 7 = x16), INA code bits 1:0 (20, then 30 / 40 / 60 inferred); total = INA x PGA. 0x92: fast-recovery mode bits 7:6, threshold bits 5:0 (n / 64 of full scale). The strap's own bytes are not printed by its console"));
+        r.add(row(E, "Counts to volts by total gain", "63.58 nV at 120", "At 1.0 V (inferred), nanovolts a count and full scale: " + AfeDecode.lsbTable(1.0).replace("\n", "; ")));
+        r.add(row(E, "High-pass (analog)", "0.02 to 0.05 Hz", "Observed for this chip: the input is coupled through an external capacitor on balls CAPP and CAPN (ADI's wrist board fits 1 uF and notes 0.5 Hz, so the internal resistor is about 318 kohm). Inferred for the strap: step decays of 2 to 9 s need 10 to 22 uF. The 0.53 Hz second-order filter of the live stream is firmware. No digital DC-removal bit is known"));
+        r.add(row(E, "Input range and noise", "+-8.07 mV; 0.6 uV rms", "Data sheet cover: DC offset +-1300 mV, AC range above 90 mV p-p; noise 0.6 uV rms over 0.05 to 40 Hz at an unstated gain (9.4 counts here). No 0.5 to 40 Hz figure is published. With a finger on the strap shows 24 to 26 uV between beats (body or electrode); the no-finger floor is not measured"));
         String R = "THIS RECORD";
         r.add(row(R, "Strap time", clock(R18Codec.ts(f)), "bytes 15 to 18"));
         r.add(row(R, "Record counter", String.valueOf(R18Codec.u32(f, 11)), "bytes 11 to 14; +1 per second"));

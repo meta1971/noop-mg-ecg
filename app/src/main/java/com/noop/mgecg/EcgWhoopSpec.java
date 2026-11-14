@@ -61,7 +61,7 @@ public final class EcgWhoopSpec {
     /*
      * R16 (stored, 500 Hz): passband gain R17/R16 = 0.0621 +/- 0.0003
      * (ten 20 s blocks, coherence > 0.98, 28 Sep session). As good as the
-     * R17 figure above. R16 clips at +/-126976 counts = about +/-7.9 mV.
+     * R17 figure above. R16 clips at +/-126976 counts = about +/-7.9 mV at 0.0621 (+/-8.07 mV at 0.06358).
      *
      * NOTE 29 Sep 2026: two runs measured 0.0628 (spectral gain, 8 blocks of
      * 20 s, SD 0.0001) and 0.0629-0.0630 (least-squares fit of the R17 filter),
@@ -100,6 +100,23 @@ public final class EcgWhoopSpec {
     public static final double R17_HP_CORNER_HZ = 0.53, R17_HP_Q = 0.72, R17_LP_MINUS1DB_HZ = 37.4, R17_LP_MINUS3DB_HZ = 41.0, R17_DELAY_MS = 264.5;
     public static final double R17_PASSBAND_OVER_OLD_R16 = 1.0238;               // R17 microvolts / (R16 counts x 0.0621) between 3 and 25 Hz = 0.06358 / 0.0621
     public static final double R16_HP_CORNER_HZ_EST = 0.035, R16_HP_CORNER_HZ_LOW = 0.019, R16_HP_CORNER_HZ_HIGH = 0.076;   // the raw stream's own low-frequency decay (contact dependent; INFERRED)
+
+    /*
+     * 0.54.4 (14 Nov 2026, decode log 189-191): THE ECG CHAIN AFTER THE 14 NOV SEARCH. No public source holds the MAX86176's own gain table, reference, noise per gain or register pages. What is new:
+     * SCALE: counts x VREF / (2^17 x gain) with VREF 1.000 V and full scale = VREF / gain is OBSERVED on the sister chips (MAX30001, MAX30003, MAX86178); VREF of the MAX86176 itself is INFERRED (1.0 V).
+     * RAIL: 126,976 = 62 x 2048 matches the documented automatic fast-recovery trigger (+-2048 x threshold code) with code 62 = 0x3E (INFERRED; the sister default is 63).
+     * ENOB CHECK (INFERRED, medium-low): 15.6 bits at 0.6 uV rms (MAX86176) and 15.3 bits at 0.72 uV rms (MAX86178) both give about 100 mV p-p = VREF / 20 at 1.0 V, good to about +-0.25 bit.
+     * HIGH-PASS (OBSERVED architecture, ADI MAXREFDES104 board): an EXTERNAL capacitor on CAPP / CAPN (balls B5, B6) with an internal resistor; the board fits 1 uF = 0.5 Hz (R about 318.3 kohm). The strap's decays (tau 2-9 s)
+     * need 10-22 uF at that resistor: corner 0.023-0.050 Hz (INFERRED). The 0.53 Hz second-order filter is firmware (R17). The measured decay corners above (0.019-0.076 Hz) agree with this and depend on contact.
+     * NOISE: 0.6 uV rms over 0.05-40 Hz is the cover's figure at an unstated gain (9.4 counts at 0.06358); no 0.5-40 Hz figure exists. In contact the strap reads 24-26 uV between beats (body/electrode, not the chip).
+     * OPEN: VREF_ECG voltage, register bytes 0x91 / 0x92, noise by gain, register pages (NDA). A known-voltage run decides the scale.
+     */
+    public static final double R16_FULL_SCALE_UV_ASSUMED = 131072.0 * R16_UV_PER_COUNT;      // 8333.6 uV, INFERRED
+    public static final double R16_RAIL_UV = R16_RAIL * R16_UV_PER_COUNT;                      // 8073.1 uV
+    public static final int R16_FAST_RECOVERY_CODE = 62;                                       // INFERRED: R16_RAIL = 2048 x 62
+    public static final double ECG_HPF_CAP_UF_LOW = 10.0, ECG_HPF_CAP_UF_HIGH = 22.0, ECG_HPF_R_KOHM = 318.3;       // INFERRED capacitor range; R from ADI's 1 uF = 0.5 Hz
+    public static final double R16_HP_MODEL_HZ_LOW = 0.0227, R16_HP_MODEL_HZ_HIGH = 0.0501;     // 1 / (2 pi R C) for 22 uF and 10 uF
+    public static final double CHIP_NOISE_UV_RMS_PUBLIC = 0.6;                                 // data sheet cover, 0.05-40 Hz, gain not stated
 
     // ------------------------------------------------------------ R16 words
     /*

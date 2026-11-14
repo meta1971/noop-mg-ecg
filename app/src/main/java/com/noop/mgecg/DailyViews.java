@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.12.0 (26 Oct): the daily dashboard pieces: three rings, the health monitor against your own baseline. Research only.
+// FILE VERSION 0.54.4 (14 Nov 2026): RingsView draws 4 rings to a row and more beneath (bigger rings, centred last row, height from the rows, ringAt() for taps). 0.12.0 (26 Oct): the daily dashboard pieces: three rings, the health monitor against your own baseline. Research only.
 
 import android.content.Context;
 import android.graphics.Canvas;
@@ -37,7 +37,7 @@ final class DailyViews {
         return "Not recovered. Keeping effort under about 10 would suit today.";
     }
 
-    /** Three rings side by side, each with a big number, a label and a one-line caption. */
+    /** Rings with a big number, a label and a one-line caption: up to three side by side, four or more four to a row with the last row centred (0.54.4). */
     static final class RingsView extends View {
         private final float[] frac;
         private final int[] col;
@@ -64,15 +64,40 @@ final class DailyViews {
             if (pulseStart > 0L && age >= 0L && age < PULSE_MS) return 1f + 0.16f * (float) Math.sin(Math.PI * age / (double) PULSE_MS);
             return 1f;
         }
+        // 0.54.4: up to 3 rings stay in one row (as before); 4 or more go 4 to a row, bigger than the 5-in-a-row of 0.54.0, and the last row is centred
+        static final int GRID_PER_ROW = 4;
+        private boolean grid() { return frac.length > 3; }
+        private int perRow() { return grid() ? GRID_PER_ROW : Math.max(1, frac.length); }
+        private float gridDia(Context c, float w) { return Math.min(w / GRID_PER_ROW - dp(c, 8), dp(c, 92)); }
+        private float rowH(Context c, float w) { return grid() ? dp(c, 4) + gridDia(c, w) + dp(c, 50) : 0f; }
+        @Override protected void onMeasure(int wSpec, int hSpec) {
+            int w = View.MeasureSpec.getSize(wSpec);
+            if (grid() && View.MeasureSpec.getMode(hSpec) != View.MeasureSpec.EXACTLY) {
+                int rows = (frac.length + GRID_PER_ROW - 1) / GRID_PER_ROW;
+                setMeasuredDimension(w, Math.round(rows * rowH(getContext(), w) + dp(getContext(), 4)));
+            } else super.onMeasure(wSpec, hSpec);
+        }
+        /** Index of the ring under a touch, or -1 for none. */
+        int ringAt(float x, float y) {
+            int nr = frac.length; float w = getWidth(); if (nr == 0 || w <= 0) return -1;
+            if (!grid()) return Math.max(0, Math.min(nr - 1, (int) (x / (w / nr))));
+            float rh = rowH(getContext(), w); int row = (int) (y / rh); int rows = (nr + GRID_PER_ROW - 1) / GRID_PER_ROW;
+            if (row < 0 || row >= rows) return -1;
+            int count = Math.min(GRID_PER_ROW, nr - row * GRID_PER_ROW); float off = (GRID_PER_ROW - count) / 2f;
+            int ci = (int) Math.floor(x / (w / GRID_PER_ROW) - off);
+            return ci < 0 || ci >= count ? -1 : row * GRID_PER_ROW + ci;
+        }
         @Override protected void onDraw(Canvas cv) {
             Context c = getContext();
             final float pulse = pulseScale();
-            final int nr = Math.max(1, frac.length); final boolean small = nr > 3, tiny = nr > 4;      // 0.53.0: four rings (stress) are drawn smaller; 0.54.0: five (active) smaller still
-            float w = getWidth(), cellW = w / nr;
-            float dia = Math.min(cellW - dp(c, tiny ? 8 : small ? 10 : 14), dp(c, 104));
-            float sw = dp(c, tiny ? 6.5f : small ? 7.5f : 9);
+            final int nr = Math.max(1, frac.length); final boolean g = grid(); final int per = perRow();
+            float w = getWidth(), cellW = w / per;
+            float dia = g ? gridDia(c, w) : Math.min(cellW - dp(c, 14), dp(c, 104));
+            float sw = dp(c, g ? 8f : 9f), rh = rowH(c, w);
             for (int i = 0; i < nr; i++) {
-                float cx = cellW * (i + 0.5f), top = dp(c, 4);
+                int row = i / per, colI = i % per, count = Math.min(per, nr - row * per);
+                float off = (per - count) / 2f;
+                float cx = cellW * (off + colI + 0.5f), top = dp(c, 4) + row * rh;
                 RectF r = new RectF(cx - dia / 2f + sw / 2f, top + sw / 2f, cx + dia / 2f - sw / 2f, top + dia - sw / 2f);
                 Paint tr = new Paint(Paint.ANTI_ALIAS_FLAG);
                 tr.setStyle(Paint.Style.STROKE); tr.setStrokeWidth(sw); tr.setColor(0x1FFFFFFF); tr.setStrokeCap(Paint.Cap.ROUND);
@@ -82,11 +107,11 @@ final class DailyViews {
                     Paint pr = new Paint(tr); pr.setColor(col[i]);
                     cv.drawArc(r, -90, 360f * f, false, pr);
                 }
-                Paint t = paint(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 300)); t.setTextSize(dp(c, tiny ? (big[i].length() > 3 ? 15 : 19) : small ? (big[i].length() > 3 ? 17 : 22) : (big[i].length() > 3 ? 22 : 28)) * (i == pulseRing && !"--".equals(big[i]) ? pulse : 1f));
-                cv.drawText(big[i], cx, top + dia / 2f + dp(c, 9), t);
-                Paint l = paint(INK); l.setTextAlign(Paint.Align.CENTER); l.setTypeface(font(c, 400)); l.setTextSize(dp(c, tiny ? 8.5f : small ? 9.5f : 11)); l.setLetterSpacing(tiny ? 0.05f : small ? 0.10f : 0.14f);
+                Paint t = paint(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 300)); t.setTextSize(dp(c, g ? (big[i].length() > 3 ? 19 : 25) : (big[i].length() > 3 ? 22 : 28)) * (i == pulseRing && !"--".equals(big[i]) ? pulse : 1f));
+                cv.drawText(big[i], cx, top + dia / 2f + dp(c, g ? 8 : 9), t);
+                Paint l = paint(INK); l.setTextAlign(Paint.Align.CENTER); l.setTypeface(font(c, 400)); l.setTextSize(dp(c, g ? 10f : 11f)); l.setLetterSpacing(g ? 0.08f : 0.14f);
                 cv.drawText(label[i], cx, top + dia + dp(c, 20), l);
-                Paint k = paint(MUT); k.setTextAlign(Paint.Align.CENTER); k.setTypeface(font(c, 400)); k.setTextSize(dp(c, tiny ? 8.5f : small ? 9f : 10.5f));
+                Paint k = paint(MUT); k.setTextAlign(Paint.Align.CENTER); k.setTypeface(font(c, 400)); k.setTextSize(dp(c, g ? 9.5f : 10.5f));
                 cv.drawText(cap[i], cx, top + dia + dp(c, 36), k);
             }
         }

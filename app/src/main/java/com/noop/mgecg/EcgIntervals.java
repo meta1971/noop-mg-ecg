@@ -65,7 +65,8 @@ public final class EcgIntervals {
      *  Not undoing it is kept because the one device comparison on record (Polar H10, one 197 s window: QT 345 ms against 363 ms as recorded and
      *  407 ms with the undo) favours it. The 18 Oct battery step test was WITHDRAWN on 19 Oct (late): on a re-run its amplitudes were mostly
      *  selection bias and its fall/rise ratio cannot show DC coupling, so whether the stored ECG has a high-pass of its own is NOT settled.
-     *  The 0.51 Hz second-order filter belongs to the strap's live stream (R17) relative to R16. Set to 1.5 to restore the old behaviour. */
+     *  The 0.51 Hz second-order filter belongs to the strap's live stream (R17) relative to R16. Set to 1.5 to restore the old behaviour.
+     *  0.54.4 (decode log 191): the chip's own input coupling is an EXTERNAL capacitor on CAPP / CAPN (ADI's board: 1 uF = 0.5 Hz); the strap's step decays need 10-22 uF, a corner of 0.02-0.05 Hz (INFERRED). That is far below the T wave's band, which is why 0 stays right. */
     public static volatile double STRAP_HP_FC_HZ = 0;
 
     public enum Status { OK, TOO_FEW_BEATS, NO_CLEAR_T_WAVE, UNCERTAIN, RATE_OUT_OF_RANGE, FAILED }

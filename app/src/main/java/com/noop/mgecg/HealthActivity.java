@@ -61,7 +61,7 @@ public class HealthActivity extends Activity {
     static volatile int pendingTab = -1;               // 0.22.0: set by the old screens when they hand back to a tab (onNewIntent is not always called)
     private volatile String syncSub = "";           // 0.20.0: the strap line of the sync strip (pages behind, battery), read off the main thread
     private TextView syncTitleTv, syncSubTv;
-    private int ringOpen = -1;                       // 0.20.0: which ring on Today is expanded (0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress), -1 none
+    private int ringOpen = -1;                       // 0.20.0: which ring on Today is expanded (0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress; 0.54.4: 5 fatigue), -1 none
     private LinearLayout ringPanel;
     private TextView liveNum, liveUnit;
     private HealthModel.Data liveData;
@@ -829,7 +829,7 @@ public class HealthActivity extends Activity {
         ringOpen = i;
         ringPanel.removeAllViews();
         LinearLayout c = card(16);
-        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else if (i == 2) fillActiveRing(c); else if (i == 4) fillStress(c, d); else fillSleep(c, d.day);      // 0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress
+        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else if (i == 2) fillActiveRing(c); else if (i == 4) fillStress(c, d); else if (i == 5) fillFatigue(c, d); else fillSleep(c, d.day);      // 0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress; 0.54.4: 5 fatigue
         ringPanel.addView(c, lp(-1, -2, 0));
         ringPanel.setVisibility(View.VISIBLE);
     }
@@ -954,6 +954,43 @@ public class HealthActivity extends Activity {
         note(c, "The expected heart rate is your own lowest fifth at that many steps a minute, over the last 14 days, plus what the hour of the day usually adds for you; the heart rate lags movement, so it falls over the 10 minutes after you stop. The score is how far you sit above it: 3 % above reads 0, 25 % above reads 100. The first hour after you wake is not scored (the waking surge). In a public wrist-sensor data set of 20 people this separated mental tasks from relaxing in every person; emotion without a heart-rate rise is not seen, and illness, heat, caffeine, alcohol, a meal or heavy lifting raise it too. An estimate, not a medical measure.");
     }
 
+    /** 0.54.4: the colour of the fatigue ring: under 30 green, 30 to 59 amber, 60 and over red. */
+    static int fatigueColor(double s) { return Double.isNaN(s) ? 0xFF8A93A0 : s < FatigueModel.LOW_BELOW ? DailyViews.OK : s < FatigueModel.HIGH_FROM ? DailyViews.AMBER : DailyViews.RED; }
+
+    /** 0.54.4: the fatigue panel (FatigueModel version 1): headline, what built up and what today added, each part with its own number and weight, then the long explanation. */
+    private void fillFatigue(LinearLayout c, HealthModel.Data d) {
+        c.addView(caps("FATIGUE: HOW IT IS WORKED OUT"));
+        FatigueModel.Result f = null;
+        try { f = FatigueModel.compute(d.nights, d.day.sleepGoalH, d.stress, d.day.effort, d.day.night == null ? 0L : d.day.night.endTs, d.day.newestTs); } catch (Throwable ignored) { }
+        if (f == null || !f.scored()) {
+            note(c, "Not scored yet. " + (f == null ? "" : f.why));
+            rows(c, Explain.fatigue());
+            return;
+        }
+        LinearLayout head = hrow();
+        head.addView(tv(String.valueOf(f.rounded()), 46, fatigueColor(f.score), 600));
+        LinearLayout side = new LinearLayout(this); side.setOrientation(LinearLayout.VERTICAL); side.setPadding(dpi(14), 0, 0, 0);
+        side.addView(tv(f.level() + " fatigue", 16, INK, 600));
+        side.addView(tv("out of 100: 0 is nothing above your usual", 11.5f, MUT, 400));
+        head.addView(side);
+        c.addView(head, lp(-1, -2, 10));
+        kv(c, "Built up over days (sleep debt, body signs, stress)", Double.isNaN(f.builtUp) ? "\u2014" : String.valueOf(Math.round(f.builtUp)));
+        kv(c, "Added today (effort, time awake)", Double.isNaN(f.today) ? "\u2014" : String.valueOf(Math.round(f.today)));
+        TextView h = caps("THE FIVE PARTS"); c.addView(h, lp(-2, -2, 16));
+        for (int i = 0; i < 5; i++) {
+            FatigueModel.Part p = f.parts[i];
+            if (p.ok()) {
+                kv(c, p.name + "  (" + Math.round(p.weight * 100) + " % of the score)", Math.round(p.score) + " \u2192 " + String.format(Locale.UK, "%.0f", p.contrib) + " points");
+                note(c, p.detail + ".");
+            } else {
+                kv(c, p.name, "left out");
+                note(c, p.detail + ".");
+            }
+        }
+        note(c, "Points add up to the score. A part that is left out hands its share to the others.");
+        rows(c, Explain.fatigue());
+    }
+
     private void fillSleep(LinearLayout c, TodayModel.Day day) {
         SleepNight.Night n = day.night;
         c.addView(caps("SLEEP: LAST NIGHT"));
@@ -1033,6 +1070,15 @@ public class HealthActivity extends Activity {
         rb = new String[] {rb[0], rb[1], hasAct ? ActivityPlus.hmClock(actMin) : "\u2014", rb[2], rb[3]};
         rl = new String[] {"RECOVERY", "EFFORT", "ACTIVE", "SLEEP", "STRESS"};
         rcap = new String[] {rcap[0], rcap[1], hasAct ? "goal " + (goalMin % 60 == 0 ? (goalMin / 60) + " h" : ActivityPlus.hmClock(goalMin)) : "no data", rcap[2], rcap[3]};
+        // 0.54.4: the FATIGUE ring (FatigueModel version 1): built up over days plus what today added; six rings go four to a row
+        FatigueModel.Result fat = null;
+        try { fat = FatigueModel.compute(d.nights, day.sleepGoalH, d.stress, day.effort, n == null ? 0L : n.endTs, day.newestTs); } catch (Throwable ignored) { }
+        final boolean hasFat = fat != null && fat.scored();
+        rf = new float[] {rf[0], rf[1], rf[2], rf[3], rf[4], hasFat ? Math.max(0.02f, (float) (fat.score / 100.0)) : 0f};
+        rc = new int[] {rc[0], rc[1], rc[2], rc[3], rc[4], hasFat ? fatigueColor(fat.score) : 0xFF8A93A0};
+        rb = new String[] {rb[0], rb[1], rb[2], rb[3], rb[4], hasFat ? String.valueOf(fat.rounded()) : "\u2014"};
+        rl = new String[] {rl[0], rl[1], rl[2], rl[3], rl[4], "FATIGUE"};
+        rcap = new String[] {rcap[0], rcap[1], rcap[2], rcap[3], rcap[4], hasFat ? fat.level() : "not scored"};
         DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
         final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(android.view.MotionEvent e) { return true; }
@@ -1040,12 +1086,12 @@ public class HealthActivity extends Activity {
         rings.setClickable(true);
         rings.setOnTouchListener(new View.OnTouchListener() {
             @Override public boolean onTouch(View v, android.view.MotionEvent e) {                // 0.20.0: tap a ring to open how it is worked out
-                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) toggleRing(Math.max(0, Math.min(4, (int) (e.getX() / (v.getWidth() / 5f)))));
+                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) { int hit = ((DailyViews.RingsView) v).ringAt(e.getX(), e.getY()); if (hit >= 0) toggleRing(hit); }      // 0.54.4: six rings, four to a row
                 return false;
             }
         });
-        col.addView(rings, lp(-1, dpi(196), 6));
-        TextView ringHint = tv("Tap a ring to see how it is worked out. Active is your moving time all day, not workouts.", 11, MUT, 400);
+        col.addView(rings, lp(-1, -2, 6));      // 0.54.4: the height follows the rows
+        TextView ringHint = tv("Tap a ring to see how it is worked out. Active is your moving time all day, not workouts. Fatigue is an estimate of what has built up over days.", 11, MUT, 400);
         ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
         col.addView(ringHint, lp(-1, -2, 0));
         ringPanel = new LinearLayout(this);
@@ -2121,6 +2167,11 @@ public class HealthActivity extends Activity {
         st.addView(valueRow("ECG scale, microvolts per count", scV, new View.OnClickListener() { @Override public void onClick(View v) { askScale(scV, scNote); } }), lp(-1, dpi(52), 0));
         scNote.setLineSpacing(0, 1.2f); scNote.setPadding(0, 0, 0, dpi(6));
         st.addView(scNote);
+        TextView chainLink = tv("What is known about the ECG chain  \u203a", 12, BLUE, 600);      // 0.54.4: gain table, output limit, high-pass, range, noise (decode log 189-191)
+        chainLink.setPadding(0, dpi(2), 0, dpi(10));
+        chainLink.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            new AlertDialog.Builder(HealthActivity.this).setTitle("ECG chain").setMessage(AfeDecode.chainSummary()).setPositiveButton("OK", null).show(); } });
+        st.addView(chainLink);
         col.addView(st, lp(-1, -2, 16));
 
         LinearLayout dt = card(16);
@@ -2230,7 +2281,7 @@ public class HealthActivity extends Activity {
         e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
         e.setText(String.format(Locale.US, "%.5f", ScaleSetting.uv()));
         new AlertDialog.Builder(this).setTitle("ECG scale, microvolts per count")
-                .setMessage("0.06358 is inferred (1 V / (2^17 x gain 120), about 80 % likely). Another contributor measured 0.0763 from WHOOP's printed report. Until a known-voltage run decides, every microvolt figure carries \"" + ScaleSetting.SCALE_TAG + "\". "
+                .setMessage("0.06358 is inferred: 1 V / (2^17 x gain 120). The formula and the 1.000 V reference are documented for the sister chips (MAX30003, MAX86178); this chip's reference is not published, and the strap's output limit of 62 x 2048 counts fits the same family. Another contributor measured 0.0763 from WHOOP's printed report; no gain setting gives that. Until a known-voltage run decides, every microvolt figure carries \"" + ScaleSetting.SCALE_TAG + "\". "
                         + "Only mark it verified after that run. Heart rate, HRV and timing do not depend on it.")
                 .setView(e)
                 .setPositiveButton("Set (provisional)", new android.content.DialogInterface.OnClickListener() {
