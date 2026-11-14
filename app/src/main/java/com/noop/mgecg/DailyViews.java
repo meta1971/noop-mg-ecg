@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.54.4 (14 Nov 2026): RingsView draws 4 rings to a row and more beneath (bigger rings, centred last row, height from the rows, ringAt() for taps). 0.12.0 (26 Oct): the daily dashboard pieces: three rings, the health monitor against your own baseline. Research only.
+// FILE VERSION 0.55.0 (14 Nov 2026): a fixed colour for each of the six rings (RING_COLORS). 0.54.4: RingsView draws 4 rings to a row and more beneath (bigger rings, centred last row, height from the rows, ringAt() for taps). 0.12.0 (26 Oct): the daily dashboard pieces: three rings, the health monitor against your own baseline. Research only.
 
 import android.content.Context;
 import android.graphics.Canvas;
@@ -25,6 +25,11 @@ final class DailyViews {
     private DailyViews() {}
 
     static final int RED = 0xFFFF5C6C, AMBER = 0xFFF2B35B, OK = 0xFF5CE5A0, GREY = 0xFF6B7585;
+
+    /** 0.55.0: one fixed colour per ring, six clearly different hues, so each ring reads apart at a glance. How high or low it is stays in the number and the caption. Order: Recovery, Effort, Active, Sleep, Stress, Fatigue. */
+    static final int RING_RECOVERY = 0xFF3DDC84, RING_EFFORT = 0xFF2FA8F0, RING_ACTIVE = 0xFFFF7A33, RING_SLEEP = 0xFF9B8CFF, RING_STRESS = 0xFFFF5C8A, RING_FATIGUE = 0xFFFFD60A;
+    static final int[] RING_COLORS = { RING_RECOVERY, RING_EFFORT, RING_ACTIVE, RING_SLEEP, RING_STRESS, RING_FATIGUE };
+    static final String[] RING_NAMES = { "Recovery", "Effort", "Active", "Sleep", "Stress", "Fatigue" };
 
     /** Recovery band colour: 67 and over green, 34 to 66 amber, below that red. */
     static int recoveryColor(double r) { return Double.isNaN(r) ? GREY : r >= 67 ? OK : r >= 34 ? AMBER : RED; }

@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.55.0 (14 Nov 2026): each ring has its own colour (DailyViews.RING_COLORS); a Quick guide link under the rings and a Quick guide row on You; plainer strap line on the sync strip ("pages not copied yet", "Strap link is on/off").
 // 0.51.0 (10 Nov 2026): You > Settings > RESEARCH fold: Read strap settings (read-only) and the Lab S switch.
 
 // 0.42.1 (5 Nov 2026): the ECG tab shows this week and the streak, with a Reminders button under it (Sync now on the Today tab is the pull; no second button). 0.39.0 (3 Nov): Settings switches "Research: averaged beat, QT and HRV from 12.8 s" and "Write reconstructed_waveform files". FILE VERSION 0.9.0 (23 Oct): the heart-first personal health app. Research only.
@@ -190,7 +191,7 @@ public class HealthActivity extends Activity {
                     String cond = StrapEvents.lastDec(app, 29), pages = "", bat = "";
                     if (cond != null) {
                         java.util.regex.Matcher mp = java.util.regex.Pattern.compile("backlog (\\d+) pages").matcher(cond), mb = java.util.regex.Pattern.compile("battery ([0-9.]+) %").matcher(cond);
-                        if (mp.find()) pages = mp.group(1) + " pages behind";
+                        if (mp.find()) pages = "0".equals(mp.group(1)) ? "all copied" : mp.group(1) + " pages not copied yet";      // 0.55.0: plainer than "pages behind"
                         if (mb.find()) bat = "battery " + Math.round(Double.parseDouble(mb.group(1))) + " %";
                     }
                     syncRange = StrapData.rangeLine(app);
@@ -793,7 +794,7 @@ public class HealthActivity extends Activity {
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
         syncTitleTv = tv(syncTitleText(day), 14, INK, 600);
-        syncSubTv = tv(syncSub.isEmpty() ? (MainActivity.linkRunning() ? "Strap link up" : "Strap link not up: Sync now opens it") : syncSub, 11, MUT, 400);
+        syncSubTv = tv(syncSub.isEmpty() ? (MainActivity.linkRunning() ? "Strap link is on" : "Strap link is off: Sync now turns it on") : syncSub, 11, MUT, 400);
         left.addView(syncTitleTv);
         left.addView(syncSubTv, lp(-2, -2, 2));
         r.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -1079,6 +1080,7 @@ public class HealthActivity extends Activity {
         rb = new String[] {rb[0], rb[1], rb[2], rb[3], rb[4], hasFat ? String.valueOf(fat.rounded()) : "\u2014"};
         rl = new String[] {rl[0], rl[1], rl[2], rl[3], rl[4], "FATIGUE"};
         rcap = new String[] {rcap[0], rcap[1], rcap[2], rcap[3], rcap[4], hasFat ? fat.level() : "not scored"};
+        rc = DailyViews.RING_COLORS.clone();      // 0.55.0: each ring keeps its own colour (green, blue, orange, violet, pink, yellow); the level is in the number and the caption
         DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
         final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(android.view.MotionEvent e) { return true; }
@@ -1094,6 +1096,11 @@ public class HealthActivity extends Activity {
         TextView ringHint = tv("Tap a ring to see how it is worked out. Active is your moving time all day, not workouts. Fatigue is an estimate of what has built up over days.", 11, MUT, 400);
         ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
         col.addView(ringHint, lp(-1, -2, 0));
+        TextView guideLink = tv("Quick guide: what the colours and tabs mean \u203a", 12, BLUE, 400);      // 0.55.0
+        guideLink.setGravity(Gravity.CENTER_HORIZONTAL);
+        guideLink.setPadding(0, dpi(8), 0, dpi(8));
+        guideLink.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { QuickGuide.show(HealthActivity.this); } });
+        col.addView(guideLink, lp(-1, -2, 2));
         ringPanel = new LinearLayout(this);
         ringPanel.setOrientation(LinearLayout.VERTICAL);
         ringPanel.setVisibility(View.GONE);
@@ -2073,6 +2080,7 @@ public class HealthActivity extends Activity {
         TextView cap = tv(String.format(Locale.UK, "%.1f h logged in the last 24", logged), 12.5f, MUT, 400);
         cap.setGravity(Gravity.CENTER);
         col.addView(cap, lp(-1, -2, 6));
+        col.addView(rowCard("Quick guide", "What the tabs and the ring colours mean, in plain words", new View.OnClickListener() { @Override public void onClick(View v) { QuickGuide.show(HealthActivity.this); } }), lp(-1, -2, 12));      // 0.55.0
 
         LinearLayout st = card(16);
         st.addView(caps("SETTINGS"));

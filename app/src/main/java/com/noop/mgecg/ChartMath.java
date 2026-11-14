@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.53.8 (12 Nov 2026): the arithmetic of the full-screen stress graphs (StressFullActivity), kept free of Android so it can be tested off the phone: the visible time window (zoom about a point,
+// FILE VERSION 0.55.0 (14 Nov 2026): minuteIndex and levelBand for the full-screen Activity day graph. 0.53.8 (12 Nov 2026): the arithmetic of the full-screen stress graphs (StressFullActivity), kept free of Android so it can be tested off the phone: the visible time window (zoom about a point,
 // pan, limits), tick positions on the local clock, y-axis ticks, the bin under a point, the per-day totals.
 
 import java.util.ArrayList;
@@ -71,6 +71,15 @@ final class ChartMath {
         for (int k = Math.max(0, i - 1); k <= Math.min(bins.size() - 1, i + 1); k++) { StressModel.Bin b = bins.get(k); double d = t >= b.t && t < b.t + StressModel.BIN_S ? 0.0 : Math.min(Math.abs(t - b.t), Math.abs(t - (b.t + StressModel.BIN_S))); if (d < bd) { bd = d; best = k; } }
         return best;
     }
+
+    /** 0.55.0: minute index of time [t] (unix seconds) in a day that starts at [dayStart] and has [n] minutes, or -1 when outside. */
+    static int minuteIndex(long dayStart, double t, int n) {
+        int m = (int) Math.floor((t - dayStart) / 60.0);
+        return m < 0 || m >= n ? -1 : m;
+    }
+
+    /** 0.55.0: effort band of an active minute: 1 light, 2 moderate, 3 hard (ActivityDetector.L_LIGHT, L_MODERATE, L_HARD); anything else counts as light. */
+    static int levelBand(int level) { return level >= 3 ? 3 : level == 2 ? 2 : 1; }
 
     static final class Day { long day0; int low, med, high, scored; double mean = Double.NaN; int moving; }
 

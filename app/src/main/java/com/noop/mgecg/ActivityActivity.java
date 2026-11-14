@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.55.0 (14 Nov 2026): YOUR DAY card gets an Expand the day graph button (ActivityDayFullActivity: landscape, pinch to zoom, drag to scroll, tap a minute).
 // FILE VERSION 0.39.0 (3 Nov 2026): STEPS card (raw, corrected, sustained walking flagged); periods show flagged minutes. 0.2.0 (23 Oct 2026): the Activity screen, day by day. Research only.
 
 import android.app.Activity;
@@ -291,7 +292,14 @@ public class ActivityActivity extends Activity {
         timeline.pick = new TimelineView.Pick() { @Override public void on(int bout) { select(bout); } };
         c.addView(timeline, lp(-1, dp(190), 12));
         c.addView(legend(new String[] {"Light", "Moderate", "Hard", "Raised, still"}, new int[] {LIGHT, MODERATE, HARD, STILL}), lp(-1, -2, 8));
-        callout = tv("Tap a shaded block to see that period.", 12, MUTED, false);
+        // 0.55.0: the day graph opens full screen (landscape, pinch to zoom, drag to scroll, a tap for any minute)
+        TextView expandBtn = HeartGraph.pill(this, "Expand the day graph", 0x1A2FA8F0, HealthViews.BLUE);
+        final long expandDay = day.dayStart;
+        expandBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { ActivityDayFullActivity.open(ActivityActivity.this, expandDay); } });
+        LinearLayout.LayoutParams exp = lp(-2, -2, 10);
+        exp.gravity = Gravity.END;
+        c.addView(expandBtn, exp);
+        callout = tv("Tap a shaded block to see that period. Expand the graph to zoom in and scroll through the day.", 12, MUTED, false);
         c.addView(callout, lp(-1, -2, 8));
         addCard(c);
 

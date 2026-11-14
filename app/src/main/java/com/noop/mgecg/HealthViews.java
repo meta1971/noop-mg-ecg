@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// 0.55.0 (14 Nov 2026): NavBar draws a word under every tab icon (the ECG button is a little smaller and higher so its word fits).
+
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.DashPathEffect;
@@ -485,13 +487,17 @@ final class HealthViews {
             for (int i = 0; i < 5; i++) {
                 cxs[i] = x + wid[i] / 2f;
                 if (i == 2) {
+                    float ey = cy - dp(c, 4);      // 0.55.0: a little smaller and higher so the word ECG fits under it
                     Paint gl = new Paint(Paint.ANTI_ALIAS_FLAG);
-                    gl.setShader(new RadialGradient(cxs[i], cy, dp(c, 36), new int[] {0x732FA8F0, 0x002FA8F0}, null, Shader.TileMode.CLAMP));
-                    cv.drawCircle(cxs[i], cy, dp(c, 36), gl);
+                    gl.setShader(new RadialGradient(cxs[i], ey, dp(c, 34), new int[] {0x732FA8F0, 0x002FA8F0}, null, Shader.TileMode.CLAMP));
+                    cv.drawCircle(cxs[i], ey, dp(c, 34), gl);
                     Paint b = new Paint(Paint.ANTI_ALIAS_FLAG);
-                    b.setShader(new LinearGradient(cxs[i] - dp(c, 20), cy - dp(c, 25), cxs[i] + dp(c, 20), cy + dp(c, 25), 0xFF58C4FF, 0xFF1788E8, Shader.TileMode.CLAMP));
-                    cv.drawCircle(cxs[i], cy, dp(c, 25), b);
-                    icon(cv, 2, cxs[i], cy, dp(c, 24), 0xFF03141F);
+                    b.setShader(new LinearGradient(cxs[i] - dp(c, 18), ey - dp(c, 22), cxs[i] + dp(c, 18), ey + dp(c, 22), 0xFF58C4FF, 0xFF1788E8, Shader.TileMode.CLAMP));
+                    cv.drawCircle(cxs[i], ey, dp(c, 22), b);
+                    icon(cv, 2, cxs[i], ey, dp(c, 21), 0xFF03141F);
+                    Paint lb = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    lb.setColor(0xFF58C4FF); lb.setTextAlign(Paint.Align.CENTER); lb.setTextSize(dp(c, 9.5f)); lb.setTypeface(font(c, 600));
+                    cv.drawText(NAMES[i], cxs[i], cy + dp(c, 27), lb);
                 } else if (i == active) {
                     Paint pill = paint(ACCENT[i]);
                     cv.drawRoundRect(new RectF(cxs[i] - wid[i] / 2f, cy - dp(c, 23), cxs[i] + wid[i] / 2f, cy + dp(c, 23)), dp(c, 23), dp(c, 23), pill);
@@ -501,7 +507,10 @@ final class HealthViews {
                     t.setColor(fg); t.setTextSize(dp(c, 13.5f)); t.setTypeface(font(c, 600));
                     cv.drawText(NAMES[i], cxs[i] - dp(c, 20), cy + dp(c, 5), t);
                 } else {
-                    icon(cv, i, cxs[i], cy, dp(c, 21), MUT);
+                    icon(cv, i, cxs[i], cy - dp(c, 7), dp(c, 21), MUT);      // 0.55.0: a word under every icon, not only under the open tab
+                    Paint lb = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    lb.setColor(MUT); lb.setTextAlign(Paint.Align.CENTER); lb.setTextSize(dp(c, 9.5f)); lb.setTypeface(font(c, 400));
+                    cv.drawText(NAMES[i], cxs[i], cy + dp(c, 19), lb);
                 }
                 x += wid[i] + gap;
             }
