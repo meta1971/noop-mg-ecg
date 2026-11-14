@@ -63,6 +63,12 @@ final class SleepNight {
         return out;
     }
 
+    /** 3 hours: the longest wake inside one night (the 0.44.0 value, unchanged; only 31-58 minute wakes have been seen in his logs). */
+    static final long NIGHT_JOIN_S = 10800L;
+
+    /** The size of a night: 3 h span and 2 h asleep. {startTs, endTs, sleepSeconds}. */
+    static boolean nightSized(long[] c) { return c[1] - c[0] >= 3 * 3600 && c[2] >= 2 * 3600; }
+
     /** Clusters of sleep: {startTs, endTs, sleepSeconds}. Input: timestamps of every record whose band state is SLEEP, sorted. */
     static List<long[]> clusters(long[] sleepTs) {
         List<long[]> blocks = new ArrayList<>();
@@ -78,13 +84,23 @@ final class SleepNight {
         for (long[] b : blocks) {
             // 0.44.0: a later block joins the night when it is within 30 minutes of it, or within 3 hours and itself the size of a night (a second sleep after a long wake).
             // A shorter block more than 30 minutes after the night is a nap (SleepNight.naps), not part of the night: before 0.44.0 it was merged and inflated the time in bed.
-            boolean nightSized = b[1] - b[0] >= 3 * 3600 && b[2] >= 2 * 3600;
-            if (cur != null && b[0] - cur[1] <= (nightSized ? 10800 : NAP_GUARD_S)) { cur[1] = b[1]; cur[2] += b[2]; }
+            boolean bigBlock = nightSized(b);
+            if (cur != null && b[0] - cur[1] <= (bigBlock ? NIGHT_JOIN_S : NAP_GUARD_S)) { cur[1] = b[1]; cur[2] += b[2]; }
             else { if (cur != null) out.add(cur); cur = new long[] {b[0], b[1], b[2]}; }
         }
         if (cur != null) out.add(cur);
+        // 0.54.2: the size test above looks at one block at a time, so a night broken by a wake of 30 to 60 minutes was split in two whenever the sleep after the wake came in
+        // pieces or was shorter than 3 hours (14 Nov 2026: 23:06-03:08, up 58 min with 455 steps, 04:07-06:54 and 07:22-07:46 = two logged nights with 62 min of the same time in bed).
+        // Now the later cluster as a whole is measured: when it is night-sized itself, and the cluster before it is too, and the gap is within 3 hours, they are one night.
+        // A shorter later sleep (a nap) is still not merged (decode log 123.3 test 7: 35 min wake, then only 1 h of sleep = a nap).
+        List<long[]> joined = new ArrayList<>();
+        for (long[] c : out) {
+            long[] p = joined.isEmpty() ? null : joined.get(joined.size() - 1);
+            if (p != null && nightSized(p) && nightSized(c) && c[0] - p[1] <= NIGHT_JOIN_S) { p[1] = c[1]; p[2] += c[2]; }
+            else joined.add(c);
+        }
         List<long[]> keep = new ArrayList<>();
-        for (long[] c : out) if (c[1] - c[0] >= 3 * 3600 && c[2] >= 2 * 3600) keep.add(c);
+        for (long[] c : joined) if (nightSized(c)) keep.add(c);
         return keep;
     }
 
