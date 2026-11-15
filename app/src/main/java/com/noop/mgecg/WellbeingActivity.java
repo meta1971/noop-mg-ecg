@@ -1,24 +1,36 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.59.0 (15 Nov 2026): added the "How this is worked out" card at the bottom: every rule the page uses and the study behind each line, with its design (observational or trial). No number or claim above it changed.
+// FILE VERSION 0.60.0 (15 Nov 2026): the page grew. New cards: night-by-night bars with personal bests, work-night scatter (bed time against hours), three ECG cards (clean-reading ring, evening-pulse spread, calmest evening),
+// a two-week WHO-5 check-in, three good things, a public-domain line for the day, and an opt-in wind-down reminder under the bed plan. Fixes: the "UK median 60" caption (study-specific, removed) and the calm-minute wording (now states Pizzoli 2021 as measured).
+// 0.59.0 (15 Nov 2026): added the "How this is worked out" card at the bottom: every rule the page uses and the study behind each line, with its design (observational or trial). No number or claim above it changed.
 // 0.58.0 (15 Nov 2026): NEW. The wellbeing page (opened from the Morning brief card on the Today tab). Everything on it is counted from the sleep log of the last 14 days (RhythmData -> SleepRegularity nights ->
 // WellbeingModel); nothing is invented, and where there is not enough data it says so. Opinion first, the numbers as the small "Your data" line, with the study behind each opinion.
 // Parts: the hero ring (one segment per night, the hours written on it, a word from the sleep regularity index), the main opinion, the plan check (a plan saved here is checked against the next night), the wake-up strip,
 // three rings, one small win for tonight (a button saves it as a plan: in bed by 23:00, stored on the phone only), and a one-minute paced-breathing orb (6 breaths a minute, pacing only: no pulse is measured here).
-// Writes: SharedPreferences "wellbeing" (plan_bed_min, plan_from_day) only. No new permission.
+// Writes: SharedPreferences "wellbeing": plan_bed_min, plan_from_day, wind_on, who5_hist, gt_<epochDay> (last 60 days kept). Reads the saved ECG report files through HealthModel. No new permission (POST_NOTIFICATIONS and the alarm permission were already declared).
 
 import android.app.Activity;
+import android.app.Dialog;
+import android.app.NotificationManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.DashPathEffect;
 import android.graphics.Paint;
 import android.graphics.RadialGradient;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.text.InputType;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
@@ -26,12 +38,17 @@ import android.text.style.StyleSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
 
@@ -43,14 +60,22 @@ public class WellbeingActivity extends Activity {
 
     /** Every rule and study behind the page. Keep in step with WellbeingModel (constants) and the "Why" lines. */
     private static final String HOW =
-            "All figures are counted from the strap's sleep minutes over your last 14 nights. Nothing is estimated; with too little data the page says so.\n\n"
-          + "Work morning: you woke before 07:00. Early bed: in bed before 23:00. A pattern needs 5 nights each way; 2 to 4 is labelled an early signal. "
-          + "Same wake-up: within 3 minutes of the latest one. Bounce-back: a night under 6 h followed by 7 h or more.\n\n"
-          + "Ring word: Steady is a sleep regularity score of 71 or more, Varied is 51 or less, Settling is between.\n\n"
+            "All figures are counted from the strap's sleep minutes over your last 14 nights and from the ECG readings saved on this phone in the last 30 days. Nothing is estimated; with too little data a card says so.\n\n"
+          + "Sleep rules: a work morning is a wake-up before 07:00. Early bed is in bed before 23:00. A pattern needs 5 nights each way; 2 to 4 is an early signal. Same wake-up: within 3 minutes of the latest one. "
+          + "Bounce-back: a night under 6 h followed by 7 h or more. Ring word: Steady is a regularity score of 71 or more, Varied is 51 or less, Settling is between. "
+          + "Those bands come from a study that measured sleep with wrist accelerometers; the strap measures it differently, so read the word as a rough guide.\n\n"
+          + "Charts: bars are labelled by the morning you woke, and the dashed line is 7 h. The count of 7 h nights in the last 7 is set beside the up to 7 nights before it; no start date is picked. "
+          + "Longest 7 h+ run counts nights in a row.\n\n"
+          + "ECG cards: the clean share counts every graded reading, including C and D. Pulse figures use readings graded A or B only. Evening is 18:00 to midnight. "
+          + "The calmest evening is the one with 3 or more such readings and the lowest median. The grade is the quality of the recording; it says nothing about your heart.\n\n"
+          + "Check-in: the five WHO-5 answers are scored 0 to 5 and the total is multiplied by 4, giving 0 to 100. 50 or below is the usual point for a closer look. The review of the questionnaire treats a change of 10 points as clinically relevant. Answers stay on this phone.\n\n"
           + "Studies behind the wording:\n"
-          + "- Sleep regularity and mood: UK Biobank, 79,666 adults, Psychological Medicine 2025. Observational: an association, not proof that regular sleep protects mood. The score bands above are that study's.\n"
-          + "- Kind wording after a short night: a meta-analysis of 21 trials of compassion-based training (Kirby 2017) found benefits across a range of outcomes.\n"
-          + "- Calm minute: 14 trials of heart-rate-variability biofeedback in people with depressive symptoms, g = 0.38, wide uncertainty. Here the app only paces your breathing.\n\n"
+          + "- Sleep regularity and mood: UK Biobank, 79,666 adults, Psychological Medicine 2025. Observational: an association, not proof that regular sleep protects mood.\n"
+          + "- Kind wording after a short night: a meta-analysis of 21 trials with 1,285 people of compassion-based training (Kirby 2017, Behavior Therapy) found benefits across a range of outcomes.\n"
+          + "- Calm minute: a meta-analysis of 14 trials with 794 adults of heart-rate-variability biofeedback (Pizzoli 2021, Scientific Reports) found g = 0.38 on depressive symptoms (95% interval 0.16 to 0.60), with wide uncertainty between studies. Biofeedback shows you your own pulse; here the app only paces your breathing.\n"
+          + "- WHO-5: Topp and colleagues 2015, Psychotherapy and Psychosomatics, a review of 213 articles. Free to use. The average in Danish general-population studies is about 70.\n"
+          + "- Three good things: Seligman and colleagues 2005, American Psychologist, an online trial of volunteers; Sin and Lyubomirsky 2009, a review of 51 studies of positive-psychology exercises in general with 4,266 people, mean r = 0.29 on well-being. A 2014 replication in 163 women aged 50 to 79 (Gander and colleagues) found a gain in happiness.\n"
+          + "- Lines: Marcus Aurelius, Meditations, translated by George Long (1862); Epictetus, Enchiridion, translated by Elizabeth Carter (1758). Both are in the public domain.\n\n"
           + "Research only. Not medical advice; nothing here diagnoses anything.";
 
     /** The page's numbers from the day log. Call off the main thread. Null if the log cannot be read. */
@@ -68,6 +93,52 @@ public class WellbeingActivity extends Activity {
         }
     }
 
+    /** Everything the page shows. Call off the main thread. Null if the sleep log cannot be read; the ECG part is empty when no readings can be read. */
+    static final class Pack {
+        WellbeingModel.Out o;
+        WellbeingExtra.Scatter sc;
+        WellbeingExtra.Bars bars;
+        WellbeingExtra.Bests bests;
+        WellbeingExtra.Ecg ecg;
+    }
+
+    static Pack loadAll(Context c) {
+        try {
+            RhythmData.Bundle b = RhythmData.bundleCached(c);
+            if (b == null || b.sri == null || b.s == null) return null;
+            SharedPreferences p = c.getSharedPreferences(PREFS, MODE_PRIVATE);
+            int planBed = p.getInt("plan_bed_min", -1);
+            long planFrom = p.getLong("plan_from_day", 0L);
+            long baseEpochDay = Math.floorDiv(b.s.baseLocalSec, 86400L);
+            Pack k = new Pack();
+            k.o = WellbeingModel.compute(b.sri.nights, b.sri.sri, baseEpochDay, planBed, planFrom);
+            k.sc = WellbeingExtra.scatter(b.sri.nights);
+            k.bars = WellbeingExtra.bars(b.sri.nights, baseEpochDay);
+            k.bests = WellbeingExtra.bests(b.sri.nights, baseEpochDay);
+            k.ecg = WellbeingExtra.ecg(ecgReadings(c), System.currentTimeMillis(), TimeZone.getDefault());
+            return k;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** The saved ECG readings as (time, heart rate, grade letter); a reading without a grade letter A to D is skipped later. */
+    private static List<WellbeingExtra.Rd> ecgReadings(Context c) {
+        List<WellbeingExtra.Rd> out = new ArrayList<WellbeingExtra.Rd>();
+        try {
+            for (HealthModel.Reading r : HealthModel.readings(c)) {
+                char g = r.grade == null || r.grade.trim().length() == 0 ? '?' : Character.toUpperCase(r.grade.trim().charAt(0));
+                int hr = -1;
+                if (r.hr != null) {
+                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)").matcher(r.hr);
+                    if (m.find()) hr = Integer.parseInt(m.group(1));
+                }
+                out.add(new WellbeingExtra.Rd(r.timeMs, hr, g));
+            }
+        } catch (Throwable ignored) { }
+        return out;
+    }
+
     private static long todayLocalEpochDay() {
         long now = System.currentTimeMillis();
         return Math.floorDiv(now / 1000L + TimeZone.getDefault().getOffset(now) / 1000L, 86400L);
@@ -77,10 +148,15 @@ public class WellbeingActivity extends Activity {
     private LinearLayout col;
     private BreathView breath;
     private boolean loadingNow;
+    private Pack lastPack;
+    private LinearLayout remBox, whoCard, goodCard;
+    private EditText[] gtFields;
+    private boolean editGood, notifDenied;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         dp = getResources().getDisplayMetrics().density;
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         root.addView(new GlowView(this), new FrameLayout.LayoutParams(-1, -1));
@@ -109,13 +185,16 @@ public class WellbeingActivity extends Activity {
         final Context app = getApplicationContext();
         Thread th = new Thread(new Runnable() {
             @Override public void run() {
-                final WellbeingModel.Out o = load(app);
+                final Pack pk = loadAll(app);
                 runOnUiThread(new Runnable() {
                     @Override public void run() {
                         loadingNow = false;
                         if (isFinishing()) return;
-                        if (o == null) showMessage("Could not read your sleep log. Open the day logger on the Today tab and pull the strap's history first.");
-                        else render(o);
+                        if (pk == null) {
+                            showMessage("Could not read your sleep log. Open the day logger on the Today tab and pull the strap's history first.");
+                            addMindCards();
+                            addClose();
+                        } else render(pk);
                     }
                 });
             }
@@ -132,7 +211,9 @@ public class WellbeingActivity extends Activity {
     }
 
     // ------------------------------------------------------------------ the page
-    private void render(final WellbeingModel.Out o) {
+    private void render(final Pack pk) {
+        final WellbeingModel.Out o = pk.o;
+        lastPack = pk;
         if (breath != null) breath.stop(false);
         breath = null;
         col.removeAllViews();
@@ -163,6 +244,8 @@ public class WellbeingActivity extends Activity {
         addEvidence(c1, o.evidence);
         col.addView(c1, lp(12));
         if (!o.enough) {
+            addMindCards();
+            addLineCard();
             addClose();
             return;
         }
@@ -204,6 +287,8 @@ public class WellbeingActivity extends Activity {
             col.addView(cw, lp(12));
         }
 
+        addBarsCard(pk);
+
         // three rings
         LinearLayout trio = new LinearLayout(this);
         trio.setOrientation(LinearLayout.HORIZONTAL);
@@ -211,8 +296,10 @@ public class WellbeingActivity extends Activity {
         trio.addView(mini(f1, TEAL, String.valueOf(o.ge7All), "7 H+ NIGHTS", o.ge7All + " of " + o.nAll + " nights"), tl());
         trio.addView(mini(o.nWork > 0 ? o.nEarly / (float) o.nWork : 0f, BLUE, o.nWork > 0 ? String.valueOf(o.nEarly) : "—", "EARLY BEDS", o.nWork > 0 ? o.nEarly + " of " + o.nWork + " work nights before 23:00" : "no work mornings yet"), tl());
         boolean hasSri = !Double.isNaN(o.sri);
-        trio.addView(mini(hasSri ? (float) Math.max(0.02, Math.min(1.0, o.sri / 100.0)) : 0f, VIOLET, hasSri ? String.valueOf(Math.round(o.sri)) : "—", "REGULARITY", hasSri ? "of 100, UK median 60" : "needs 24 h of days"), tl());
+        trio.addView(mini(hasSri ? (float) Math.max(0.02, Math.min(1.0, o.sri / 100.0)) : 0f, VIOLET, hasSri ? String.valueOf(Math.round(o.sri)) : "—", "REGULARITY", hasSri ? "of 100" : "needs 24 h of days"), tl());
         col.addView(trio, lp(12));
+
+        addScatterCard(pk);
 
         // one small win
         LinearLayout cwin = card();
@@ -240,13 +327,23 @@ public class WellbeingActivity extends Activity {
             clear.setPadding(0, px(14), 0, 0);
             clear.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
+                    WellbeingReminder.setOn(WellbeingActivity.this, false);
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("plan_bed_min").remove("plan_from_day").commit();
                     reload();
                 }
             });
             cwin.addView(clear);
         }
+        if (o.planOn) {
+            remBox = new LinearLayout(this);
+            remBox.setOrientation(LinearLayout.VERTICAL);
+            cwin.addView(remBox);
+            fillReminder();
+        }
         col.addView(cwin, lp(12));
+
+        addEcgCards(pk);
+        addMindCards();
 
         // a calm minute
         LinearLayout cb2 = card();
@@ -257,10 +354,13 @@ public class WellbeingActivity extends Activity {
         final TextView startBtn = pill("Start the minute", TEAL, 0xFF05131E, null);
         breath.bind(startBtn);
         cb2.addView(startBtn, pl(8));
-        TextView why = tv("Why this: about 6 slow breaths a minute is the pace used in heart-rate-variability biofeedback studies. In 14 trials of people with depressive symptoms it gave a small-to-medium benefit (g = 0.38), with wide uncertainty. Here it is the pacing only: the app does not measure your pulse during this minute.", 12, EVID, 400);
+        TextView why = tv("", 12, EVID, 400);
+        why.setText(rich("Why this: about 6 slow breaths a minute is the pace used in heart-rate-variability biofeedback. A meta-analysis of 14 trials with 794 adults (Pizzoli and colleagues 2021, Scientific Reports) found g = 0.38 on depressive symptoms, 95% interval 0.16 to 0.60, with wide uncertainty between studies. In biofeedback you watch your own pulse as you breathe; here the app only paces your breathing and does not measure your pulse, so this minute is not that treatment."));
         why.setPadding(0, px(12), 0, 0);
         cb2.addView(why);
         col.addView(cb2, lp(12));
+
+        addLineCard();
 
         // how this is worked out
         LinearLayout hw = card();
@@ -279,6 +379,394 @@ public class WellbeingActivity extends Activity {
         close.setPadding(0, px(22), 0, px(8));
         close.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { finish(); } });
         col.addView(close, new LinearLayout.LayoutParams(-1, px(60)));
+    }
+
+    // ------------------------------------------------------------------ 0.60.0: charts, ECG cards, check-in, three good things, line of the day, reminder
+    private LinearLayout.LayoutParams lpH(float hDp, float topDp) {
+        LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(-1, px(hDp));
+        l.topMargin = px(topDp);
+        return l;
+    }
+
+    private TextView note(String s) {
+        TextView t = tv(s, 13, MUT, 400);
+        t.setPadding(0, px(10), 0, 0);
+        return t;
+    }
+
+    private GradientDrawable fill(int color, float radiusDp) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(px(radiusDp));
+        return g;
+    }
+
+    private View tile(String big, String label, String cap) {
+        LinearLayout t = new LinearLayout(this);
+        t.setOrientation(LinearLayout.VERTICAL);
+        t.setBackground(fill(0x0FFFFFFF, 16));
+        t.setPadding(px(12), px(12), px(12), px(12));
+        t.addView(tv(big, 21, INK, 200));
+        TextView l = tv(label, 10.5f, MUT, 400);
+        l.setLetterSpacing(0.14f);
+        l.setPadding(0, px(6), 0, 0);
+        t.addView(l);
+        TextView k = tv(cap, 11.5f, EVID, 400);
+        k.setPadding(0, px(3), 0, 0);
+        t.addView(k);
+        return t;
+    }
+
+    private LinearLayout.LayoutParams half(boolean first) {
+        LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(0, -2, 1f);
+        if (first) l.rightMargin = px(5); else l.leftMargin = px(5);
+        return l;
+    }
+
+    private void addScatterCard(Pack pk) {
+        WellbeingExtra.Scatter s = pk.sc;
+        LinearLayout c = card();
+        c.addView(caps("WORK NIGHTS: BED TIME AND SLEEP", BLUE));
+        c.addView(opinion(s.head, 19));
+        if (s.n >= WellbeingExtra.MIN_SCATTER) c.addView(new ScatterView(this, s.bedMin, s.hrs, s.early), lpH(220, 10));
+        c.addView(note(s.line));
+        if (s.n >= WellbeingExtra.MIN_SCATTER)
+            addEvidence(c, "Your data: " + s.n + " work nights (a wake-up before 07:00) in the last 14 days. Each dot is one night: teal in bed before 23:00, amber after. The dashed lines are the 7 h mark, 23:00 and each side's average. A few nights show a link, not a cause.");
+        col.addView(c, lp(12));
+    }
+
+    private void addBarsCard(Pack pk) {
+        WellbeingExtra.Bars b = pk.bars;
+        LinearLayout c = card();
+        c.addView(caps("NIGHT BY NIGHT", TEAL));
+        c.addView(opinion(b.head, 19));
+        if (b.n >= 3) {
+            c.addView(new BarsView(this, b.hrs, b.dow), lpH(190, 10));
+            c.addView(note(b.line));
+            WellbeingExtra.Bests t = pk.bests;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.addView(tile(WellbeingModel.hm(t.longestH), "LONGEST NIGHT", WellbeingExtra.dayName(t.longestWake)), half(true));
+            row.addView(tile(t.run > 0 ? t.run + (t.run == 1 ? " night" : " nights") : "—", "LONGEST 7 H+ RUN", t.run > 0 ? "to " + WellbeingExtra.dayName(t.runEndWake) : "no 7 h night yet"), half(false));
+            c.addView(row, lp(14));
+            addEvidence(c, "Your data: each bar is the strap's asleep time for one night, labelled by the morning you woke; the dashed line is 7 h. The last 7 nights are set beside the up to 7 before them. The bests are from these same nights.");
+        }
+        col.addView(c, lp(12));
+    }
+
+    private void addEcgCards(Pack pk) {
+        WellbeingExtra.Ecg e = pk.ecg;
+        if (e == null) return;
+        if (e.nAll == 0) {
+            LinearLayout c = card();
+            c.addView(caps("YOUR ECG READINGS", VIOLET));
+            c.addView(opinion("No graded readings in the last 30 days.", 19));
+            c.addView(note("Readings you save fill this in: how many were clean, how your evening pulse is spread, and your calmest evening."));
+            col.addView(c, lp(12));
+            return;
+        }
+        LinearLayout cc = card();
+        cc.addView(caps("CLEAN ECG READINGS", VIOLET));
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.addView(new MiniRingView(this, e.cleanPct >= 0 ? e.cleanPct / 100f : 0f, VIOLET, e.cleanPct >= 0 ? e.cleanPct + "%" : "—"), new LinearLayout.LayoutParams(px(88), px(88)));
+        LinearLayout tx = new LinearLayout(this);
+        tx.setOrientation(LinearLayout.VERTICAL);
+        tx.addView(tv(e.cleanHead, 18, INK, 400));
+        TextView l = tv(e.cleanLine, 13, MUT, 400);
+        l.setPadding(0, px(6), 0, 0);
+        tx.addView(l);
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, -2, 1f);
+        tp.leftMargin = px(14);
+        r.addView(tx, tp);
+        cc.addView(r, lp(10));
+        col.addView(cc, lp(12));
+
+        LinearLayout ch = card();
+        ch.addView(caps("EVENING PULSE", BLUE));
+        ch.addView(opinion(e.histHead, 19));
+        if (e.evN >= WellbeingExtra.MIN_EVENING) ch.addView(new HistView(this, e.binLo, e.binCnt, e.evMedian), lpH(190, 10));
+        ch.addView(note(e.histLine));
+        if (e.evN >= WellbeingExtra.MIN_EVENING)
+            addEvidence(ch, "Your data: only readings graded A or B with a heart rate count; evening is 18:00 to midnight. Each bar is a 5 bpm step and the gold line is the median.");
+        col.addView(ch, lp(12));
+
+        if (e.calm) {
+            LinearLayout ck = card();
+            ck.addView(caps("YOUR CALMEST EVENING", TEAL));
+            ck.addView(opinion(e.calmHead, 19));
+            ck.addView(new CalmLineView(this, e.calmAt, e.calmHr, e.evMedian), lpH(170, 10));
+            ck.addView(note(e.calmLine));
+            addEvidence(ck, "Your data: the evening (18:00 to midnight) with the lowest median pulse among evenings with 3 or more readings graded A or B. The dashed line is your median across all evenings.");
+            col.addView(ck, lp(12));
+        }
+    }
+
+    // ---- the line of the day
+    private void addLineCard() {
+        String[] ln = WellbeingExtra.lineFor(todayLocalEpochDay());
+        LinearLayout c = card();
+        c.addView(caps("A LINE FOR TODAY", GOLD));
+        TextView q = tv("“" + ln[0] + "”", 17, INK, 300);
+        q.setPadding(0, px(10), 0, 0);
+        c.addView(q);
+        TextView a = tv(ln[1], 12, EVID, 400);
+        a.setPadding(0, px(10), 0, 0);
+        c.addView(a);
+        TextView n = tv("A line to think about, not advice. Public-domain translation.", 12, EVID, 400);
+        n.setPadding(0, px(4), 0, 0);
+        c.addView(n);
+        col.addView(c, lp(12));
+    }
+
+    // ---- the wind-down reminder (inside the "one small win" card, while a plan exists)
+    private void fillReminder() {
+        if (remBox == null) return;
+        remBox.removeAllViews();
+        int bed = WellbeingReminder.planBed(this);
+        if (bed < 0) return;
+        final boolean wOn = WellbeingReminder.on(this);
+        String at = WellbeingModel.clock(WellbeingExtra.windMin(bed));
+        remBox.addView(pill(wOn ? "Reminder on: " + at + " every evening" : "Remind me at " + at, wOn ? 0x26FFFFFF : TEAL, wOn ? INK : 0xFF05131E, new View.OnClickListener() {
+            @Override public void onClick(View v) { toggleReminder(); }
+        }), pl(14));
+        StringBuilder n = new StringBuilder(wOn ? "Tap to turn it off. " : "A notification 45 minutes before your plan time, every evening. ");
+        n.append("It stays on this phone.");
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        boolean blocked = nm != null && !nm.areNotificationsEnabled();
+        if ((wOn && blocked) || (!wOn && notifDenied)) n.append(" Notifications are blocked for this app, so nothing can show: allow them in Android settings.");
+        if (wOn && !EcgReminder.exactOk(this)) n.append(" Android may show it a few minutes late; allow Alarms & reminders for this app to make it exact.");
+        TextView t = tv(n.toString(), 12, EVID, 400);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(0, px(8), 0, 0);
+        remBox.addView(t);
+        if (wOn) {
+            TextView test = tv("Send a test now", 13, MUT, 600);
+            test.setGravity(Gravity.CENTER);
+            test.setPadding(0, px(12), 0, 0);
+            test.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { WellbeingReminder.post(getApplicationContext()); }
+            });
+            remBox.addView(test);
+        }
+    }
+
+    private void toggleReminder() {
+        if (WellbeingReminder.on(this)) {
+            WellbeingReminder.setOn(this, false);
+            fillReminder();
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+            try { requestPermissions(new String[] { "android.permission.POST_NOTIFICATIONS" }, WellbeingReminder.PERM_REQ); } catch (Throwable ignored) { }
+            return;
+        }
+        notifDenied = false;
+        WellbeingReminder.setOn(this, true);
+        fillReminder();
+    }
+
+    @Override public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(code, perms, res);
+        if (code != WellbeingReminder.PERM_REQ) return;
+        boolean ok = res != null && res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED;
+        notifDenied = !ok;
+        if (ok) WellbeingReminder.setOn(this, true);
+        fillReminder();
+    }
+
+    // ---- the two-week WHO-5 check-in
+    private void fillWho() {
+        whoCard.removeAllViews();
+        whoCard.addView(caps("A TWO-WEEK CHECK-IN", VIOLET));
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String hist = p.getString("who5_hist", "");
+        long[] last = WellbeingExtra.who5Entry(hist, 0), prev = WellbeingExtra.who5Entry(hist, 1);
+        long today = todayLocalEpochDay();
+        if (last == null) {
+            whoCard.addView(opinion("Five questions about how you have felt.", 19));
+            whoCard.addView(note("The WHO-5 is a short well-being questionnaire from the World Health Organization. You answer for the last two weeks. Your answers stay on this phone."));
+        } else {
+            String[] tx = WellbeingExtra.who5Text((int) last[1], prev == null ? -1 : (int) prev[1], prev == null ? 0L : prev[0]);
+            whoCard.addView(opinion(tx[0], 26));
+            long ago = today - last[0];
+            TextView when = tv("Done " + (ago <= 0 ? "today" : ago == 1 ? "yesterday" : ago + " days ago") + ". Every two weeks is enough.", 12, EVID, 400);
+            when.setPadding(0, px(4), 0, 0);
+            whoCard.addView(when);
+            whoCard.addView(note(tx[1]));
+            if (last[1] <= 50) {
+                TextView sam = tv("If things feel heavy, Samaritans are free to call on 116 123, any time. Tap to call.", 14, GOLD, 600);
+                sam.setPadding(0, px(12), 0, 0);
+                sam.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) { try { startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:116123"))); } catch (Throwable ignored) { } }
+                });
+                whoCard.addView(sam);
+            }
+        }
+        whoCard.addView(pill(last == null ? "Start the 5 questions" : "Take it again", VIOLET, 0xFF0E0A1F, new View.OnClickListener() {
+            @Override public void onClick(View v) { askWho(0, new int[5]); }
+        }), pl(14));
+        addEvidence(whoCard, "Why this: the WHO-5 is a five-question well-being questionnaire (World Health Organization, 1998). A review of 213 articles (Topp and colleagues 2015, Psychotherapy and Psychosomatics) found it valid both as a well-being measure and as a screen. Each answer scores 0 to 5 and the total is multiplied by 4. It is free to use.");
+    }
+
+    private void askWho(final int idx, final int[] ans) {
+        if (idx >= 5) { finishWho(ans); return; }
+        final Dialog d = new Dialog(this);
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(outline(VIOLET));
+        box.setPadding(px(20), px(20), px(20), px(14));
+        box.addView(caps("QUESTION " + (idx + 1) + " OF 5", VIOLET));
+        TextView lead = tv("Over the last two weeks", 12, EVID, 400);
+        lead.setPadding(0, px(10), 0, 0);
+        box.addView(lead);
+        TextView q = tv(WellbeingExtra.WHO5_ITEMS[idx], 19, INK, 400);
+        q.setPadding(0, px(4), 0, px(8));
+        box.addView(q);
+        for (int k = 0; k < WellbeingExtra.WHO5_SCALE.length; k++) {
+            final int kk = k;
+            TextView o = tv(WellbeingExtra.WHO5_SCALE[k], 15, INK, 400);
+            o.setGravity(Gravity.CENTER_VERTICAL);
+            o.setBackground(fill(0x12FFFFFF, 14));
+            o.setPadding(px(14), 0, px(14), 0);
+            LinearLayout.LayoutParams ol = new LinearLayout.LayoutParams(-1, px(46));
+            ol.topMargin = px(7);
+            o.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { ans[idx] = WellbeingExtra.who5Score(kk); d.dismiss(); askWho(idx + 1, ans); }
+            });
+            box.addView(o, ol);
+        }
+        TextView cancel = tv("Cancel", 14, MUT, 600);
+        cancel.setGravity(Gravity.CENTER);
+        cancel.setPadding(0, px(14), 0, px(4));
+        cancel.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { d.dismiss(); } });
+        box.addView(cancel);
+        d.setContentView(box);
+        if (d.getWindow() != null) {
+            d.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            d.getWindow().setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.92f), ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+        d.show();
+    }
+
+    private void finishWho(int[] ans) {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        p.edit().putString("who5_hist", WellbeingExtra.who5Push(p.getString("who5_hist", ""), todayLocalEpochDay(), WellbeingExtra.who5Pct(ans))).commit();
+        fillWho();
+    }
+
+    // ---- three good things
+    private EditText field(String hint) {
+        EditText e = new EditText(this);
+        e.setHint(hint);
+        e.setHintTextColor(0xFF5E6877);
+        e.setTextColor(INK);
+        e.setTextSize(15);
+        e.setTypeface(HealthViews.font(this, 400));
+        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        e.setMaxLines(4);
+        e.setBackground(fill(0x14FFFFFF, 14));
+        e.setPadding(px(14), px(12), px(14), px(12));
+        return e;
+    }
+
+    private void fillGood() {
+        goodCard.removeAllViews();
+        goodCard.addView(caps("THREE GOOD THINGS", GOLD));
+        final SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        final long today = todayLocalEpochDay();
+        String saved = p.getString("gt_" + today, null);
+        int written = 0;
+        for (int d = 0; d < 14; d++) if (p.contains("gt_" + (today - d))) written++;
+        if (saved != null && !editGood) {
+            String[] parts = WellbeingExtra.unpackGood(saved);
+            goodCard.addView(opinion("Today's good things, in your words.", 19));
+            for (int i = 0; i < 3; i++) {
+                if (parts[i].length() == 0) continue;
+                TextView t = tv((i + 1) + ".  " + parts[i], 15, INK, 400);
+                t.setPadding(0, px(10), 0, 0);
+                goodCard.addView(t);
+            }
+            if (parts[3].length() > 0) {
+                TextView w = tv("Why they happened: " + parts[3], 14, MUT, 400);
+                w.setPadding(0, px(12), 0, 0);
+                goodCard.addView(w);
+            }
+            TextView edit = tv("Edit", 14, MUT, 600);
+            edit.setPadding(0, px(14), 0, 0);
+            edit.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { editGood = true; fillGood(); } });
+            goodCard.addView(edit);
+        } else {
+            goodCard.addView(opinion("What went well today, and why?", 19));
+            goodCard.addView(note("Three things that went well, small ones count, and a line on why they happened. It takes about two minutes."));
+            List<String> seeds = lastPack == null ? new ArrayList<String>() : WellbeingExtra.goodSeeds(lastPack.o, lastPack.ecg);
+            if (seeds.size() > 0) {
+                TextView hdr = caps("FROM YOUR DATA, TAP ONE TO USE IT", MUT);
+                hdr.setPadding(0, px(14), 0, 0);
+                goodCard.addView(hdr);
+                for (final String s : seeds) {
+                    TextView t = tv(s, 14, TEAL, 400);
+                    t.setPadding(0, px(8), 0, 0);
+                    t.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            if (gtFields == null) return;
+                            for (int i = 0; i < 3; i++) if (gtFields[i].getText().toString().trim().length() == 0) { gtFields[i].setText(s); return; }
+                        }
+                    });
+                    goodCard.addView(t);
+                }
+            }
+            String[] parts = saved != null ? WellbeingExtra.unpackGood(saved) : new String[] { "", "", "", "" };
+            String[] hints = { "1. Something that went well", "2. Another", "3. And another", "Why did these happen?" };
+            gtFields = new EditText[4];
+            for (int i = 0; i < 4; i++) {
+                EditText e = field(hints[i]);
+                e.setText(parts[i]);
+                gtFields[i] = e;
+                LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(-1, -2);
+                fp.topMargin = px(i == 3 ? 14 : 8);
+                goodCard.addView(e, fp);
+            }
+            goodCard.addView(pill("Save today's three", GOLD, 0xFF1A1305, new View.OnClickListener() {
+                @Override public void onClick(View v) { saveGood(p, today); }
+            }), pl(14));
+        }
+        TextView meta = tv("Written on " + written + " of the last 14 days. Stays on this phone.", 12, EVID, 400);
+        meta.setPadding(0, px(12), 0, 0);
+        goodCard.addView(meta);
+        addEvidence(goodCard, "Why this: in an online trial (Seligman and colleagues 2005, American Psychologist), people who wrote down three good things each day for a week, and why each happened, were happier up to six months later than people given a control exercise. A review of 51 studies of positive-psychology exercises in general (Sin and Lyubomirsky 2009, 4,266 people) found a mean effect of r = 0.29 on well-being. The people were volunteers and the measures self-reported, so this is encouraging, not proof.");
+    }
+
+    private void saveGood(SharedPreferences p, long today) {
+        if (gtFields == null) return;
+        String a = gtFields[0].getText().toString(), b = gtFields[1].getText().toString(), c = gtFields[2].getText().toString(), w = gtFields[3].getText().toString();
+        if (a.trim().length() == 0 && b.trim().length() == 0 && c.trim().length() == 0) {
+            gtFields[0].setHint("Write at least one thing, then save");
+            return;
+        }
+        SharedPreferences.Editor ed = p.edit();
+        for (String k : p.getAll().keySet()) {
+            if (!k.startsWith("gt_")) continue;
+            try { if (Long.parseLong(k.substring(3)) < today - 60) ed.remove(k); } catch (Throwable ignored) { }
+        }
+        ed.putString("gt_" + today, WellbeingExtra.packGood(a, b, c, w)).commit();
+        try {
+            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            View f = getCurrentFocus();
+            if (imm != null && f != null) imm.hideSoftInputFromWindow(f.getWindowToken(), 0);
+        } catch (Throwable ignored) { }
+        editGood = false;
+        fillGood();
+    }
+    private void addMindCards() {
+        whoCard = card();
+        fillWho();
+        col.addView(whoCard, lp(12));
+        goodCard = card();
+        fillGood();
+        col.addView(goodCard, lp(12));
     }
 
     // ------------------------------------------------------------------ small builders
@@ -366,7 +854,7 @@ public class WellbeingActivity extends Activity {
 
     private CharSequence rich(String s) {
         SpannableString sp = new SpannableString(s);
-        String[] keys = {"Your data:", "Why it matters:", "Why this wording:"};
+        String[] keys = {"Your data:", "Why it matters:", "Why this wording:", "Why this:"};
         for (String k : keys) {
             int i = s.indexOf(k);
             while (i >= 0) {
@@ -620,6 +1108,207 @@ public class WellbeingActivity extends Activity {
             t.setColor(0xEBFFFFFF);
             cv.drawText(sub, cx, cy + size * 0.045f + HealthViews.dp(c, 24), t);
             if (running) postInvalidateOnAnimation();
+        }
+    }
+
+    // ------------------------------------------------------------------ 0.60.0 charts
+    private static Paint textPaint(Context c, float sp, int color, Paint.Align al) {
+        Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
+        t.setTextAlign(al);
+        t.setTypeface(HealthViews.font(c, 400));
+        t.setTextSize(HealthViews.dp(c, sp));
+        t.setColor(color);
+        return t;
+    }
+
+    /** Work nights: bed time across, hours asleep up. Teal = in bed before 23:00, amber = after. Dashed: the 7 h mark, 23:00 and each side's average. */
+    static final class ScatterView extends View {
+        private final int[] bed; private final double[] hrs; private final boolean[] early;
+        ScatterView(Context c, int[] bed, double[] hrs, boolean[] early) { super(c); this.bed = bed; this.hrs = hrs; this.early = early; }
+        @Override protected void onDraw(Canvas cv) {
+            Context c = getContext();
+            float w = getWidth(), h = getHeight(), x0 = HealthViews.dp(c, 34), x1 = w - HealthViews.dp(c, 10), yTop = HealthViews.dp(c, 14), yBase = h - HealthViews.dp(c, 28);
+            int lo = bed[0], hi = bed[0];
+            double hMin = hrs[0], hMax = hrs[0], se = 0, sl = 0; int ne = 0, nl = 0;
+            for (int i = 0; i < bed.length; i++) {
+                lo = Math.min(lo, bed[i]); hi = Math.max(hi, bed[i]); hMin = Math.min(hMin, hrs[i]); hMax = Math.max(hMax, hrs[i]);
+                if (early[i]) { se += hrs[i]; ne++; } else { sl += hrs[i]; nl++; }
+            }
+            int t0 = (int) Math.floor((Math.min(lo, WellbeingModel.LATE_BED_MIN) - 20) / 30.0) * 30, t1 = (int) Math.ceil((Math.max(hi, WellbeingModel.LATE_BED_MIN) + 20) / 30.0) * 30;
+            if (t1 - t0 < 120) t1 = t0 + 120;
+            double y0 = Math.floor(Math.min(hMin, 7.0) - 0.5), y1 = Math.ceil(Math.max(hMax, 7.0) + 0.5);
+            Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
+            ln.setStrokeWidth(Math.max(1f, HealthViews.dp(c, 1)));
+            Paint lab = textPaint(c, 10.5f, 0xFF7B8696, Paint.Align.RIGHT);
+            for (int g = (int) Math.ceil(y0); g <= y1; g++) {
+                float y = (float) (yBase - (g - y0) / (y1 - y0) * (yBase - yTop));
+                ln.setColor(0x14FFFFFF);
+                cv.drawLine(x0, y, x1, y, ln);
+                cv.drawText(g + " h", x0 - HealthViews.dp(c, 6), y + HealthViews.dp(c, 3.5f), lab);
+            }
+            Paint xl = textPaint(c, 10.5f, 0xFF7B8696, Paint.Align.CENTER);
+            int step = (t1 - t0) > 240 ? 60 : 30;
+            for (int t = t0; t <= t1; t += step) {
+                float x = x0 + (t - t0) / (float) (t1 - t0) * (x1 - x0);
+                ln.setColor(0x1FFFFFFF);
+                cv.drawLine(x, yBase, x, yBase + HealthViews.dp(c, 4), ln);
+                cv.drawText(WellbeingModel.clock(t), x, yBase + HealthViews.dp(c, 20), xl);
+            }
+            DashPathEffect dash = new DashPathEffect(new float[] { HealthViews.dp(c, 5), HealthViews.dp(c, 4) }, 0f);
+            float yS = (float) (yBase - (7.0 - y0) / (y1 - y0) * (yBase - yTop));
+            ln.setPathEffect(dash);
+            ln.setColor(HealthViews.alpha(TEAL, 0.55f));
+            ln.setStrokeWidth(HealthViews.dp(c, 1.4f));
+            cv.drawLine(x0, yS, x1, yS, ln);
+            float xB = x0 + (WellbeingModel.LATE_BED_MIN - t0) / (float) (t1 - t0) * (x1 - x0);
+            ln.setColor(HealthViews.alpha(GOLD, 0.6f));
+            cv.drawLine(xB, yTop, xB, yBase, ln);
+            Paint top = textPaint(c, 10.5f, GOLD, Paint.Align.CENTER);
+            cv.drawText("23:00", xB, yTop - HealthViews.dp(c, 3), top);
+            ln.setStrokeWidth(HealthViews.dp(c, 2f));
+            if (ne > 0) {
+                float y = (float) (yBase - (se / ne - y0) / (y1 - y0) * (yBase - yTop));
+                ln.setColor(HealthViews.alpha(TEAL, 0.85f));
+                cv.drawLine(x0, y, xB, y, ln);
+            }
+            if (nl > 0) {
+                float y = (float) (yBase - (sl / nl - y0) / (y1 - y0) * (yBase - yTop));
+                ln.setColor(HealthViews.alpha(GOLD, 0.85f));
+                cv.drawLine(xB, y, x1, y, ln);
+            }
+            ln.setPathEffect(null);
+            Paint d = new Paint(Paint.ANTI_ALIAS_FLAG);
+            for (int i = 0; i < bed.length; i++) {
+                float x = x0 + (bed[i] - t0) / (float) (t1 - t0) * (x1 - x0), y = (float) (yBase - (hrs[i] - y0) / (y1 - y0) * (yBase - yTop));
+                int col = early[i] ? TEAL : GOLD;
+                d.setColor(HealthViews.alpha(col, 0.18f));
+                cv.drawCircle(x, y, HealthViews.dp(c, 8.5f), d);
+                d.setColor(col);
+                cv.drawCircle(x, y, HealthViews.dp(c, 5f), d);
+            }
+        }
+    }
+
+    /** Hours asleep for each of the last nights as pills, the hours written above and the weekday of the morning you woke below; dashed line at 7 h. */
+    static final class BarsView extends View {
+        private final double[] hrs; private final int[] dow;
+        BarsView(Context c, double[] hrs, int[] dow) { super(c); this.hrs = hrs; this.dow = dow; }
+        @Override protected void onDraw(Canvas cv) {
+            Context c = getContext();
+            float w = getWidth(), h = getHeight(), x0 = HealthViews.dp(c, 8), x1 = w - HealthViews.dp(c, 8), yTop = HealthViews.dp(c, 18), yBase = h - HealthViews.dp(c, 24);
+            int n = hrs.length;
+            double mx = 9.0;
+            for (double v : hrs) mx = Math.max(mx, Math.ceil(v) + 0.5);
+            float slot = (x1 - x0) / n, bw = Math.min(HealthViews.dp(c, 15), slot * 0.62f);
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            Paint hl = textPaint(c, 9.5f, 0xFFB9C3D1, Paint.Align.CENTER), dl = textPaint(c, 10.5f, 0xFF7B8696, Paint.Align.CENTER);
+            float yS = (float) (yBase - 7.0 / mx * (yBase - yTop));
+            Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
+            ln.setStyle(Paint.Style.STROKE);
+            ln.setStrokeWidth(HealthViews.dp(c, 1.4f));
+            ln.setColor(HealthViews.alpha(TEAL, 0.55f));
+            ln.setPathEffect(new DashPathEffect(new float[] { HealthViews.dp(c, 5), HealthViews.dp(c, 4) }, 0f));
+            cv.drawLine(x0, yS, x1, yS, ln);
+            String letters = "MTWTFSS";
+            for (int i = 0; i < n; i++) {
+                float cx = x0 + slot * (i + 0.5f), top = (float) (yBase - hrs[i] / mx * (yBase - yTop));
+                boolean ok = hrs[i] >= WellbeingModel.GOAL_H;
+                int col = ok ? TEAL : GOLD;
+                p.setColor(HealthViews.alpha(col, 0.14f));
+                cv.drawRoundRect(new RectF(cx - bw / 2 - HealthViews.dp(c, 3), top - HealthViews.dp(c, 3), cx + bw / 2 + HealthViews.dp(c, 3), yBase + HealthViews.dp(c, 3)), bw, bw, p);
+                p.setColor(HealthViews.alpha(col, ok ? 1f : 0.62f));
+                cv.drawRoundRect(new RectF(cx - bw / 2, top, cx + bw / 2, yBase), bw / 2, bw / 2, p);
+                cv.drawText(String.format(Locale.UK, "%.1f", hrs[i]), cx, top - HealthViews.dp(c, 6), hl);
+                cv.drawText(String.valueOf(letters.charAt(Math.max(0, Math.min(6, dow[i])))), cx, yBase + HealthViews.dp(c, 18), dl);
+            }
+        }
+    }
+
+    /** Evening pulse spread: one bar per 5 bpm step, the count above, the median as a gold line. */
+    static final class HistView extends View {
+        private final int[] lo, cnt; private final double med;
+        HistView(Context c, int[] lo, int[] cnt, double med) { super(c); this.lo = lo; this.cnt = cnt; this.med = med; }
+        @Override protected void onDraw(Canvas cv) {
+            Context c = getContext();
+            float w = getWidth(), h = getHeight(), x0 = HealthViews.dp(c, 8), x1 = w - HealthViews.dp(c, 8), yTop = HealthViews.dp(c, 26), yBase = h - HealthViews.dp(c, 24);
+            int n = lo.length, mx = 1;
+            for (int v : cnt) mx = Math.max(mx, v);
+            float slot = (x1 - x0) / n, bw = Math.min(HealthViews.dp(c, 30), slot * 0.7f);
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            Paint cl = textPaint(c, 10, 0xFFB9C3D1, Paint.Align.CENTER), xl = textPaint(c, 10, 0xFF7B8696, Paint.Align.CENTER);
+            for (int i = 0; i < n; i++) {
+                float cx = x0 + slot * (i + 0.5f), top = yBase - cnt[i] / (float) mx * (yBase - yTop);
+                if (cnt[i] > 0) {
+                    p.setColor(HealthViews.alpha(BLUE, 0.16f));
+                    cv.drawRoundRect(new RectF(cx - bw / 2 - HealthViews.dp(c, 3), top - HealthViews.dp(c, 3), cx + bw / 2 + HealthViews.dp(c, 3), yBase + HealthViews.dp(c, 3)), HealthViews.dp(c, 9), HealthViews.dp(c, 9), p);
+                    p.setColor(BLUE);
+                    cv.drawRoundRect(new RectF(cx - bw / 2, top, cx + bw / 2, yBase), HealthViews.dp(c, 7), HealthViews.dp(c, 7), p);
+                    cv.drawText(String.valueOf(cnt[i]), cx, top - HealthViews.dp(c, 6), cl);
+                }
+                cv.drawText(lo[i] + "-" + (lo[i] + 4), cx, yBase + HealthViews.dp(c, 18), xl);
+            }
+            float mxp = x0 + (float) ((med - lo[0]) / 5.0) * slot;
+            Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
+            ln.setStrokeWidth(HealthViews.dp(c, 2f));
+            ln.setColor(GOLD);
+            cv.drawLine(mxp, HealthViews.dp(c, 16), mxp, yBase, ln);
+            Paint t = textPaint(c, 10.5f, GOLD, Paint.Align.CENTER);
+            cv.drawText("median " + WellbeingExtra.num(med), Math.max(HealthViews.dp(c, 40), Math.min(w - HealthViews.dp(c, 40), mxp)), HealthViews.dp(c, 11), t);
+        }
+    }
+
+    /** The calmest evening: each reading as a dot at its time (18:00 to midnight) joined by a line; the dashed line is the median of all evenings. */
+    static final class CalmLineView extends View {
+        private final int[] at, hr; private final double base;
+        CalmLineView(Context c, int[] at, int[] hr, double base) { super(c); this.at = at; this.hr = hr; this.base = base; }
+        @Override protected void onDraw(Canvas cv) {
+            Context c = getContext();
+            float w = getWidth(), h = getHeight(), x0 = HealthViews.dp(c, 30), x1 = w - HealthViews.dp(c, 14), yTop = HealthViews.dp(c, 22), yBase = h - HealthViews.dp(c, 26);
+            double lo = base, hi = base;
+            for (int v : hr) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+            lo = Math.floor((lo - 4) / 5.0) * 5; hi = Math.ceil((hi + 4) / 5.0) * 5;
+            Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
+            ln.setStrokeWidth(Math.max(1f, HealthViews.dp(c, 1)));
+            Paint yl = textPaint(c, 10.5f, 0xFF7B8696, Paint.Align.RIGHT), xl = textPaint(c, 10.5f, 0xFF7B8696, Paint.Align.CENTER);
+            for (double g = lo; g <= hi + 0.01; g += 5) {
+                float y = (float) (yBase - (g - lo) / (hi - lo) * (yBase - yTop));
+                ln.setColor(0x14FFFFFF);
+                cv.drawLine(x0, y, x1, y, ln);
+                cv.drawText(String.valueOf((int) g), x0 - HealthViews.dp(c, 6), y + HealthViews.dp(c, 3.5f), yl);
+            }
+            int[] ticks = { 1080, 1200, 1320, 1440 };
+            for (int t : ticks) {
+                float x = x0 + (t - 1080) / 360f * (x1 - x0);
+                ln.setColor(0x1FFFFFFF);
+                cv.drawLine(x, yBase, x, yBase + HealthViews.dp(c, 4), ln);
+                cv.drawText(WellbeingModel.clock(t), x, yBase + HealthViews.dp(c, 20), xl);
+            }
+            float yb = (float) (yBase - (base - lo) / (hi - lo) * (yBase - yTop));
+            ln.setStyle(Paint.Style.STROKE);
+            ln.setPathEffect(new DashPathEffect(new float[] { HealthViews.dp(c, 5), HealthViews.dp(c, 4) }, 0f));
+            ln.setColor(HealthViews.alpha(GOLD, 0.7f));
+            ln.setStrokeWidth(HealthViews.dp(c, 1.4f));
+            cv.drawLine(x0, yb, x1, yb, ln);
+            cv.drawText("all evenings " + WellbeingExtra.num(base), x1, yb - HealthViews.dp(c, 5), textPaint(c, 10.5f, GOLD, Paint.Align.RIGHT));
+            ln.setPathEffect(null);
+            ln.setColor(HealthViews.alpha(TEAL, 0.75f));
+            ln.setStrokeWidth(HealthViews.dp(c, 2f));
+            float px0 = 0, py0 = 0;
+            Paint d = new Paint(Paint.ANTI_ALIAS_FLAG);
+            Paint vl = textPaint(c, 10, 0xFFB9C3D1, Paint.Align.CENTER);
+            for (int i = 0; i < at.length; i++) {
+                float x = x0 + (Math.max(1080, Math.min(1440, at[i])) - 1080) / 360f * (x1 - x0), y = (float) (yBase - (hr[i] - lo) / (hi - lo) * (yBase - yTop));
+                if (i > 0) cv.drawLine(px0, py0, x, y, ln);
+                px0 = x; py0 = y;
+            }
+            for (int i = 0; i < at.length; i++) {
+                float x = x0 + (Math.max(1080, Math.min(1440, at[i])) - 1080) / 360f * (x1 - x0), y = (float) (yBase - (hr[i] - lo) / (hi - lo) * (yBase - yTop));
+                d.setColor(HealthViews.alpha(TEAL, 0.18f));
+                cv.drawCircle(x, y, HealthViews.dp(c, 8.5f), d);
+                d.setColor(TEAL);
+                cv.drawCircle(x, y, HealthViews.dp(c, 5f), d);
+                cv.drawText(String.valueOf(hr[i]), x, y - HealthViews.dp(c, 11), vl);
+            }
         }
     }
 }

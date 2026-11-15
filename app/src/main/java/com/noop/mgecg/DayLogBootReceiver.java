@@ -15,6 +15,7 @@ public class DayLogBootReceiver extends BroadcastReceiver {
             try { Backup.schedule(c); Backup.ensure(c); } catch (Throwable ignored) { }      // 0.16.0: the alarm does not survive a restart or an update by itself
             try { DayLogService.ensure(c); } catch (Throwable ignored) { }                  // 0.19.2: after a restart or an update the logger service and its 15 minute alarm come back by themselves
             try { EcgReminder.schedule(c); EcgWidget.refreshAll(c); } catch (Throwable ignored) { }      // 0.42.0: the reminder alarm and the widget come back after a restart or an update
+            try { WellbeingReminder.schedule(c); } catch (Throwable ignored) { }                         // 0.60.0: the wind-down reminder alarm comes back too
             KeepAlive.afterRestart(c);
         }
     }

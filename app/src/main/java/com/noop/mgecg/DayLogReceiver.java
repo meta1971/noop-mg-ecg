@@ -15,6 +15,8 @@ public class DayLogReceiver extends BroadcastReceiver {
             MainActivity.requestPull();
         } else if (EcgReminder.isAction(a)) {          // 0.42.0: reading reminders and their snooze
             EcgReminder.onAction(c, a);
+        } else if (WellbeingReminder.isAction(a)) {          // 0.60.0: the wind-down reminder tied to the bed plan
+            WellbeingReminder.onAction(c, a);
         } else if (IntakeNotifier.kindOf(a) != null) {          // 0.38.0: Drink, Carb meal, Caffeine from the intake notification
             IntakeNotifier.onAction(c, a);
         }
