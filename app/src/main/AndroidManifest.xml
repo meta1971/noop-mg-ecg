@@ -44,6 +44,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 0.42.3: the guided-run cue buzzes with the phone's vibrator -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />      <!-- 0.57.0: optional Do Not Disturb during a reading; granted by the user in Settings, not at install -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- 0.15.0: lets the logger start the invisible link owner from the background (Android 10+ blocks background activity starts otherwise); nothing is drawn -->
@@ -123,6 +124,15 @@
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+            android:exported="false" />
+
+        <!-- 0.58.0: the wellbeing page (opened from the Morning brief card on Today): reads the day log, writes only its own small preference file, no new permission -->
+        <activity
+            android:name=".WellbeingActivity"
+            android:label="MG Heart"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:exported="false" />
 
         <!-- 0.55.0: the Activity day graph full screen, landscape (the Portrait button turns it), zoom and scroll; reads the day log, no new permission -->
