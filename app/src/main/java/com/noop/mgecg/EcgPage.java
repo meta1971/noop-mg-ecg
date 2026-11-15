@@ -883,7 +883,7 @@ final class EcgPage {
                 String bt = String.format(Locale.UK, "Noise (between beats):  QRS band 8-25 Hz %.0f uV (usual 15-27)  \u00b7  25-48 Hz %.0f  \u00b7  50 Hz %.0f  \u00b7  drift %.0f", b[1], b[2], b[3], b[0]);
                 String hint = LiveBands.hint(b, lastOut != null && !Double.isNaN(lastOut.rUv) ? lastOut.rUv : Double.NaN);
                 if (hint == null && b[1] > 40) hint = "Broadband noise (muscle or vibration): relax the hand, rest the forearm, keep still";
-                bandsView.setText(bt + (hint != null && b[1] > 27 ? "\n" + hint : "") + (autoCleanOn ? "\nDisplay smoothing raised while the signal is noisy (the recording is not changed)" : "") + (longNoisy >= 60 ? "\nStill noisy: let go, shake out your hand, rest the whole forearm for a minute, then stop and start again" : "") + (LiveMotion.fresh(now) ? (LiveMotion.moving() ? "\nMotion sensor: your arm is moving: hold still (a step in the trace is likely)" : "\nMotion sensor: still") : ""));
+                bandsView.setText(bt + (hint != null && b[1] > 27 ? "\n" + hint : "") + (autoCleanOn ? "\nDisplay smoothing raised while the signal is noisy (the recording is not changed)" : "") + (longNoisy >= 60 ? "\nStill noisy: let go, shake out your hand, rest the whole forearm for a minute, then stop and start again" : "") + (LiveMotion.fresh(now) ? (LiveMotion.moving() ? "\nMotion sensor: your arm is moving: hold still (a step in the trace is likely)" : "\nMotion sensor: still") : "") + (RingGuard.active(now) ? "\nPhone vibration detected (a ring or buzz): a step in the trace is likely, and the seconds are marked. Turn the phone to Do Not Disturb." : ""));
             } else bandsView.setText("Noise by band appears after about 10 s of beats");
             updateTarget(est);
             // the three rings: live heart rate, noise in the QRS band, the strap's own check (0 to 100 %)
@@ -1019,6 +1019,12 @@ final class EcgPage {
             if (imuTest) ReadingNotes.put(d, startSec, "imu_live_test", "1");
             if (imuTest || imuFr > 0) { ReadingNotes.put(d, startSec, "imu_frames_live", String.valueOf(imuFr)); ReadingNotes.put(d, startSec, "motion_moving_s", String.valueOf(LiveMotion.movingSeconds())); }      // 0.50.0: also without the test switch (a stale stream shows here)
             if (imuFr > 0 && MainActivity.imuBeforeCmd) ReadingNotes.put(d, startSec, "imu_stream_before_cmd", "1");
+            if (RingGuard.frames() > 0) {      // 0.57.0: the buzz guard (decode log 206): frames seen, flagged seconds, the longest run, the line frequency of the last hit, the episodes (3 or more flagged seconds, gaps of 3 s or less) and every flagged second, from the reading start
+                ReadingNotes.put(d, startSec, "ring_guard_frames", String.valueOf(RingGuard.frames())); ReadingNotes.put(d, startSec, "ring_flagged_s", String.valueOf(RingGuard.flaggedSeconds()));
+                ReadingNotes.put(d, startSec, "ring_longest_run_s", String.valueOf(RingGuard.longestRunSeconds())); ReadingNotes.put(d, startSec, "ring_line_hz_last", String.valueOf(RingGuard.lineHz()));
+                ReadingNotes.put(d, startSec, "ring_episodes", RingGuard.episodesCsv()); ReadingNotes.put(d, startSec, "ring_flag_times_s", RingGuard.timesCsv()); ReadingNotes.put(d, startSec, "ring_rule", RingGuard.RULE);
+            }
+            String qpr = QuietPhone.lastResult(); if (qpr.length() > 0 && !qpr.startsWith("off")) ReadingNotes.put(d, startSec, "quiet_phone", qpr);
             if (imuTest && MainActivity.imuRev > 0) ReadingNotes.put(d, startSec, "raw_start", "rev" + MainActivity.imuRev + "_ms" + MainActivity.imuRawMs + "_resp" + MainActivity.imuRawResp + "_frames" + imuFr);      // 0.46.0 TEST: the live IMU request was on for this reading; 0.46.1: frames seen and seconds above the movement thresholds
             ReadingNotes.put(d, startSec, "live_template_beats", String.valueOf(Live500.tplBeats));      // 0.46.0: beats behind the live template veto (0 = none)
             ReadingNotes.put(d, startSec, "peaks_raw_live", String.valueOf(Live500.beatsSeen()));      // 0.46.0: raw detector peaks (accepted beats are beats_live); a large gap means a noisy reading

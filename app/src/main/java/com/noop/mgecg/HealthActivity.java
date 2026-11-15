@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.58.0 (15 Nov 2026): the MORNING BRIEF card at the top of Today (WellbeingActivity / WellbeingModel): the main opinion counted from the last 14 days of sleep, tap for the wellbeing page. 0.57.0: Phone-buzz guard and Silence-the-phone rows on You (RingGuard / QuietPhone).
 // 0.56.0 (14 Nov 2026): the seventh ring, HEART WATCH (AlertEngine / AlertWatch): usual / WATCH / CHECK from the pulse rhythm at rest, the heart rate at rest and the night signs; detail panel with what to do.
 // 0.55.0 (14 Nov 2026): each ring has its own colour (DailyViews.RING_COLORS); a Quick guide link under the rings and a Quick guide row on You; plainer strap line on the sync strip ("pages not copied yet", "Strap link is on/off").
 // 0.51.0 (10 Nov 2026): You > Settings > RESEARCH fold: Read strap settings (read-only) and the Lab S switch.
@@ -297,6 +298,48 @@ public class HealthActivity extends Activity {
         s.setPadding(0, dpi(3), 0, 0);
         c.addView(s);
         if (click != null) c.setOnClickListener(click);
+        return c;
+    }
+
+    /** 0.58.0: the Morning brief card at the top of Today: the page's main opinion (counted from the last 14 days of sleep) and the ring word; a tap opens the wellbeing page. */
+    private View wellbeingCard() {
+        LinearLayout c = card(16);
+        LinearLayout row = hrow();
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.addView(caps("MORNING BRIEF"));
+        final TextView head = tv("Reading your last nights...", 17, INK, 400);
+        head.setPadding(0, dpi(8), 0, 0);
+        l.addView(head);
+        final TextView sub = tv("Tap for your morning page", 12, MUT, 400);
+        sub.setPadding(0, dpi(6), 0, 0);
+        l.addView(sub);
+        row.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
+        final TextView word = tv("", 26, TEAL, 200);
+        word.setPadding(dpi(10), 0, 0, 0);
+        row.addView(word);
+        c.addView(row);
+        c.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { try { startActivity(new Intent(HealthActivity.this, WellbeingActivity.class)); } catch (Throwable ignored) { } }
+        });
+        final Context app = getApplicationContext();
+        Thread th = new Thread(new Runnable() {
+            @Override public void run() {
+                final WellbeingModel.Out o = WellbeingActivity.load(app);
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (isFinishing()) return;
+                        if (o == null) { head.setText("Your morning page"); sub.setText("Tap to open"); return; }
+                        head.setText(o.headline);
+                        word.setText(o.enough && !"Gathering".equals(o.word) ? o.word : "");
+                        sub.setText(o.enough ? (o.planOn && o.planChecked ? o.planHead : "Tap for your morning page") : o.body);
+                    }
+                });
+            }
+        });
+        th.setDaemon(true);
+        th.start();
         return c;
     }
 
@@ -1085,6 +1128,7 @@ public class HealthActivity extends Activity {
         SleepNight.Night n = day.night;
         long age = System.currentTimeMillis() / 1000L - day.newestTs;
         col.addView(head("Hi, " + name(), n != null ? "You slept " + HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) : "Good morning", null));
+        col.addView(wellbeingCard(), lp(-1, -2, 12));                // 0.58.0: the Morning brief card, opens the wellbeing page
         View banner = loggerBanner(age);                       // 0.13.2: say so when the all-day log is not running
         if (banner != null) col.addView(banner, lp(-1, -2, 12));
         col.addView(syncStrip(day), lp(-1, -2, 10));              // 0.20.0: when it last synced, how far behind the strap is, and a Sync now button
@@ -2168,6 +2212,19 @@ public class HealthActivity extends Activity {
         TextView imuNote = tv("Test, off by default. During an ECG reading it asks the strap for its live accelerometer and gyro stream (START_RAW_DATA, then TOGGLE_IMU_MODE, as the NOOP app does) and shows a motion warning on the reading page when your arm moves (0.46.1; the sensor cannot see finger tremor). The frames are kept in the live-frame file. It could disturb the ECG: turn it off if a reading ever looks different, and tell me.", 11.5f, MUT, 400);
         imuNote.setPadding(0, 0, 0, dpi(6));
         st.addView(imuNote);
+        st.addView(toggleRow("Phone-buzz guard", ctl, "ring_guard", true), lp(-1, dpi(52), 0));      // 0.57.0
+        TextView rgNote = tv("On by default. During an ECG reading the strap's motion stream is watched for a ringing or buzzing phone (a narrow line between 5 and 49 Hz, not a hand movement). While it happens a banner shows, and the seconds are written to the reading notes (ring_flag_times_s). It asks the strap for the same motion stream as the test switch above. Detection only: the recording is not changed.", 11.5f, MUT, 400);
+        rgNote.setPadding(0, 0, 0, dpi(6));
+        st.addView(rgNote);
+        final TextView qpv = tv(quietText(ctl), 14, BLUE, 600);
+        st.addView(valueRow("Silence the phone during readings", qpv, new View.OnClickListener() { @Override public void onClick(View v) {
+            boolean on = !ctl.getBoolean("quiet_phone", false);
+            if (on && !QuietPhone.granted(HealthActivity.this)) { android.widget.Toast.makeText(HealthActivity.this, "Allow Do Not Disturb access for this app, then come back and tap this row again.", android.widget.Toast.LENGTH_LONG).show(); try { startActivity(QuietPhone.grantIntent()); } catch (RuntimeException e) { } return; }
+            ctl.edit().putBoolean("quiet_phone", on).apply(); qpv.setText(quietText(ctl));
+        } }));
+        TextView qpNote = tv("Off by default. On: when a reading starts the phone goes to Do Not Disturb, Alarms only, so a call or message cannot ring or buzz it; when the reading ends the earlier setting is put back (and at the next start of the app if the app was killed in between). Calls from everyone are silenced, including favourites. Needs the one-time Do Not Disturb access in Android settings.", 11.5f, MUT, 400);
+        qpNote.setPadding(0, 0, 0, dpi(6));
+        st.addView(qpNote);
         LinearLayout rf = explainerCard("RESEARCH", "Strap settings reader and the scale lab");      // 0.51.0: build brief items 1 and 4
         expandable("e_research", rf, new Filler() { @Override public void fill(LinearLayout q) {
             q.addView(pillButton("Read strap settings (read-only)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) {
@@ -2280,6 +2337,11 @@ public class HealthActivity extends Activity {
     }
 
     private View toggleRow(String label, final SharedPreferences prefs, final String key) { return toggleRow(label, prefs, key, true); }
+
+    private String quietText(SharedPreferences p) {      // 0.57.0
+        if (!p.getBoolean("quiet_phone", false)) return "Off";
+        return QuietPhone.granted(this) ? "On (Alarms only during a reading)" : "On, needs access";
+    }
 
     private static String smoothText(SharedPreferences p) {
         int md = p.getInt("ecg_smooth500", 2);

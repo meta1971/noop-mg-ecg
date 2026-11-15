@@ -197,7 +197,8 @@ public class Live500View extends View {
         else { nzTxt = String.format(L, "%.0f \u00b5V", n); nzNote = n <= 27 ? "" : n <= 40 ? "Signal fair: relax your hand, keep still" : "Signal noisy: rest the whole forearm, keep still"; nzCol = n <= 27 ? 0xFF3FB950 : n <= 40 ? 0xFFD4A72C : 0xFFE5534B; }
         int cb = Live500.cleanBeats(); cleanTxt = String.format(L, "%d/300", Math.min(cb, 999)); cleanFrac = Math.min(1f, cb / 300f);
         armTxt = LiveMotion.fresh(now) ? (LiveMotion.moving() ? "moving" : "still") : ""; armMoving = LiveMotion.fresh(now) && LiveMotion.moving();
-        if (nzNote.length() > 0) { footLeft = nzNote; footLeftCol = nzCol; }
+        if (RingGuard.active(now)) { footLeft = "Phone buzzing: a step in the trace is likely"; footLeftCol = 0xFFF2B84B; }      // 0.57.0
+        else if (nzNote.length() > 0) { footLeft = nzNote; footLeftCol = nzCol; }
         else {
             String[] parts = { "Lead I", "500 Hz", Live500.modeLabel(), String.format(L, "%.1f s delay", Live500.delaySeconds()), autoScale ? "auto scale" : "fixed -1 to +2 mV" };
             int np = parts.length; String left;
