@@ -1,6 +1,7 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.58.0 (15 Nov 2026): NEW. The wellbeing page (opened from the Morning brief card on the Today tab). Everything on it is counted from the sleep log of the last 14 days (RhythmData -> SleepRegularity nights ->
+// FILE VERSION 0.59.0 (15 Nov 2026): added the "How this is worked out" card at the bottom: every rule the page uses and the study behind each line, with its design (observational or trial). No number or claim above it changed.
+// 0.58.0 (15 Nov 2026): NEW. The wellbeing page (opened from the Morning brief card on the Today tab). Everything on it is counted from the sleep log of the last 14 days (RhythmData -> SleepRegularity nights ->
 // WellbeingModel); nothing is invented, and where there is not enough data it says so. Opinion first, the numbers as the small "Your data" line, with the study behind each opinion.
 // Parts: the hero ring (one segment per night, the hours written on it, a word from the sleep regularity index), the main opinion, the plan check (a plan saved here is checked against the next night), the wake-up strip,
 // three rings, one small win for tonight (a button saves it as a plan: in bed by 23:00, stored on the phone only), and a one-minute paced-breathing orb (6 breaths a minute, pacing only: no pulse is measured here).
@@ -39,6 +40,18 @@ public class WellbeingActivity extends Activity {
     private static final int BG = HealthViews.BG, INK = HealthViews.INK, MUT = HealthViews.MUT;
     private static final int BLUE = HealthViews.BLUE, VIOLET = HealthViews.VIOLET, TEAL = HealthViews.TEAL, GOLD = HealthViews.GOLD, ROSE = HealthViews.ROSE;
     private static final int EVID = 0xFF7F8A9A;
+
+    /** Every rule and study behind the page. Keep in step with WellbeingModel (constants) and the "Why" lines. */
+    private static final String HOW =
+            "All figures are counted from the strap's sleep minutes over your last 14 nights. Nothing is estimated; with too little data the page says so.\n\n"
+          + "Work morning: you woke before 07:00. Early bed: in bed before 23:00. A pattern needs 5 nights each way; 2 to 4 is labelled an early signal. "
+          + "Same wake-up: within 3 minutes of the latest one. Bounce-back: a night under 6 h followed by 7 h or more.\n\n"
+          + "Ring word: Steady is a sleep regularity score of 71 or more, Varied is 51 or less, Settling is between.\n\n"
+          + "Studies behind the wording:\n"
+          + "- Sleep regularity and mood: UK Biobank, 79,666 adults, Psychological Medicine 2025. Observational: an association, not proof that regular sleep protects mood. The score bands above are that study's.\n"
+          + "- Kind wording after a short night: a meta-analysis of 21 trials of compassion-based training (Kirby 2017) found benefits across a range of outcomes.\n"
+          + "- Calm minute: 14 trials of heart-rate-variability biofeedback in people with depressive symptoms, g = 0.38, wide uncertainty. Here the app only paces your breathing.\n\n"
+          + "Research only. Not medical advice; nothing here diagnoses anything.";
 
     /** The page's numbers from the day log. Call off the main thread. Null if the log cannot be read. */
     static WellbeingModel.Out load(Context c) {
@@ -248,6 +261,14 @@ public class WellbeingActivity extends Activity {
         why.setPadding(0, px(12), 0, 0);
         cb2.addView(why);
         col.addView(cb2, lp(12));
+
+        // how this is worked out
+        LinearLayout hw = card();
+        hw.addView(caps("HOW THIS IS WORKED OUT", MUT));
+        TextView hwt = tv(HOW, 13, MUT, 400);
+        hwt.setPadding(0, px(10), 0, 0);
+        hw.addView(hwt);
+        col.addView(hw, lp(12));
 
         addClose();
     }
