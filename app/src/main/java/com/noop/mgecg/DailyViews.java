@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.62.0 (15 Nov 2026): TodayRingsView (Today: Sleep, Recovery and Effort as a hero row, Active, Stress, Fatigue and Heart Watch as four small tiles; same arcs, track, Outfit figures and colours as RingsView); Metric.deltaText().
 // FILE VERSION 0.56.0 (14 Nov 2026): RING_COLORS / RING_NAMES gain the seventh ring, Heart Watch; heartColor(tier).
 // FILE VERSION 0.55.0 (14 Nov 2026): a fixed colour for each of the six rings (RING_COLORS). 0.54.4: RingsView draws 4 rings to a row and more beneath (bigger rings, centred last row, height from the rows, ringAt() for taps). 0.12.0 (26 Oct): the daily dashboard pieces: three rings, the health monitor against your own baseline. Research only.
 
@@ -127,6 +128,118 @@ final class DailyViews {
         }
     }
 
+    /**
+     * 0.62.0: the Today rings as a hero row (Sleep, Recovery, Effort; the middle one larger) and four small tiles under it
+     * (Active, Stress, Fatigue, Heart Watch). The arrays are in ring order (0 Recovery, 1 Effort, 2 Active, 3 Sleep, 4 Stress,
+     * 5 Fatigue, 6 Heart Watch) and ringAt() returns that index, so the taps and the panels are the ones of RingsView.
+     * Same arcs (track 0x1FFFFFFF, round caps, from the top), Outfit light figures, caps labels and colours as RingsView.
+     */
+    static final class TodayRingsView extends View {
+        static final int[] HERO = {3, 0, 1};
+        static final int[] TILES = {2, 4, 5, 6};
+        private final float[] frac;
+        private final int[] col;
+        private final String[] big, label, cap;
+        TodayRingsView(Context c, float[] frac, int[] col, String[] big, String[] label, String[] cap) {
+            super(c);
+            this.frac = frac; this.col = col; this.big = big; this.label = label; this.cap = cap;
+        }
+        /**
+         * Geometry in dp for a view wDp wide. Entry i (ring order) = {left, top, right, bottom, ringCentreX, ringCentreY, ringDiameter, strokeWidth, kind}
+         * with kind 0 = side hero ring, 1 = middle hero ring, 2 = tile; entry 7 = {total height}. Pure arithmetic, checked off the phone (X21).
+         */
+        static float[][] layout(float wDp) {
+            float[][] g = new float[8][];
+            float sideD = Math.min(wDp * 0.27f, 92f), midD = Math.min(wDp * 0.36f, 120f);
+            float heroH = 4f + midD + 44f, cellW = wDp / 3f;
+            for (int k = 0; k < 3; k++) {
+                float d = k == 1 ? midD : sideD;
+                g[HERO[k]] = new float[] {cellW * k, 0f, cellW * (k + 1), heroH, cellW * (k + 0.5f), 4f + midD / 2f, d, k == 1 ? 10f : 8f, k == 1 ? 1f : 0f};
+            }
+            float tileTop = heroH + 8f, gap = 8f, tw = (wDp - 3f * gap) / 4f, th = 104f;
+            for (int k = 0; k < 4; k++) {
+                float l = k * (tw + gap);
+                g[TILES[k]] = new float[] {l, tileTop, l + tw, tileTop + th, l + tw / 2f, tileTop + 10f + 19f, 38f, 5f, 2f};
+            }
+            g[7] = new float[] {tileTop + th + 4f};
+            return g;
+        }
+        private float density() { return getContext().getResources().getDisplayMetrics().density; }
+        @Override protected void onMeasure(int wSpec, int hSpec) {
+            int w = View.MeasureSpec.getSize(wSpec);
+            float wDp = w / density();
+            setMeasuredDimension(w, Math.round(layout(wDp)[7][0] * density()));
+        }
+        /** Index (ring order) of the ring or tile under a touch, or -1 for none. */
+        int ringAt(float x, float y) {
+            float dn = density(), wDp = getWidth() / dn;
+            if (wDp <= 0f) return -1;
+            float[][] g = layout(wDp);
+            float xd = x / dn, yd = y / dn;
+            for (int i = 0; i < 7; i++) if (xd >= g[i][0] && xd < g[i][2] && yd >= g[i][1] && yd < g[i][3]) return i;
+            return -1;
+        }
+        private static String fit(String s, Paint p, float maxPx) {
+            if (s == null) return "";
+            if (p.measureText(s) <= maxPx) return s;
+            int n = s.length();
+            while (n > 1 && p.measureText(s.substring(0, n) + "\u2026") > maxPx) n--;
+            return s.substring(0, n).trim() + "\u2026";
+        }
+        @Override protected void onDraw(Canvas cv) {
+            Context c = getContext();
+            float dn = density(), wDp = getWidth() / dn;
+            if (wDp <= 0f || frac.length < 7) return;
+            float[][] g = layout(wDp);
+            for (int i = 0; i < 7; i++) {
+                float[] b = g[i];
+                boolean tile = b[8] == 2f;
+                float cx = b[4] * dn, cy = b[5] * dn, d = b[6] * dn, sw = b[7] * dn;
+                if (tile) {
+                    Paint bg = paint(CARD);
+                    cv.drawRoundRect(new RectF(b[0] * dn, b[1] * dn, b[2] * dn, b[3] * dn), dp(c, 16), dp(c, 16), bg);
+                    Paint st = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    st.setStyle(Paint.Style.STROKE); st.setStrokeWidth(Math.max(1f, dp(c, 1))); st.setColor(0x0FFFFFFF);
+                    cv.drawRoundRect(new RectF(b[0] * dn, b[1] * dn, b[2] * dn, b[3] * dn), dp(c, 16), dp(c, 16), st);
+                }
+                RectF r = new RectF(cx - d / 2f + sw / 2f, cy - d / 2f + sw / 2f, cx + d / 2f - sw / 2f, cy + d / 2f - sw / 2f);
+                Paint tr = new Paint(Paint.ANTI_ALIAS_FLAG);
+                tr.setStyle(Paint.Style.STROKE); tr.setStrokeWidth(sw); tr.setColor(0x1FFFFFFF); tr.setStrokeCap(Paint.Cap.ROUND);
+                cv.drawArc(r, 0, 360, false, tr);
+                float f = Math.max(0f, Math.min(1f, frac[i]));
+                if (f > 0.004f) {
+                    Paint pr = new Paint(tr); pr.setColor(col[i]);
+                    cv.drawArc(r, -90, 360f * f, false, pr);
+                }
+                float cellCx = (b[0] + b[2]) / 2f * dn;
+                if (!tile) {
+                    boolean mid = b[8] == 1f;
+                    float ts = dp(c, mid ? (big[i].length() > 3 ? 24 : 32) : (big[i].length() > 3 ? 20 : 26));
+                    Paint t = paint(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 300)); t.setTextSize(ts);
+                    cv.drawText(big[i], cx, cy + ts * 0.32f, t);
+                    float ringBottom = (4f + layoutMid(wDp) ) * dn;
+                    Paint l = paint(INK); l.setTextAlign(Paint.Align.CENTER); l.setTypeface(font(c, 400)); l.setTextSize(dp(c, 11f)); l.setLetterSpacing(0.14f);
+                    cv.drawText(label[i], cellCx, ringBottom + dp(c, 20), l);
+                    Paint k = paint(MUT); k.setTextAlign(Paint.Align.CENTER); k.setTypeface(font(c, 400)); k.setTextSize(dp(c, 10.5f));
+                    cv.drawText(fit(cap[i], k, (b[2] - b[0]) * dn - dp(c, 6)), cellCx, ringBottom + dp(c, 36), k);
+                } else {
+                    float tw = (b[2] - b[0]) * dn - dp(c, 8);
+                    String v = big[i];
+                    float vs = dp(c, v.length() > 5 ? 12 : 15);
+                    Paint t = paint(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 400)); t.setTextSize(vs);
+                    float y = b[1] * dn + dp(c, 10 + 38 + 18);
+                    cv.drawText(fit(v, t, tw), cellCx, y, t);
+                    String lb = "HEART WATCH".equals(label[i]) ? "HEART" : label[i];
+                    Paint l = paint(INK); l.setTextAlign(Paint.Align.CENTER); l.setTypeface(font(c, 400)); l.setTextSize(dp(c, 9.5f)); l.setLetterSpacing(0.08f);
+                    cv.drawText(fit(lb, l, tw), cellCx, y + dp(c, 16), l);
+                    Paint k = paint(MUT); k.setTextAlign(Paint.Align.CENTER); k.setTypeface(font(c, 400)); k.setTextSize(dp(c, 9f));
+                    cv.drawText(fit(cap[i], k, tw), cellCx, y + dp(c, 29), k);
+                }
+            }
+        }
+        private static float layoutMid(float wDp) { return Math.min(wDp * 0.36f, 120f); }
+    }
+
     /** One monitor line: last night's value, your usual range, and where the value sits. */
     static final class Metric {
         String name, unit;
@@ -146,6 +259,15 @@ final class DailyViews {
             return "usual " + String.format(Locale.UK, f, mean - sd) + " to " + String.format(Locale.UK, f, mean + sd) + (unit.isEmpty() ? "" : " " + unit);
         }
         int color() { int s = status(); return s == 0 ? OK : s == 1 ? AMBER : s == 2 ? RED : GREY; }
+        /** 0.62.0: how far last night sits from your usual, e.g. "\u25B2 5" or "\u25BC 2"; "usual" when it rounds to nothing; empty without a baseline. */
+        String deltaText() {
+            if (status() < 0) return "";
+            double d = now - mean;
+            String f = "%." + dec + "f";
+            String mag = String.format(Locale.UK, f, Math.abs(d));
+            if (Double.parseDouble(mag) == 0.0) return "usual";
+            return (d > 0 ? "\u25B2 " : "\u25BC ") + mag;
+        }
     }
 
     private static void fill(Metric m, List<Double> vals, double sdFloor) {

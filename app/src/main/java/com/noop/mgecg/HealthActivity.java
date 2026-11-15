@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.62.0 (15 Nov 2026): Today: the rings become a hero row (Sleep, Recovery, Effort) with four small tiles under it (Active, Stress, Fatigue, Heart Watch), DailyViews.TodayRingsView; a DAILY OUTLOOK card for the plan sentence; KEY STATISTICS (the night monitor) moved up under it, each line with its distance from your usual. Taps and panels unchanged.
 // 0.61.0 (15 Nov 2026): answer line at the top of Heart, Rest, ECG and You (a sentence in words against the person's own earlier nights, UxLogic); one status strip on every tab with a sheet of what needs attention (logger, link, old records, notifications, exact alarms, battery, Do Not Disturb access); Rest card "against your own usual" with range bars; Today opens by the time of day (the wellbeing card is "This evening" from 18:00 and sits under the rings in the daytime); specific empty states; Display settings on You (text size, brighter secondary text, bigger tap targets, UxKit).
 // 0.58.0 (15 Nov 2026): the MORNING BRIEF card at the top of Today (WellbeingActivity / WellbeingModel): the main opinion counted from the last 14 days of sleep, tap for the wellbeing page. 0.57.0: Phone-buzz guard and Silence-the-phone rows on You (RingGuard / QuietPhone).
 // 0.56.0 (14 Nov 2026): the seventh ring, HEART WATCH (AlertEngine / AlertWatch): usual / WATCH / CHECK from the pulse rhythm at rest, the heart rate at rest and the night signs; detail panel with what to do.
@@ -1351,18 +1352,18 @@ public class HealthActivity extends Activity {
         rb = java.util.Arrays.copyOf(rb, 7); rb[6] = hw == null ? "\u2014" : hw.big();
         rl = java.util.Arrays.copyOf(rl, 7); rl[6] = "HEART WATCH";
         rcap = java.util.Arrays.copyOf(rcap, 7); rcap[6] = hw == null ? "not scored" : hw.caption();
-        DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
+        DailyViews.TodayRingsView rings = new DailyViews.TodayRingsView(this, rf, rc, rb, rl, rcap);      // 0.62.0: hero row + four tiles, same ring order and taps
         final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(android.view.MotionEvent e) { return true; }
         });
         rings.setClickable(true);
         rings.setOnTouchListener(new View.OnTouchListener() {
             @Override public boolean onTouch(View v, android.view.MotionEvent e) {                // 0.20.0: tap a ring to open how it is worked out
-                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) { int hit = ((DailyViews.RingsView) v).ringAt(e.getX(), e.getY()); if (hit >= 0) toggleRing(hit); }      // 0.54.4: six rings, four to a row
+                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) { int hit = ((DailyViews.TodayRingsView) v).ringAt(e.getX(), e.getY()); if (hit >= 0) toggleRing(hit); }      // 0.62.0: hero ring or tile
                 return false;
             }
         });
-        col.addView(rings, lp(-1, -2, 6));      // 0.54.4: the height follows the rows
+        col.addView(rings, lp(-1, -2, 10));      // 0.62.0: the height comes from TodayRingsView.layout
         TextView ringHint = tv("Tap a ring to see how it is worked out. Active is your moving time all day, not workouts. Fatigue is an estimate of what has built up over days. Heart Watch flags anything unusual for you.", 11, MUT, 400);
         ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
         col.addView(ringHint, lp(-1, -2, 0));
@@ -1376,10 +1377,49 @@ public class HealthActivity extends Activity {
         ringPanel.setVisibility(View.GONE);
         col.addView(ringPanel, lp(-1, -2, 8));
         if (ringOpen >= 0) showRing(ringOpen);
+        LinearLayout olc = card(16);      // 0.62.0: the plan sentence in a card with its heading
+        olc.addView(caps("DAILY OUTLOOK"));
         TextView plan = tv(DailyViews.plan(rec), 14, INK, 400);
         plan.setLineSpacing(0, 1.25f);
-        col.addView(plan, lp(-2, -2, 8));
-        col.addView(tv("Estimates from this strap's own records, built on your own recent nights. Not WHOOP's scores and not a medical measure.", 11, MUT, 400), lp(-2, -2, 4));
+        olc.addView(plan, lp(-1, -2, 8));
+        col.addView(olc, lp(-1, -2, 10));
+        // ---- key statistics (0.62.0: was HEALTH MONITOR, moved up under the daily outlook): last night against your own usual range
+        List<DailyViews.Metric> mon = DailyViews.monitor(d);
+        if (!mon.isEmpty()) {
+            LinearLayout hmc = card(16);
+            LinearLayout hmh = hrow();
+            hmh.addView(caps("KEY STATISTICS"));
+            hmh.addView(spacer());
+            hmh.addView(tv("last night against your usual", 12, MUT, 400));
+            hmc.addView(hmh);
+            for (DailyViews.Metric mt : mon) {
+                LinearLayout row = hrow();
+                row.addView(tv(mt.name, 13, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+                String dtx = mt.deltaText();      // 0.62.0: how far last night sits from your usual
+                if (!dtx.isEmpty()) { TextView dv = tv(dtx, 11, mt.color(), 400); dv.setPadding(0, 0, dpi(8), 0); row.addView(dv); }
+                row.addView(tv(mt.valueText(), 15, INK, 600));
+                hmc.addView(row, lp(-1, -2, 12));
+                hmc.addView(new DailyViews.BandView(this, mt), lp(-1, dpi(18), 2));
+                hmc.addView(tv(mt.rangeText(), 11, MUT, 400));
+                final LinearLayout mp = new LinearLayout(this);
+                mp.setOrientation(LinearLayout.VERTICAL);
+                mp.setVisibility(View.GONE);
+                hmc.addView(mp, lp(-1, -2, 4));
+                final String mkey = "mon_" + mt.name;
+                final DailyViews.Metric mtf = mt;
+                row.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                    if (openCards.contains(mkey)) { openCards.remove(mkey); mp.removeAllViews(); mp.setVisibility(View.GONE); }
+                    else { openCards.add(mkey); mp.removeAllViews(); fillMonitorPanel(mp, mtf); mp.setVisibility(View.VISIBLE); }
+                } });
+                if (openCards.contains(mkey)) { fillMonitorPanel(mp, mtf); mp.setVisibility(View.VISIBLE); }
+            }
+            TextView hn = tv("Tap a line to see what it means. Green is inside your usual range, amber about two spreads out, red further. HRV here comes from the wrist's optical intervals. A guide, not a diagnosis.", 11, MUT, 400);
+            hn.setLineSpacing(0, 1.2f);
+            hmc.addView(hn, lp(-2, -2, 10));
+            col.addView(hmc, lp(-1, -2, 12));
+        }
+
+        col.addView(tv("Estimates from this strap's own records, built on your own recent nights. Not WHOOP's scores and not a medical measure.", 11, MUT, 400), lp(-2, -2, 8));
         if (slot == 1) col.addView(wellbeingCard(slot), lp(-1, -2, 16));
         try { col.addView(alarmCard(), lp(-1, -2, 16)); } catch (Throwable ignored) { }      // 0.43.5: a morning and an evening buzz alarm
 
@@ -1431,40 +1471,6 @@ public class HealthActivity extends Activity {
         nowCard.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { go(1); } });
         expandable("t_hr", nowCard, new Filler() { @Override public void fill(LinearLayout p) { fillHrNow(p); } });
         col.addView(nowCard, lp(-1, -2, 12));
-
-        // ---- health monitor: last night against your own usual range
-        List<DailyViews.Metric> mon = DailyViews.monitor(d);
-        if (!mon.isEmpty()) {
-            LinearLayout hmc = card(16);
-            LinearLayout hmh = hrow();
-            hmh.addView(caps("HEALTH MONITOR"));
-            hmh.addView(spacer());
-            hmh.addView(tv("last night against your usual", 12, MUT, 400));
-            hmc.addView(hmh);
-            for (DailyViews.Metric mt : mon) {
-                LinearLayout row = hrow();
-                row.addView(tv(mt.name, 13, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
-                row.addView(tv(mt.valueText(), 15, INK, 600));
-                hmc.addView(row, lp(-1, -2, 12));
-                hmc.addView(new DailyViews.BandView(this, mt), lp(-1, dpi(18), 2));
-                hmc.addView(tv(mt.rangeText(), 11, MUT, 400));
-                final LinearLayout mp = new LinearLayout(this);
-                mp.setOrientation(LinearLayout.VERTICAL);
-                mp.setVisibility(View.GONE);
-                hmc.addView(mp, lp(-1, -2, 4));
-                final String mkey = "mon_" + mt.name;
-                final DailyViews.Metric mtf = mt;
-                row.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
-                    if (openCards.contains(mkey)) { openCards.remove(mkey); mp.removeAllViews(); mp.setVisibility(View.GONE); }
-                    else { openCards.add(mkey); mp.removeAllViews(); fillMonitorPanel(mp, mtf); mp.setVisibility(View.VISIBLE); }
-                } });
-                if (openCards.contains(mkey)) { fillMonitorPanel(mp, mtf); mp.setVisibility(View.VISIBLE); }
-            }
-            TextView hn = tv("Tap a line to see what it means. Green is inside your usual range, amber about two spreads out, red further. HRV here comes from the wrist's optical intervals. A guide, not a diagnosis.", 11, MUT, 400);
-            hn.setLineSpacing(0, 1.2f);
-            hmc.addView(hn, lp(-2, -2, 10));
-            col.addView(hmc, lp(-1, -2, 12));
-        }
 
         col.addView(rowCard("Trends", "Recovery, resting heart rate, HRV, sleep, breathing and skin temperature over 7, 30 or 90 nights",
                 new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } }), lp(-1, -2, 12));
