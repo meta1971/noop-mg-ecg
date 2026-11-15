@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.61.0 (15 Nov 2026): the notification opens the wellbeing page at the three good things (extra focus_evening); text says so.
 // FILE VERSION 0.60.0 (15 Nov 2026): NEW. The wind-down reminder of the wellbeing page. Opt-in, and only while a bed plan is saved: one notification every evening, 45 minutes before the plan time (23:00 -> 22:15).
 // The alarm goes to DayLogReceiver (no manifest change) and is set again after a restart or an update by DayLogBootReceiver. Nothing is sent anywhere; the setting lives in SharedPreferences "wellbeing" (wind_on).
 // Without the exact-alarm permission (Android 12 and up) the alarm is inexact and may arrive a few minutes late; clearing the plan or switching the reminder off cancels it.
@@ -67,11 +68,11 @@ final class WellbeingReminder {
             NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) return;
             if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CH) == null) nm.createNotificationChannel(new NotificationChannel(CH, "Wind-down reminder", NotificationManager.IMPORTANCE_DEFAULT));
-            PendingIntent open = PendingIntent.getActivity(c, REQ_OPEN, new Intent(c, WellbeingActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            PendingIntent open = PendingIntent.getActivity(c, REQ_OPEN, new Intent(c, WellbeingActivity.class).putExtra("focus_evening", true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
             int bed = planBed(c);
             Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(c, CH) : new Notification.Builder(c);
             b.setSmallIcon(android.R.drawable.ic_menu_recent_history).setContentTitle("Wind-down time")
-                .setContentText(bed >= 0 ? "Your plan: in bed by " + WellbeingModel.clock(bed) + ". Tap for a calm minute." : "Tap for a calm minute.")
+                .setContentText(bed >= 0 ? "Your plan: in bed by " + WellbeingModel.clock(bed) + ". Tap for your three good things and a calm minute." : "Tap for your three good things and a calm minute.")
                 .setContentIntent(open).setAutoCancel(true);
             nm.notify(ID, b.build());
         } catch (Throwable ignored) { }

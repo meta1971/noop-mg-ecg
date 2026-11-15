@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.61.0 (15 Nov 2026): BEFORE YOU START card in the ready state (strap link and whether calls can ring; the arm is a reminder, not a measurement; nothing blocks the start), a one-line verdict after a reading from the end rule (ReadingEnd: 60 s of best-quality seconds, 64 clean beats) with buzz and movement counts, a Take another reading pill, and phone-buzz / arm-movement bands on the replay (reading notes ring_episodes and motion_moving_times_s). Acquisition code is unchanged.
 // 0.51.0 (10 Nov 2026): silent research notes after each reading (console catalogue, spectrum block, R17 / R16 and event 118 cross-checks, strap settings scan stats) and the Lab S scale lab (SimLabSheet), behind You > Settings > Research.
 
 // FILE VERSION 0.43.4 (6 Nov 2026): the reading page rebuilt from the screenshot of the "Hi, Ame" page (HealthActivity): greeting + big title + LIVE chip, ONE status card like "Synced 17 min ago / Sync now" with a green pill, the same three rings
@@ -56,6 +57,7 @@ final class EcgPage {
     private Button start;
     private LinearLayout waveCardRef;
     private LinearLayout bankCard; private TextView bankText, bankNote; private ProgressLine bankLine; private BankView bankView; private volatile boolean bankBusy; private static volatile BeatBank.Pooled bankPooled; private static volatile String bankSig = "";      // 0.45.0 (d): the personal beat bank card
+    private LinearLayout preCard; private TextView preVerdict, preStrap, prePhone, preArm, verdictView, retakePill, replayMarksNote;      // 0.61.0: the pre-flight card, the verdict line and the retake pill, the note under the replay marks
     private LinearLayout replayCard; private ReplayView replayView; private volatile boolean replayLoading; private long replayFor = -1L;      // 0.44.0: replay of the finished reading
     private LinearLayout setupBody;
     private final TextView[] rowValues = new TextView[9];
@@ -264,6 +266,34 @@ final class EcgPage {
             LinkState.Info li = MainActivity.linkState(a);
             linkChip.setText("\u25CF  " + li.chip); linkChip.setTextColor(li.level == LinkState.GOOD ? GREEN : li.level == LinkState.WARN ? GOLD : ROSE);
         } catch (Throwable ignored) { }
+        refreshPreflight();
+    }
+
+    /** 0.61.0: the card above READING SETUP. It states only what the phone can know before the start: the strap link and whether calls can ring. The arm and strap fit are a reminder, not a measurement. */
+    private void refreshPreflight() {
+        try {
+            if (preCard == null) return;
+            boolean rest = mode == REST;
+            preCard.setVisibility(rest ? View.VISIBLE : View.GONE);
+            if (!rest) return;
+            LinkState.Info li = MainActivity.linkState(a);
+            preStrap.setText("\u25CF  " + (li.level == LinkState.GOOD ? "Strap linked" : li.title + (li.level == LinkState.BAD ? ": a reading cannot start" : "")));
+            preStrap.setTextColor(li.level == LinkState.GOOD ? GREEN : li.level == LinkState.WARN ? GOLD : ROSE);
+            int f = 1;
+            try { android.app.NotificationManager nm = (android.app.NotificationManager) a.getSystemService(android.content.Context.NOTIFICATION_SERVICE); if (nm != null) f = nm.getCurrentInterruptionFilter(); } catch (Throwable ignored) { }
+            boolean wanted = QuietPhone.wanted(pr), granted = QuietPhone.granted(a);
+            boolean quiet; int col; String txt;
+            if (f == 3 || f == 4) { quiet = true; col = GREEN; txt = "Do Not Disturb is on: calls will not ring."; }
+            else if (f == 2) { quiet = false; col = GOLD; txt = "Do Not Disturb is on for priority only: calls from allowed contacts can still ring."; }
+            else if (wanted && granted) { quiet = true; col = GREEN; txt = "Quiet mode will switch Do Not Disturb on when the reading starts."; }
+            else if (wanted) { quiet = false; col = GOLD; txt = "Quiet mode is on but has no access, so calls will ring."; }
+            else { quiet = false; col = GOLD; txt = "Calls and notifications can ring. A ring near the strap can add steps to the trace; turn on Do Not Disturb first."; }
+            prePhone.setText("\u25CF  " + txt); prePhone.setTextColor(col);
+            preArm.setText("Not measured before the start: forearm on a table, fingers flat on the clasp, strap snug.");
+            boolean ready = li.level == LinkState.GOOD && quiet;
+            preVerdict.setText(li.level == LinkState.BAD ? "Not ready" : ready ? "Ready" : "Check first");
+            preVerdict.setTextColor(li.level == LinkState.BAD ? ROSE : ready ? GREEN : GOLD);
+        } catch (Throwable e) { fail("pre-flight", e); }
     }
 
     /** The "Synced 17 min ago / Sync now" card of the Home page, reused for the three states. */
@@ -311,6 +341,10 @@ final class EcgPage {
         col.addView(ringHint, lp(-1, -2, 0));
         planView = t("", 14, INK, 400); planView.setLineSpacing(0, 1.25f);
         col.addView(planView, lp(-2, -2, 8));
+        verdictView = t("", 14, INK, 400); verdictView.setLineSpacing(0, 1.25f); verdictView.setVisibility(View.GONE); col.addView(verdictView, lp(-2, -2, 8));      // 0.61.0: one line after a reading, and a way back to the ready screen
+        retakePill = HeartGraph.pill(a, "Take another reading", 0x1A2FA8F0, BLUE); retakePill.setVisibility(View.GONE);
+        retakePill.setOnClickListener(v -> { try { if (!running) { detailsOpen = false; applyMode(REST); } } catch (Throwable e) { fail("retake", e); } });
+        col.addView(retakePill, lp(-2, -2, 10));
         noteView = t("Research only: not a diagnosis. The strap's own check and your report show how reliable each reading was.", 11, MUT, 400); noteView.setLineSpacing(0, 1.2f);
         col.addView(noteView, lp(-2, -2, 6));
     }
@@ -353,6 +387,8 @@ final class EcgPage {
         replayView = new ReplayView(a); replayCard.addView(replayView, lp(-1, dp(230), 8));
         TextView rn = t("Drag to move, pinch to zoom, double-tap to fit the whole reading. Amber and grey shading is the strap's own quality for that second; triangles are the beats found.", 11, MUT, 400); rn.setLineSpacing(0, 1.2f);
         replayCard.addView(rn, lp(-1, -2, 6));
+        replayMarksNote = t("Amber bands: the strap felt the phone buzz. Violet bands: the arm moved. Timing is from the start of the reading, good to about 3 s.", 11, MUT, 400); replayMarksNote.setLineSpacing(0, 1.2f); replayMarksNote.setVisibility(View.GONE);      // 0.61.0
+        replayCard.addView(replayMarksNote, lp(-1, -2, 4));
         replayCard.setVisibility(View.GONE);
         col.addView(replayCard, lp(-1, -2, 12));
         // 0.45.0 (d): the personal beat bank: the 40 cleanest beats of every reading, pooled on the phone; the detail view unlocks at 1,000 beats
@@ -440,6 +476,15 @@ final class EcgPage {
         nextCard.addView(nr, lp(-1, -2, 8));
         nextCard.setVisibility(View.GONE);
         col.addView(nextCard, lp(-1, -2, 12));
+        preCard = glass(16);      // 0.61.0: what is measurable before the start, in words (nothing here blocks the start)
+        LinearLayout ph = hrow();
+        ph.addView(caps("BEFORE YOU START"), new LinearLayout.LayoutParams(0, -2, 1f));
+        preVerdict = t("", 12, MUT, 600); ph.addView(preVerdict);
+        preCard.addView(ph, new LinearLayout.LayoutParams(-1, -2));
+        preStrap = t("", 13, INK, 400); preStrap.setLineSpacing(0, 1.2f); preCard.addView(preStrap, lp(-2, -2, 10));
+        prePhone = t("", 13, INK, 400); prePhone.setLineSpacing(0, 1.2f); preCard.addView(prePhone, lp(-2, -2, 8));
+        preArm = t("", 12, MUT, 400); preArm.setLineSpacing(0, 1.2f); preCard.addView(preArm, lp(-2, -2, 8));
+        col.addView(preCard, lp(-1, -2, 12));
         setupCard = glass(16);
         setupCard.addView(caps("READING SETUP"), new LinearLayout.LayoutParams(-2, -2));
         LinearLayout r1 = hrow(); r1.setPadding(0, dp(12), 0, dp(4));
@@ -473,6 +518,8 @@ final class EcgPage {
             if (noteView != null) noteView.setVisibility(run ? View.GONE : View.VISIBLE);
             if (sendNote != null) sendNote.setVisibility(done ? View.VISIBLE : View.GONE);
             if (cuePill != null && !run && readyLeft <= 0) cuePill.setVisibility(View.GONE);
+            if (verdictView != null) verdictView.setVisibility(done ? View.VISIBLE : View.GONE);
+            if (retakePill != null) retakePill.setVisibility(done ? View.VISIBLE : View.GONE);
             applyDetails();
             if (!run) refreshNext(); else if (nextCard != null) nextCard.setVisibility(View.GONE);
             String name = a.getSharedPreferences("today", android.content.Context.MODE_PRIVATE).getString("name", "Ame");
@@ -486,6 +533,7 @@ final class EcgPage {
             } else {
                 greetView.setText("Reading done"); titleView.setText(String.format(Locale.UK, "%d:%02d recorded", (long) lastDur / 60, (long) lastDur % 60));
                 planView.setText("Send collects everything by itself. Your report is in All reports.");
+                try { if (verdictView != null) verdictView.setText(UxLogic.readingVerdict(Live500.q3Sec(), Live500.cleanBeats(), ReadingEnd.Q3_SEC, ReadingEnd.CLEAN_BEATS, RingGuard.episodes(), LiveMotion.movingSeconds())); } catch (Throwable ignored) { }      // 0.61.0
             }
             updateLink();
             if (rest && scrollRef != null) scrollRef.post(new Runnable() { @Override public void run() { try { scrollRef.scrollTo(0, 0); } catch (Throwable ignored) { } } });
@@ -1017,7 +1065,7 @@ final class EcgPage {
             if (stopReason == 1 && !endRuleUsed.isEmpty()) ReadingNotes.put(d, startSec, "end_rule", endRuleUsed);
             boolean imuTest = pr.getBoolean("imu_live_test", false); int imuFr = LiveMotion.frames();
             if (imuTest) ReadingNotes.put(d, startSec, "imu_live_test", "1");
-            if (imuTest || imuFr > 0) { ReadingNotes.put(d, startSec, "imu_frames_live", String.valueOf(imuFr)); ReadingNotes.put(d, startSec, "motion_moving_s", String.valueOf(LiveMotion.movingSeconds())); }      // 0.50.0: also without the test switch (a stale stream shows here)
+            if (imuTest || imuFr > 0) { ReadingNotes.put(d, startSec, "imu_frames_live", String.valueOf(imuFr)); ReadingNotes.put(d, startSec, "motion_moving_s", String.valueOf(LiveMotion.movingSeconds())); ReadingNotes.put(d, startSec, "motion_moving_times_s", LiveMotion.movingTimesCsv()); }      // 0.50.0: also without the test switch (a stale stream shows here)
             if (imuFr > 0 && MainActivity.imuBeforeCmd) ReadingNotes.put(d, startSec, "imu_stream_before_cmd", "1");
             if (RingGuard.frames() > 0) {      // 0.57.0: the buzz guard (decode log 206): frames seen, flagged seconds, the longest run, the line frequency of the last hit, the episodes (3 or more flagged seconds, gaps of 3 s or less) and every flagged second, from the reading start
                 ReadingNotes.put(d, startSec, "ring_guard_frames", String.valueOf(RingGuard.frames())); ReadingNotes.put(d, startSec, "ring_flagged_s", String.valueOf(RingGuard.flaggedSeconds()));
@@ -1148,9 +1196,12 @@ final class EcgPage {
                 ReplayData rd = null;
                 try { try { Thread.sleep(800L); } catch (InterruptedException ignored) { } rd = ReplayData.load(ProReportMaker.findBin(d, sec)); } catch (Throwable ignored) { }
                 final ReplayData fr = rd;
+                List<UxLogic.Span> mk = null;      // 0.61.0: buzz episodes and moving seconds from this reading's notes
+                try { java.util.Map<String, String> nt = ReadingNotes.forReading(d, sec); if (rd != null && nt != null) mk = UxLogic.marks(nt.get("ring_episodes"), nt.get("motion_moving_times_s"), rd.durS); } catch (Throwable ignored) { }
+                final List<UxLogic.Span> fmk = mk;
                 h.post(new Runnable() { @Override public void run() {
                     replayLoading = false;
-                    if (mode == DONE && startMs / 1000L == sec && replayView != null) { replayView.setData(fr, fr == null ? "No 500 Hz data found for this reading" : null); replayFor = sec; }
+                    if (mode == DONE && startMs / 1000L == sec && replayView != null) { replayView.setData(fr, fr == null ? "No 500 Hz data found for this reading" : null); replayView.setMarks(fmk); if (replayMarksNote != null) replayMarksNote.setVisibility(fmk != null && !fmk.isEmpty() ? View.VISIBLE : View.GONE); replayFor = sec; }
                 } });
             } }).start();
         } catch (Throwable e) { replayLoading = false; fail("replay", e); }

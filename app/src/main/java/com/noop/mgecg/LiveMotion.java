@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.61.0 (15 Nov 2026): also keeps the second (from the reading start) of every MOVING frame, at most 600, for the marks on the replay (movingTimesCsv, reading note motion_moving_times_s). The rule itself is unchanged.
 // FILE VERSION 0.46.1 (9 Nov 2026): live motion from the strap's R21 frames (type 43, layout 21, 1,244 bytes, one a second: 100 samples of accelerometer and gyroscope) that arrive when
 // Settings > Live motion capture (test) asked for the IMU stream (START_RAW_DATA 81 [01], then TOGGLE_IMU_MODE 106 [01 01]). Decoding as AuxSummary: accelerometer x, y, z from byte 28 (100 int16 each,
 // 4096 counts per g), gyroscope from byte 640 (16.384 counts per dps); checked exact against the history copy of the same reading on 9 Nov (0.00000 g difference). Per second: the largest
@@ -12,8 +13,9 @@ final class LiveMotion {
     private static final Object L = new Object();
     private static long lastMs; private static double dev = Double.NaN, tilt = Double.NaN, gyro = Double.NaN;
     private static boolean moving; private static int frames, movingSec;
+    private static long resetMs; private static final double[] mvTimes = new double[600]; private static int mvN;      // 0.61.0: seconds from the reading start of each MOVING second (at most 600)
 
-    static void reset() { synchronized (L) { lastMs = 0; dev = tilt = gyro = Double.NaN; moving = false; frames = 0; movingSec = 0; } }
+    static void reset() { synchronized (L) { lastMs = 0; dev = tilt = gyro = Double.NaN; moving = false; frames = 0; movingSec = 0; resetMs = System.currentTimeMillis(); mvN = 0; } }
 
     private static int i16(byte[] f, int o) { return (short) ((f[o] & 0xFF) | ((f[o + 1] & 0xFF) << 8)); }
 
@@ -39,13 +41,15 @@ final class LiveMotion {
         }
         synchronized (L) {
             dev = d; tilt = t; gyro = g; lastMs = nowMs; frames++;
-            moving = d > DEV_G || t > TILT_DEG || g > GYRO_DPS; if (moving) movingSec++;
+            moving = d > DEV_G || t > TILT_DEG || g > GYRO_DPS; if (moving) { movingSec++; if (mvN < mvTimes.length && resetMs > 0) mvTimes[mvN++] = Math.max(0.0, (nowMs - resetMs) / 1000.0); }
         }
         return true;
     }
 
     static int frames() { synchronized (L) { return frames; } }
     static int movingSeconds() { synchronized (L) { return movingSec; } }
+    /** 0.61.0: seconds from the reading start of each moving second, ';' between (frame arrival, about 1 s after its samples). */
+    static String movingTimesCsv() { synchronized (L) { StringBuilder sb = new StringBuilder(); for (int i = 0; i < mvN; i++) { if (i > 0) sb.append(';'); sb.append(String.format(java.util.Locale.US, "%.0f", mvTimes[i])); } return sb.toString(); } }
     /** True when a frame arrived in the last 3 s. */
     static boolean fresh(long nowMs) { synchronized (L) { return frames > 0 && nowMs - lastMs <= 3000; } }
     static boolean moving() { synchronized (L) { return moving; } }

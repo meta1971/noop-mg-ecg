@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.61.0 (15 Nov 2026): text size setting (UxKit.scaled); the intent extra focus_evening scrolls to the three good things (from the wind-down reminder and the "This evening" card).
 // FILE VERSION 0.60.0 (15 Nov 2026): the page grew. New cards: night-by-night bars with personal bests, work-night scatter (bed time against hours), three ECG cards (clean-reading ring, evening-pulse spread, calmest evening),
 // a two-week WHO-5 check-in, three good things, a public-domain line for the day, and an opt-in wind-down reminder under the bed plan. Fixes: the "UK median 60" caption (study-specific, removed) and the calm-minute wording (now states Pizzoli 2021 as measured).
 // 0.59.0 (15 Nov 2026): added the "How this is worked out" card at the bottom: every rule the page uses and the study behind each line, with its design (observational or trial). No number or claim above it changed.
@@ -150,17 +151,31 @@ public class WellbeingActivity extends Activity {
     private boolean loadingNow;
     private Pack lastPack;
     private LinearLayout remBox, whoCard, goodCard;
+    private ScrollView scroll; private boolean focusEvening;      // 0.61.0: the evening reminder and the "This evening" card open straight at the three good things
     private EditText[] gtFields;
     private boolean editGood, notifDenied;
 
+    @Override protected void attachBaseContext(Context base) { super.attachBaseContext(UxKit.scaled(base)); }      // 0.61.0: text size setting
+
+    @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); setIntent(i); focusEvening = i != null && i.getBooleanExtra("focus_evening", false); scrollToFocus(); }
+
+    private void scrollToFocus() {
+        if (!focusEvening || scroll == null) return;
+        scroll.postDelayed(new Runnable() { @Override public void run() {
+            try { if (goodCard != null && goodCard.getParent() != null) { scroll.smoothScrollTo(0, Math.max(0, goodCard.getTop() - px(12))); focusEvening = false; } } catch (Throwable ignored) { }
+        } }, 350L);
+    }
+
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        focusEvening = getIntent() != null && getIntent().getBooleanExtra("focus_evening", false);
         dp = getResources().getDisplayMetrics().density;
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         root.addView(new GlowView(this), new FrameLayout.LayoutParams(-1, -1));
         ScrollView sv = new ScrollView(this);
+        scroll = sv;
         sv.setVerticalScrollBarEnabled(false);
         col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
@@ -195,6 +210,7 @@ public class WellbeingActivity extends Activity {
                             addMindCards();
                             addClose();
                         } else render(pk);
+                        scrollToFocus();
                     }
                 });
             }

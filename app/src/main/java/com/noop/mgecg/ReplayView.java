@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.61.0 (15 Nov 2026): setMarks(): amber bands where the strap felt the phone buzz, violet bands where the arm moved (UxLogic.marks from the reading notes); drawn under the grid and trace and on the overview bar.
 // FILE VERSION 0.44.0 (7 Nov 2026): read-only replay of a whole recorded reading (decode log 50.6 item 1, A3). Drag to move, pinch to zoom, double-tap to fit the
 // whole reading or come back to 8 s. Paper or dark theme as the live graph (Live500View.paper); beat markers with R-R times; quality shading per second (amber fair, grey poor,
 // darker no contact); a thin overview bar with the reading's quality and the window.
@@ -14,10 +15,13 @@ import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 public class ReplayView extends View {
     private ReplayData d;
+    private List<UxLogic.Span> marks = new ArrayList<UxLogic.Span>();      // 0.61.0: phone buzz and arm movement, from the reading notes
     private String message = "Loading the reading\u2026";
     private double[] yr = { -0.5, 1.0 };
     private double t0, span = 8.0;
@@ -70,6 +74,9 @@ public class ReplayView extends View {
         if (d != null) { yr = d.yRange(); span = clampSpan(8.0); t0 = 0; }
         invalidate();
     }
+
+    /** 0.61.0: bands where the strap felt the phone buzz (amber) or the arm move (violet); times are seconds from the reading start. */
+    void setMarks(List<UxLogic.Span> m) { marks = m == null ? new ArrayList<UxLogic.Span>() : m; invalidate(); }
 
     private double clampSpan(double s) { double mx = d == null ? 8.0 : Math.max(1.5, d.durS), mn = Math.min(1.5, mx); return Math.max(mn, Math.min(mx, s)); }
     private void clampT0() { if (d == null) return; t0 = Math.max(0.0, Math.min(Math.max(0.0, d.durS - span), t0)); }
@@ -136,6 +143,14 @@ public class ReplayView extends View {
             shade.setColor(col); cv.drawRect(Math.max(0f, xa), top, Math.min(w, xb), bot, shade);
             s = e;
         }
+        // 0.61.0: where the strap felt the phone buzz or the arm move (timing from the reading start, good to about 3 s)
+        for (UxLogic.Span m : marks) {
+            if (m.b < t0 || m.a > t0 + span) continue;
+            float xa = Math.max(0f, xOf(m.a, w)), xb = Math.min((float) w, xOf(m.b, w));
+            if (xb - xa < 3f * dp) { float mid = (xa + xb) / 2f; xa = mid - 1.5f * dp; xb = mid + 1.5f * dp; }
+            shade.setColor(m.kind == UxLogic.KIND_BUZZ ? 0x33FFB347 : 0x338E93E8); cv.drawRect(xa, top, xb, bot, shade);
+            shade.setColor(m.kind == UxLogic.KIND_BUZZ ? 0xFFFFB347 : 0xFF8E93E8); cv.drawRect(xa, bot - 5f * dp, xb, bot, shade);
+        }
         // grid
         if (span <= 20.0) {
             double st = span <= 6.0 ? 0.04 : 0.2;
@@ -196,6 +211,10 @@ public class ReplayView extends View {
             if (tb < 0 || ta > d.durS) continue;
             float xa = (float) (Math.max(0, ta) / d.durS * w), xb = (float) (Math.min(d.durS, tb) / d.durS * w);
             ov.setColor(ovColour(d.secCls[s])); cv.drawRect(xa, oy, Math.max(xb, xa + 1f), oy + oh, ov);
+        }
+        for (UxLogic.Span m : marks) {
+            float xa = (float) (Math.max(0, m.a) / d.durS * w), xb = (float) (Math.min(d.durS, m.b) / d.durS * w);
+            ov.setColor(m.kind == UxLogic.KIND_BUZZ ? 0xFFFFB347 : 0xFF8E93E8); cv.drawRect(xa, oy - 3f * dp, Math.max(xb, xa + 2f * dp), oy, ov);
         }
         cv.drawRoundRect((float) (t0 / d.durS * w), oy - 2f * dp, (float) Math.min(w, (t0 + span) / d.durS * w), oy + oh + 2f * dp, 3f * dp, 3f * dp, ovWin);
         cv.drawRect(1, 1, w - 1, h - 1, border);

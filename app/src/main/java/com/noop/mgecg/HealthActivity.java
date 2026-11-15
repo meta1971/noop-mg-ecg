@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.61.0 (15 Nov 2026): answer line at the top of Heart, Rest, ECG and You (a sentence in words against the person's own earlier nights, UxLogic); one status strip on every tab with a sheet of what needs attention (logger, link, old records, notifications, exact alarms, battery, Do Not Disturb access); Rest card "against your own usual" with range bars; Today opens by the time of day (the wellbeing card is "This evening" from 18:00 and sits under the rings in the daytime); specific empty states; Display settings on You (text size, brighter secondary text, bigger tap targets, UxKit).
 // 0.58.0 (15 Nov 2026): the MORNING BRIEF card at the top of Today (WellbeingActivity / WellbeingModel): the main opinion counted from the last 14 days of sleep, tap for the wellbeing page. 0.57.0: Phone-buzz guard and Silence-the-phone rows on You (RingGuard / QuietPhone).
 // 0.56.0 (14 Nov 2026): the seventh ring, HEART WATCH (AlertEngine / AlertWatch): usual / WATCH / CHECK from the pulse rhythm at rest, the heart rate at rest and the night signs; detail panel with what to do.
 // 0.55.0 (14 Nov 2026): each ring has its own colour (DailyViews.RING_COLORS); a Quick guide link under the rings and a Quick guide row on You; plainer strap line on the sync strip ("pages not copied yet", "Strap link is on/off").
@@ -207,6 +208,181 @@ public class HealthActivity extends Activity {
         }, "health-load").start();
     }
 
+    // ------------------------------------------------------------------ 0.61.0: answer lines, status strip, own range, display settings
+    @Override protected void attachBaseContext(Context base) { super.attachBaseContext(UxKit.scaled(base)); }
+
+    private int tapMin() { return UxKit.bigTaps(this) ? dpi(54) : 0; }
+
+    /** One sentence in words that answers the tab's question; the numbers sit inside the sentence. */
+    private View answerLine(String s) {
+        TextView t = tv(s, 15, INK, 400);
+        t.setLineSpacing(0, 1.22f);
+        t.setPadding(dpi(14), dpi(12), dpi(14), dpi(12));
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        g.setColor(0x14FFFFFF); g.setCornerRadius(dp(this, 14)); g.setStroke(dpi(1), 0x1F2FA8F0);
+        t.setBackground(g);
+        return t;
+    }
+
+    private static int nightIdx(List<TodayModel.NightStat> all, long bedTs) {
+        for (int i = all.size() - 1; i >= 0; i--) if (Math.abs(all.get(i).bed - bedTs) < 3600L) return i;
+        return -1;
+    }
+
+    /** m: 0 sleep hours, 1 lowest five-minute heart rate, 2 RMSSD (same rule as Trends). The first [upto] nights, oldest first. */
+    private static double[] nightVals(List<TodayModel.NightStat> all, int upto, int m) {
+        double[] o = new double[Math.max(0, upto)];
+        for (int i = 0; i < o.length; i++) { TodayModel.NightStat q = all.get(i); o[i] = m == 0 ? q.tstH : m == 1 ? q.hrLow5 : (q.rmssd > 0 ? q.rmssd : Double.NaN); }
+        return o;
+    }
+
+    private static String nightWhen(TodayModel.NightStat q) {
+        long end = q.bed + (long) (q.tstH * 3600.0);
+        if (System.currentTimeMillis() / 1000L - end < 36L * 3600L) return "last night";
+        return "on the night of " + new SimpleDateFormat("EEE d MMM", Locale.UK).format(new Date(q.bed * 1000L));
+    }
+
+    /** The neutral range bar: the band is the middle 80 % of the earlier nights, the tick is their median, the dot is this night. */
+    static final class RangeBarView extends View {
+        private final double lo, hi, med, val; private final int col;
+        RangeBarView(Context c, UxLogic.Range r, double val, int col) { super(c); this.lo = r.lo; this.hi = r.hi; this.med = r.med; this.val = val; this.col = col; }
+        @Override protected void onDraw(Canvas cv) {
+            Context c = getContext();
+            float w = getWidth(), h = getHeight(), pad = dp(c, 8), cy = h / 2f;
+            double span = Math.max(hi - lo, Math.max(1e-6, Math.abs(hi) * 0.05));
+            double a = Math.min(lo, val) - span * 0.35, b = Math.max(hi, val) + span * 0.35;
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            p.setColor(0x1FFFFFFF); cv.drawRoundRect(new RectF(pad, cy - dp(c, 2), w - pad, cy + dp(c, 2)), dp(c, 2), dp(c, 2), p);
+            float xl = (float) (pad + (w - 2 * pad) * (lo - a) / (b - a)), xh = (float) (pad + (w - 2 * pad) * (hi - a) / (b - a)), xm = (float) (pad + (w - 2 * pad) * (med - a) / (b - a)), xv = (float) (pad + (w - 2 * pad) * (val - a) / (b - a));
+            p.setColor(0x402FA8F0); cv.drawRoundRect(new RectF(xl, cy - dp(c, 7), xh, cy + dp(c, 7)), dp(c, 7), dp(c, 7), p);
+            p.setColor(0x80FFFFFF); cv.drawRect(xm - dp(c, 1), cy - dp(c, 7), xm + dp(c, 1), cy + dp(c, 7), p);
+            p.setColor(0x40000000); cv.drawCircle(xv, cy, dp(c, 8), p);
+            p.setColor(col); cv.drawCircle(xv, cy, dp(c, 6), p);
+        }
+    }
+
+    private void rangeRow(LinearLayout c, String label, String valTxt, String rangeTxt, UxLogic.Range r, double val) {
+        LinearLayout row = hrow();
+        row.addView(tv(label, 13.5f, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(tv(valTxt, 14, INK, 600));
+        c.addView(row, lp(-1, -2, 14));
+        c.addView(new RangeBarView(this, r, val, r.pos == UxLogic.INSIDE ? TEAL : GOLD), lp(-1, dpi(24), 4));
+        c.addView(tv("usual " + rangeTxt + "  ·  " + (r.pos == UxLogic.INSIDE ? "inside" : r.pos == UxLogic.BELOW ? "below" : "above") + "  ·  last " + r.n + " nights", 11.5f, MUT, 400), lp(-2, -2, 2));
+    }
+
+    /** The Rest card: this night against the same person's earlier nights. Says what is missing when there are fewer than five. */
+    private View rangeCard(double tst, UxLogic.Range rT, double hr, UxLogic.Range rH, double hv, UxLogic.Range rV) {
+        LinearLayout c = card(16);
+        c.addView(caps("AGAINST YOUR OWN USUAL"));
+        if (!rT.ok() && !rH.ok() && !rV.ok()) {
+            int n = Math.max(rT.n, Math.max(rH.n, rV.n));
+            c.addView(tv("Each figure is compared with your own earlier nights once there are " + UxLogic.RANGE_MIN_N + " of them with data. " + (n == 0 ? "None are logged yet." : "There " + (n == 1 ? "is " : "are ") + n + " so far.") + " Until then nothing is compared.", 12.5f, MUT, 400), lp(-2, -2, 6));
+            return c;
+        }
+        if (rT.ok()) rangeRow(c, "Sleep", HealthModel.hm(tst), HealthModel.hm(rT.lo) + " to " + HealthModel.hm(rT.hi), rT, tst);
+        if (rH.ok()) rangeRow(c, "Lowest 5-minute heart rate", UxLogic.num(hr) + " bpm", UxLogic.num(rH.lo) + " to " + UxLogic.num(rH.hi), rH, hr);
+        if (rV.ok()) rangeRow(c, "HRV (RMSSD, wrist)", UxLogic.num(hv) + " ms", UxLogic.num(rV.lo) + " to " + UxLogic.num(rV.hi), rV, hv);
+        TextView cap = tv("The band is the middle 80 % of your own earlier nights (the 10th to the 90th percentile of up to 30), the tick is their median. Outside the band means unusual for you, not good or bad.", 11, MUT, 400);
+        cap.setLineSpacing(0, 1.2f);
+        c.addView(cap, lp(-2, -2, 12));
+        return c;
+    }
+
+    // ---- status strip
+    private List<UxLogic.Issue> uxIssues(LinkState.Info li, long ageSec) {
+        boolean on = DayLog.enabled(this);
+        boolean remindersOn = false;
+        try { remindersOn = WellbeingReminder.on(this) || EcgReminder.load(this).on; } catch (Throwable ignored) { }
+        boolean notifBlocked = false;
+        try { android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE); notifBlocked = (on || remindersOn) && nm != null && !nm.areNotificationsEnabled(); } catch (Throwable ignored) { }
+        boolean exactOff = false;
+        try { exactOff = remindersOn && !EcgReminder.exactOk(this); } catch (Throwable ignored) { }
+        boolean battery = false;
+        try { battery = !KeepAlive.batteryExempt(this); } catch (Throwable ignored) { }
+        boolean dnd = false;
+        try { SharedPreferences ctl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE); dnd = QuietPhone.wanted(ctl) && !QuietPhone.granted(this); } catch (Throwable ignored) { }
+        boolean stale = ageSec >= 0 && LinkState.staleBanner(li.level, ageSec);
+        return UxLogic.issues(on, li.level, li.title, li.detail, stale, notifBlocked, exactOff, battery, dnd);
+    }
+
+    private View statusStrip() {
+        final boolean on = DayLog.enabled(this);
+        final LinkState.Info li = MainActivity.linkState(this);
+        long ageSec = data != null && data.day != null && data.day.newestTs > 0 ? Math.max(0L, System.currentTimeMillis() / 1000L - data.day.newestTs) : -1L;
+        final List<UxLogic.Issue> is = uxIssues(li, ageSec);
+        LinearLayout r = hrow();
+        r.setPadding(0, dpi(2), 0, dpi(12));
+        TextView t = tv(UxLogic.statusLine(on, li.level, ageSec), 11.5f, MUT, 400);
+        r.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
+        if (!is.isEmpty()) r.addView(tv(is.size() + " to fix ›", 11.5f, GOLD, 600));
+        r.setMinimumHeight(Math.max(dpi(30), tapMin()));
+        r.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { showIssues(is, on); } });
+        return r;
+    }
+
+    private void showIssues(List<UxLogic.Issue> is, boolean loggerOn) {
+        AlertDialog.Builder b = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
+        if (is.isEmpty()) {
+            b.setTitle("Nothing needs your attention").setMessage("The strap link, the day logger, notifications, alarms and battery settings are all as the app needs them. The strap stores its records and sends them at each history pull, so the last record is normally a few minutes to half an hour old.");
+        } else {
+            StringBuilder m = new StringBuilder();
+            boolean needLogger = false, needNotif = false;
+            for (UxLogic.Issue q : is) {
+                m.append("• ").append(q.title).append("\n  ").append(q.detail).append("\n\n");
+                if ("logger".equals(q.code)) needLogger = true;
+                if ("notif".equals(q.code)) needNotif = true;
+            }
+            b.setTitle(is.size() == 1 ? "One thing to fix" : is.size() + " things to fix").setMessage(m.toString().trim());
+            if (needLogger) b.setPositiveButton("Turn on the day logger", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) { turnOnLogger(); } });
+            else if (needNotif) b.setPositiveButton("Allow notifications", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) { askNotify(); } });
+            b.setNeutralButton("App settings", new android.content.DialogInterface.OnClickListener() { @Override public void onClick(android.content.DialogInterface d, int w) {
+                try { startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + getPackageName()))); } catch (Throwable ignored) { }
+            } });
+        }
+        b.setNegativeButton("Close", null);
+        b.show();
+    }
+
+    /** Rebuilds the tab and puts the scroll position back (the You tab is long; a setting must not throw the person to the top). */
+    private void renderKeepScroll() {
+        int y = 0;
+        try { View c0 = content.getChildAt(0); if (c0 instanceof ScrollView) y = c0.getScrollY(); } catch (Throwable ignored) { }
+        render();
+        final int fy = y;
+        content.post(new Runnable() { @Override public void run() { try { View c0 = content.getChildAt(0); if (c0 instanceof ScrollView) c0.scrollTo(0, fy); } catch (Throwable ignored) { } } });
+    }
+
+    // ---- display settings (You tab)
+    private View uxToggle(String label, final String key) {
+        LinearLayout r = hrow();
+        r.addView(tv(label, 14, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
+        final SharedPreferences up = UxKit.sp(this);
+        final Toggle t = new Toggle(this, up.getBoolean(key, false));
+        t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !up.getBoolean(key, false); up.edit().putBoolean(key, on).apply(); t.set(on); renderKeepScroll(); } });
+        r.addView(t, new LinearLayout.LayoutParams(dpi(46), dpi(28)));
+        r.setMinimumHeight(dpi(52));
+        return r;
+    }
+
+    private View displayCard() {
+        LinearLayout c = card(16);
+        c.addView(caps("DISPLAY"));
+        final SharedPreferences up = UxKit.sp(this);
+        final TextView sv = tv(UxLogic.stepName(UxKit.textStep(this)), 14, BLUE, 600);
+        c.addView(valueRow("Text size", sv, new View.OnClickListener() { @Override public void onClick(View v) {
+            int st = (UxKit.textStep(HealthActivity.this) + 1) % UxLogic.STEPS;
+            up.edit().putInt("text_step", st).commit();
+            pendingTab = 4;                                   // come back to this tab after the screen is rebuilt at the new size
+            recreate();
+        } }), lp(-1, dpi(52), 6));
+        c.addView(uxToggle("Brighter secondary text", "contrast"), lp(-1, dpi(52), 0));
+        c.addView(uxToggle("Bigger tap targets", "big_taps"), lp(-1, dpi(52), 0));
+        TextView n = tv("Text size applies to Today, Heart, ECG list, Rest, You and the wellbeing page. The live ECG reading screen keeps its own sizes.", 11, MUT, 400);
+        n.setLineSpacing(0, 1.2f);
+        c.addView(n, lp(-2, -2, 6));
+        return c;
+    }
+
     // ------------------------------------------------------------------ small builders
     private int dpi(float v) { return Math.round(dp(this, v)); }
 
@@ -214,7 +390,7 @@ public class HealthActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(sp);
-        t.setTextColor(color);
+        t.setTextColor(UxKit.muted(this, color));
         t.setTypeface(font(this, weight));
         t.setIncludeFontPadding(false);
         return t;
@@ -252,7 +428,7 @@ public class HealthActivity extends Activity {
     private TextView chip(String s, int dot) {
         TextView t = tv(s, 12, INK, 400);
         t.setGravity(Gravity.CENTER);
-        t.setPadding(dpi(13), dpi(8), dpi(13), dpi(8));
+        t.setPadding(dpi(13), dpi(UxKit.bigTaps(this) ? 14 : 8), dpi(13), dpi(UxKit.bigTaps(this) ? 14 : 8));
         android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
         g.setColor(0x0DFFFFFF); g.setCornerRadius(dp(this, 17)); g.setStroke(dpi(1), 0x0FFFFFFF);
         t.setBackground(g);
@@ -302,17 +478,18 @@ public class HealthActivity extends Activity {
     }
 
     /** 0.58.0: the Morning brief card at the top of Today: the page's main opinion (counted from the last 14 days of sleep) and the ring word; a tap opens the wellbeing page. */
-    private View wellbeingCard() {
+    private View wellbeingCard(final int slot) {
         LinearLayout c = card(16);
         LinearLayout row = hrow();
         row.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.VERTICAL);
-        l.addView(caps("MORNING BRIEF"));
+        l.addView(caps(slot == 0 ? "MORNING BRIEF" : slot == 1 ? "WELLBEING" : "THIS EVENING"));
         final TextView head = tv("Reading your last nights...", 17, INK, 400);
         head.setPadding(0, dpi(8), 0, 0);
         l.addView(head);
-        final TextView sub = tv("Tap for your morning page", 12, MUT, 400);
+        final String dflt = slot == 2 ? "Tap for your three good things and the wind-down" : "Tap for your morning page";
+        final TextView sub = tv(dflt, 12, MUT, 400);
         sub.setPadding(0, dpi(6), 0, 0);
         l.addView(sub);
         row.addView(l, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -321,7 +498,7 @@ public class HealthActivity extends Activity {
         row.addView(word);
         c.addView(row);
         c.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { try { startActivity(new Intent(HealthActivity.this, WellbeingActivity.class)); } catch (Throwable ignored) { } }
+            @Override public void onClick(View v) { try { startActivity(new Intent(HealthActivity.this, WellbeingActivity.class).putExtra("focus_evening", slot == 2)); } catch (Throwable ignored) { } }
         });
         final Context app = getApplicationContext();
         Thread th = new Thread(new Runnable() {
@@ -333,7 +510,7 @@ public class HealthActivity extends Activity {
                         if (o == null) { head.setText("Your morning page"); sub.setText("Tap to open"); return; }
                         head.setText(o.headline);
                         word.setText(o.enough && !"Gathering".equals(o.word) ? o.word : "");
-                        sub.setText(o.enough ? (o.planOn && o.planChecked ? o.planHead : "Tap for your morning page") : o.body);
+                        sub.setText(o.enough ? (slot != 2 && o.planOn && o.planChecked ? o.planHead : dflt) : o.body);
                     }
                 });
             }
@@ -492,6 +669,10 @@ public class HealthActivity extends Activity {
             case 4: v = youTab(); break;
             default: v = todayTab();
         }
+        try {                                                                  // 0.61.0: one status strip at the top of every tab
+            if (v instanceof ScrollView && ((ScrollView) v).getChildCount() > 0 && ((ScrollView) v).getChildAt(0) instanceof LinearLayout)
+                ((LinearLayout) ((ScrollView) v).getChildAt(0)).addView(statusStrip(), 0, new LinearLayout.LayoutParams(-1, -2));
+        } catch (Throwable ignored) { }
         content.addView(v, new FrameLayout.LayoutParams(-1, -1));
     }
 
@@ -1128,7 +1309,8 @@ public class HealthActivity extends Activity {
         SleepNight.Night n = day.night;
         long age = System.currentTimeMillis() / 1000L - day.newestTs;
         col.addView(head("Hi, " + name(), n != null ? "You slept " + HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) : "Good morning", null));
-        col.addView(wellbeingCard(), lp(-1, -2, 12));                // 0.58.0: the Morning brief card, opens the wellbeing page
+        final int slot = UxLogic.slot(java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY));      // 0.61.0: morning, daytime, evening
+        if (slot != 1) col.addView(wellbeingCard(slot), lp(-1, -2, 12));                // 0.58.0: the Morning brief card (0.61.0: "This evening" after 18:00, below the rings in the daytime), opens the wellbeing page
         View banner = loggerBanner(age);                       // 0.13.2: say so when the all-day log is not running
         if (banner != null) col.addView(banner, lp(-1, -2, 12));
         col.addView(syncStrip(day), lp(-1, -2, 10));              // 0.20.0: when it last synced, how far behind the strap is, and a Sync now button
@@ -1198,6 +1380,7 @@ public class HealthActivity extends Activity {
         plan.setLineSpacing(0, 1.25f);
         col.addView(plan, lp(-2, -2, 8));
         col.addView(tv("Estimates from this strap's own records, built on your own recent nights. Not WHOOP's scores and not a medical measure.", 11, MUT, 400), lp(-2, -2, 4));
+        if (slot == 1) col.addView(wellbeingCard(slot), lp(-1, -2, 16));
         try { col.addView(alarmCard(), lp(-1, -2, 16)); } catch (Throwable ignored) { }      // 0.43.5: a morning and an evening buzz alarm
 
         // ---- 0.54.0: all-day activity (not workouts): moving time, still stretches and the hours of the day
@@ -1364,7 +1547,7 @@ public class HealthActivity extends Activity {
         HealthModel.Data d = data;
         if (d == null || d.day == null || d.day.newestTs == 0) {
             col.addView(head("Heart", "Heart", null));
-            col.addView(tv("No records yet.", 14, MUT, 400), lp(-2, -2, 16));
+            col.addView(tv("No records yet. The strap stores its heart-rate seconds and the app collects them at each history pull, about every 30 minutes while the day logger is on and the strap is in range. Turn the day logger on (Today tab) and the first records arrive within the hour.", 14, MUT, 400), lp(-2, -2, 16));
             return wrap(col);
         }
         TodayModel.Day day = d.day;
@@ -1391,6 +1574,16 @@ public class HealthActivity extends Activity {
         col.addView(big, lp(-1, -2, 8));
         col.addView(tv(shownHr(d) > 0 && !Double.isNaN(day.restingHr) ? (shownHr(d) > day.restingHr + 8 ? "Above your lowest 5-minute rate of " : "Close to your lowest 5-minute rate of ") + Math.round(day.restingHr) + ". " + hrvSrc + "." : hrvSrc + ".", 12, MUT, 400), lp(-2, -2, 6));
 
+        try {                                                                  // 0.61.0: the answer first, against the person's own earlier nights
+            List<TodayModel.NightStat> an = restNights();
+            if (!an.isEmpty()) {
+                TodayModel.NightStat lt = an.get(an.size() - 1);
+                UxLogic.Range r5 = UxLogic.range(nightVals(an, an.size() - 1, 1), lt.hrLow5);
+                String ans = UxLogic.heartAnswer(nightWhen(lt), lt.hrLow5, r5);
+                if (ans != null) col.addView(answerLine(ans), lp(-1, -2, 12));
+                else if (!Double.isNaN(lt.hrLow5)) col.addView(tv("No comparison yet: your usual range needs " + UxLogic.RANGE_MIN_N + " earlier nights with a heart-rate low, and there " + (r5.n == 1 ? "is " : "are ") + r5.n + ".", 12, MUT, 400), lp(-2, -2, 10));
+            }
+        } catch (Throwable ignored) { }
         LinearLayout hrc = explainerCard("ABOUT THE HEART RATE", "How it is measured, what the zones mean and when to trust it");
         expandable("h_hr", hrc, new Filler() { @Override public void fill(LinearLayout p) { fillHrNow(p); } });
         col.addView(hrc, lp(-1, -2, 10));
@@ -1675,7 +1868,22 @@ public class HealthActivity extends Activity {
         HealthModel.Data d = data;
         int n = d == null ? 0 : d.readings.size();
         col.addView(head("ECG", n == 0 ? "Take your first reading" : "Ready for an ECG", null));
-        col.addView(pillButton("Start an ECG", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), lp(-1, dpi(54), 16));
+        col.addView(pillButton("Start an ECG", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), lp(-1, Math.max(dpi(54), tapMin()), 16));
+        try {                                                                  // 0.61.0: the answer first
+            long nowMs = System.currentTimeMillis(); int n7 = 0, ab = 0;
+            if (d != null) for (HealthModel.Reading rr : d.readings) {
+                if (rr.timeMs < nowMs - 7L * 86400000L) continue;
+                n7++;
+                String gg = rr.grade == null ? "-" : rr.grade.toUpperCase(Locale.UK);
+                if (gg.startsWith("A") || gg.startsWith("B")) ab++;
+            }
+            if (n > 0) {
+                HealthModel.Reading l0 = d.readings.get(0);
+                int hr0 = 0; try { hr0 = Integer.parseInt(l0.hr.trim()); } catch (Throwable ignored) { }
+                String g0 = l0.grade == null ? "-" : l0.grade.toUpperCase(Locale.UK);
+                col.addView(answerLine(UxLogic.ecgAnswer(n7, ab, l0.when, hr0, g0.length() > 0 ? g0.charAt(0) : ' ')), lp(-1, -2, 12));
+            }
+        } catch (Throwable ignored) { }
         if (n == 0) col.addView(tv("Two fingers on the clasp, forearm on a table. A free reading runs about two and a half minutes: enough for a rhythm check.", 14, INK, 400), lp(-2, -2, 14));
         try {                                                              // the latest reading: the status card with Send, then the three rings (like the Today page)
             if (n > 0 && d.readings.get(0).file != null) {
@@ -1824,7 +2032,7 @@ public class HealthActivity extends Activity {
         if (base == null || base.day == null || base.day.night == null) {
             LinearLayout col = screen();
             col.addView(head("Last night", "Rest", null));
-            col.addView(tv("No complete night in the records yet.", 14, MUT, 400), lp(-2, -2, 16));
+            col.addView(tv("No complete night in the records yet. A night needs the strap worn through sleep with the day logger on; it shows here after the morning history pull.", 14, MUT, 400), lp(-2, -2, 16));
             return wrap(col);
         }
         if (nightOwner != base) { nightCache.clear(); nightMiss.clear(); nightOwner = base; nightLoading = 0; }
@@ -1907,6 +2115,18 @@ public class HealthActivity extends Activity {
         double goal = goal();
         col.addView(head(latest ? "Last night" : dayName(n.bedTs), "Rest", chip(hhmm(n.bedTs) + " to " + hhmm(n.endTs), 0)));
         col.addView(restNav(all, n.bedTs), lp(-1, -2, 14));
+        View rangeC = null;
+        try {                                                                  // 0.61.0: this night against the earlier ones (up to 30 before it)
+            int k = nightIdx(all, n.bedTs);
+            if (k >= 0) {
+                TodayModel.NightStat q = all.get(k);
+                double rm = q.rmssd > 0 ? q.rmssd : Double.NaN;
+                UxLogic.Range rT = UxLogic.range(nightVals(all, k, 0), n.tstH), rH = UxLogic.range(nightVals(all, k, 1), q.hrLow5), rV = UxLogic.range(nightVals(all, k, 2), rm);
+                String ans = UxLogic.restAnswer(n.tstH, rT, q.hrLow5, rH, rm, rV);
+                if (ans != null) col.addView(answerLine(ans), lp(-1, -2, 12));
+                rangeC = rangeCard(n.tstH, rT, q.hrLow5, rH, rm, rV);
+            }
+        } catch (Throwable ignored) { }
         int rs = Math.min(screenW(), dpi(290));
         double need = Math.min(1.0, n.tstH / goal);
         View ring = new StageRingView(this, ringSegments(d, need), HealthModel.hm(n.tstH).replace(" ", ""), "ASLEEP");
@@ -1923,6 +2143,7 @@ public class HealthActivity extends Activity {
         capt.setGravity(Gravity.CENTER);
         col.addView(capt, lp(-1, -2, d.day.napH > 0 ? 4 : 28));
         if (d.day.napH > 0) { TextView napT = tv("Nap " + HealthModel.hmShort((long) (d.day.napH * 3600)), 13, BLUE, 600); napT.setGravity(Gravity.CENTER); col.addView(napT, lp(-1, -2, 20)); }
+        if (rangeC != null) col.addView(rangeC, lp(-1, -2, 12));
         long tot = 0;
         for (long s : d.stageSecs) tot += s;
         LinearLayout sh = card(16);
@@ -2157,6 +2378,11 @@ public class HealthActivity extends Activity {
         LinearLayout col = screen();
         HealthModel.Data d = data;
         col.addView(head("Strap, logger and settings", "You", null));
+        try {                                                                  // 0.61.0
+            LinkState.Info yli = MainActivity.linkState(this);
+            long yAge = d != null && d.day != null && d.day.newestTs > 0 ? Math.max(0L, System.currentTimeMillis() / 1000L - d.day.newestTs) : -1L;
+            col.addView(answerLine(UxLogic.youAnswer(DayLog.enabled(this), yli.level, d == null || d.day == null ? Double.NaN : d.day.loggedH, uxIssues(yli, yAge).size())), lp(-1, -2, 12));
+        } catch (Throwable ignored) { }
         float logged = d == null || d.day == null ? 0f : (float) d.day.loggedH;
         View av = avatar(Math.min(1f, logged / 24f));
         LinearLayout.LayoutParams ap = lp(dpi(170), dpi(170), 10);
@@ -2170,6 +2396,7 @@ public class HealthActivity extends Activity {
         col.addView(cap, lp(-1, -2, 6));
         col.addView(rowCard("Quick guide", "What the tabs and the ring colours mean, in plain words", new View.OnClickListener() { @Override public void onClick(View v) { QuickGuide.show(HealthActivity.this); } }), lp(-1, -2, 12));      // 0.55.0
 
+        col.addView(displayCard(), lp(-1, -2, 16));                          // 0.61.0
         LinearLayout st = card(16);
         st.addView(caps("SETTINGS"));
         final SharedPreferences ctl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
@@ -2360,6 +2587,7 @@ public class HealthActivity extends Activity {
         t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !prefs.getBoolean(key, def); prefs.edit().putBoolean(key, on).apply(); t.set(on); } });
         r.addView(t, new LinearLayout.LayoutParams(dpi(46), dpi(28)));
         r.setBackground(null);
+        r.setMinimumHeight(tapMin());
         return r;
     }
 
@@ -2368,6 +2596,7 @@ public class HealthActivity extends Activity {
         r.addView(tv(label, 14, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
         r.addView(value);
         r.setOnClickListener(l);
+        r.setMinimumHeight(tapMin());
         return r;
     }
 
