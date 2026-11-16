@@ -38,7 +38,7 @@ final class Explain {
 
     static String[][] sleepRing(double goalH) {
         return new String[][] {
-            {READ, "The ring fills towards your sleep need of " + String.format(Locale.UK, "%.0f", goalH) + " hours. The coloured parts are the strap's estimate of awake, light, deep and REM sleep through the night."},
+            {READ, "The ring fills towards your sleep need of " + String.format(Locale.UK, "%.1f", goalH) + " hours. The coloured parts are the strap's estimate of awake, light, deep and REM sleep through the night."},
             {WATCH, "Stages are estimated from heart rate and movement, not from brain waves, so treat the split as a guide. Hours asleep are the more reliable number."}
         };
     }

@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// 0.64.0 (16 Nov 2026): You tab: FIND row and WELLBEING AND INSIGHTS shortcuts at the top; Heart Watch panel: IF THE PULSE FLAG SHOWS steps (no alert rule changed); sleep goal printed with one decimal.
 
 // 0.63.0 (16 Nov 2026): Today: the seven equal rings are back as in 0.61.0 (0.62.0's hero row removed); a DAILY OUTLOOK card for the plan sentence; KEY STATISTICS (the night monitor) moved up under it, each line with its distance from your usual. Taps and panels unchanged.
 // 0.61.0 (15 Nov 2026): answer line at the top of Heart, Rest, ECG and You (a sentence in words against the person's own earlier nights, UxLogic); one status strip on every tab with a sheet of what needs attention (logger, link, old records, notifications, exact alarms, battery, Do Not Disturb access); Rest card "against your own usual" with range bars; Today opens by the time of day (the wellbeing card is "This evening" from 18:00 and sits under the rings in the daytime); specific empty states; Display settings on You (text size, brighter secondary text, bigger tap targets, UxKit).
@@ -446,8 +447,10 @@ public class HealthActivity extends Activity {
         return col;
     }
 
+    private ScrollView lastScroll;      // 0.64.0: the You tab's Find row scrolls to a card
+
     private View wrap(LinearLayout col) {
-        ScrollView sv = new ScrollView(this);
+        ScrollView sv = new ScrollView(this); lastScroll = sv;
         sv.setFillViewport(true);
         sv.setVerticalScrollBarEnabled(false);
         sv.addView(col, new ViewGroup.LayoutParams(-1, -2));
@@ -1250,6 +1253,8 @@ public class HealthActivity extends Activity {
         c.addView(caps("WHAT TO DO"), lp(-2, -2, 16));
         note(c, r.advice);
         if (r.rhythm.tier >= AlertEngine.WATCH) c.addView(pillButton("Start an ECG now", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startEcg(); } }), lp(-1, dpi(46), 12));
+        c.addView(caps("IF THE PULSE FLAG SHOWS"), lp(-2, -2, 16));      // 0.64.0: wording per rule 50.1 (h): no disease is named; no alert rule changed
+        note(c, "1. Sit down, rest the wrist on a table and keep still for a minute.\n2. Take an ECG reading of at least 30 seconds (ECG tab, START ECG) and stay still the whole time.\n3. Open that reading's report and show it, with this page, to a doctor or nurse. They read the ECG; this app only counts and times beats and cannot say what a rhythm is.\nChest pain, fainting or being unable to get your breath: do not wait for a reading, call 999.");
         final boolean on = AlertWatch.on(this);
         c.addView(pillButton("Notify me on a CHECK of the heart rate or night signs: " + (on ? "On" : "Off"), 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { AlertWatch.setOn(HealthActivity.this, !on); showRing(6); } }), lp(-1, dpi(44), 8));
         note(c, "How it works: each time the strap syncs, this compares you with your own recent record, never with other people. The pulse check uses only still, clean five-minute windows and ignores single early beats. Limits: the levels were chosen on one person's 21 days (no alert in them) and on synthetic rhythms; they are NOT validated against illness or heart events, and no wearable method is proven to predict a heart attack. The strap's ECG, read by a doctor, is what confirms a rhythm. A quiet ring does not rule anything out.");
@@ -1260,7 +1265,7 @@ public class HealthActivity extends Activity {
         c.addView(caps("SLEEP: LAST NIGHT"));
         if (n == null) { note(c, "No complete night found yet."); return; }
         kv(c, "In bed", hhmm(n.bedTs) + " to " + hhmm(n.endTs) + "  (" + HealthModel.hm(n.tibH) + ")");
-        kv(c, "Asleep (the night)", HealthModel.hm(n.tstH) + "  (" + Math.round(100.0 * n.tstH / day.sleepGoalH) + " % of your " + Math.round(day.sleepGoalH) + " h goal)");
+        kv(c, "Asleep (the night)", HealthModel.hm(n.tstH) + "  (" + Math.round(100.0 * n.tstH / day.sleepGoalH) + " % of your " + String.format(java.util.Locale.UK, "%.1f", day.sleepGoalH) + " h goal)");
         if (day.napH > 0) {                                                                   // 0.44.0: naps since waking; the night's efficiency, HRV and recovery stay night-only
             for (long[] nb : day.naps) kv(c, "Nap " + hhmm(nb[0]) + " to " + hhmm(nb[1]), HealthModel.hmShort(nb[2]));
             kv(c, "Night plus naps (the sleep ring)", HealthModel.hm(n.tstH + day.napH) + (Double.isNaN(day.sleepPct) ? "" : "  (" + Math.round(day.sleepPct) + " %)"));
@@ -1328,9 +1333,9 @@ public class HealthActivity extends Activity {
         String[] rl = {"RECOVERY", "EFFORT", "SLEEP", "STRESS"};
         final boolean hasAct = actMin >= 0; final int goalMin = Math.max(30, actGoal);      // 0.54.0: ACTIVE, all-day moving time against the goal set on the Activity screen
         String[] rcap = {Double.isNaN(rec) ? "needs " + TodayModel.MIN_BASELINE + " nights" : "vs your last " + day.baselineNights + " nights", "of 21 today",
-                n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h goal",
+                n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + String.format(java.util.Locale.UK, "%.1f", day.sleepGoalH) + " h goal",
                 hasStress ? (Double.isNaN(stx.week) ? stx.level() + " today" : "usual " + Math.round(stx.week)) : "not scored"};      // 0.53.5: against your own usual of the last week
-        rcap[0] = Double.isNaN(rec) ? "needs nights" : "vs " + day.baselineNights + " nights"; rcap[2] = n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + Math.round(day.sleepGoalH) + " h";      // shorter captions: four rings share the row
+        rcap[0] = Double.isNaN(rec) ? "needs nights" : "vs " + day.baselineNights + " nights"; rcap[2] = n == null ? "no night yet" : HealthModel.hmShort((long) ((n.tstH + day.napH) * 3600)) + " of " + String.format(java.util.Locale.UK, "%.1f", day.sleepGoalH) + " h";      // shorter captions: four rings share the row
         rf = new float[] {rf[0], rf[1], hasAct ? Math.max(0.02f, Math.min(1f, actMin / (float) goalMin)) : 0f, rf[2], rf[3]};
         rc = new int[] {rc[0], rc[1], hasAct ? TEAL : 0xFF8A93A0, rc[2], rc[3]};
         rb = new String[] {rb[0], rb[1], hasAct ? ActivityPlus.hmClock(actMin) : "\u2014", rb[2], rb[3]};
@@ -2402,9 +2407,10 @@ public class HealthActivity extends Activity {
         col.addView(cap, lp(-1, -2, 6));
         col.addView(rowCard("Quick guide", "What the tabs and the ring colours mean, in plain words", new View.OnClickListener() { @Override public void onClick(View v) { QuickGuide.show(HealthActivity.this); } }), lp(-1, -2, 12));      // 0.55.0
 
+        final LinearLayout findHolder = new LinearLayout(this); findHolder.setOrientation(LinearLayout.VERTICAL); col.addView(findHolder, lp(-1, -2, 12));      // 0.64.0: Find and the wellbeing / insight shortcuts, filled at the end
         col.addView(displayCard(), lp(-1, -2, 16));                          // 0.61.0
         LinearLayout st = card(16);
-        st.addView(caps("SETTINGS"));
+        st.addView(caps("SETTINGS, ECG AND LAB OPTIONS"));
         final SharedPreferences ctl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
         st.addView(toggleRow("Start the ECG reading by itself after a 5 second countdown", ctl, "ecg_autostart"), lp(-1, dpi(52), 6));
         st.addView(toggleRow("Show the packet counters on the screen during a reading", ctl, "ecg_packets_open"), lp(-1, dpi(52), 0));
@@ -2541,7 +2547,58 @@ public class HealthActivity extends Activity {
         imp.setPadding(0, dpi(10), 0, 0);
         dt.addView(imp);
         col.addView(dt, lp(-1, -2, 12));
+        try { findHolder.addView(insightCard(), lp(-1, -2, 0)); findHolder.addView(findCard(st, dt), lp(-1, -2, 12)); } catch (Throwable ignored) { }      // 0.64.0
         return wrap(col);
+    }
+
+    /** 0.64.0: the shortcuts people look for in You, in plain groups. */
+    private LinearLayout insightCard() {
+        LinearLayout c = card(16);
+        c.addView(caps("WELLBEING AND INSIGHTS"));
+        c.addView(pillButton("Wellbeing: sleep, mood and energy, calm minute, if-then, your week", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { try { startActivity(new Intent(HealthActivity.this, WellbeingActivity.class)); } catch (Throwable ignored) { } } }), lp(-1, -2, 10));
+        c.addView(pillButton("Heart Watch: night signs and pulse check", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { showRing(6); } }), lp(-1, -2, 8));
+        c.addView(pillButton("Trends: 7, 30 and 90 nights", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } }), lp(-1, -2, 8));
+        return c;
+    }
+
+    /** 0.64.0: a search row. Type a word (backup, scale, wellbeing, trends...) and tap the result. */
+    private LinearLayout findCard(final LinearLayout stCard, final LinearLayout dtCard) {
+        final LinearLayout c = card(16);
+        c.addView(caps("FIND"));
+        final android.widget.EditText q = new android.widget.EditText(this); q.setHint("Type: backup, scale, wellbeing, trends, export..."); q.setTextColor(INK); q.setHintTextColor(MUT); q.setSingleLine(true); q.setTextSize(15);
+        c.addView(q, lp(-1, -2, 6));
+        final LinearLayout res = new LinearLayout(this); res.setOrientation(LinearLayout.VERTICAL); c.addView(res, lp(-1, -2, 4));
+        final String[] lab = { "Wellbeing page", "Heart Watch", "Trends", "Quick guide", "Export and send data", "Daily backup", "Storage: sizes, trim, restore", "Import a pull (zip)", "Sleep research", "Day logger and export", "Export ECG data for analysis", "Live frames", "Older screens (ECG tools)", "Settings, ECG and lab options", "Your data", "Scale lab (Lab S) steps" };
+        final String[] kw = { "mood energy calm minute breathing if then week good things who-5 sleep plan", "rhythm pulse night signs alert notify", "graphs 7 30 90 nights recovery", "help rings colours tabs", "share zip pull send", "copy restore", "space trim delete", "pull zip load", "regularity body clock", "logger csv", "ecg csv analysis", "packets stream", "ecg tools lab report start reading", "toggles switches notifications strap link battery text size", "export backup import storage", "calibration simulator high-pass corner ladder scale tones old phone" };
+        final Runnable[] go = new Runnable[lab.length];
+        go[0] = new Runnable() { @Override public void run() { try { startActivity(new Intent(HealthActivity.this, WellbeingActivity.class)); } catch (Throwable ignored) { } } };
+        go[1] = new Runnable() { @Override public void run() { showRing(6); } };
+        go[2] = new Runnable() { @Override public void run() { if (data != null) Trends.show(HealthActivity.this, data); } };
+        go[3] = new Runnable() { @Override public void run() { QuickGuide.show(HealthActivity.this); } };
+        go[4] = new Runnable() { @Override public void run() { ExportScreen.show(HealthActivity.this); } };
+        go[5] = new Runnable() { @Override public void run() { BackupScreen.show(HealthActivity.this); } };
+        go[6] = new Runnable() { @Override public void run() { StorageScreen.show(HealthActivity.this); } };
+        go[7] = new Runnable() { @Override public void run() { pickZip(); } };
+        go[8] = new Runnable() { @Override public void run() { SleepResearch.show(HealthActivity.this); } };
+        go[9] = new Runnable() { @Override public void run() { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } };
+        go[10] = new Runnable() { @Override public void run() { EcgExport.ask(HealthActivity.this); } };
+        go[11] = new Runnable() { @Override public void run() { startActivity(new Intent(HealthActivity.this, LiveFramesActivity.class)); } };
+        go[12] = new Runnable() { @Override public void run() { startActivity(oldScreens()); } };
+        go[13] = new Runnable() { @Override public void run() { if (lastScroll != null) lastScroll.smoothScrollTo(0, Math.max(0, stCard.getTop() - dpi(8))); } };
+        go[14] = new Runnable() { @Override public void run() { if (lastScroll != null) lastScroll.smoothScrollTo(0, Math.max(0, dtCard.getTop() - dpi(8))); } };
+        go[15] = new Runnable() { @Override public void run() { android.widget.Toast.makeText(HealthActivity.this, "Switch on 'Scale lab (S) in the ECG Lab' under Settings > Research, then ECG tab > Lab > S > Open: the seven steps are at the top.", android.widget.Toast.LENGTH_LONG).show(); if (lastScroll != null) lastScroll.smoothScrollTo(0, Math.max(0, stCard.getTop() - dpi(8))); } };
+        final Runnable refresh = new Runnable() { @Override public void run() {
+            res.removeAllViews(); String[] tok = q.getText().toString().toLowerCase(Locale.UK).trim().split("\\s+"); int shown = 0; boolean any = !q.getText().toString().trim().isEmpty();
+            for (int i = 0; i < lab.length && shown < 6; i++) {
+                String hay = (lab[i] + " " + kw[i]).toLowerCase(Locale.UK); boolean ok = true; if (any) for (String t : tok) if (!t.isEmpty() && !hay.contains(t)) { ok = false; break; }
+                if (!any && i > 4) break; if (!ok) continue; final int k = i;
+                res.addView(pillButton(lab[i], 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { try { go[k].run(); } catch (Throwable ignored) { } } }), lp(-1, dpi(44), 6)); shown++;
+            }
+            if (any && shown == 0) res.addView(tv("Nothing matches. Try one word.", 12, MUT, 400));
+        } };
+        q.addTextChangedListener(new android.text.TextWatcher() { @Override public void beforeTextChanged(CharSequence s, int a, int b, int d) { } @Override public void onTextChanged(CharSequence s, int a, int b, int d) { refresh.run(); } @Override public void afterTextChanged(android.text.Editable e) { } });
+        refresh.run();
+        return c;
     }
 
     private View avatar(final float frac) {

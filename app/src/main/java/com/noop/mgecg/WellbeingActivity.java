@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// 0.64.0 (16 Nov 2026): mood and energy two-tap check with YOUR OWN PATTERN (Mind64), calm minute log with before / after RMSSD from the strap's live beats, if-then plan, week on one page, preview cards WORK-DAY LOAD and OVERNIGHT GAP (Pair64, opt-in).
 
 // FILE VERSION 0.61.0 (15 Nov 2026): text size setting (UxKit.scaled); the intent extra focus_evening scrolls to the three good things (from the wind-down reminder and the "This evening" card).
 // FILE VERSION 0.60.0 (15 Nov 2026): the page grew. New cards: night-by-night bars with personal bests, work-night scatter (bed time against hours), three ECG cards (clean-reading ring, evening-pulse spread, calmest evening),
@@ -29,6 +30,8 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.text.InputType;
@@ -101,6 +104,7 @@ public class WellbeingActivity extends Activity {
         WellbeingExtra.Bars bars;
         WellbeingExtra.Bests bests;
         WellbeingExtra.Ecg ecg;
+        java.util.Map<Long, Double> wake = new java.util.HashMap<>();      // 0.64.0: hours slept by the day the night ended on
     }
 
     static Pack loadAll(Context c) {
@@ -117,6 +121,7 @@ public class WellbeingActivity extends Activity {
             k.bars = WellbeingExtra.bars(b.sri.nights, baseEpochDay);
             k.bests = WellbeingExtra.bests(b.sri.nights, baseEpochDay);
             k.ecg = WellbeingExtra.ecg(ecgReadings(c), System.currentTimeMillis(), TimeZone.getDefault());
+            try { k.wake = Mind64.hoursByWakeDay(b.sri.nights, baseEpochDay); } catch (Throwable ignored) { }
             return k;
         } catch (Throwable t) {
             return null;
@@ -150,7 +155,8 @@ public class WellbeingActivity extends Activity {
     private BreathView breath;
     private boolean loadingNow;
     private Pack lastPack;
-    private LinearLayout remBox, whoCard, goodCard;
+    private LinearLayout remBox, whoCard, goodCard, moodCard, ifCard, weekCard, calmCard, workCard, gapCard;
+    private int selMood = 0, selEnergy = 0, ifCue = -1, ifAct = -1; private long calmStartMs = 0L; private final Handler ui = new Handler(Looper.getMainLooper());
     private ScrollView scroll; private boolean focusEvening;      // 0.61.0: the evening reminder and the "This evening" card open straight at the three good things
     private EditText[] gtFields;
     private boolean editGood, notifDenied;
@@ -366,6 +372,8 @@ public class WellbeingActivity extends Activity {
         cb2.addView(caps("A CALM MINUTE", TEAL));
         cb2.addView(opinion("Breathe with the orb for one minute.", 19));
         breath = new BreathView(this);
+        breath.onStartCb = new Runnable() { @Override public void run() { calmStartMs = System.currentTimeMillis(); } };
+        breath.onFinishCb = new Runnable() { @Override public void run() { logCalm(calmStartMs, System.currentTimeMillis()); } };
         cb2.addView(breath, new LinearLayout.LayoutParams(-1, px(300)));
         final TextView startBtn = pill("Start the minute", TEAL, 0xFF05131E, null);
         breath.bind(startBtn);
@@ -375,6 +383,7 @@ public class WellbeingActivity extends Activity {
         why.setPadding(0, px(12), 0, 0);
         cb2.addView(why);
         col.addView(cb2, lp(12));
+        calmCard = card(); fillCalm(); col.addView(calmCard, lp(8));      // 0.64.0: before / after RMSSD
 
         addLineCard();
 
@@ -783,6 +792,192 @@ public class WellbeingActivity extends Activity {
         goodCard = card();
         fillGood();
         col.addView(goodCard, lp(12));
+        moodCard = card(); fillMood(); col.addView(moodCard, lp(12));      // 0.64.0
+        ifCard = card(); fillIf(); col.addView(ifCard, lp(12));
+        weekCard = card(); fillWeek(); col.addView(weekCard, lp(12));
+        workCard = card(); fillWork(); col.addView(workCard, lp(12));      // 0.64.0 preview cards
+        gapCard = card(); fillGap(); col.addView(gapCard, lp(12));
+    }
+
+
+    // ------------------------------------------------------------------ 0.64.0: mood and energy, your own pattern, calm minute RMSSD, if-then, the week
+    private long today() { return todayLocalEpochDay(); }
+
+    private void fillMood() {
+        moodCard.removeAllViews();
+        moodCard.addView(caps("HOW ARE YOU RIGHT NOW", ROSE));
+        final SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        List<Mind64.Entry> es = Mind64.parse(p.getString("mind_log", ""));
+        moodCard.addView(opinion("Two taps: mood, then energy.", 19));
+        moodCard.addView(tv("MOOD   1 low  to  5 good", 12, EVID, 600), pl(10));
+        moodCard.addView(chipRow(true), pl(6));
+        moodCard.addView(tv("ENERGY   1 flat  to  5 full", 12, EVID, 600), pl(10));
+        moodCard.addView(chipRow(false), pl(6));
+        int todayN = 0; long t = today(); for (Mind64.Entry e : es) if (e.day == t) todayN++;
+        moodCard.addView(note(todayN == 0 ? "Nothing logged today. It stays on this phone." : "Logged " + todayN + (todayN == 1 ? " time" : " times") + " today. It stays on this phone."));
+        Mind64.Pattern P = Mind64.pattern(es, lastPack == null ? new java.util.HashMap<Long, Double>() : lastPack.wake);
+        moodCard.addView(caps("YOUR OWN PATTERN", MUT), pl(16));
+        moodCard.addView(opinion(P.head, 17));
+        moodCard.addView(note(P.body));
+        addEvidence(moodCard, "How this is worked out: each day's entries are averaged, then days are split by the hours slept in the night before (under 7 h, or 7 h and over). It needs at least " + Mind64.MIN_ENTRIES + " entries on " + Mind64.MIN_DAYS + " days and " + Mind64.MIN_GROUP + " days in each group before it shows anything. It reports your own averages only; it makes no claim about cause and gives no advice. The 7 h line is a common reference point, not your personal need.");
+    }
+
+    private LinearLayout chipRow(final boolean mood) {
+        LinearLayout r = new LinearLayout(this); r.setOrientation(LinearLayout.HORIZONTAL);
+        for (int v = 1; v <= 5; v++) {
+            final int val = v; boolean sel = (mood ? selMood : selEnergy) == v;
+            TextView c = pill(String.valueOf(v), sel ? ROSE : 0x1AFFFFFF, sel ? 0xFF1A0A10 : INK, new View.OnClickListener() { @Override public void onClick(View x) { if (mood) selMood = val; else selEnergy = val; chosen(); } });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(46), 1f); lp.rightMargin = v < 5 ? px(8) : 0; r.addView(c, lp);
+        }
+        return r;
+    }
+
+    private void chosen() {
+        if (selMood > 0 && selEnergy > 0) {
+            SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+            p.edit().putString("mind_log", Mind64.add(p.getString("mind_log", ""), System.currentTimeMillis(), today(), selMood, selEnergy)).apply();
+            selMood = 0; selEnergy = 0; showMessageShort("Saved");
+        }
+        fillMood(); fillWeek();
+    }
+    private void showMessageShort(String s) { try { android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) { } }
+
+    private void fillIf() {
+        ifCard.removeAllViews();
+        ifCard.addView(caps("YOUR IF-THEN", BLUE));
+        final SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        int cue = p.getInt("if_cue", -1), act = p.getInt("if_act", -1);
+        if (cue >= 0 && act >= 0 && !editIf) {
+            ifCard.addView(opinion(Mind64.plan(cue, act), 19));
+            ifCard.addView(pill("Change it", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { editIf = true; ifCue = p.getInt("if_cue", -1); ifAct = p.getInt("if_act", -1); fillIf(); } }), pl(12));
+        } else {
+            ifCard.addView(opinion("Pick when, then what.", 19));
+            ifCard.addView(tv("IF", 12, EVID, 600), pl(8));
+            for (int i = 0; i < Mind64.CUES.length; i++) { final int k = i; ifCard.addView(pill(Mind64.CUES[i], ifCue == i ? BLUE : 0x1AFFFFFF, ifCue == i ? 0xFF05131E : INK, new View.OnClickListener() { @Override public void onClick(View v) { ifCue = k; fillIf(); } }), pl(6)); }
+            ifCard.addView(tv("THEN I", 12, EVID, 600), pl(12));
+            for (int i = 0; i < Mind64.ACTS.length; i++) { final int k = i; ifCard.addView(pill(Mind64.ACTS[i], ifAct == i ? BLUE : 0x1AFFFFFF, ifAct == i ? 0xFF05131E : INK, new View.OnClickListener() { @Override public void onClick(View v) { ifAct = k; fillIf(); } }), pl(6)); }
+            if (ifCue >= 0 && ifAct >= 0) ifCard.addView(pill("Save: " + Mind64.plan(ifCue, ifAct), BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { p.edit().putInt("if_cue", ifCue).putInt("if_act", ifAct).apply(); editIf = false; fillIf(); } }), pl(12));
+        }
+        addEvidence(ifCard, "Why this: planning a specific if-then response in advance (an \"implementation intention\") is a studied way of following through on an intention; see the meta-analysis by Gollwitzer and Sheeran (2006). The studies mostly measure goals people set themselves, not mood or heart signs, and effects vary. Your plan stays on this phone; nothing here checks whether you did it.");
+    }
+    private boolean editIf = false;
+
+    private void logCalm(long startMs, long endMs) {
+        if (startMs <= 0L) return;
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String old = p.getString("calm_log", ""); String[] ls = old.isEmpty() ? new String[0] : old.split("\n"); StringBuilder sb = new StringBuilder();
+        for (int i = Math.max(0, ls.length - 59); i < ls.length; i++) sb.append(ls[i]).append('\n');
+        sb.append(startMs).append(',').append(endMs).append(",,,0,0\n"); p.edit().putString("calm_log", sb.toString()).apply();
+        fillCalm(); ui.postDelayed(new Runnable() { @Override public void run() { computeCalm(); } }, 63000L);
+    }
+
+    /** Fills the before / after RMSSD of every calm minute that has its 60 s after-window recorded (live beat intervals of the strap; off the main thread). */
+    private void computeCalm() {
+        new Thread(new Runnable() { @Override public void run() {
+            try {
+                SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE); String old = p.getString("calm_log", ""); if (old.isEmpty()) return;
+                String[] ls = old.split("\n"); boolean ch = false; StringBuilder sb = new StringBuilder(); long now = System.currentTimeMillis();
+                for (String ln : ls) {
+                    String[] f = ln.split(",", -1);
+                    if (f.length >= 6 && f[2].isEmpty() && f[3].isEmpty() && Long.parseLong(f[1]) + 62000L < now) {
+                        long s0 = Long.parseLong(f[0]), e0 = Long.parseLong(f[1]); List<Mind64.Row> rows = liveRows(s0 - 61000L, e0 + 61000L);
+                        Mind64.Win a = Mind64.window(rows, s0 - 60000L, s0), b = Mind64.window(rows, e0, e0 + 60000L);
+                        ln = f[0] + "," + f[1] + "," + (a.ok ? String.format(Locale.US, "%.1f", a.rmssd) : "na") + "," + (b.ok ? String.format(Locale.US, "%.1f", b.rmssd) : "na") + "," + a.beats + "," + b.beats; ch = true;
+                    }
+                    sb.append(ln).append('\n');
+                }
+                if (ch) { p.edit().putString("calm_log", sb.toString()).apply(); runOnUiThread(new Runnable() { @Override public void run() { if (calmCard != null) fillCalm(); if (weekCard != null) fillWeek(); } }); }
+            } catch (Throwable ignored) { }
+        } }, "calm-rmssd").start();
+    }
+
+    private List<Mind64.Row> liveRows(long fromMs, long toMs) {
+        List<Mind64.Row> out = new ArrayList<>();
+        try {
+            android.database.Cursor q = DayLog.db(this).rawQuery("SELECT ms, hr, rr FROM live_hr WHERE ms >= ? AND ms < ? ORDER BY ms", new String[] { String.valueOf(fromMs), String.valueOf(toMs) });
+            try {
+                while (q.moveToNext()) {
+                    Mind64.Row r = new Mind64.Row(); r.ms = q.getLong(0); r.hr = q.getInt(1); String t = q.getString(2);
+                    if (t != null && !t.isEmpty()) { String[] w = t.split(","); r.rr = new int[w.length]; for (int i = 0; i < w.length; i++) { try { r.rr[i] = Integer.parseInt(w[i].trim()); } catch (Throwable e) { r.rr[i] = 0; } } }
+                    out.add(r);
+                }
+            } finally { q.close(); }
+        } catch (Throwable ignored) { }
+        return out;
+    }
+
+    private void fillCalm() {
+        if (calmCard == null) return;
+        calmCard.removeAllViews();
+        calmCard.addView(caps("YOUR CALM MINUTES", TEAL));
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE); String log = p.getString("calm_log", "");
+        String[] ls = log.isEmpty() ? new String[0] : log.split("\n");
+        if (ls.length == 0) { calmCard.addView(note("After each calm minute this lists the pulse variability (RMSSD) of the 60 seconds before and the 60 seconds after, from the strap's live beat intervals. The strap must be connected and on your wrist during and after the minute.")); computeCalmLater(); return; }
+        int shown = 0; java.text.SimpleDateFormat df = new java.text.SimpleDateFormat("d MMM HH:mm", Locale.UK);
+        for (int i = ls.length - 1; i >= 0 && shown < 5; i--, shown++) {
+            String[] f = ls[i].split(",", -1); if (f.length < 6) continue; String when = df.format(new java.util.Date(Long.parseLong(f[0])));
+            String res;
+            if (f[2].isEmpty()) res = System.currentTimeMillis() < Long.parseLong(f[1]) + 62000L ? "counting the minute after... stay on this page" : "waiting for the beat intervals";
+            else { double a = parseD(f[2]), b = parseD(f[3]); res = Mind64.calmLine(a, b, parseI(f[4]), parseI(f[5])); }
+            calmCard.addView(tv(when + "   " + res, 13, INK, 400), pl(8));
+        }
+        calmCard.addView(note("One minute is a short window and the strap's optical beat intervals read higher than a chest strap's, so use this to compare one minute with another on the same wrist, not as a measure of calm. It does not tell you the breathing worked."));
+        computeCalmLater();
+    }
+    private void computeCalmLater() { ui.postDelayed(new Runnable() { @Override public void run() { computeCalm(); } }, 800L); }
+    private static double parseD(String s) { try { return Double.parseDouble(s); } catch (Throwable e) { return Double.NaN; } }
+    private static int parseI(String s) { try { return Integer.parseInt(s); } catch (Throwable e) { return 0; } }
+
+    private void fillWeek() {
+        if (weekCard == null) return;
+        weekCard.removeAllViews();
+        weekCard.addView(caps("YOUR WEEK ON ONE PAGE", GOLD));
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE); long t = today();
+        int good = 0; for (int d = 0; d < 7; d++) if (p.contains("gt_" + (t - d))) good++;
+        String log = p.getString("calm_log", ""); int calm = 0; long cut = System.currentTimeMillis() - 7L * 86400000L; if (!log.isEmpty()) for (String ln : log.split("\n")) { try { if (Long.parseLong(ln.split(",")[0]) >= cut) calm++; } catch (Throwable ignored) { } }
+        double[] hrs = lastPack == null || lastPack.o == null ? new double[0] : lastPack.o.hrs;
+        final Mind64.Week w = Mind64.week(Mind64.parse(p.getString("mind_log", "")), t, hrs, calm, good);
+        final String text = Mind64.weekText(w);
+        weekCard.addView(tv(text, 14, INK, 400), pl(8));
+        weekCard.addView(pill("Copy as text", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { try { ((android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(android.content.ClipData.newPlainText("week", text)); showMessageShort("Copied"); } catch (Throwable ignored) { } } }), pl(12));
+        weekCard.addView(note("Everything here is a count or an average of what you entered or what the strap recorded. It stays on this phone unless you copy it."));
+    }
+
+
+    // ------------------------------------------------------------------ 0.64.0 preview cards (Pair64): descriptive, sample-gated, no link claimed, no advice
+    private void fillWork() {
+        if (workCard == null) return;
+        workCard.removeAllViews();
+        workCard.addView(caps("WORK-DAY LOAD (PREVIEW)", MUT));
+        workCard.addView(note("Weekday steps from 06:00 to 18:00 beside the RMSSD of the night that followed. Gathering..."));
+        new Thread(new Runnable() { @Override public void run() {
+            final double[][] d = Pair64.workDays(WellbeingActivity.this, 70); final Pair64.Split S = Pair64.split(d[0], d[1], "Lower-step", "Higher-step", " thousand steps", 0.001);
+            runOnUiThread(new Runnable() { @Override public void run() {
+                if (workCard == null) return; workCard.removeAllViews(); workCard.addView(caps("WORK-DAY LOAD (PREVIEW)", MUT)); workCard.addView(opinion(S.head, 17)); workCard.addView(note(S.body));
+                addEvidence(workCard, "How this is worked out: each weekday with at least 8 of the 12 hours recorded gets its steps (counted inside the recorded minutes, so a few per cent short) and the RMSSD of the night after it; days are split at the middle step count. Needs " + Pair64.MIN_N + " days and " + Pair64.MIN_HALF + " on each side. On your own earlier evenings no link between steps and the evening RMSSD was established (11 to 12 evenings), so this card shows two middle values and claims nothing.");
+            } });
+        } }, "work-load").start();
+    }
+
+    private void fillGap() {
+        if (gapCard == null) return;
+        gapCard.removeAllViews();
+        final SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        gapCard.setBackground(outline(EVID));
+        gapCard.addView(caps("OVERNIGHT GAP (PREVIEW, OFF UNLESS YOU TURN IT ON)", MUT));
+        final boolean on = p.getBoolean("gap_on", false);
+        gapCard.addView(pill(on ? "On: tap to turn off" : "Off: tap to turn on", on ? 0x1AFFFFFF : BLUE, on ? INK : 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { p.edit().putBoolean("gap_on", !on).apply(); fillGap(); } }), pl(10));
+        if (!on) { gapCard.addView(note("When on, you log your last meal with one tap and this describes the hours between it and bed beside that night's RMSSD, once there are enough nights. It never suggests when to eat. Meal times stay on this phone.")); return; }
+        gapCard.addView(pill("Log my last meal now", TEAL, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) {
+            String old = p.getString("meal_log", ""); String[] ls = old.isEmpty() ? new String[0] : old.split("\n"); StringBuilder sb = new StringBuilder(); for (int i = Math.max(0, ls.length - 199); i < ls.length; i++) sb.append(ls[i]).append('\n');
+            sb.append(System.currentTimeMillis()).append('\n'); p.edit().putString("meal_log", sb.toString()).apply(); showMessageShort("Logged"); fillGap(); } }), pl(8));
+        List<Long> meals = new ArrayList<>(); String ml = p.getString("meal_log", ""); if (!ml.isEmpty()) for (String ln : ml.split("\n")) { try { meals.add(Long.parseLong(ln.trim())); } catch (Throwable ignored) { } }
+        final List<Long> fm = meals; final TextView st = note("Gathering..."); gapCard.addView(st);
+        new Thread(new Runnable() { @Override public void run() {
+            final double[][] d = Pair64.mealGaps(WellbeingActivity.this, fm); final Pair64.Split S = Pair64.split(d[0], d[1], "Shorter-gap", "Longer-gap", " h", 1.0);
+            runOnUiThread(new Runnable() { @Override public void run() { st.setText(S.head + ". " + S.body); } });
+        } }, "meal-gap").start();
+        addEvidence(gapCard, "How this is worked out: for each night with a logged meal 1 to 8 hours before bed, the hours from the last meal to bed beside that night's RMSSD; nights are split at the middle gap. Needs " + Pair64.MIN_N + " nights and " + Pair64.MIN_HALF + " on each side. Descriptive only: no cause is claimed and nothing is recommended.");
     }
 
     // ------------------------------------------------------------------ small builders
@@ -1063,14 +1258,14 @@ public class WellbeingActivity extends Activity {
         static final long TOTAL_MS = 60000L, IN_MS = 4000L, CYCLE_MS = 10000L;
         private boolean running, done;
         private long t0;
-        private TextView btn;
+        private TextView btn; Runnable onStartCb, onFinishCb;
         BreathView(Context c) { super(c); }
         void bind(TextView b) {
             btn = b;
             btn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { if (running) stop(false); else start(); } });
         }
         void start() {
-            running = true; done = false; t0 = SystemClock.elapsedRealtime();
+            running = true; done = false; t0 = SystemClock.elapsedRealtime(); if (onStartCb != null) { try { onStartCb.run(); } catch (Throwable ignored) { } }
             try { ((Activity) getContext()).getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); } catch (Throwable ignored) { }
             if (btn != null) btn.setText("Stop");
             postInvalidateOnAnimation();
@@ -1079,6 +1274,7 @@ public class WellbeingActivity extends Activity {
             running = false; done = finished;
             try { ((Activity) getContext()).getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); } catch (Throwable ignored) { }
             if (btn != null) btn.setText(finished ? "Do it again" : "Start the minute");
+            if (finished && onFinishCb != null) { try { onFinishCb.run(); } catch (Throwable ignored) { } }
             invalidate();
         }
         private static float ease(float x) { x = Math.max(0f, Math.min(1f, x)); return x * x * (3f - 2f * x); }

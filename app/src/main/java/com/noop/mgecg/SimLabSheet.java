@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// 0.64.0 (16 Nov 2026): the Scale lab chooser starts with STEP BY STEP (seven short steps, LabParts): save the sounds, meter number, wire check, scale, level ladder, low tones (high-pass corner bound), high tones; the old phone plays, this phone records.
 
 // FILE VERSION 0.52.2 (11 Nov 2026): the direct runs come FIRST in the sheet, W wiring check added, wiring text. FILE VERSION 0.52.1 (11 Nov 2026): direct runs M, D, E, F, G added (SimDirect: this phone's audio straight to the pods, no divider; rows in the chooser, a branch in tick() and finished(), and the block "direct runs" near the end). FILE VERSION 0.51.0 (10 Nov 2026): Lab "S: Scale and corner" (build brief 0.51.0 item 4): the sheets, the audio ladder and the run control. The analysis is SimLadder.
 
@@ -35,7 +36,7 @@ final class SimLabSheet {
     static final String WAV_NAME = "sim_ladder_v3.wav";
 
     private final EcgPage p; private final NewLookActivity a;
-    char mode; boolean active, internalAudio;
+    char mode; boolean active, internalAudio, oldPhone;
     private long planMs; private volatile AudioTrack track; private volatile boolean stopAudio; private int volBefore = -1;
     private double playStrapS = Double.NaN, playRelS = Double.NaN; private long startMs;
 
@@ -47,8 +48,19 @@ final class SimLabSheet {
         TextView in = p.t("Known voltages through the divider give the scale (uV per count), the high-pass corner, linearity and the floor. Wiring: MG_simulator_test_v3.pdf (Part 2A, 2B, 3). One run per tap; the results are measurements of this wiring and are not applied.", 12, HealthViews.MUT, 400);
         in.setLineSpacing(0, 1.2f); box.addView(in, new LinearLayout.LayoutParams(-1, -2));
         final Dialog[] d = new Dialog[1];
+        // 0.64.0: STEP BY STEP, short parts, one action and one number each
+        TextView gh = p.t("STEP BY STEP (START HERE)", 11, 0xFF6EC3FF, 600); gh.setLetterSpacing(0.12f); box.addView(gh, p.lp(-1, -2, 14));
+        TextView gi = p.t("Seven short steps, one action and one number each. The old phone plays the sounds, this phone records. Do them in order; each step shows its last result. Nothing is applied to the app.", 12, HealthViews.MUT, 400);
+        gi.setLineSpacing(0, 1.2f); box.addView(gi, p.lp(-1, -2, 4));
+        guideRow(box, "1   Save the sounds", "One tap. Five short sound files go to Download/sim. Copy them to the old phone as on 8 Nov.", doneText("1"), "Save", () -> { d[0].dismiss(); exportParts(); });
+        guideRow(box, "2   Meter number", "Old phone plays LabS_2_meter.wav into the METER (AC mV, 200 mV range, cable NOT on the strap). Read the steady value at 0:08-0:18 and type it here.", doneText("2") + (Double.isNaN(vfsPkMv()) ? "" : "  \u00b7  " + calText()), "Type", () -> { d[0].dismiss(); typeMeter(); });
+        guideRow(box, "3   Wire check", "Strap on the left wrist, cable on the strap contacts and the foil, old phone silent. 25 s, no sound. You want GOOD.", doneText("W"), "Start", () -> { d[0].dismiss(); startWiring(); });
+        guideRow(box, "4   Scale", "One 10 Hz tone, 45 s. Start here, then PLAY LabS_4_scale.wav on the old phone within the first 8 s. Result: uV per count.", doneText("S"), "Start", () -> { d[0].dismiss(); startPart('S'); });
+        guideRow(box, "5   Level ladder", "Four levels of the same tone. PLAY LabS_5_levels.wav. Result: uV per count at each level and the straightness.", doneText("L"), "Start", () -> { d[0].dismiss(); startPart('L'); });
+        guideRow(box, "6   Low tones (high-pass corner)", "5, 2, 1 and 0.5 Hz. PLAY LabS_6_low.wav. Result: an upper bound for the high-pass corner.", doneText("H"), "Start", () -> { d[0].dismiss(); startPart('H'); });
+        guideRow(box, "7   High tones", "20 to 200 Hz. PLAY LabS_7_high.wav. Result: the response above 10 Hz.", doneText("U"), "Start", () -> { d[0].dismiss(); startPart('U'); });
         // 0.52.1: DIRECT runs (SimDirect): this phone's audio straight to the pods, no divider, no DC; nothing over -48 dBFS reaches the strap
-        TextView dh = p.t("DIRECT RUNS, NO DIVIDER", 11, 0xFF6EC3FF, 600); dh.setLetterSpacing(0.12f); box.addView(dh, p.lp(-1, -2, 18));
+        TextView dh = p.t("LONGER RUNS (THE OLD ONES, NEED THIS PHONE'S OWN AUDIO OUTPUT)", 11, 0xFF6EC3FF, 600); dh.setLetterSpacing(0.12f); box.addView(dh, p.lp(-1, -2, 18));
         TextView di = p.t("This phone's audio straight to the two pods: small signals made digitally (1 mV = -60 dBFS), no resistors, no DC. Wiring: cable tip to the clasp contact (bare metal, CLIPPED on, not taped), cable sleeve to foil on the LEFT index fingertip (the strap arm, so your own heartbeat is not added), strap snug on the left wrist. Run W first, calibrate once with the meter (M), then D to G. " + calText(), 12, HealthViews.MUT, 400);
         di.setLineSpacing(0, 1.2f); box.addView(di, p.lp(-1, -2, 4));
         row(box, "W   Wiring check", "25 s with the wiring in place and no signal: does the strap see a closed contact? Run this before D to G.", () -> { d[0].dismiss(); startWiring(); });
@@ -75,6 +87,25 @@ final class SimLabSheet {
         LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, p.dp(42)); gp.leftMargin = p.dp(10); r.addView(b, gp);
         box.addView(r, p.lp(-1, -2, 8));
     }
+
+    private void guideRow(LinearLayout box, String title, String plain, String status, String button, final Runnable go) {
+        LinearLayout r = p.hrow(); r.setBackground(HealthViews.glass(a, 16)); r.setPadding(p.dp(16), p.dp(12), p.dp(12), p.dp(12));
+        LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.VERTICAL);
+        mid.addView(p.t(title, 15, HealthViews.INK, 400)); TextView pl = p.t(plain, 12, HealthViews.MUT, 400); pl.setLineSpacing(0, 1.2f); mid.addView(pl, p.lp(-2, -2, 3));
+        if (status != null && !status.isEmpty()) { TextView st = p.t(status, 12, 0xFF6EC3FF, 400); st.setLineSpacing(0, 1.2f); mid.addView(st, p.lp(-2, -2, 4)); }
+        r.addView(mid, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView b = p.pill(button, HealthViews.BLUE, 0xFF05131E); b.setPadding(p.dp(18), 0, p.dp(18), 0); b.setOnClickListener(v -> go.run());
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, p.dp(42)); gp.leftMargin = p.dp(10); r.addView(b, gp);
+        box.addView(r, p.lp(-1, -2, 8));
+    }
+
+    /** The last result of a guided step ("" when it was never run). */
+    private String doneText(String key) {
+        String v = ctl().getString("labs_last_" + key, ""); if (v.isEmpty()) return "Not done yet.";
+        long ts = ctl().getLong("labs_ts_" + key, 0L);
+        return "Last: " + v + (ts > 0 ? "  (" + new java.text.SimpleDateFormat("d MMM HH:mm", Locale.UK).format(new java.util.Date(ts)) + ")" : "");
+    }
+    private void rememberStep(String key, String text) { ctl().edit().putString("labs_last_" + key, text).putLong("labs_ts_" + key, System.currentTimeMillis()).apply(); }
 
     /** True when this phone has a wired or USB audio output. */
     private boolean hasWiredOut() {
@@ -107,7 +138,12 @@ final class SimLabSheet {
         startMs = readingStartMs;
         int s = (int) (elMs / 1000);
         if (SimDirect.isDirect(mode)) {      // 0.52.1
-            if (track == null && !stopAudio && dtrack != null && elMs >= (long) (SimDirect.AUDIO_AT_S * 1000)) playDirect(dtrack, true);
+            if (!oldPhone && track == null && !stopAudio && dtrack != null && elMs >= (long) (SimDirect.AUDIO_AT_S * 1000)) playDirect(dtrack, true);
+            if (oldPhone && LabParts.is(mode)) {      // 0.64.0: the old phone plays; the analysis finds the tone by itself
+                int lf = (int) Math.max(0, (planMs - elMs) / 1000);
+                p.simCue(s < 2 ? "Get ready. Press PLAY on the old phone between 0:02 and 0:08, then hands off." : s < 9 ? "Press PLAY on the old phone now (until 0:08), then hands off." : LabParts.title(mode) + String.format(Locale.UK, "  \u00b7  keep still, %d:%02d left", lf / 60, lf % 60));
+                return elMs >= planMs;
+            }
             double ps = elMs / 1000.0 - SimDirect.AUDIO_AT_S; String seg = "";
             if (dtrack != null && ps >= 0) for (SimDirect.Seg sg : dtrack.segs) if (ps >= sg.start && ps < sg.end) { seg = sg.name; break; }
             int left = (int) Math.max(0, (planMs - elMs) / 1000);
@@ -245,14 +281,71 @@ final class SimLabSheet {
         playGen++; if (mode == 'M') stopAudio();      // ends the calibration tones at once if they are still playing
         new android.app.AlertDialog.Builder(a).setTitle(SimDirect.title(m) + ": direct connection")
             .setMessage("Cable from this phone straight to the two pods, NO divider. Sound effects off (DSEE, equaliser, normaliser, Dolby). The media volume goes to maximum for the run; the signal itself stays under -48 dBFS, a few millivolts at the strap. Keep still and do not touch the wiring. Play nothing else while the cable is on the strap." + (Double.isNaN(vfsPkMv()) ? "\n\nNo meter calibration is stored: the run still records everything, but the scale can only be given after run M." : ""))
-            .setPositiveButton("Start", (x, y) -> { try { internalAudio = true; dtrack = SimDirect.track(m); start(m, (long) ((SimDirect.AUDIO_AT_S + dtrack.seconds) * 1000) + 1000L); } catch (Throwable e) { a.toast("The run could not start: " + e.getClass().getSimpleName()); } })
+            .setPositiveButton("Start", (x, y) -> { try { oldPhone = false; internalAudio = true; dtrack = SimDirect.track(m); start(m, (long) ((SimDirect.AUDIO_AT_S + dtrack.seconds) * 1000) + 1000L); } catch (Throwable e) { a.toast("The run could not start: " + e.getClass().getSimpleName()); } })
             .setNegativeButton("Cancel", null).show();
+    }
+
+    /** 0.64.0: a short part (S, L, H, U). The old phone plays by default; this phone plays only when it has a wired or USB output and the person chooses it. */
+    private void startPart(final char m) {
+        if (p.isRunning()) { a.toast("A reading is running."); return; }
+        final long ms = (long) ((LabParts.seconds(m) + 12.0) * 1000);
+        final boolean own = hasWiredOut();
+        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(a).setTitle("Step " + LabParts.stepNo(m) + ": " + LabParts.title(m))
+            .setMessage("Wiring as in the wire check (cable tip to one clasp contact, sleeve to the foil on the LEFT index fingertip, strap snug on the left wrist, nothing touching the wiring). Old phone: volume at maximum, effects off, LabS_" + LabParts.stepNo(m) + " file ready at 0:00.\n\nTap Start, then press PLAY on the old phone within the first 8 seconds. The reading takes " + (int) (ms / 60000) + ":" + String.format(Locale.UK, "%02d", (int) (ms / 1000 % 60)) + "." + (Double.isNaN(vfsPkMv()) ? "\n\nNo meter number is stored yet (step 2): the run still records everything, and the scale follows once the number is typed." : ""))
+            .setPositiveButton("Start (old phone plays)", (x, y) -> { try { oldPhone = true; internalAudio = false; dtrack = SimDirect.track(m); start(m, ms); } catch (Throwable e) { a.toast("The run could not start: " + e.getClass().getSimpleName()); } })
+            .setNegativeButton("Cancel", null);
+        if (own) b.setNeutralButton("This phone plays", (x, y) -> { try { oldPhone = false; internalAudio = true; dtrack = SimDirect.track(m); start(m, (long) ((SimDirect.AUDIO_AT_S + dtrack.seconds) * 1000) + 1000L); } catch (Throwable e) { a.toast("The run could not start: " + e.getClass().getSimpleName()); } });
+        b.show();
+    }
+
+    /** 0.64.0: type the one meter number (100 Hz at -20 dBFS); nothing is played by this phone. */
+    private void typeMeter() {
+        LinearLayout box = new LinearLayout(a); box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(p.t("Meter on V~ (AC), 200 mV range. Cable from the old phone on the meter, NOT on the strap. Play LabS_2_meter.wav (volume at maximum). Read the steady value between 0:08 and 0:18, in millivolts. If it shows OL use the 2 V range and type the value in mV.", 12, HealthViews.MUT, 400));
+        final EditText f1 = num(box, "100 Hz at -20 dBFS (mV)", ctl().getString("sim_cal_v100", ""));
+        final Dialog[] d = new Dialog[1];
+        TextView go = p.pill("Save", HealthViews.BLUE, 0xFF05131E); go.setPadding(p.dp(18), p.dp(12), p.dp(18), p.dp(12));
+        go.setOnClickListener(v -> {
+            double a1 = parse(f1.getText().toString());
+            if (Double.isNaN(a1) || a1 <= 0) { a.toast("Type the meter reading in mV."); return; }
+            if (a1 < 3 || a1 > 700) { a.toast("That is outside 3 to 700 mV: check the range and the unit."); return; }
+            ctl().edit().putString("sim_cal_v100", f1.getText().toString().trim()).putLong("sim_cal_ts", System.currentTimeMillis()).apply();
+            rememberStep("2", f1.getText().toString().trim() + " mV rms at 100 Hz, full scale " + String.format(Locale.UK, "%.0f", a1 * Math.sqrt(2) / 0.1) + " mV peak");
+            d[0].dismiss(); a.toast(calText());
+        });
+        box.addView(go, p.lp(-1, -2, 14));
+        d[0] = p.sheet("Step 2: meter number", box); d[0].show();
+    }
+
+    /** 0.64.0: writes the five short sound files to Download/sim (16-bit mono 48 kHz, the same triangular dither as the in-app playback). */
+    void exportParts() {
+        a.toast("Saving the sounds (a few seconds)...");
+        new Thread(new Runnable() { @Override public void run() {
+            String msg; int ok = 0;
+            try {
+                char[] modes = { 'N', 'S', 'L', 'H', 'U' };
+                for (char m : modes) {
+                    String name = "LabS_" + LabParts.stepNo(m) + "_" + (m == 'N' ? "meter" : m == 'S' ? "scale" : m == 'L' ? "levels" : m == 'H' ? "low" : "high") + ".wav";
+                    long n = (long) Math.round(LabParts.seconds(m) * SR);
+                    ContentValues cv = new ContentValues(); cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name); cv.put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav"); cv.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/sim/"); cv.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                    Uri u = a.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    try (OutputStream o = a.getContentResolver().openOutputStream(u)) {
+                        o.write(LabParts.wavHeader(n)); java.util.Random rng = new java.util.Random(7); int chunk = SR / 2; byte[] buf = new byte[2 * chunk];
+                        for (long i = 0; i < n; i += chunk) { int k = (int) Math.min(chunk, n - i); LabParts.pcm(m, buf, k, i, rng); o.write(buf, 0, 2 * k); }
+                    }
+                    ContentValues done = new ContentValues(); done.put(MediaStore.MediaColumns.IS_PENDING, 0); a.getContentResolver().update(u, done, null, null); ok++;
+                }
+                rememberStep("1", ok + " files in Download/sim");
+                msg = "Saved " + ok + " files in Download/sim (LabS_2 to LabS_7). Copy them to the old phone.";
+            } catch (Throwable e) { msg = "The sounds could not be saved (" + ok + " of 5 done): " + e.getClass().getSimpleName(); }
+            final String fm = msg; a.runOnUiThread(() -> a.toast(fm));
+        } }, "sim-parts-wav").start();
     }
 
     private void startWiring() {
         if (p.isRunning()) { a.toast("A reading is running."); return; }
         playGen++; if (mode == 'M') stopAudio();
-        internalAudio = false; dtrack = null; start('W', 25_000L);
+        oldPhone = false; internalAudio = false; dtrack = null; start('W', 25_000L);
     }
 
     private void startCal() {
@@ -318,7 +411,8 @@ final class SimLabSheet {
                 if (bin == null) err = "No live raw file was found for this run.";
                 else {
                     List<byte[]> fr = SpectrumBlock.r16(java.nio.file.Files.readAllBytes(bin.toPath()));
-                    R = m == 'W' ? SimDirect.wiring(fr) : m == 'D' ? SimDirect.analyseTones(fr, vfs) : SimDirect.analyseEcg(tr != null ? tr : SimDirect.track(m), fr, vfs, pr);
+                    R = m == 'W' ? SimDirect.wiring(fr) : m == 'D' ? SimDirect.analyseTones(fr, vfs) : LabParts.is(m) ? LabParts.analyse(m, SimDirect.counts(fr), vfs) : SimDirect.analyseEcg(tr != null ? tr : SimDirect.track(m), fr, vfs, pr);
+                    if (m == 'W' || LabParts.is(m)) { String first = R.card.isEmpty() ? "" : R.card.get(0); rememberStep(String.valueOf(m), first.length() > 150 ? first.substring(0, 150) : first); }      // 0.64.0: shown under the step
                     if (!Double.isNaN(pr)) R.notes.put("sim_play_rel_s", String.format(Locale.US, "%.2f", pr));
                     R.notes.put("simd_cal_ts", String.valueOf(ctl().getLong("sim_cal_ts", 0L) / 1000L));
                     for (Map.Entry<String, String> e : R.notes.entrySet()) ReadingNotes.put(dir, startSec, e.getKey(), e.getValue());

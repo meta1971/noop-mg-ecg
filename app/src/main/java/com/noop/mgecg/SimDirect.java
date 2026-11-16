@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// 0.64.0 (16 Nov 2026): modes N, S, L, H, U are the short Lab S parts (LabParts); isDirect, title, track, fill and peakFs hand them over.
 
 // FILE VERSION 0.52.2 (11 Nov 2026): W wiring check and the strap's own contact verdict in every direct result. FILE VERSION 0.52.1 (11 Nov 2026): the DIRECT phone-audio Lab runs (decode log 151, 152, 154, 155): no divider and no DC. The strap input is high impedance, so the phone's headphone output can drive the two
 // pods directly when the signal is made small DIGITALLY: 1 mV of ECG = 0.001 of full scale (-60 dBFS); nothing played into the strap exceeds -48 dBFS (a few millivolts). The phone's full-scale voltage is
@@ -30,8 +31,8 @@ final class SimDirect {
     static final class Seg { String name = "", kind = ""; double start, end, param = Double.NaN; double[] beats = new double[0]; }
     static final class Track { char mode; double seconds; float[] ecg; final List<Seg> segs = new ArrayList<>(); }
 
-    static boolean isDirect(char m) { return m == 'D' || m == 'E' || m == 'F' || m == 'G' || m == 'W'; }
-    static String title(char m) { return m == 'W' ? "Wiring check" : m == 'M' ? "Meter calibration" : m == 'D' ? "Direct tones" : m == 'E' ? "ECG scenarios A" : m == 'F' ? "ECG scenarios B" : m == 'G' ? "AF replay" : "?"; }
+    static boolean isDirect(char m) { return m == 'D' || m == 'E' || m == 'F' || m == 'G' || m == 'W' || LabParts.is(m); }
+    static String title(char m) { return m == 'W' ? "Wiring check" : m == 'M' ? "Meter calibration" : m == 'D' ? "Direct tones" : m == 'E' ? "ECG scenarios A" : m == 'F' ? "ECG scenarios B" : m == 'G' ? "AF replay" : LabParts.title(m); }
 
     // ------------------------------------------------------------------ tone tracks (analytic)
     private static double db(double d) { return Math.pow(10.0, d / 20.0); }
@@ -73,6 +74,7 @@ final class SimDirect {
     private static final double RR = 60.0 / 70.0;
 
     static synchronized Track track(char mode) {
+        if (mode == 'N' || LabParts.is(mode)) return LabParts.track(mode);      // 0.64.0: the short Lab S parts
         load(); Track tr = new Track(); tr.mode = mode;
         if (mode == 'M') { tr.seconds = CAL_S; return tr; }
         if (mode == 'D') { tr.seconds = TONES_S; for (int i = 0; i < 4; i++) { Seg s = new Seg(); s.name = "L" + (int) -LEVEL_DB[i]; s.kind = "level"; s.start = 8 * i; s.end = 8 * i + 6; s.param = LEVEL_DB[i]; tr.segs.add(s); } for (int j = 0; j < FREQ.length; j++) { Seg s = new Seg(); s.name = "F" + FREQ_KEY[j]; s.kind = "tone"; s.start = 34 + 8 * j; s.end = s.start + 6; s.param = FREQ[j]; tr.segs.add(s); } return tr; }
@@ -106,7 +108,7 @@ final class SimDirect {
     static double peakFs(Track tr) {
         double mx = 0;
         if (tr.ecg != null) { for (float v : tr.ecg) mx = Math.max(mx, Math.abs(v) * FS_PER_MV); return mx; }
-        for (double t = 0; t < tr.seconds; t += 1.0 / 4000.0) mx = Math.max(mx, Math.abs(tr.mode == 'M' ? calValue(t) : toneValue(t))); return mx;
+        for (double t = 0; t < tr.seconds; t += 1.0 / 4000.0) mx = Math.max(mx, Math.abs(tr.mode == 'M' ? calValue(t) : LabParts.is(tr.mode) || tr.mode == 'N' ? LabParts.value(tr.mode, t) : toneValue(t))); return mx;
     }
 
     /** n float samples at 48 kHz from sample index pos (0 = the start of the audio). ECG tracks: cubic interpolation of the 500 Hz track, with +-1 LSB (16-bit) triangular dither so that a 16-bit output path stays linear. */
@@ -115,8 +117,9 @@ final class SimDirect {
             double t = (pos + i) / (double) SR, v;
             if (tr.mode == 'M') v = calValue(t);
             else if (tr.mode == 'D') v = toneValue(t);
+            else if (tr.mode == 'N' || LabParts.is(tr.mode)) v = LabParts.value(tr.mode, t);
             else { double p = t * FS; int j = (int) p; double f = p - j; float[] e = tr.ecg; int L = e.length; if (j + 2 >= L) v = 0; else { double p0 = e[Math.max(0, j - 1)], p1 = e[j], p2 = e[j + 1], p3 = e[j + 2]; v = 0.5 * (2 * p1 + (-p0 + p2) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f + (-p0 + 3 * p1 - 3 * p2 + p3) * f * f * f) * FS_PER_MV; } }
-            if (tr.mode != 'M') { if (v > MAX_STRAP_FS) v = MAX_STRAP_FS; else if (v < -MAX_STRAP_FS) v = -MAX_STRAP_FS; v += (rng.nextDouble() - rng.nextDouble()) / 32768.0; }
+            if (tr.mode != 'M' && tr.mode != 'N') { if (v > MAX_STRAP_FS) v = MAX_STRAP_FS; else if (v < -MAX_STRAP_FS) v = -MAX_STRAP_FS; v += (rng.nextDouble() - rng.nextDouble()) / 32768.0; }
             out[i] = (float) v;
         }
     }

@@ -178,7 +178,7 @@ final class StrapData {
         r.add(row(M, "Largest acceleration step", String.format(L, "%.4f g", R18Codec.f32(f, 41)), "bytes 41 to 44: the largest change of the acceleration magnitude between two samples of the 100 Hz motion record in this second (exact against the raw record); about 0.002 at rest, 0.3 jogging"));
         r.add(row(M, "Gravity direction", String.format(L, "x %.3f  y %.3f  z %.3f", gx, gy, gz) + String.format(L, "  (%.3f g)", Math.sqrt(gx * gx + gy * gy + gz * gz)), "bytes 45 to 56: the mean of the 100 raw accelerometer samples of the second / 4,096 counts per g; which way the strap's axes point"));
         r.add(row(M, "Step counter", String.valueOf(R18Codec.steps(f)), "bytes 57 and 58; running total"));
-        r.add(row(M, "Step cadence", String.valueOf(R18Codec.u16(f, 59)), "byte 59"));
+        r.add(row(M, "Step interval (about x 5 ms)", String.valueOf(R18Codec.u16(f, 59)), "byte 59"));
         int act = R18Codec.u8(f, 63);
         r.add(row(M, "Activity class", R18Codec.activityName(act), "byte 63; none, walk or run (walk against run not yet separated)"));
         r.add(row(M, "Stillness flag", (R18Codec.u8(f, 32) & 0x80) != 0 ? "still" : "moving or unset", "byte 32 bit 7; a candidate, not proven"));
