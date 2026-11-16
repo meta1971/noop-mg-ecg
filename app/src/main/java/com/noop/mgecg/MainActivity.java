@@ -561,14 +561,16 @@ public class MainActivity extends NewLookActivity {
 
         logRaw("LOG_FILE_OPENED path=" +
                 rawLogFile.getAbsolutePath());
-        try {                                                          // 0.19.0: why did the previous process end, and is the logger set up to survive
-            for (String x : ProcExit.check(this)) logRaw("PROCESS_EXIT " + x);
-            android.content.SharedPreferences ld = getSharedPreferences("linkdiag", MODE_PRIVATE);
-            logRaw("LOGGER_HEALTH batteryExempt=" + KeepAlive.batteryExempt(this) + " overlay=" + (Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(this))
-                    + " taskRemoved=" + ld.getInt("n_task_removed", 0) + " svcRestart=" + ld.getInt("n_svc_restart", 0) + " alarmRuns=" + ld.getInt("n_alarm", 0) + " alarmRestarts=" + ld.getInt("n_alarm_restart", 0));
-            String crash = CrashLog.last(this);
-            if (!crash.isEmpty()) logRaw("LAST_CRASH " + crash.replace('\n', '|'));
-        } catch (Throwable ignored) { }
+        new Thread(new Runnable() { @Override public void run() {      // 0.67.0: these lines need system calls and file reads; they do not have to hold up the first screen
+            try {                                                      // 0.19.0: why did the previous process end, and is the logger set up to survive
+                for (String x : ProcExit.check(MainActivity.this)) logRaw("PROCESS_EXIT " + x);
+                android.content.SharedPreferences ld = getSharedPreferences("linkdiag", MODE_PRIVATE);
+                logRaw("LOGGER_HEALTH batteryExempt=" + KeepAlive.batteryExempt(MainActivity.this) + " overlay=" + (Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(MainActivity.this))
+                        + " taskRemoved=" + ld.getInt("n_task_removed", 0) + " svcRestart=" + ld.getInt("n_svc_restart", 0) + " alarmRuns=" + ld.getInt("n_alarm", 0) + " alarmRestarts=" + ld.getInt("n_alarm_restart", 0));
+                String crash = CrashLog.last(MainActivity.this);
+                if (!crash.isEmpty()) logRaw("LAST_CRASH " + crash.replace('\n', '|'));
+            } catch (Throwable ignored) { }
+        } }, "startup-diag").start();
     }
 
     /*
@@ -10349,6 +10351,7 @@ public class MainActivity extends NewLookActivity {
 
     @Override
     protected void onCreate(Bundle b) {
+        StartupClock.mark(StartupClock.MAIN_CREATE);  // 0.67.0
         CrashLog.install(this);                       // 0.19.0
         ScaleSetting.load(this);                      // 0.54.0: the ECG scale (one versioned setting)
 
@@ -10389,7 +10392,13 @@ public class MainActivity extends NewLookActivity {
                                 BLUETOOTH_SERVICE))
                         .getAdapter();
 
+        {                                                                       // 0.67.0: a plain launch only hands the screen to HealthActivity: build the old layers, but do not lay them out or draw them
+            android.content.Intent hi = getIntent();
+            boolean wantsOldHere = hi != null && (hi.getBooleanExtra("stay", false) || hi.getBooleanExtra("start_ecg", false) || hi.getStringExtra("open_report") != null);
+            NewLookActivity.handoffLaunch = b == null && !wantsOldHere && !hostOnly;
+        }
         buildUi();
+        StartupClock.mark(StartupClock.MAIN_UI);      // 0.67.0
         requestPerms();
 
         initRawLogFile();

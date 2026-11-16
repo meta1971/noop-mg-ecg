@@ -205,6 +205,7 @@ public class NewLookActivity extends Activity {
             return true;
         });
         super.setContentView(root);
+        if (handoffLaunch) { handoffLaunch = false; hiddenRoot = root; root.setVisibility(View.GONE); }      // 0.67.0: built, but not measured or drawn until it is really opened
         android.content.Intent li0 = getIntent();
         if (li0 != null && li0.getBooleanExtra("start_ecg", false) || pendingEcg) { fromNew = true; showStarting("Getting your strap ready\u2026", ""); }
         else showHome();
@@ -264,9 +265,28 @@ public class NewLookActivity extends Activity {
         }
     }
 
+    // 0.67.0: this screen sits under the heart app all day (it owns the strap link). While it is not on screen it must not scan the report files or count
+    // the database; and on a hand-off launch (MainActivity only passes the screen to HealthActivity) its layers are not laid out or drawn at all.
+    static volatile boolean handoffLaunch;               // set by MainActivity.onCreate for a plain launch that goes straight to HealthActivity
+    private volatile boolean resumedNow;
+    private boolean pausedOnce;
+    private View hiddenRoot;
+
+    private boolean onScreen() { return resumedNow && hiddenRoot == null; }
+
+    @Override
+    protected void onPause() {
+        resumedNow = false;
+        pausedOnce = true;
+        super.onPause();
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        resumedNow = true;
+        if (hiddenRoot != null && pausedOnce) { hiddenRoot.setVisibility(View.VISIBLE); hiddenRoot = null; tickCount = 0; }      // back on screen: show the layers, refresh the home at the next tick
+        else if (hiddenRoot == null) tickCount = 0;
         View root = findViewById(android.R.id.content); if (root != null) root.setAlpha(1f);      // 0.27.2
         consumePending();
     }
@@ -343,8 +363,8 @@ public class NewLookActivity extends Activity {
             if (c != null && c.getVisibility() != View.VISIBLE) { if (fromNew) leaveToNewApp(); else showHome(); }    // the old ECG screen was closed
             else updateEcgExtras();
         }
-        checkNewReport();
-        if (state == ST_HOME && tickCount++ % 10 == 0) refreshHome();
+        if (onScreen() || state == ST_ECG || state == ST_START) checkNewReport();      // 0.67.0: not while hidden under the heart app
+        if (onScreen() && state == ST_HOME && tickCount++ % 10 == 0) refreshHome();
     }
 
     private void updateConnection() {
@@ -959,7 +979,7 @@ public class NewLookActivity extends Activity {
         state = ST_HOME;
         hideLayers();
         homeLayer.setVisibility(View.VISIBLE);
-        refreshHome();
+        if (hiddenRoot == null) refreshHome();      // 0.67.0: a hand-off launch refreshes it when it is first shown
         updateConnection();
         if (bannerFile != null && bannerFile.exists() && bannerPending) banner.setVisibility(View.VISIBLE);
     }
@@ -1170,11 +1190,13 @@ public class NewLookActivity extends Activity {
 
     private void refreshDayLogLine() {
         if (dayLogStatus == null) return;
-        try {
-            dayLogStatus.setText((DayLog.enabled(this) ? "Logger ON  \u00b7  " : "Logger OFF  \u00b7  ") + DayLog.statusLine(this));
-        } catch (Throwable t) {
-            dayLogStatus.setText("");
-        }
+        final android.content.Context app = getApplicationContext();
+        new Thread(() -> {      // 0.67.0: database reads off the main thread
+            String t;
+            try { t = (DayLog.enabled(app) ? "Logger ON  \u00b7  " : "Logger OFF  \u00b7  ") + DayLog.statusLine(app); } catch (Throwable e) { t = ""; }
+            final String tt = t;
+            ui.post(() -> { if (dayLogStatus != null) dayLogStatus.setText(tt); });
+        }, "home-daylog").start();
     }
 
     private volatile boolean exporting;
@@ -1244,14 +1266,6 @@ public class NewLookActivity extends Activity {
         return min < 60 ? min + " m" : (min / 60) + ":" + String.format(Locale.UK, "%02d", min % 60);
     }
 
-    private void refreshStreak() {
-        try {
-            EcgStreak.Out s = EcgStreak.compute(EcgWidget.startsOf(getExternalFilesDir(null)), System.currentTimeMillis(), java.util.TimeZone.getDefault());
-            if (homeStreakBody != null) homeStreakBody.setText(EcgStreak.strip(s) + "\n" + EcgStreak.summary(s));
-            if (homeStreakBody != null) homeStreakBody.setContentDescription(EcgStreak.summary(s) + (s.today ? ". You have a reading today." : ". No reading yet today."));
-        } catch (Throwable ignored) { }
-    }
-
     private void publishShortcuts() {
         if (android.os.Build.VERSION.SDK_INT < 25) return;
         android.content.pm.ShortcutManager sm = (android.content.pm.ShortcutManager) getSystemService(android.content.pm.ShortcutManager.class);
@@ -1264,11 +1278,33 @@ public class NewLookActivity extends Activity {
         sm.setDynamicShortcuts(l);
     }
 
+    private volatile boolean homeLoading;
+
+    /** 0.67.0: the report files are scanned on a thread; the screen is filled in when the scan is done (before: on the main thread, every 5 s, all day). */
     private void refreshHome() {
         refreshDayLogLine();
         refreshGlance();
-        refreshStreak();
-        List<Rep> reps = loadReports();
+        if (homeLoading) return;
+        homeLoading = true;
+        final File dir = getExternalFilesDir(null);
+        new Thread(() -> {
+            List<Rep> reps = null; EcgStreak.Out streak = null; int newCount = 0;
+            try { reps = loadReports(); } catch (Throwable ignored) { }
+            try { streak = EcgStreak.compute(EcgWidget.startsOf(dir), System.currentTimeMillis(), java.util.TimeZone.getDefault()); } catch (Throwable ignored) { }
+            try { newCount = SendFlow.newCount(dir); } catch (Throwable ignored) { }
+            final List<Rep> fr = reps; final EcgStreak.Out fs = streak; final int fn = newCount;
+            ui.post(() -> { homeLoading = false; if (!isFinishing()) applyHome(fr, fs, fn); });
+        }, "home-reports").start();
+    }
+
+    private void applyHome(List<Rep> reps, EcgStreak.Out s, int newCount) {
+        try {
+            if (s != null && homeStreakBody != null) {
+                homeStreakBody.setText(EcgStreak.strip(s) + "\n" + EcgStreak.summary(s));
+                homeStreakBody.setContentDescription(EcgStreak.summary(s) + (s.today ? ". You have a reading today." : ". No reading yet today."));
+            }
+        } catch (Throwable ignored) { }
+        if (reps == null) return;
         if (reps.isEmpty()) {
             latestFile = null;
             homeLatestTitle.setText("NO READINGS YET");
@@ -1286,9 +1322,8 @@ public class NewLookActivity extends Activity {
         try {
             if (homeSendBtn != null) { homeSendBtn.setVisibility(View.VISIBLE); SendFlow.attach(this, homeSendBtn, ProReportMaker.unixOf(r.file), r.file); }
             if (homeSendAll != null) {
-                int n = SendFlow.newCount(getExternalFilesDir(null));
-                homeSendAll.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
-                if (!homeSendAll.getText().toString().startsWith("Waiting")) homeSendAll.setText("Send all new  (" + n + ")");
+                homeSendAll.setVisibility(newCount > 0 ? View.VISIBLE : View.GONE);
+                if (!homeSendAll.getText().toString().startsWith("Waiting")) homeSendAll.setText("Send all new  (" + newCount + ")");
             }
         } catch (Throwable ignored) { }
     }
@@ -1448,19 +1483,36 @@ public class NewLookActivity extends Activity {
     }
 
     /** 0.15.3: the late tail of a reading ("0 of 3 seconds were clean enough") is not a reading; the Reports screen lists the files itself. */
+    private static final java.util.HashMap<String, Boolean> FRAG_CACHE = new java.util.HashMap<String, Boolean>();      // 0.67.0: one read per report file, not one per call
+
     static boolean isFragment(File f) {
+        final String key = f.getName() + "|" + f.lastModified() + "|" + f.length();
+        synchronized (FRAG_CACHE) { Boolean h = FRAG_CACHE.get(key); if (h != null) return h; }
+        boolean res = false;
         try {
             java.io.FileInputStream in = new java.io.FileInputStream(f);
             try {
                 byte[] b = new byte[16000];
                 int k = in.read(b);
                 int tot = HealthModel.fragmentSeconds(k <= 0 ? "" : new String(b, 0, k, "UTF-8"));
-                return tot >= 0 && tot < 20;
+                res = tot >= 0 && tot < 20;
             } finally { in.close(); }
         } catch (Throwable t) { return false; }
+        synchronized (FRAG_CACHE) { if (FRAG_CACHE.size() > 4000) FRAG_CACHE.clear(); FRAG_CACHE.put(key, res); }
+        return res;
     }
 
+    private static final java.util.HashMap<String, Rep> REP_CACHE = new java.util.HashMap<String, Rep>();      // 0.67.0: the head of a report file is read once
+
     Rep describe(File f) {
+        final String key = f.getName() + "|" + f.lastModified() + "|" + f.length();
+        synchronized (REP_CACHE) { Rep h = REP_CACHE.get(key); if (h != null) return h; }
+        Rep r = describeNow(f);
+        synchronized (REP_CACHE) { if (REP_CACHE.size() > 4000) REP_CACHE.clear(); REP_CACHE.put(key, r); }
+        return r;
+    }
+
+    private Rep describeNow(File f) {
         Rep r = new Rep();
         r.file = f;
         long t = f.lastModified();

@@ -95,6 +95,7 @@ public class HealthActivity extends Activity {
     // ------------------------------------------------------------------ lifecycle
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        StartupClock.healthStart();              // 0.67.0
         FrameMonitor.captureTo(getExternalFilesDir(null));          // 0.25.0: raw copies of undecoded frames
         ScaleSetting.load(this);                                    // 0.54.0
         FrameLayout root = new FrameLayout(this);
@@ -118,7 +119,15 @@ public class HealthActivity extends Activity {
         root.addView(scrim, new FrameLayout.LayoutParams(-1, Math.round(dp(this, 130)), Gravity.BOTTOM));
         root.addView(nav, np);
         setContentView(root);
+        HealthSnap hs = HealthSnap.get(System.currentTimeMillis(), HealthSnap.MAX_AGE_MS);      // 0.67.0: paint from the last load at once, refresh behind it
+        if (hs != null) {
+            data = hs.data; loadedOnce = true;
+            actBouts = hs.actBouts; actLine = hs.actLine; actMin = hs.actMin; actGoal = hs.actGoal; actToday = hs.actToday; actStatsAt = hs.actStatsAt;
+            trustDays = hs.trustDays; trustIngests = hs.trustIngests; trustAt = hs.trustAt;
+            syncRange = hs.syncRange; syncBattery = hs.syncBattery; syncSub = hs.syncSub;
+        }
         render();
+        ui.post(new Runnable() { @Override public void run() { StartupClock.healthPaint(); } });      // after the first layout pass
     }
 
     /** Another screen's bottom bar asks for a tab while this screen is already open. */
@@ -205,7 +214,14 @@ public class HealthActivity extends Activity {
                     syncSub = cond == null ? "" : "Strap: " + pages + (pages.isEmpty() || bat.isEmpty() ? "" : "  \u00b7  ") + bat;
                 } catch (Throwable ignored) { }
                 final HealthModel.Data dd = d;
-                ui.post(new Runnable() { @Override public void run() { loading = false; loadedOnce = true; if (!isFinishing()) { data = dd; render(); } } });
+                if (dd != null) {                                          // 0.67.0: keep it for the next HealthActivity
+                    HealthSnap hs = new HealthSnap();
+                    hs.data = dd; hs.actBouts = actBouts; hs.actLine = actLine; hs.actMin = actMin; hs.actGoal = actGoal; hs.actToday = actToday; hs.actStatsAt = actStatsAt;
+                    hs.trustDays = trustDays; hs.trustIngests = trustIngests; hs.trustAt = trustAt;
+                    hs.syncRange = syncRange; hs.syncBattery = syncBattery; hs.syncSub = syncSub;
+                    HealthSnap.put(hs);
+                }
+                ui.post(new Runnable() { @Override public void run() { loading = false; loadedOnce = true; StartupClock.healthLoaded(); if (!isFinishing()) { data = dd; render(); } } });
             }
         }, "health-load").start();
     }
@@ -366,9 +382,85 @@ public class HealthActivity extends Activity {
         return r;
     }
 
+    // ------------------------------------------------------------------ 0.67.0: headers and drop-down groups on the You page
+    private static final class NavG { String section, key; LinearLayout card, body; TextView mark; boolean open; }
+    private final java.util.ArrayList<NavG> navGs = new java.util.ArrayList<>();
+
+    private String navCsv() { return sp().getString("nav_open", ""); }
+
+    private void applyNav(NavG g) {
+        g.body.setVisibility(g.open ? View.VISIBLE : View.GONE);
+        g.mark.setText(g.open ? "\u25B4" : "\u25BE");
+    }
+
+    private void setNav(NavG g, boolean open) {
+        g.open = open;
+        applyNav(g);
+        sp().edit().putString("nav_open", NavGroups.set(navCsv(), g.key, open)).apply();
+    }
+
+    private void setAllNav(String section, boolean open) {
+        java.util.ArrayList<String> ks = new java.util.ArrayList<>();
+        for (NavG g : navGs) if (g.section.equals(section)) { g.open = open; applyNav(g); ks.add(g.key); }
+        sp().edit().putString("nav_open", NavGroups.setAll(navCsv(), ks, open)).apply();
+    }
+
+    /** A card whose header (title, one-line hint, arrow) opens and closes its body; the state is remembered per key. Add rows to g.body. */
+    private NavG navGroup(String section, final String key, String title, String hint) {
+        final NavG g = new NavG();
+        g.section = section; g.key = key;
+        g.card = card(0);
+        LinearLayout hd = hrow();
+        hd.setPadding(dpi(16), dpi(14), dpi(16), dpi(14));
+        hd.setMinimumHeight(Math.max(dpi(56), tapMin()));
+        LinearLayout tx = new LinearLayout(this);
+        tx.setOrientation(LinearLayout.VERTICAL);
+        tx.addView(tv(title, 15, INK, 600));
+        if (hint != null && !hint.isEmpty()) { TextView h = tv(hint, 11.5f, MUT, 400); h.setPadding(0, dpi(3), 0, 0); tx.addView(h); }
+        hd.addView(tx, new LinearLayout.LayoutParams(0, -2, 1f));
+        g.mark = tv("\u25BE", 16, BLUE, 600);
+        g.mark.setPadding(dpi(10), 0, 0, 0);
+        hd.addView(g.mark);
+        g.body = new LinearLayout(this);
+        g.body.setOrientation(LinearLayout.VERTICAL);
+        g.body.setPadding(dpi(16), 0, dpi(16), dpi(14));
+        g.card.addView(hd);
+        g.card.addView(g.body);
+        g.open = NavGroups.isOpen(navCsv(), key);
+        applyNav(g);
+        hd.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { setNav(g, !g.open); } });
+        navGs.add(g);
+        return g;
+    }
+
+    /** Opens a group (if closed) and scrolls the page to it. */
+    private void goToNav(final NavG g) {
+        if (!g.open) setNav(g, true);
+        if (lastScroll != null) lastScroll.post(new Runnable() { @Override public void run() { lastScroll.smoothScrollTo(0, Math.max(0, g.card.getTop() - dpi(8))); } });
+    }
+
+    /** A section title; with [section] it also carries "Open all" and "Close all" for that section's groups. */
+    private View sectionHead(String title, final String section) {
+        LinearLayout r = hrow();
+        TextView t = caps(title);
+        t.setTextColor(BLUE);
+        r.addView(t, new LinearLayout.LayoutParams(0, -2, 1f));
+        if (section != null) {
+            TextView o = tv("Open all", 12, BLUE, 600);
+            o.setPadding(dpi(10), dpi(8), dpi(10), dpi(8));
+            o.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { setAllNav(section, true); } });
+            TextView c = tv("Close all", 12, BLUE, 600);
+            c.setPadding(dpi(10), dpi(8), 0, dpi(8));
+            c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { setAllNav(section, false); } });
+            r.addView(o);
+            r.addView(c);
+        }
+        return r;
+    }
+
     private View displayCard() {
-        LinearLayout c = card(16);
-        c.addView(caps("DISPLAY"));
+        NavG dg = navGroup("settings", "display", "Display", "Text size, brighter text, bigger tap targets");      // 0.67.0: a drop-down group like the rest
+        LinearLayout c = dg.body;
         final SharedPreferences up = UxKit.sp(this);
         final TextView sv = tv(UxLogic.stepName(UxKit.textStep(this)), 14, BLUE, 600);
         c.addView(valueRow("Text size", sv, new View.OnClickListener() { @Override public void onClick(View v) {
@@ -382,7 +474,7 @@ public class HealthActivity extends Activity {
         TextView n = tv("Text size applies to Today, Heart, ECG list, Rest, You and the wellbeing page. The live ECG reading screen keeps its own sizes.", 11, MUT, 400);
         n.setLineSpacing(0, 1.2f);
         c.addView(n, lp(-2, -2, 6));
-        return c;
+        return dg.card;
     }
 
     // ------------------------------------------------------------------ small builders
@@ -2448,7 +2540,7 @@ public class HealthActivity extends Activity {
         } catch (Throwable ignored) { }
         float logged = d == null || d.day == null ? 0f : (float) d.day.loggedH;
         View av = avatar(Math.min(1f, logged / 24f));
-        LinearLayout.LayoutParams ap = lp(dpi(170), dpi(170), 10);
+        LinearLayout.LayoutParams ap = lp(dpi(120), dpi(120), 6);      // 0.67.0: smaller, so the menus start higher up
         ap.gravity = Gravity.CENTER_HORIZONTAL;
         col.addView(av, ap);
         TextView nm = tv(name(), 22, INK, 400);
@@ -2457,65 +2549,74 @@ public class HealthActivity extends Activity {
         TextView cap = tv(String.format(Locale.UK, "%.1f h logged in the last 24", logged), 12.5f, MUT, 400);
         cap.setGravity(Gravity.CENTER);
         col.addView(cap, lp(-1, -2, 6));
-        col.addView(rowCard("Quick guide", "What the tabs and the ring colours mean, in plain words", new View.OnClickListener() { @Override public void onClick(View v) { QuickGuide.show(HealthActivity.this); } }), lp(-1, -2, 12));      // 0.55.0
+        navGs.clear();                                                        // 0.67.0: this page's drop-down groups are rebuilt with it
+        col.addView(sectionHead("HELP AND SEARCH", null), lp(-1, -2, 14));
+        col.addView(rowCard("Quick guide", "What the tabs and the ring colours mean, in plain words", new View.OnClickListener() { @Override public void onClick(View v) { QuickGuide.show(HealthActivity.this); } }), lp(-1, -2, 8));      // 0.55.0
 
         final LinearLayout findHolder = new LinearLayout(this); findHolder.setOrientation(LinearLayout.VERTICAL); col.addView(findHolder, lp(-1, -2, 12));      // 0.64.0: Find and the wellbeing / insight shortcuts, filled at the end
-        col.addView(displayCard(), lp(-1, -2, 16));                          // 0.61.0
-        LinearLayout st = card(16);
-        st.addView(caps("SETTINGS, ECG AND LAB OPTIONS"));
+        col.addView(sectionHead("SETTINGS", "settings"), lp(-1, -2, 22));      // 0.67.0: headers and drop-down groups
+        col.addView(displayCard(), lp(-1, -2, 4));                           // 0.61.0
+        final NavG gE = navGroup("settings", "ecg", "ECG readings", "Countdown, near-live 500 Hz, clock, H10, live raw");
+        final NavG gG = navGroup("settings", "graph", "ECG graph", "Window, style, theme, smoothing, quality colours");
+        final NavG gP = navGroup("settings", "phone", "During a reading", "Phone-buzz guard, silence the phone");
+        final NavG gA = navGroup("settings", "alerts", "Alerts and strap link", "Morning summary, battery alert, restart the link");
+        final NavG gN = navGroup("settings", "numbers", "Your numbers", "Sleep goal, maximum heart rate, ECG scale");
+        final NavG gR = navGroup("settings", "research", "Research and tests", "Scale lab, strap settings reader, test switches");
+        NavG[] sg = { gE, gG, gP, gA, gN, gR };
+        for (NavG g : sg) col.addView(g.card, lp(-1, -2, 8));
         final SharedPreferences ctl = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
-        st.addView(toggleRow("Start the ECG reading by itself after a 5 second countdown", ctl, "ecg_autostart"), lp(-1, dpi(52), 6));
-        st.addView(toggleRow("Show the packet counters on the screen during a reading", ctl, "ecg_packets_open"), lp(-1, dpi(52), 0));
-        st.addView(toggleRow("Record the H10 with each ECG reading (adds a PDF page)", ctl, "h10_with_reading", false), lp(-1, dpi(52), 0));
-        st.addView(toggleRow("Research: averaged beat, QT and HRV from 12.8 s (leave out the strap's settling)", ctl, "ecg_settle128", false), lp(-1, -2, 0));      // 0.39.0
-        st.addView(toggleRow("Write reconstructed_waveform files (old pulse-packet rebuild, unused)", ctl, "write_reconstructed", false), lp(-1, dpi(52), 0));      // 0.39.0
-        st.addView(toggleRow("Near-live 500 Hz during readings", ctl, "ecg_tail"), lp(-1, dpi(52), 0));
-        st.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
-        st.addView(toggleRow("Set the strap clock to the sub-second (as the official app)", ctl, "clock_subsec"), lp(-1, dpi(52), 0));
+        gE.body.addView(toggleRow("Start the ECG reading by itself after a 5 second countdown", ctl, "ecg_autostart"), lp(-1, dpi(52), 6));
+        gE.body.addView(toggleRow("Show the packet counters on the screen during a reading", ctl, "ecg_packets_open"), lp(-1, dpi(52), 0));
+        gE.body.addView(toggleRow("Record the H10 with each ECG reading (adds a PDF page)", ctl, "h10_with_reading", false), lp(-1, dpi(52), 0));
+        gE.body.addView(toggleRow("Research: averaged beat, QT and HRV from 12.8 s (leave out the strap's settling)", ctl, "ecg_settle128", false), lp(-1, -2, 0));      // 0.39.0
+        gR.body.addView(toggleRow("Write reconstructed_waveform files (old pulse-packet rebuild, unused)", ctl, "write_reconstructed", false), lp(-1, dpi(52), 0));      // 0.39.0
+        gE.body.addView(toggleRow("Near-live 500 Hz during readings", ctl, "ecg_tail"), lp(-1, dpi(52), 0));
+        gE.body.addView(toggleRow("Auto-restart at the 10-minute cap", ctl, "ecg_autorestart"), lp(-1, dpi(52), 0));
+        gE.body.addView(toggleRow("Set the strap clock to the sub-second (as the official app)", ctl, "clock_subsec"), lp(-1, dpi(52), 0));
         final TextView lrv = tv(liveRawModeText(ctl), 14, BLUE, 600);
-        st.addView(valueRow("Live raw 500 Hz during readings (command 126)", lrv, new View.OnClickListener() {
+        gE.body.addView(valueRow("Live raw 500 Hz during readings (command 126)", lrv, new View.OnClickListener() {
             @Override public void onClick(View v) { int md = (ctl.getInt("ecg_liveraw_mode", 1) + 1) % 3; ctl.edit().putInt("ecg_liveraw_mode", md).apply(); lrv.setText(liveRawModeText(ctl)); }
         }), lp(-1, dpi(52), 0));
         TextView lrNote = tv("Tap to change: Off, On at start (the default: the live 500 Hz stream from the first second, about 0.1 s behind), Staged (126 on at about 16 s and off at about 41 s of one reading, a test).", 11.5f, MUT, 400);
         lrNote.setPadding(0, 0, 0, dpi(6));
-        st.addView(lrNote);
+        gE.body.addView(lrNote);
         // 0.43.0: the four graph options moved here from the ECG screen; they apply from the next reading
         final TextView gwv = tv(ctl.getInt("graph_window", 6000) == 3500 ? "3.5 s (zoom)" : "6 s", 14, BLUE, 600);
-        st.addView(valueRow("ECG graph window", gwv, new View.OnClickListener() { @Override public void onClick(View v) { int w = ctl.getInt("graph_window", 6000) == 3500 ? 6000 : 3500; ctl.edit().putInt("graph_window", w).apply(); Live500View.windowMs = w; gwv.setText(w == 3500 ? "3.5 s (zoom)" : "6 s"); } }), lp(-1, dpi(52), 0));
+        gG.body.addView(valueRow("ECG graph window", gwv, new View.OnClickListener() { @Override public void onClick(View v) { int w = ctl.getInt("graph_window", 6000) == 3500 ? 6000 : 3500; ctl.edit().putInt("graph_window", w).apply(); Live500View.windowMs = w; gwv.setText(w == 3500 ? "3.5 s (zoom)" : "6 s"); } }), lp(-1, dpi(52), 0));
         final TextView gsv = tv(ctl.getBoolean("graph_sweep", false) ? "Sweep with erase bar" : "Scroll", 14, BLUE, 600);
-        st.addView(valueRow("ECG graph style", gsv, new View.OnClickListener() { @Override public void onClick(View v) { boolean w = !ctl.getBoolean("graph_sweep", false); ctl.edit().putBoolean("graph_sweep", w).apply(); Live500View.sweep = w; gsv.setText(w ? "Sweep with erase bar" : "Scroll"); } }), lp(-1, dpi(52), 0));
+        gG.body.addView(valueRow("ECG graph style", gsv, new View.OnClickListener() { @Override public void onClick(View v) { boolean w = !ctl.getBoolean("graph_sweep", false); ctl.edit().putBoolean("graph_sweep", w).apply(); Live500View.sweep = w; gsv.setText(w ? "Sweep with erase bar" : "Scroll"); } }), lp(-1, dpi(52), 0));
         final TextView gtv = tv(ctl.getBoolean("graph_paper", false) ? "Paper (light)" : "Dark", 14, BLUE, 600);
-        st.addView(valueRow("ECG graph theme", gtv, new View.OnClickListener() { @Override public void onClick(View v) { boolean w = !ctl.getBoolean("graph_paper", false); ctl.edit().putBoolean("graph_paper", w).apply(); Live500View.paper = w; gtv.setText(w ? "Paper (light)" : "Dark"); } }), lp(-1, dpi(52), 0));
+        gG.body.addView(valueRow("ECG graph theme", gtv, new View.OnClickListener() { @Override public void onClick(View v) { boolean w = !ctl.getBoolean("graph_paper", false); ctl.edit().putBoolean("graph_paper", w).apply(); Live500View.paper = w; gtv.setText(w ? "Paper (light)" : "Dark"); } }), lp(-1, dpi(52), 0));
         final TextView gpv = tv(ctl.getString("pro_display", "1").equals("1") ? "On (spline baseline, markers)" : "Off (0.05 Hz filter only)", 14, BLUE, 600);
-        st.addView(valueRow("ECG pro display", gpv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getString("pro_display", "1").equals("1"); ctl.edit().putString("pro_display", on ? "1" : "0").apply(); Live500.pro = on; gpv.setText(on ? "On (spline baseline, markers)" : "Off (0.05 Hz filter only)"); } }), lp(-1, dpi(52), 0));
+        gG.body.addView(valueRow("ECG pro display", gpv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getString("pro_display", "1").equals("1"); ctl.edit().putString("pro_display", on ? "1" : "0").apply(); Live500.pro = on; gpv.setText(on ? "On (spline baseline, markers)" : "Off (0.05 Hz filter only)"); } }), lp(-1, dpi(52), 0));
         // 0.44.0: quality colours of the live trace and the clean view
         final TextView gqv = tv(ctl.getBoolean("ecg_quality_colours", true) ? "On" : "Off", 14, BLUE, 600);
-        st.addView(valueRow("ECG quality colours", gqv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getBoolean("ecg_quality_colours", true); ctl.edit().putBoolean("ecg_quality_colours", on).apply(); Live500View.qualityColours = on; gqv.setText(on ? "On" : "Off"); } }), lp(-1, dpi(52), 0));
+        gG.body.addView(valueRow("ECG quality colours", gqv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getBoolean("ecg_quality_colours", true); ctl.edit().putBoolean("ecg_quality_colours", on).apply(); Live500View.qualityColours = on; gqv.setText(on ? "On" : "Off"); } }), lp(-1, dpi(52), 0));
         TextView gqNote = tv("The live trace is coloured by the strap's own quality for each second: normal colour for quality 3, amber for 2, grey for 0 or 1, a gap when the fingers are off.", 11.5f, MUT, 400);
         gqNote.setPadding(0, 0, 0, dpi(6));
-        st.addView(gqNote);
+        gG.body.addView(gqNote);
         final TextView gcv = tv(ctl.getBoolean("ecg_clean_view", false) ? "On (clean view)" : "Off", 14, BLUE, 600);
-        st.addView(valueRow("ECG display smoothing", gcv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getBoolean("ecg_clean_view", false); ctl.edit().putBoolean("ecg_clean_view", on).apply(); Live500.setClean(on); gcv.setText(on ? "On (clean view)" : "Off"); } }), lp(-1, dpi(52), 0));
+        gG.body.addView(valueRow("ECG display smoothing", gcv, new View.OnClickListener() { @Override public void onClick(View v) { boolean on = !ctl.getBoolean("ecg_clean_view", false); ctl.edit().putBoolean("ecg_clean_view", on).apply(); Live500.setClean(on); gcv.setText(on ? "On (clean view)" : "Off"); } }), lp(-1, dpi(52), 0));
         TextView gcNote = tv("On: heavier smoothing between the beats (about 20 ms) for a calmer picture; the QRS keeps its shape and the graph says smoothed. Display only: reports and stored data are not changed.", 11.5f, MUT, 400);
         gcNote.setPadding(0, 0, 0, dpi(6));
-        st.addView(gcNote);
-        st.addView(toggleRow("Live motion capture (test)", ctl, "imu_live_test", false), lp(-1, dpi(52), 0));
+        gG.body.addView(gcNote);
+        gR.body.addView(toggleRow("Live motion capture (test)", ctl, "imu_live_test", false), lp(-1, dpi(52), 0));
         TextView imuNote = tv("Test, off by default. During an ECG reading it asks the strap for its live accelerometer and gyro stream (START_RAW_DATA, then TOGGLE_IMU_MODE, as the NOOP app does) and shows a motion warning on the reading page when your arm moves (0.46.1; the sensor cannot see finger tremor). The frames are kept in the live-frame file. It could disturb the ECG: turn it off if a reading ever looks different, and tell me.", 11.5f, MUT, 400);
         imuNote.setPadding(0, 0, 0, dpi(6));
-        st.addView(imuNote);
-        st.addView(toggleRow("Phone-buzz guard", ctl, "ring_guard", true), lp(-1, dpi(52), 0));      // 0.57.0
+        gR.body.addView(imuNote);
+        gP.body.addView(toggleRow("Phone-buzz guard", ctl, "ring_guard", true), lp(-1, dpi(52), 0));      // 0.57.0
         TextView rgNote = tv("On by default. During an ECG reading the strap's motion stream is watched for a ringing or buzzing phone (a narrow line between 5 and 49 Hz, not a hand movement). While it happens a banner shows, and the seconds are written to the reading notes (ring_flag_times_s). It asks the strap for the same motion stream as the test switch above. Detection only: the recording is not changed.", 11.5f, MUT, 400);
         rgNote.setPadding(0, 0, 0, dpi(6));
-        st.addView(rgNote);
+        gP.body.addView(rgNote);
         final TextView qpv = tv(quietText(ctl), 14, BLUE, 600);
-        st.addView(valueRow("Silence the phone during readings", qpv, new View.OnClickListener() { @Override public void onClick(View v) {
+        gP.body.addView(valueRow("Silence the phone during readings", qpv, new View.OnClickListener() { @Override public void onClick(View v) {
             boolean on = !ctl.getBoolean("quiet_phone", false);
             if (on && !QuietPhone.granted(HealthActivity.this)) { android.widget.Toast.makeText(HealthActivity.this, "Allow Do Not Disturb access for this app, then come back and tap this row again.", android.widget.Toast.LENGTH_LONG).show(); try { startActivity(QuietPhone.grantIntent()); } catch (RuntimeException e) { } return; }
             ctl.edit().putBoolean("quiet_phone", on).apply(); qpv.setText(quietText(ctl));
         } }));
         TextView qpNote = tv("Off by default. On: when a reading starts the phone goes to Do Not Disturb, Alarms only, so a call or message cannot ring or buzz it; when the reading ends the earlier setting is put back (and at the next start of the app if the app was killed in between). Calls from everyone are silenced, including favourites. Needs the one-time Do Not Disturb access in Android settings.", 11.5f, MUT, 400);
         qpNote.setPadding(0, 0, 0, dpi(6));
-        st.addView(qpNote);
+        gP.body.addView(qpNote);
         LinearLayout rf = explainerCard("RESEARCH", "Strap settings reader and the scale lab");      // 0.51.0: build brief items 1 and 4
         expandable("e_research", rf, new Filler() { @Override public void fill(LinearLayout q) {
             q.addView(pillButton("Read strap settings (read-only)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) {
@@ -2533,20 +2634,20 @@ public class HealthActivity extends Activity {
             q.addView(toggleRow("Scale lab (S) in the ECG Lab", ctl, "research_lab_s", false), lp(-1, dpi(52), 6));
             TextView ln = tv("Adds \"S: Scale and corner (needs the divider)\" to ECG > Lab. Wiring: MG_simulator_test_v3.pdf (Part 2A, 2B, 3).", 11.5f, MUT, 400); ln.setLineSpacing(0, 1.2f); q.addView(ln, lp(-1, -2, 2));
         } }, "Open");
-        st.addView(rf, lp(-1, -2, 10));
-        st.addView(toggleRow("Show the 500 Hz graph when live raw frames arrive", ctl, "ecg_view500"), lp(-1, dpi(52), 0));
+        gR.body.addView(rf, lp(-1, -2, 10));
+        gG.body.addView(toggleRow("Show the 500 Hz graph when live raw frames arrive", ctl, "ecg_view500"), lp(-1, dpi(52), 0));
         final TextView smv = tv(smoothText(ctl), 14, BLUE, 600);
-        st.addView(valueRow("500 Hz graph smoothing (display only)", smv, new View.OnClickListener() {
+        gG.body.addView(valueRow("500 Hz graph smoothing (display only)", smv, new View.OnClickListener() {
             @Override public void onClick(View v) { int md = ctl.getInt("ecg_smooth500", 2); md = md == 2 ? 1 : md == 1 ? 0 : 2; ctl.edit().putInt("ecg_smooth500", md).apply(); smv.setText(smoothText(ctl)); }
         }), lp(-1, dpi(52), 0));
         TextView smNote = tv("Tap to change: Smooth (default), Light, Off. Smooths the noise between the beats and keeps the QRS sharp; the R wave, the P and T waves are kept (T and P about 90 %). Display only: the reports and the stored data are not changed. Takes effect at the next reading.", 11.5f, MUT, 400);
         smNote.setPadding(0, 0, 0, dpi(6));
-        st.addView(smNote);
-        st.addView(toggleRow("TEST: save filtered ECG (command 127)", ctl, "ecg_savefiltered", false), lp(-1, dpi(52), 0));
-        st.addView(toggleRow("Morning summary notification", sp(), "n_morning"), lp(-1, dpi(52), 0));
-        st.addView(toggleRow("Strap battery alert (15% or less)", sp(), "n_battery"), lp(-1, dpi(52), 0));
+        gG.body.addView(smNote);
+        gR.body.addView(toggleRow("TEST: save filtered ECG (command 127)", ctl, "ecg_savefiltered", false), lp(-1, dpi(52), 0));
+        gA.body.addView(toggleRow("Morning summary notification", sp(), "n_morning"), lp(-1, dpi(52), 0));
+        gA.body.addView(toggleRow("Strap battery alert (15% or less)", sp(), "n_battery"), lp(-1, dpi(52), 0));
         final boolean ovl = android.os.Build.VERSION.SDK_INT < 23 || android.provider.Settings.canDrawOverlays(this);
-        st.addView(pillButton(ovl ? "Restart the strap link by itself: allowed" : "Allow the app to restart the strap link by itself", ovl ? 0x1AFFFFFF : BLUE, ovl ? INK : 0xFF05131E, new View.OnClickListener() {
+        gA.body.addView(pillButton(ovl ? "Restart the strap link by itself: allowed" : "Allow the app to restart the strap link by itself", ovl ? 0x1AFFFFFF : BLUE, ovl ? INK : 0xFF05131E, new View.OnClickListener() {
             @Override public void onClick(View v) {
                 try { startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + getPackageName()))); } catch (Throwable ignored) { }
             }
@@ -2554,31 +2655,34 @@ public class HealthActivity extends Activity {
         TextView ovNote = tv("If Android ends the app, only a screen start can bring the strap link back, and Android allows that from the background only with \"Display over other apps\". Allow it and the logger restores the link by itself, invisibly. Nothing is drawn over other apps.", 11.5f, MUT, 400);
         ovNote.setLineSpacing(0, 1.2f);
         ovNote.setPadding(0, dpi(6), 0, 0);
-        st.addView(ovNote);
+        gA.body.addView(ovNote);
         final TextView goalV = tv(String.format(Locale.UK, "%.1f h", goal()), 14, INK, 600);
-        st.addView(valueRow("Sleep goal", goalV, new View.OnClickListener() {
+        gN.body.addView(valueRow("Sleep goal", goalV, new View.OnClickListener() {
             @Override public void onClick(View v) { float g = goal() + 0.5f; if (g > 9.5f) g = 6.5f; sp().edit().putFloat("goal", g).apply(); goalV.setText(String.format(Locale.UK, "%.1f h", g)); load(); }
         }), lp(-1, dpi(52), 0));
         final TextView mxV = tv(maxHr() + " bpm", 14, INK, 600);
-        st.addView(valueRow("Maximum heart rate", mxV, new View.OnClickListener() { @Override public void onClick(View v) { askMaxHr(mxV); } }), lp(-1, dpi(52), 0));
+        gN.body.addView(valueRow("Maximum heart rate", mxV, new View.OnClickListener() { @Override public void onClick(View v) { askMaxHr(mxV); } }), lp(-1, dpi(52), 0));
         // 0.54.0: the ECG scale as one versioned setting, shown on every microvolt figure until a known voltage has decided it
         final TextView scV = tv(String.format(Locale.UK, "%.5f", ScaleSetting.uv()), 14, BLUE, 600);
         final TextView scNote = tv(ScaleSetting.status(), 11.5f, MUT, 400);
-        st.addView(valueRow("ECG scale, microvolts per count", scV, new View.OnClickListener() { @Override public void onClick(View v) { askScale(scV, scNote); } }), lp(-1, dpi(52), 0));
+        gN.body.addView(valueRow("ECG scale, microvolts per count", scV, new View.OnClickListener() { @Override public void onClick(View v) { askScale(scV, scNote); } }), lp(-1, dpi(52), 0));
         scNote.setLineSpacing(0, 1.2f); scNote.setPadding(0, 0, 0, dpi(6));
-        st.addView(scNote);
+        gN.body.addView(scNote);
         TextView chainLink = tv("What is known about the ECG chain  \u203a", 12, BLUE, 600);      // 0.54.4: gain table, output limit, high-pass, range, noise (decode log 189-191)
         chainLink.setPadding(0, dpi(2), 0, dpi(10));
         chainLink.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
             new AlertDialog.Builder(HealthActivity.this).setTitle("ECG chain").setMessage(AfeDecode.chainSummary()).setPositiveButton("OK", null).show(); } });
-        st.addView(chainLink);
-        col.addView(st, lp(-1, -2, 16));
-
-        LinearLayout dt = card(16);
-        dt.addView(caps("YOUR DATA"));
+        gN.body.addView(chainLink);
+        col.addView(sectionHead("DATA AND TOOLS", "data"), lp(-1, -2, 22));
+        final NavG gD = navGroup("data", "data", "Your data", "Import, export and send, daily backup, storage");
+        final NavG gT = navGroup("data", "tools", "Tools and research screens", "Sleep research, day logger, ECG export, live frames, older screens");
+        col.addView(gD.card, lp(-1, -2, 8));
+        col.addView(gT.card, lp(-1, -2, 8));
+        LinearLayout dt = gD.body;
+        LinearLayout dt2 = gT.body;
         TextView t = tv("Everything stays on this phone. The day logger holds the raw history and exports it as one zip.", 12.5f, MUT, 400);
         t.setLineSpacing(0, 1.2f);
-        t.setPadding(0, dpi(6), 0, 0);
+        t.setPadding(0, 0, 0, 0);
         dt.addView(t);
         dt.addView(pillButton("Import a pull (zip)", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { pickZip(); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Export and send data", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { ExportScreen.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));
@@ -2590,21 +2694,24 @@ public class HealthActivity extends Activity {
         TextView bkNote = tv("Copies all the app's data every day at a time you choose into Download/MGbackup.  Backup: " + Backup.shortStatus(this), 11.5f, MUT, 400);
         bkNote.setPadding(0, dpi(6), 0, 0);
         dt.addView(bkNote);
-        dt.addView(pillButton("Sleep research: regularity, body clock, sources", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { SleepResearch.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));      // 0.54.0
-        dt.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
-        dt.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 8));
-        dt.addView(pillButton("Live frames (watch the strap's packets arrive)", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, LiveFramesActivity.class)); } }), lp(-1, dpi(44), 8));
-        dt.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(oldScreens()); } }), lp(-1, dpi(44), 8));
+        dt2.addView(pillButton("Sleep research: regularity, body clock, sources", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { SleepResearch.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));      // 0.54.0
+        dt2.addView(pillButton("Day logger and export", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(44), 12));
+        dt2.addView(pillButton("Export ECG data for analysis", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { EcgExport.ask(HealthActivity.this); } }), lp(-1, dpi(44), 8));
+        dt2.addView(pillButton("Live frames (watch the strap's packets arrive)", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, LiveFramesActivity.class)); } }), lp(-1, dpi(44), 8));
+        dt2.addView(pillButton("Older screens (ECG tools)", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(oldScreens()); } }), lp(-1, dpi(44), 8));
         TextView imp = tv(importNote, 11.5f, MUT, 400);
         imp.setPadding(0, dpi(10), 0, 0);
         dt.addView(imp);
-        col.addView(dt, lp(-1, -2, 12));
-        try { findHolder.addView(findCard(st, dt), lp(-1, -2, 0)); } catch (Throwable ignored) { }      // 0.64.0 (0.65.0: the wellbeing and insight shortcuts moved to Today; You is settings and data)
+        try { findHolder.addView(findCard(gE, gD, gR), lp(-1, -2, 0)); } catch (Throwable ignored) { }      // 0.64.0 (0.65.0: the wellbeing and insight shortcuts moved to Today; You is settings and data)
+        try {
+            String sc = StartupClock.line();
+            if (!sc.isEmpty()) { TextView sct = tv(sc, 10.5f, MUT, 400); sct.setPadding(dpi(4), dpi(14), dpi(4), 0); col.addView(sct); }      // 0.67.0: where the start-up time goes (this run of the app)
+        } catch (Throwable ignored) { }
         return wrap(col);
     }
 
     /** 0.64.0: a search row. Type a word (backup, scale, wellbeing, trends...) and tap the result. */
-    private LinearLayout findCard(final LinearLayout stCard, final LinearLayout dtCard) {
+    private LinearLayout findCard(final NavG stG, final NavG dtG, final NavG resG) {
         final LinearLayout c = card(16);
         c.addView(caps("FIND"));
         final android.widget.EditText q = new android.widget.EditText(this); q.setHint("Type: backup, scale, wellbeing, trends, export..."); q.setTextColor(INK); q.setHintTextColor(MUT); q.setSingleLine(true); q.setTextSize(15);
@@ -2626,9 +2733,9 @@ public class HealthActivity extends Activity {
         go[10] = new Runnable() { @Override public void run() { EcgExport.ask(HealthActivity.this); } };
         go[11] = new Runnable() { @Override public void run() { startActivity(new Intent(HealthActivity.this, LiveFramesActivity.class)); } };
         go[12] = new Runnable() { @Override public void run() { startActivity(oldScreens()); } };
-        go[13] = new Runnable() { @Override public void run() { if (lastScroll != null) lastScroll.smoothScrollTo(0, Math.max(0, stCard.getTop() - dpi(8))); } };
-        go[14] = new Runnable() { @Override public void run() { if (lastScroll != null) lastScroll.smoothScrollTo(0, Math.max(0, dtCard.getTop() - dpi(8))); } };
-        go[15] = new Runnable() { @Override public void run() { android.widget.Toast.makeText(HealthActivity.this, "Switch on 'Scale lab (S) in the ECG Lab' under Settings > Research, then ECG tab > Lab > S > Open: the seven steps are at the top.", android.widget.Toast.LENGTH_LONG).show(); if (lastScroll != null) lastScroll.smoothScrollTo(0, Math.max(0, stCard.getTop() - dpi(8))); } };
+        go[13] = new Runnable() { @Override public void run() { goToNav(stG); } };
+        go[14] = new Runnable() { @Override public void run() { goToNav(dtG); } };
+        go[15] = new Runnable() { @Override public void run() { android.widget.Toast.makeText(HealthActivity.this, "Switch on 'Scale lab (S) in the ECG Lab' under Research and tests > Research, then ECG tab > Lab > S > Open: the seven steps are at the top.", android.widget.Toast.LENGTH_LONG).show(); goToNav(resG); } };
         final Runnable refresh = new Runnable() { @Override public void run() {
             res.removeAllViews(); String[] tok = q.getText().toString().toLowerCase(Locale.UK).trim().split("\\s+"); int shown = 0; boolean any = !q.getText().toString().trim().isEmpty();
             final int[] dflt = { 13, 14, 4, 5, 15 };      // 0.65.0: with nothing typed the row lists settings and data, not wellbeing
@@ -2650,7 +2757,7 @@ public class HealthActivity extends Activity {
         return new View(this) {
             @Override protected void onDraw(Canvas cv) {
                 Context c = getContext();
-                float size = getWidth(), cx = size / 2f, cy = size / 2f, r = size * 0.40f, sw = dp(c, 10);
+                float size = getWidth(), cx = size / 2f, cy = size / 2f, r = size * 0.40f, sw = size * 0.059f, k = size / 170f;      // 0.67.0: scales with its size
                 RectF box = new RectF(cx - r, cy - r, cx + r, cy + r);
                 Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
                 p.setStyle(Paint.Style.STROKE); p.setStrokeCap(Paint.Cap.ROUND); p.setStrokeWidth(sw);
@@ -2658,14 +2765,14 @@ public class HealthActivity extends Activity {
                 cv.drawArc(box, 0, 360, false, p);
                 for (int pass = 0; pass < 3; pass++) {
                     p.setShader(new LinearGradient(0, 0, size, size, 0xFFF2B35B, 0xFFFF8CA2, Shader.TileMode.CLAMP));
-                    p.setStrokeWidth(sw + dp(c, 3 * (2 - pass)));
+                    p.setStrokeWidth(sw + dp(c, 3 * (2 - pass)) * k);
                     p.setAlpha(pass < 2 ? 50 + 40 * pass : 255);
                     cv.drawArc(box, -90, 360f * frac, false, p);
                 }
                 p.setShader(null);
                 Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
-                t.setColor(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 200)); t.setTextSize(dp(c, 62));
-                cv.drawText(letter, cx, cy + dp(c, 22), t);
+                t.setColor(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 200)); t.setTextSize(dp(c, 62) * k);
+                cv.drawText(letter, cx, cy + dp(c, 22) * k, t);
             }
         };
     }

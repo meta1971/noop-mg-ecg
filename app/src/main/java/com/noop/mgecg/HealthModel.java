@@ -233,6 +233,9 @@ final class HealthModel {
     }
 
     // ------------------------------------------------------------------ ECG readings saved by the app
+    /** 0.67.0: parsed report heads, keyed name|lastModified|length (a report never changes once written), so the 16 KB read per file happens once per file, not once per refresh. */
+    private static final java.util.HashMap<String, String[]> READ_CACHE = new java.util.HashMap<>();
+
     static List<Reading> readings(Context c) {
         List<Reading> out = new ArrayList<>();
         File dir = c.getExternalFilesDir(null);
@@ -242,32 +245,44 @@ final class HealthModel {
         for (File f : all) {
             String n = f.getName();
             if (!(n.startsWith("ecg_report_") && n.endsWith(".html"))) continue;
+            String key = n + "|" + f.lastModified() + "|" + f.length();
+            String[] row;
+            synchronized (READ_CACHE) { row = READ_CACHE.get(key); }
+            if (row == null) {
+                row = parseReading(f);
+                synchronized (READ_CACHE) { READ_CACHE.put(key, row); }
+            }
+            if (row[0] == null) continue;                          // a fragment (late tail), not a reading
             Reading r = new Reading();
             r.file = f;
-            long t = f.lastModified();
-            try {
-                long unix = Long.parseLong(n.substring("ecg_report_".length(), n.length() - ".html".length()));
-                if (unix >= 1672531200L && unix <= 1924992000L) t = unix * 1000L;
-            } catch (Exception ignored) { }
-            r.timeMs = t;
-            r.when = new SimpleDateFormat("EEE d MMM, HH:mm", Locale.UK).format(new Date(t));
-            String head = readHead(f, 16000);
-            String v = meta(head, "ecg-hr");
-            if (v != null) r.hr = v;
-            v = meta(head, "ecg-hrv");
-            if (v != null) r.hrv = v;
-            v = meta(head, "ecg-rhythm");
-            if (v != null) r.rhythm = v;
-            v = meta(head, "ecg-grade");
-            if (v != null) r.grade = v;
-            int tot = fragmentSeconds(head);                       // 0.15.2: the late tail of a reading ("0 of 3 seconds"): not a reading
-            if (tot >= 0 && tot < 20) continue;
+            r.timeMs = Long.parseLong(row[0]);
+            r.when = row[1];
+            r.hr = row[2]; r.hrv = row[3]; r.rhythm = row[4]; r.grade = row[5];
             out.add(r);
         }
         Collections.sort(out, new Comparator<Reading>() {
             @Override public int compare(Reading a, Reading b) { return Long.compare(b.timeMs, a.timeMs); }
         });
         return out;
+    }
+
+    /** One report file to {timeMs, when, hr, hrv, rhythm, grade}; row[0] == null when the file is a fragment. */
+    private static String[] parseReading(File f) {
+        String n = f.getName();
+        long t = f.lastModified();
+        try {
+            long unix = Long.parseLong(n.substring("ecg_report_".length(), n.length() - ".html".length()));
+            if (unix >= 1672531200L && unix <= 1924992000L) t = unix * 1000L;
+        } catch (Exception ignored) { }
+        String head = readHead(f, 16000);
+        int tot = fragmentSeconds(head);                           // 0.15.2: the late tail of a reading ("0 of 3 seconds"): not a reading
+        if (tot >= 0 && tot < 20) return new String[] {null, null, null, null, null, null};
+        String hr = meta(head, "ecg-hr"), hrv = meta(head, "ecg-hrv"), rh = meta(head, "ecg-rhythm"), gr = meta(head, "ecg-grade");
+        return new String[] {
+            String.valueOf(t),
+            new SimpleDateFormat("EEE d MMM, HH:mm", Locale.UK).format(new Date(t)),
+            hr != null ? hr : "-", hrv != null ? hrv : "-", rh != null ? rh : "-", gr != null ? gr : "-"
+        };
     }
 
     /** Total seconds a report says it covers ("54 of 61 seconds", "for 40 of 62 seconds"), or -1 when the text is not there. Pure. */

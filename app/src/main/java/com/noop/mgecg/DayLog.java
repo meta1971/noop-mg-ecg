@@ -318,18 +318,52 @@ final class DayLog {
         return String.format(Locale.US, "%.1f h ago", s / 3600.0);
     }
 
+    // 0.67.0: COUNT(*) over the whole r18 table reads every page of a 100 MB file. statusLine() is called at start-up, every 5 s by the hidden old home
+    // screen and every minute by the logger notification, all on the main thread. The full count now runs on a thread (at most every 10 minutes);
+    // between full counts the number is the last full count plus the rows newer than the newest row it saw (a primary-key range, cheap).
+    private static volatile long cntN = -1, cntMax = 0, cntAt = 0;
+    private static volatile boolean cntBusy = false;
+
+    /** {rows in r18 or -1 while the first count is still running, newest ts}. Never runs the full COUNT(*) on the calling thread. */
+    static long[] countFast(final Context c) {
+        final long now = System.currentTimeMillis();
+        if ((cntN < 0 || now - cntAt > 600000L) && !cntBusy) {
+            cntBusy = true;
+            final Context app = c.getApplicationContext();
+            new Thread(new Runnable() { @Override public void run() {
+                try {
+                    Cursor q = db(app).rawQuery("SELECT COUNT(*), IFNULL(MAX(ts), 0) FROM r18", null);
+                    if (q.moveToFirst()) { cntMax = q.getLong(1); cntN = q.getLong(0); cntAt = System.currentTimeMillis(); }
+                    q.close();
+                } catch (Throwable ignored) { }
+                cntBusy = false;
+            } }, "daylog-count").start();
+        }
+        long n = cntN, mx = 0;
+        try {
+            SQLiteDatabase d = db(c);
+            Cursor q = d.rawQuery("SELECT IFNULL(MAX(ts), 0) FROM r18", null);
+            if (q.moveToFirst()) mx = q.getLong(0);
+            q.close();
+            if (n >= 0 && mx > cntMax) {
+                q = d.rawQuery("SELECT COUNT(*) FROM r18 WHERE ts > ?", new String[] {String.valueOf(cntMax)});
+                if (q.moveToFirst()) n += q.getLong(0);
+                q.close();
+            }
+        } catch (Throwable ignored) { }
+        return new long[] {n, mx};
+    }
+
     static String statusLine(Context c) {
         try {
             SQLiteDatabase d = db(c);
-            Cursor q = d.rawQuery("SELECT COUNT(*), MAX(ts) FROM r18", null);
-            long n = 0, mx = 0;
-            if (q.moveToFirst()) { n = q.getLong(0); mx = q.getLong(1); }
-            q.close();
+            long[] cm = countFast(c);
+            long n = cm[0], mx = cm[1];
             String bat = "?";
             Cursor b = d.rawQuery("SELECT text FROM events WHERE kind='battery' ORDER BY id DESC LIMIT 1", null);
             if (b.moveToFirst()) bat = b.getString(0) + "%";
             b.close();
-            return "pulled " + ago(lastPullMs(c)) + " | " + n + " s logged" + (mx > 0 ? ", newest " + ago(mx * 1000L) : "") + " | strap " + bat;
+            return "pulled " + ago(lastPullMs(c)) + " | " + (n < 0 ? "counting" : String.valueOf(n)) + " s logged" + (mx > 0 ? ", newest " + ago(mx * 1000L) : "") + " | strap " + bat;
         } catch (Throwable t) { return "starting"; }
     }
 
