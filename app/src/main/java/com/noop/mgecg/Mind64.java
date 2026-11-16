@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.66.0 (16 Nov 2026): calm minute counts every interval of every live row (the earlier tail-overlap skip is gone: the strap does not repeat intervals between frames, decode log 237).
 // FILE VERSION 0.64.0 (16 Nov 2026): pure logic for the Wellbeing additions: mood and energy log (two taps), "your own pattern" with a sample gate, calm-minute before/after RMSSD from the live beat intervals,
 // if-then plans and the week page. No Android here, so it is tested off the phone. Nothing here gives advice; every statement is a count or a mean of the person's own entries, and the pattern card never states a cause.
 // Storage format (strings kept in the "wellbeing" preferences by WellbeingActivity): mind_log lines "ms,day,mood,energy"; calm_log lines "startMs,endMs,pre,post,nPre,nPost" (pre/post blank until computed).
@@ -83,14 +84,12 @@ final class Mind64 {
     static final class Win { int beats, diffs; double rmssd = Double.NaN, hr = Double.NaN; boolean ok; String why = ""; }
     static final int MIN_BEATS = 35, MIN_DIFFS = 25;
 
-    /** Beat intervals (ms) of the rows in [fromMs, toMs): an interval list that repeats the tail of the previous row's list is counted once. Intervals outside 300-2000 ms are dropped. */
+    /** Beat intervals (ms) of the rows in [fromMs, toMs): every interval of every row is counted (the strap's live frames do not repeat intervals between frames). Intervals outside 300-2000 ms are dropped. */
     static Win window(List<Row> rows, long fromMs, long toMs) {
-        Win W = new Win(); List<double[]> rr = new ArrayList<>(); int[] prev = new int[0]; double t = 0; List<Integer> hrs = new ArrayList<>();
+        Win W = new Win(); List<double[]> rr = new ArrayList<>(); double t = 0; List<Integer> hrs = new ArrayList<>();
         for (Row r : rows) {
             if (r.ms < fromMs || r.ms >= toMs) continue; if (r.hr > 0) hrs.add(r.hr);
-            int skip = 0; for (int k = Math.min(prev.length, r.rr.length); k >= 1; k--) { boolean eq = true; for (int i = 0; i < k; i++) if (prev[prev.length - k + i] != r.rr[i]) { eq = false; break; } if (eq) { skip = k; break; } }
-            for (int i = skip; i < r.rr.length; i++) { int v = r.rr[i]; if (v < 300 || v > 2000) continue; t += v / 1000.0; rr.add(new double[] { t, v }); }
-            if (r.rr.length > 0) prev = r.rr;
+            for (int i = 0; i < r.rr.length; i++) { int v = r.rr[i]; if (v < 300 || v > 2000) continue; t += v / 1000.0; rr.add(new double[] { t, v }); }
         }
         W.beats = rr.size(); if (W.beats < MIN_BEATS) { W.why = "only " + W.beats + " beats were recorded (need " + MIN_BEATS + ")"; return W; }
         double mean = 0; for (double[] b : rr) mean += b[1]; mean /= rr.size(); W.hr = 60000.0 / mean;

@@ -145,7 +145,16 @@ public class WellbeingActivity extends Activity {
         return out;
     }
 
-    private static long todayLocalEpochDay() {
+    /** 0.65.0: hours slept by the day the night ended on, for the Today check-in card's pattern line. Call off the main thread. Empty when the sleep log cannot be read. */
+    static java.util.Map<Long, Double> wakeMap(Context c) {
+        try {
+            RhythmData.Bundle b = RhythmData.bundleCached(c);
+            if (b == null || b.sri == null || b.s == null) return new java.util.HashMap<Long, Double>();
+            return Mind64.hoursByWakeDay(b.sri.nights, Math.floorDiv(b.s.baseLocalSec, 86400L));
+        } catch (Throwable t) { return new java.util.HashMap<Long, Double>(); }
+    }
+
+    static long todayLocalEpochDay() {
         long now = System.currentTimeMillis();
         return Math.floorDiv(now / 1000L + TimeZone.getDefault().getOffset(now) / 1000L, 86400L);
     }

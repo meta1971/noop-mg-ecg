@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.66.0 (16 Nov 2026): the SpO2 'how' text now states the rule of Spo2.java (76-99, SNR 30, first 4 s out, 8 counted seconds, median of window medians).
 // FILE VERSION 0.54.4 (14 Nov 2026): + fatigue(). 0.21.0 (27 Oct 2026): the plain-language explanations behind every card, ring and graph. Pure Java (no Android), so the wording is reviewable and tested.
 
 import java.util.Locale;
@@ -133,7 +134,7 @@ final class Explain {
     static String[][] spo2() {
         return new String[][] {
             {WHAT, "A blood-oxygen estimate from the strap's own readings during sleep."},
-            {HOW, "The strap measures in short windows of 30 seconds about every 20 minutes while you sleep. A window counts when it holds at least five in-band seconds (70 to 100), and the night's value is the mean of the window medians. Other values in the same byte are status codes, not readings, and are ignored."},
+            {HOW, "The strap measures in short windows of 30 seconds about every 20 minutes while you sleep. A second counts when the strap's value is from 76 to 99, its pulse signal is strong enough (signal-to-noise 30 or more) and it is not one of the first 4 seconds of the window. A window counts when it holds at least 8 counted seconds, and the night's value is the median of the window medians. Other values in the same byte are status codes, not readings, and are ignored. This is the strap's own estimate and has not been checked against a pulse oximeter."},
             {READ, "Typical healthy sleepers sit around 94 to 98 %. A few windows slightly below is common."},
             {WATCH, "This is an estimate that has not been checked against a reference oximeter, so it is not a medical measurement. If you have symptoms or concerns, use a proper oximeter and ask a clinician."}
         };

@@ -54,7 +54,7 @@ final class Pair64 {
                 Calendar day = Calendar.getInstance(); day.setTimeInMillis(today0 * 1000L); day.add(Calendar.DAY_OF_YEAR, -d);
                 int dow = day.get(Calendar.DAY_OF_WEEK); if (dow == Calendar.SATURDAY || dow == Calendar.SUNDAY) continue;
                 long a = day.getTimeInMillis() / 1000L + 6 * 3600L, b = a + 12 * 3600L; long steps = 0; int cnt = 0;
-                for (long[] m : mins) if (m[0] >= a && m[0] < b) { steps += (m[2] - m[1]) & 0xFFFFL; cnt++; }
+                for (long[] m : mins) if (m[0] >= a && m[0] < b) { long dm = (m[2] - m[1]) & 0xFFFFL; if (dm <= 400L) steps += dm; cnt++; }      // 0.65.0: a minute with a jump over 400 (a counter reset) adds nothing
                 if (cnt < 480) continue;      // under 8 of the 12 hours recorded: the day is not counted
                 double rm = Double.NaN; for (TodayModel.NightStat n : ns) if (n.bed >= b && n.bed < b + 12 * 3600L && !Double.isNaN(n.rmssd)) { rm = n.rmssd; break; }
                 out.add(new double[] { steps, rm });

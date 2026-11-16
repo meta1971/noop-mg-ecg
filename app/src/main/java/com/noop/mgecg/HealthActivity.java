@@ -481,6 +481,52 @@ public class HealthActivity extends Activity {
         return c;
     }
 
+    // ------------------------------------------------------------------ 0.65.0: the mood and energy check on Today (the same log and rules as the Wellbeing page: prefs "wellbeing" mind_log, Mind64)
+    private LinearLayout checkinHolder;
+    private int ciMood, ciEnergy;
+
+    private void fillCheckin() {
+        final LinearLayout c = checkinHolder; if (c == null) return;
+        c.removeAllViews();
+        TextView hd = caps("HOW ARE YOU RIGHT NOW"); hd.setTextColor(ROSE); c.addView(hd);
+        c.addView(tv("Two taps: mood, then energy.", 15, INK, 400), lp(-2, -2, 8));
+        c.addView(tv("MOOD   1 low  to  5 good", 11.5f, MUT, 400), lp(-2, -2, 10));
+        c.addView(ciChips(true), lp(-1, -2, 6));
+        c.addView(tv("ENERGY   1 flat  to  5 full", 11.5f, MUT, 400), lp(-2, -2, 10));
+        c.addView(ciChips(false), lp(-1, -2, 6));
+        final SharedPreferences wp = getSharedPreferences("wellbeing", MODE_PRIVATE);
+        final List<Mind64.Entry> es = Mind64.parse(wp.getString("mind_log", ""));
+        long t0 = WellbeingActivity.todayLocalEpochDay(); int n0 = 0; for (Mind64.Entry e : es) if (e.day == t0) n0++;
+        c.addView(tv(n0 == 0 ? "Nothing logged today. It stays on this phone." : "Logged " + n0 + (n0 == 1 ? " time" : " times") + " today. It stays on this phone.", 11.5f, MUT, 400), lp(-2, -2, 8));
+        final TextView pat = tv("", 12.5f, INK, 400); pat.setLineSpacing(0, 1.2f); c.addView(pat, lp(-1, -2, 8));
+        final Context app = getApplicationContext();
+        Thread th = new Thread(new Runnable() { @Override public void run() {
+            final Mind64.Pattern P = Mind64.pattern(es, WellbeingActivity.wakeMap(app));
+            runOnUiThread(new Runnable() { @Override public void run() { if (!isFinishing()) pat.setText("Your own pattern: " + P.head + "\n" + P.body); } });
+        } });
+        th.setDaemon(true); th.start();
+    }
+
+    private LinearLayout ciChips(final boolean mood) {
+        LinearLayout r = hrow();
+        for (int v = 1; v <= 5; v++) {
+            final int val = v; boolean sel = (mood ? ciMood : ciEnergy) == v;
+            TextView t = tv(String.valueOf(v), 15, sel ? 0xFF1A0A10 : INK, 600); t.setGravity(Gravity.CENTER);
+            android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable(); g.setColor(sel ? ROSE : 0x1AFFFFFF); g.setCornerRadius(dp(this, 20)); t.setBackground(g);
+            t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) {
+                if (mood) ciMood = val; else ciEnergy = val;
+                if (ciMood > 0 && ciEnergy > 0) {
+                    SharedPreferences wp = getSharedPreferences("wellbeing", MODE_PRIVATE);
+                    wp.edit().putString("mind_log", Mind64.add(wp.getString("mind_log", ""), System.currentTimeMillis(), WellbeingActivity.todayLocalEpochDay(), ciMood, ciEnergy)).apply();
+                    ciMood = 0; ciEnergy = 0; try { android.widget.Toast.makeText(HealthActivity.this, "Saved", android.widget.Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) { }
+                }
+                fillCheckin();
+            } });
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dpi(46), 1f); p.rightMargin = v < 5 ? dpi(8) : 0; r.addView(t, p);
+        }
+        return r;
+    }
+
     /** 0.58.0: the Morning brief card at the top of Today: the page's main opinion (counted from the last 14 days of sleep) and the ring word; a tap opens the wellbeing page. */
     private View wellbeingCard(final int slot) {
         LinearLayout c = card(16);
@@ -1388,6 +1434,7 @@ public class HealthActivity extends Activity {
         plan.setLineSpacing(0, 1.25f);
         olc.addView(plan, lp(-1, -2, 8));
         col.addView(olc, lp(-1, -2, 10));
+        try { checkinHolder = card(16); fillCheckin(); col.addView(checkinHolder, lp(-1, -2, 12)); } catch (Throwable ignored) { }      // 0.65.0: the mood and energy check on the home page
         // ---- key statistics (0.63.0: was HEALTH MONITOR, moved up under the daily outlook): last night against your own usual range
         List<DailyViews.Metric> mon = DailyViews.monitor(d);
         if (!mon.isEmpty()) {
@@ -1477,6 +1524,11 @@ public class HealthActivity extends Activity {
         expandable("t_hr", nowCard, new Filler() { @Override public void fill(LinearLayout p) { fillHrNow(p); } });
         col.addView(nowCard, lp(-1, -2, 12));
 
+        col.addView(caps("INSIGHTS"), lp(-2, -2, 18));      // 0.65.0: wellbeing and insights on the home page (they were a card in You in 0.64.0)
+        col.addView(rowCard("Wellbeing", "Sleep rhythm, calm minute, good things, if-then plans, your week, work-day load",
+                new View.OnClickListener() { @Override public void onClick(View v) { try { startActivity(new Intent(HealthActivity.this, WellbeingActivity.class)); } catch (Throwable ignored) { } } }), lp(-1, -2, 8));
+        col.addView(rowCard("Heart Watch", "Night signs against your own usual, and the pulse check",
+                new View.OnClickListener() { @Override public void onClick(View v) { showRing(6); } }), lp(-1, -2, 12));
         col.addView(rowCard("Trends", "Recovery, resting heart rate, HRV, sleep, breathing and skin temperature over 7, 30 or 90 nights",
                 new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } }), lp(-1, -2, 12));
         col.addView(rowCard("HRV (research)", "Your HRV in context: seated ECG readings, nights, evening and alcohol, age limits, guided breathing tests and the sources. Not a diagnosis",
@@ -2547,18 +2599,8 @@ public class HealthActivity extends Activity {
         imp.setPadding(0, dpi(10), 0, 0);
         dt.addView(imp);
         col.addView(dt, lp(-1, -2, 12));
-        try { findHolder.addView(insightCard(), lp(-1, -2, 0)); findHolder.addView(findCard(st, dt), lp(-1, -2, 12)); } catch (Throwable ignored) { }      // 0.64.0
+        try { findHolder.addView(findCard(st, dt), lp(-1, -2, 0)); } catch (Throwable ignored) { }      // 0.64.0 (0.65.0: the wellbeing and insight shortcuts moved to Today; You is settings and data)
         return wrap(col);
-    }
-
-    /** 0.64.0: the shortcuts people look for in You, in plain groups. */
-    private LinearLayout insightCard() {
-        LinearLayout c = card(16);
-        c.addView(caps("WELLBEING AND INSIGHTS"));
-        c.addView(pillButton("Wellbeing: sleep, mood and energy, calm minute, if-then, your week", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { try { startActivity(new Intent(HealthActivity.this, WellbeingActivity.class)); } catch (Throwable ignored) { } } }), lp(-1, -2, 10));
-        c.addView(pillButton("Heart Watch: night signs and pulse check", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { showRing(6); } }), lp(-1, -2, 8));
-        c.addView(pillButton("Trends: 7, 30 and 90 nights", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } }), lp(-1, -2, 8));
-        return c;
     }
 
     /** 0.64.0: a search row. Type a word (backup, scale, wellbeing, trends...) and tap the result. */
@@ -2589,9 +2631,11 @@ public class HealthActivity extends Activity {
         go[15] = new Runnable() { @Override public void run() { android.widget.Toast.makeText(HealthActivity.this, "Switch on 'Scale lab (S) in the ECG Lab' under Settings > Research, then ECG tab > Lab > S > Open: the seven steps are at the top.", android.widget.Toast.LENGTH_LONG).show(); if (lastScroll != null) lastScroll.smoothScrollTo(0, Math.max(0, stCard.getTop() - dpi(8))); } };
         final Runnable refresh = new Runnable() { @Override public void run() {
             res.removeAllViews(); String[] tok = q.getText().toString().toLowerCase(Locale.UK).trim().split("\\s+"); int shown = 0; boolean any = !q.getText().toString().trim().isEmpty();
-            for (int i = 0; i < lab.length && shown < 6; i++) {
+            final int[] dflt = { 13, 14, 4, 5, 15 };      // 0.65.0: with nothing typed the row lists settings and data, not wellbeing
+            for (int ii = 0; ii < lab.length && shown < 6; ii++) {
+                if (!any && ii >= dflt.length) break; final int i = any ? ii : dflt[ii];
                 String hay = (lab[i] + " " + kw[i]).toLowerCase(Locale.UK); boolean ok = true; if (any) for (String t : tok) if (!t.isEmpty() && !hay.contains(t)) { ok = false; break; }
-                if (!any && i > 4) break; if (!ok) continue; final int k = i;
+                if (!ok) continue; final int k = i;
                 res.addView(pillButton(lab[i], 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { try { go[k].run(); } catch (Throwable ignored) { } } }), lp(-1, dpi(44), 6)); shown++;
             }
             if (any && shown == 0) res.addView(tv("Nothing matches. Try one word.", 12, MUT, 400));

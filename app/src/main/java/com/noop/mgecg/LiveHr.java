@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.66.0 (16 Nov 2026): comment only, the strap sends at most 4 interval words in its fixed 32-byte live frame.
 // FILE VERSION 0.11.0 (25 Oct): continuous live heart rate from the strap's standard Heart Rate service (0x2A37). Research only.
 
 import android.content.ContentValues;
@@ -81,6 +82,7 @@ final class LiveHr {
     /**
      * 0.11.1: the WHOOP 5/MG sends its live heart rate as real-time frames (type 40), not on 0x2A37, once TOGGLE_REALTIME_HR(1) is on.
      * Layout (frame bytes): type @8 = 40, unix @10, sub-second @14, heart rate @16, interval count @17, interval words @18 (u16, milliseconds).
+     * The frame is a fixed 32 bytes, so at most 4 interval words fit; the strap does not repeat intervals between frames (checked on 1,381,188 frames, 26 Oct-15 Nov 2026).
      * The frame is accepted only when its CRC32 matches. Never throws.
      */
     static void onRealtimeFrame(final Context c, byte[] f) {
