@@ -573,52 +573,6 @@ public class HealthActivity extends Activity {
         return c;
     }
 
-    // ------------------------------------------------------------------ 0.65.0: the mood and energy check on Today (the same log and rules as the Wellbeing page: prefs "wellbeing" mind_log, Mind64)
-    private LinearLayout checkinHolder;
-    private int ciMood, ciEnergy;
-
-    private void fillCheckin() {
-        final LinearLayout c = checkinHolder; if (c == null) return;
-        c.removeAllViews();
-        TextView hd = caps("HOW ARE YOU RIGHT NOW"); hd.setTextColor(ROSE); c.addView(hd);
-        c.addView(tv("Two taps: mood, then energy.", 15, INK, 400), lp(-2, -2, 8));
-        c.addView(tv("MOOD   1 low  to  5 good", 11.5f, MUT, 400), lp(-2, -2, 10));
-        c.addView(ciChips(true), lp(-1, -2, 6));
-        c.addView(tv("ENERGY   1 flat  to  5 full", 11.5f, MUT, 400), lp(-2, -2, 10));
-        c.addView(ciChips(false), lp(-1, -2, 6));
-        final SharedPreferences wp = getSharedPreferences("wellbeing", MODE_PRIVATE);
-        final List<Mind64.Entry> es = Mind64.parse(wp.getString("mind_log", ""));
-        long t0 = WellbeingActivity.todayLocalEpochDay(); int n0 = 0; for (Mind64.Entry e : es) if (e.day == t0) n0++;
-        c.addView(tv(n0 == 0 ? "Nothing logged today. It stays on this phone." : "Logged " + n0 + (n0 == 1 ? " time" : " times") + " today. It stays on this phone.", 11.5f, MUT, 400), lp(-2, -2, 8));
-        final TextView pat = tv("", 12.5f, INK, 400); pat.setLineSpacing(0, 1.2f); c.addView(pat, lp(-1, -2, 8));
-        final Context app = getApplicationContext();
-        Thread th = new Thread(new Runnable() { @Override public void run() {
-            final Mind64.Pattern P = Mind64.pattern(es, WellbeingActivity.wakeMap(app));
-            runOnUiThread(new Runnable() { @Override public void run() { if (!isFinishing()) pat.setText("Your own pattern: " + P.head + "\n" + P.body); } });
-        } });
-        th.setDaemon(true); th.start();
-    }
-
-    private LinearLayout ciChips(final boolean mood) {
-        LinearLayout r = hrow();
-        for (int v = 1; v <= 5; v++) {
-            final int val = v; boolean sel = (mood ? ciMood : ciEnergy) == v;
-            TextView t = tv(String.valueOf(v), 15, sel ? 0xFF1A0A10 : INK, 600); t.setGravity(Gravity.CENTER);
-            android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable(); g.setColor(sel ? ROSE : 0x1AFFFFFF); g.setCornerRadius(dp(this, 20)); t.setBackground(g);
-            t.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) {
-                if (mood) ciMood = val; else ciEnergy = val;
-                if (ciMood > 0 && ciEnergy > 0) {
-                    SharedPreferences wp = getSharedPreferences("wellbeing", MODE_PRIVATE);
-                    wp.edit().putString("mind_log", Mind64.add(wp.getString("mind_log", ""), System.currentTimeMillis(), WellbeingActivity.todayLocalEpochDay(), ciMood, ciEnergy)).apply();
-                    ciMood = 0; ciEnergy = 0; try { android.widget.Toast.makeText(HealthActivity.this, "Saved", android.widget.Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) { }
-                }
-                fillCheckin();
-            } });
-            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dpi(46), 1f); p.rightMargin = v < 5 ? dpi(8) : 0; r.addView(t, p);
-        }
-        return r;
-    }
-
     /** 0.58.0: the Morning brief card at the top of Today: the page's main opinion (counted from the last 14 days of sleep) and the ring word; a tap opens the wellbeing page. */
     private View wellbeingCard(final int slot) {
         LinearLayout c = card(16);
@@ -1526,7 +1480,6 @@ public class HealthActivity extends Activity {
         plan.setLineSpacing(0, 1.25f);
         olc.addView(plan, lp(-1, -2, 8));
         col.addView(olc, lp(-1, -2, 10));
-        try { checkinHolder = card(16); fillCheckin(); col.addView(checkinHolder, lp(-1, -2, 12)); } catch (Throwable ignored) { }      // 0.65.0: the mood and energy check on the home page
         // ---- key statistics (0.63.0: was HEALTH MONITOR, moved up under the daily outlook): last night against your own usual range
         List<DailyViews.Metric> mon = DailyViews.monitor(d);
         if (!mon.isEmpty()) {
