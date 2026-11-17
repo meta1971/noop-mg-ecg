@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.69.0 (17 Nov 2026): QUICK TICKS for the scale lab: the rig GATE and the micro-tests G1-G3 (gain), C1-C3 (corner), L1-L2 (ladder) of decode log addendum 258.4, with the checks of 263. Pure Java (no Android): generator plan, analysis and tick rules, tested off the phone.
+// FILE VERSION 0.69.1 (17 Nov 2026): the gate looks at 13-42 s only (the stop tail broke the contact test on the first real reading) and the contact-value limit is 200. FILE VERSION 0.69.0 (17 Nov 2026): QUICK TICKS for the scale lab: the rig GATE and the micro-tests G1-G3 (gain), C1-C3 (corner), L1-L2 (ladder) of decode log addendum 258.4, with the checks of 263. Pure Java (no Android): generator plan, analysis and tick rules, tested off the phone.
 //   GATE k  silent reading in the exact rig wiring (cable plugged into the old phone, no sound): must show an ordinary ECG before any tone test counts (260.5).
 //   ISO p   isolation 1: cable on the strap and the foil, NOT plugged into the old phone.   ISO q   isolation 3: plugged in with a 10 Hz lead-in tone (the tone is subtracted before the ECG check).
 //   G1 a    10 Hz -54 dBFS 15 s    G2 b   20 Hz -54 dBFS 15 s    G3 c   10 Hz -48 dBFS 15 s          (gain K in uV per count; needs the stored meter number)
@@ -26,7 +26,7 @@ final class LabQuick {
     static final double LEAD_S = LabParts.LEAD_S, TAIL_S = LabParts.TAIL_S, SETTLE_S = 13.0;
     static final char G1 = 'a', G2 = 'b', G3 = 'c', C1 = 'd', C2 = 'e', L1 = 'f', L2 = 'g', C3 = 'h', GATE = 'k', ISO1 = 'p', ISO3 = 'q';
     static final char[] TESTS = { G1, G2, G3, C1, C2, L1, L2, C3 };
-    static final double MAINS_MAX_UV = 7.0, CONTACT_MIN = 0.95, I_MAX = 120, REL_MAX = 0.02, SAT_COUNTS = 120000;
+    static final double MAINS_MAX_UV = 7.0, CONTACT_MIN = 0.95, I_MAX = 200, REL_MAX = 0.02, SAT_COUNTS = 120000, END_S = 42.0;      // 0.69.1: I_MAX 200 (an accepted reading of 17 Nov shows 92-127, an open electrode about 350); the gate looks at 13-42 s only (END_S)
 
     static boolean is(char m) { return (m >= 'a' && m <= 'h') || m == GATE || m == ISO1 || m == ISO3; }
     static boolean audio(char m) { return (m >= 'a' && m <= 'g') || m == ISO3; }
@@ -211,13 +211,13 @@ final class LabQuick {
     static SimDirect.Result analyseGate(char variant, List<byte[]> fr, double appUv) {
         SimDirect.Result Z = new SimDirect.Result(); Z.notes.put("labq_mode", id(variant));
         Rec R = decode(fr); int last = R == null ? -1 : R.last();
-        if (R == null || last < 30 * FS) { Z.notes.put("labq_state", "SHORT"); Z.card.add("GATE: the record is shorter than 30 s: no result. Start again and keep the reading running to the end."); return Z; }
-        int from = (int) (SETTLE_S * FS), to = last + 1; boolean tone = variant == ISO3;
+        if (R == null || last < 40 * FS) { Z.notes.put("labq_state", "SHORT"); Z.card.add("GATE: the record is shorter than 40 s: no result. Start again and keep the reading running to the end."); return Z; }
+        int from = (int) (SETTLE_S * FS), to = Math.min(last + 1, (int) (END_S * FS)); boolean tone = variant == ISO3;      // 0.69.1: 13 s to 42 s only: after the stop the strap ends the session and the contact flag drops (17 Nov reading: contact 0 and progress 255 from the stop second, and the hand was off the foil 2 s before the stop tap)
         // contact, fast recovery, rail
         int on = 0, tot = 0, runs = 0; boolean inFr = false; double mx = 0;
         for (int i = from; i < to; i++) { if (!R.have[i]) continue; tot++; if (R.contact(i)) on++; boolean fr1 = R.fr(i); if (fr1 && !inFr) runs++; inFr = fr1; mx = Math.max(mx, Math.abs(R.c[i])); }
         double contact = tot == 0 ? 0 : on / (double) tot;
-        double[] iv = new double[R.secs]; int ni = 0; for (int s = (int) SETTLE_S; s < R.secs; s++) if (!Double.isNaN(R.I[s])) iv[ni++] = R.I[s]; double iMed = ni == 0 ? Double.NaN : ProDsp.median(Arrays.copyOf(iv, ni));
+        double[] iv = new double[R.secs]; int ni = 0; for (int s = (int) SETTLE_S; s < Math.min(R.secs, (int) END_S); s++) if (!Double.isNaN(R.I[s])) iv[ni++] = R.I[s]; double iMed = ni == 0 ? Double.NaN : ProDsp.median(Arrays.copyOf(iv, ni));
         double mains = mains(R, from, to, appUv);
         // the strap's verdict: the last second at progress 100
         int res = -1, shr = -1; for (int s = R.secs - 1; s >= 0; s--) if (R.prog[s] == 100) { res = R.res[s]; break; }
@@ -239,7 +239,7 @@ final class LabQuick {
         // the verdicts, in the order they are named
         List<String> bad = new ArrayList<>(); boolean checkOnly = false;
         if (contact < CONTACT_MIN) bad.add("the strap had contact in only " + f(100 * contact, 0) + " % of the samples (needs 95 %)");
-        if (!Double.isNaN(iMed) && iMed > I_MAX) bad.add("contact value " + f(iMed, 0) + " (a finger gives about 78, an open electrode about 350)");
+        if (!Double.isNaN(iMed) && iMed > I_MAX) bad.add("contact value " + f(iMed, 0) + " (a finger gives 78 to 127, an open electrode about 350)");
         if (runs > 1 || mx >= SAT_COUNTS) bad.add(runs + " fast-recovery runs after the first 13 s" + (mx >= SAT_COUNTS ? " and a signal at the rail" : ""));
         if (Double.isNaN(mains)) bad.add("too few clean 5 s windows to measure the 50 Hz pick-up");
         else if (mains > MAINS_MAX_UV) bad.add("50 Hz pick-up " + f(mains, 1) + " uV (limit " + f(MAINS_MAX_UV, 0) + "; ordinary readings: median 1.4, 95th percentile 5.3 before 8 Nov, 3.3 and 7.1 since)");
