@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.69.0 (17 Nov 2026): event 124 log text names its parts (phase 1 start / 2 stop / 3 raw data on; state 3 and 4 = ECG pair, 5 = raw-data collection; u16 value, meaning open; decode log 133.3, 225.x, INFERRED); skip(124) unchanged.
 // FILE VERSION 0.39.0 (3 Nov): event 63 (extended battery) now kept for the Strap data screen; raw 118 / 119 bodies read back for the ECG report. 0.13.0 (26 Oct): every strap event kept in the day-log database, and the ECG end-of-reading events decoded as they arrive. Research only.
 
 import android.content.Context;
@@ -89,7 +90,10 @@ final class StrapEvents {
             String nm = sid == 1 ? "Bluetooth link " + (in.length > 4 && u8(in, 4) == 1 ? "up" : "down") : sid == 4 ? "sensor mode change" : sid == 6 ? "power pack detected" : sid == 7 && in.length >= 8 ? String.format(L, "value %.1f", f32(in, 4)) : "";
             return "sub-id " + sid + (nm.isEmpty() ? "" : ": " + nm);
         }
-        if (id == 124 && in.length >= 5) return "phase " + u8(in, 1) + " (1 = ECG start, 2 = stop), transition " + u8(in, 3) + ", value " + u8(in, 4);
+        if (id == 124 && in.length >= 5) {      // 0.69.0: model M (decode log 133.3, 225.x; INFERRED, 8 readings, no hold-out): byte 1 = 1 start, 2 stop, 3 raw data on; byte 3 = state (3 and 4 = the ECG pair, 5 = raw-data collection); value = u16 at 4-5 (it was one byte)
+            int ph = u8(in, 1), stt = u8(in, 3), val = in.length >= 6 ? u16(in, 4) : u8(in, 4);
+            return "phase " + ph + (ph == 1 ? " (start)" : ph == 2 ? " (stop)" : ph == 3 ? " (raw data on)" : "") + ", state " + stt + (stt == 3 || stt == 4 ? " (ECG pair)" : stt == 5 ? " (raw-data collection)" : "") + ", value " + val + " (builds between sessions; meaning open)";
+        }
         if (id == 117 && in.length >= 2) return "state " + u8(in, 1);
         if (id == 109 && in.length >= 27)
             return String.format(L, "battery pack: battery %.1f %%, colourway %d, type %d (its address and name are not shown)", u16(in, 23) / 10.0, u8(in, 25), u8(in, 26));

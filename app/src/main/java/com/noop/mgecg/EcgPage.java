@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.69.0 (17 Nov 2026): Lab S runs force the live raw stream (command 126, pref ecg_liveraw_mode = 1) for the whole run and put the setting back afterwards (decode log 262: a run with it off gave no raw file); the QUICK TICKS runs (LabQuick) use it too.
 // 0.61.0 (15 Nov 2026): BEFORE YOU START card in the ready state (strap link and whether calls can ring; the arm is a reminder, not a measurement; nothing blocks the start), a one-line verdict after a reading from the end rule (ReadingEnd: 60 s of best-quality seconds, 64 clean beats) with buzz and movement counts, a Take another reading pill, and phone-buzz / arm-movement bands on the replay (reading notes ring_episodes and motion_moving_times_s). Acquisition code is unchanged.
 // 0.51.0 (10 Nov 2026): silent research notes after each reading (console catalogue, spectrum block, R17 / R16 and event 118 cross-checks, strap settings scan stats) and the Lab S scale lab (SimLabSheet), behind You > Settings > Research.
 
@@ -113,18 +114,21 @@ final class EcgPage {
     private String pref(String k, String d) { return pr.getString(k, d); }
 
     // ------------------------------------------------------------------ 0.51.0: scale lab (Lab S) and the silent research notes
-    private SimLabSheet sim; private boolean simRun, simAutoBefore = true;
+    private SimLabSheet sim; private boolean simRun, simAutoBefore = true; private int simLiveRawBefore = -1;      // 0.69.0: Lab S needs the live raw stream (command 126) for the WHOLE run: mode 1 is forced for the run and restored at its end
     boolean isRunning() { return running; }
     /** A free reading for the scale lab: Auto-stop off for the run (restored at its end), no guided run, then START. */
     void startSimReading() {
         try {
             if (running) return;
             simAutoBefore = pr.getBoolean("auto_stop", true); simRun = true;
+            int lrNow = pr.getInt("ecg_liveraw_mode", 1); simLiveRawBefore = lrNow != 1 ? lrNow : -1;
+            if (lrNow != 1) { pr.edit().putInt("ecg_liveraw_mode", 1).apply(); a.toast("Live raw 500 Hz set to On at start for this run; it goes back afterwards."); }
             pr.edit().putBoolean("auto_stop", false).putString("run_id", "").apply();
             a.cancelAutoCountdown(); readyCancelled = true; readyLeft = 0;
-            if (start != null && start.getText().toString().startsWith("START")) start.performClick(); else { simRun = false; pr.edit().putBoolean("auto_stop", simAutoBefore).apply(); if (sim != null) sim.active = false; a.toast("The reading could not start."); }
+            if (start != null && start.getText().toString().startsWith("START")) start.performClick(); else { simRun = false; pr.edit().putBoolean("auto_stop", simAutoBefore).apply(); simLiveRawRestore(); if (sim != null) sim.active = false; a.toast("The reading could not start."); }
         } catch (Throwable e) { fail("scale lab start", e); }
     }
+    private void simLiveRawRestore() { if (simLiveRawBefore >= 0) { pr.edit().putInt("ecg_liveraw_mode", simLiveRawBefore).apply(); simLiveRawBefore = -1; } }
     void simCue(String s) { try { if (cueView == null) return; cuePill.setVisibility(View.VISIBLE); cueView.setText(s); } catch (Throwable ignored) { } }
 
     /** After a reading, off the main thread: console catalogue notes, strap settings scan stats, the spectrum block, R17 / R16 and event 118 cross-checks. Notes only. */
@@ -1121,7 +1125,7 @@ final class EcgPage {
         } catch (Throwable e) { fail("result", e); }
         try { startResearchNotes(startSec, d, dur); } catch (Throwable e) { fail("research notes", e); }      // 0.51.0: items 2, 3, 5 of the build brief (notes only)
         if (simRun) {
-            simRun = false; pr.edit().putBoolean("auto_stop", simAutoBefore).apply();
+            simRun = false; pr.edit().putBoolean("auto_stop", simAutoBefore).apply(); simLiveRawRestore();
             try { if (cuePill != null) cuePill.setVisibility(View.GONE); if (sim != null) sim.finished(startSec, d); } catch (Throwable e) { fail("scale lab end", e); }
         }
         if (guidedThisRun && "G".equals(pref("run_id", ""))) { try { standResult(startSec, d); } catch (Throwable e) { fail("stand test", e); } }      // 0.54.0 idea 4

@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.69.0 (17 Nov 2026): minuteSteps() is the 400-step minute cap of 0.65.0 as a pure function with its own test (XP65); workDays behaves as before.
 // FILE VERSION 0.64.0 (16 Nov 2026): two PREVIEW cards on the Wellbeing page, both descriptive and sample-gated, neither states a link or gives advice (decode log addendum 232.5: the evening RMSSD against steps link is NOT established,
 // per-evening Spearman -0.33 / -0.18 / -0.22 on 11-12 evenings).
 //   WORK-DAY LOAD: for each weekday, the steps counted between 06:00 and 18:00, beside the RMSSD of the night that followed. Days split at the median of the steps; the median RMSSD of each half is printed.
@@ -41,6 +42,9 @@ final class Pair64 {
 
     // ------------------------------------------------------------------ loaders (day logger database; call off the main thread)
     /** [steps in the 06:00-18:00 window (minus nothing: counted inside the minutes), next-night RMSSD] for each weekday of the last `days` days; NaN where missing. */
+    /** Steps inside one minute from the counter at its first and last second (16-bit, wraps); a jump over 400 is a counter reset and counts 0 (234.1 item 7). */
+    static long minuteSteps(long steps0, long steps1) { long dm = (steps1 - steps0) & 0xFFFFL; return dm <= 400L ? dm : 0L; }
+
     static double[][] workDays(Context c, int days) {
         List<double[]> out = new ArrayList<>();
         try {
@@ -54,7 +58,7 @@ final class Pair64 {
                 Calendar day = Calendar.getInstance(); day.setTimeInMillis(today0 * 1000L); day.add(Calendar.DAY_OF_YEAR, -d);
                 int dow = day.get(Calendar.DAY_OF_WEEK); if (dow == Calendar.SATURDAY || dow == Calendar.SUNDAY) continue;
                 long a = day.getTimeInMillis() / 1000L + 6 * 3600L, b = a + 12 * 3600L; long steps = 0; int cnt = 0;
-                for (long[] m : mins) if (m[0] >= a && m[0] < b) { long dm = (m[2] - m[1]) & 0xFFFFL; if (dm <= 400L) steps += dm; cnt++; }      // 0.65.0: a minute with a jump over 400 (a counter reset) adds nothing
+                for (long[] m : mins) if (m[0] >= a && m[0] < b) { steps += minuteSteps(m[1], m[2]); cnt++; }      // 0.65.0: a minute with a jump over 400 (a counter reset) adds nothing; 0.69.0: the cap is a pure function with its own test (XP65)
                 if (cnt < 480) continue;      // under 8 of the 12 hours recorded: the day is not counted
                 double rm = Double.NaN; for (TodayModel.NightStat n : ns) if (n.bed >= b && n.bed < b + 12 * 3600L && !Double.isNaN(n.rmssd)) { rm = n.rmssd; break; }
                 out.add(new double[] { steps, rm });

@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.69.0 (17 Nov 2026): the QUICK TICKS modes a-h, k, p, q (LabQuick) share this generator, title, length and track code; the S, L, H, U parts are unchanged.
 // FILE VERSION 0.64.0 (16 Nov 2026): Lab S split into SHORT PARTS, one action and one number each (decode log addendum 233). Pure Java (no Android): generator, ground truth and analysis, tested off the phone.
 //   N  meter tone: 5 s silence, 100 Hz at -20 dBFS for 15 s, 5 s silence. NEVER into the strap. One meter number (the app uses the 100 Hz number first).
 //   S  scale: one 10 Hz tone at -54 dBFS for 30 s. One reading, one number (uV per count) and its drift over the 30 s.
@@ -21,9 +22,9 @@ final class LabParts {
 
     static final class Part { String name; double f, db, start, len; Part(String n, double f, double db, double s, double l) { name = n; this.f = f; this.db = db; start = s; len = l; } }
 
-    static boolean is(char m) { return m == 'S' || m == 'L' || m == 'H' || m == 'U'; }
-    static String title(char m) { return m == 'N' ? "Meter tone" : m == 'S' ? "Scale" : m == 'L' ? "Level ladder" : m == 'H' ? "Low tones" : m == 'U' ? "Upper tones" : "?"; }
-    static String stepNo(char m) { return m == 'N' ? "2" : m == 'S' ? "4" : m == 'L' ? "5" : m == 'H' ? "6" : m == 'U' ? "7" : "?"; }
+    static boolean is(char m) { return m == 'S' || m == 'L' || m == 'H' || m == 'U' || LabQuick.is(m); }      // 0.69.0: the QUICK TICKS modes (LabQuick) ride on the same generator and run control
+    static String title(char m) { if (LabQuick.is(m)) return LabQuick.title(m); return m == 'N' ? "Meter tone" : m == 'S' ? "Scale" : m == 'L' ? "Level ladder" : m == 'H' ? "Low tones" : m == 'U' ? "Upper tones" : "?"; }
+    static String stepNo(char m) { if (LabQuick.is(m)) return LabQuick.id(m); return m == 'N' ? "2" : m == 'S' ? "4" : m == 'L' ? "5" : m == 'H' ? "6" : m == 'U' ? "7" : "?"; }
 
     private static double db(double d) { return Math.pow(10.0, d / 20.0); }
     private static double env(double u, double len) { return u < 0 || u >= len ? 0 : u < EDGE_S ? 0.5 * (1 - Math.cos(Math.PI * u / EDGE_S)) : len - u < EDGE_S ? 0.5 * (1 - Math.cos(Math.PI * (len - u) / EDGE_S)) : 1; }
@@ -31,6 +32,7 @@ final class LabParts {
     private static final java.util.HashMap<Character, List<Part>> CACHE = new java.util.HashMap<>();
     /** The segments of a part, times from the start of the audio file (the first LEAD_S seconds are silence). Cached: the generator asks for them once per sample. */
     static synchronized List<Part> parts(char m) {
+        if (LabQuick.is(m)) return LabQuick.parts(m);
         List<Part> c = CACHE.get(m); if (c == null) { c = build(m); CACHE.put(m, c); } return c;
     }
     private static List<Part> build(char m) {
@@ -46,6 +48,7 @@ final class LabParts {
 
     static double seconds(char m) {
         if (m == 'N') return 25.0;
+        if (LabQuick.is(m)) return LabQuick.seconds(m);
         List<Part> l = parts(m); Part z = l.get(l.size() - 1); return z.start + z.len + TAIL_S;
     }
 

@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// 0.69.0 (17 Nov 2026): CSV header column 'cadence' renamed 'step_interval' (the field is an interval, about x 5 ms, decode log 205.4); no reader by that name exists in the repo. Exports made before 0.69.0 keep the old name.
 
 import java.util.Locale;
 import java.util.zip.CRC32;
@@ -23,7 +24,7 @@ final class R18Codec {
     private R18Codec() {}
 
     static final String HEADER = "ts,sub_s,rec_idx,raw_active,hr,rr_n,rr1_ms,rr2_ms,rr3_ms,rr4_ms,alt_hr,b33,b36,"
-            + "dyn_g,grav_x,grav_y,grav_z,steps,cadence,activity,therm1_c,therm2_c,skin_c,w75,onwrist,wake_q,state,"
+            + "dyn_g,grav_x,grav_y,grav_z,steps,step_interval,activity,therm1_c,therm2_c,skin_c,w75,onwrist,wake_q,state,"
             + "b81_hi,b82,spo2_window,b35_state,b34,b40,b105,opt106,opt107,opt108,opt109,f113,b32,hr38,hr39,"
             + "flags10,optical_hz,w77,w79,activity_name,skin_ok";
 

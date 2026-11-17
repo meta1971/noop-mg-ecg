@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// 0.69.0 (17 Nov 2026): QUICK TICKS at the top of the chooser (LabQuick): the rig gate, then the micro-tests G1-G3 gain, C1-C3 corner, L1-L2 ladder, each alone, each ticking a box (decode log 258.4, 263).
 // 0.64.0 (16 Nov 2026): the Scale lab chooser starts with STEP BY STEP (seven short steps, LabParts): save the sounds, meter number, wire check, scale, level ladder, low tones (high-pass corner bound), high tones; the old phone plays, this phone records.
 
 // FILE VERSION 0.52.2 (11 Nov 2026): the direct runs come FIRST in the sheet, W wiring check added, wiring text. FILE VERSION 0.52.1 (11 Nov 2026): direct runs M, D, E, F, G added (SimDirect: this phone's audio straight to the pods, no divider; rows in the chooser, a branch in tick() and finished(), and the block "direct runs" near the end). FILE VERSION 0.51.0 (10 Nov 2026): Lab "S: Scale and corner" (build brief 0.51.0 item 4): the sheets, the audio ladder and the run control. The analysis is SimLadder.
@@ -48,6 +49,7 @@ final class SimLabSheet {
         TextView in = p.t("Known voltages through the divider give the scale (uV per count), the high-pass corner, linearity and the floor. Wiring: MG_simulator_test_v3.pdf (Part 2A, 2B, 3). One run per tap; the results are measurements of this wiring and are not applied.", 12, HealthViews.MUT, 400);
         in.setLineSpacing(0, 1.2f); box.addView(in, new LinearLayout.LayoutParams(-1, -2));
         final Dialog[] d = new Dialog[1];
+        quickBlock(box, d);      // 0.69.0
         // 0.64.0: STEP BY STEP, short parts, one action and one number each
         TextView gh = p.t("STEP BY STEP (START HERE)", 11, 0xFF6EC3FF, 600); gh.setLetterSpacing(0.12f); box.addView(gh, p.lp(-1, -2, 14));
         TextView gi = p.t("Seven short steps, one action and one number each. The old phone plays the sounds, this phone records. Do them in order; each step shows its last result. Nothing is applied to the app.", 12, HealthViews.MUT, 400);
@@ -137,6 +139,7 @@ final class SimLabSheet {
         if (!active) return false;
         startMs = readingStartMs;
         int s = (int) (elMs / 1000);
+        if (LabQuick.is(mode) && !oldPhone) { p.simCue(LabQuick.cue(mode, s, planMs)); return elMs >= planMs; }      // 0.69.0: gate (silent), isolation 1, C3 lift test
         if (SimDirect.isDirect(mode)) {      // 0.52.1
             if (!oldPhone && track == null && !stopAudio && dtrack != null && elMs >= (long) (SimDirect.AUDIO_AT_S * 1000)) playDirect(dtrack, true);
             if (oldPhone && LabParts.is(mode)) {      // 0.64.0: the old phone plays; the analysis finds the tone by itself
@@ -408,11 +411,12 @@ final class SimLabSheet {
             SimDirect.Result R = null; String err = null;
             try {
                 File bin = null; for (int i = 0; i < 10 && bin == null; i++) { bin = ProReportMaker.findBin(dir, startSec); if (bin == null) Thread.sleep(500); }
-                if (bin == null) err = "No live raw file was found for this run.";
+                if (bin == null) err = "No live raw file was found for this run. The live raw stream (You > Settings > Live raw 500 Hz) is forced on for Lab S runs; if it still failed, the strap link dropped: repeat the run.";
                 else {
                     List<byte[]> fr = SpectrumBlock.r16(java.nio.file.Files.readAllBytes(bin.toPath()));
-                    R = m == 'W' ? SimDirect.wiring(fr) : m == 'D' ? SimDirect.analyseTones(fr, vfs) : LabParts.is(m) ? LabParts.analyse(m, SimDirect.counts(fr), vfs) : SimDirect.analyseEcg(tr != null ? tr : SimDirect.track(m), fr, vfs, pr);
-                    if (m == 'W' || LabParts.is(m)) { String first = R.card.isEmpty() ? "" : R.card.get(0); rememberStep(String.valueOf(m), first.length() > 150 ? first.substring(0, 150) : first); }      // 0.64.0: shown under the step
+                    R = LabQuick.is(m) ? quickResult(m, fr, vfs) : m == 'W' ? SimDirect.wiring(fr) : m == 'D' ? SimDirect.analyseTones(fr, vfs) : LabParts.is(m) ? LabParts.analyse(m, SimDirect.counts(fr), vfs) : SimDirect.analyseEcg(tr != null ? tr : SimDirect.track(m), fr, vfs, pr);
+                    if (LabQuick.is(m)) storeQuick(m, R);      // 0.69.0: the stored result feeds the three boxes
+                    if ((m == 'W' || LabParts.is(m)) && !LabQuick.is(m)) { String first = R.card.isEmpty() ? "" : R.card.get(0); rememberStep(String.valueOf(m), first.length() > 150 ? first.substring(0, 150) : first); }      // 0.64.0: shown under the step
                     if (!Double.isNaN(pr)) R.notes.put("sim_play_rel_s", String.format(Locale.US, "%.2f", pr));
                     R.notes.put("simd_cal_ts", String.valueOf(ctl().getLong("sim_cal_ts", 0L) / 1000L));
                     for (Map.Entry<String, String> e : R.notes.entrySet()) ReadingNotes.put(dir, startSec, e.getKey(), e.getValue());
@@ -426,6 +430,152 @@ final class SimLabSheet {
                 } catch (Throwable ignored) { }
             } });
         } }, "sim-direct-analyse").start();
+    }
+
+    // ------------------------------------------------------------------ 0.69.0: QUICK TICKS (LabQuick)
+    private String gateAtStart = "UNGATED";
+    private static final long GATE_FRESH_MS = 4L * 3600_000L;
+
+    private SimDirect.Result quickResult(char m, List<byte[]> fr, double vfs) {
+        double app = ProAnalysis.uv();
+        if (LabQuick.isGate(m)) return LabQuick.analyseGate(m, fr, app);
+        if (m == LabQuick.C3) return LabQuick.analyseLift(fr, app);
+        return LabQuick.analyseTest(m, fr, vfs, app);
+    }
+
+    /** Stores the result of one quick test (prefs labq_<ID>) and puts the three boxes under its card. */
+    private void storeQuick(char m, SimDirect.Result R) {
+        String gated = LabQuick.isGate(m) ? "GATE" : gateAtStart; R.notes.put("labq_gated", gated);
+        String first = R.card.isEmpty() ? "" : R.card.get(0); if (first.length() > 120) first = first.substring(0, 120); R.notes.put("labq_line", first.replace(';', ',').replace('=', ' '));
+        ctl().edit().putString("labq_" + LabQuick.id(m), LabQuick.encode(R.notes, System.currentTimeMillis(), gated)).apply();
+        if (!LabQuick.isGate(m)) { LabQuick.Tick[] tk = LabQuick.ticks(quickStore(), ProAnalysis.uv()); R.card.add(tickText(tk)); }
+    }
+    private static String tickText(LabQuick.Tick[] tk) {
+        StringBuilder sb = new StringBuilder("THE BOXES NOW:");
+        for (LabQuick.Tick t : tk) sb.append("\n").append(t.state == 2 ? "\u25cf " : t.state == 1 ? "\u25d0 " : "\u25cb ").append(t.name).append(": ").append(t.line);
+        return sb.toString();
+    }
+    private java.util.Map<String, java.util.Map<String, String>> quickStore() {
+        java.util.Map<String, java.util.Map<String, String>> m = new java.util.LinkedHashMap<>();
+        for (char c : LabQuick.TESTS) m.put(LabQuick.id(c), LabQuick.decodeStore(ctl().getString("labq_" + LabQuick.id(c), "")));
+        return m;
+    }
+    private java.util.Map<String, String> gateStored(char variant) { return LabQuick.decodeStore(ctl().getString("labq_" + LabQuick.id(variant), "")); }
+    private static boolean fresh(java.util.Map<String, String> g) { try { return System.currentTimeMillis() - Long.parseLong(g.get("ts")) < GATE_FRESH_MS; } catch (Throwable e) { return false; } }
+    /** "PASS" or "CHECK" when the gate for this test passed in the last 4 hours (the plugged-in gate for the audio tests; any gate for the lift test), else "". */
+    private String gateStateFor(char m) {
+        java.util.Map<String, String> k = gateStored(LabQuick.GATE), pp = gateStored(LabQuick.ISO1);
+        String sk = k.get("state"), sp = pp.get("state");
+        if (fresh(k) && ("PASS".equals(sk) || "CHECK".equals(sk))) return sk;
+        if (m == LabQuick.C3 && fresh(pp) && ("PASS".equals(sp) || "CHECK".equals(sp))) return sp;
+        return "";
+    }
+    private String gateLine() {
+        java.util.Map<String, String> k = gateStored(LabQuick.GATE); String st = k.get("state");
+        if (st == null) return "Not run yet. Cable plugged into the old phone, no sound, 45 s. Every tone test needs it first.";
+        long ts = 0; try { ts = Long.parseLong(k.get("ts")); } catch (Throwable ignored) { }
+        String why = k.get("why"); return st + (ts > 0 ? " (" + new java.text.SimpleDateFormat("d MMM HH:mm", Locale.UK).format(new java.util.Date(ts)) + (fresh(k) ? "" : ", older than 4 h: run it again") + ")" : "") + (why != null && !why.isEmpty() && !"PASS".equals(st) ? ": " + why : "");
+    }
+    private String quickLast(char m) {
+        java.util.Map<String, String> k = LabQuick.decodeStore(ctl().getString("labq_" + LabQuick.id(m), "")); if (k.isEmpty()) return "Not done yet.";
+        long ts = 0; try { ts = Long.parseLong(k.get("ts")); } catch (Throwable ignored) { }
+        String g = k.get("gated"); String line = k.get("line"); return "Last: " + (line == null ? "" : line) + (ts > 0 ? "  (" + new java.text.SimpleDateFormat("d MMM HH:mm", Locale.UK).format(new java.util.Date(ts)) + ")" : "") + (g != null && !LabQuick.gatedOk(k) ? "  [no passed gate: not counted]" : "");
+    }
+    private static String mmss(long ms) { return (ms / 60000) + ":" + String.format(Locale.UK, "%02d", (int) (ms / 1000 % 60)); }
+
+    private void quickBlock(LinearLayout box, final Dialog[] d) {
+        TextView qh = p.t("QUICK TICKS: GAIN, CORNER, LADDER", 11, 0xFF6EC3FF, 600); qh.setLetterSpacing(0.12f); box.addView(qh, p.lp(-1, -2, 14));
+        TextView qi = p.t("Small tests, each on its own: do one today, another tomorrow. A box ticks when its numbers are in. Every test counts only after the rig gate has passed in the last 4 hours, so no run is spent on a rig that gives no ECG. Nothing is applied to the app.", 12, HealthViews.MUT, 400);
+        qi.setLineSpacing(0, 1.2f); box.addView(qi, p.lp(-1, -2, 4));
+        guideRow(box, "0   Save the quick sounds", "One tap: eight short WAV files (LabQ_*, about 25 MB) go to Download/sim. Copy them to the old phone once.", doneText("Q"), "Save", () -> { d[0].dismiss(); exportQuick(); });
+        guideRow(box, "0   Meter number", "Needed only for the GAIN box (same as step 2 below). Cable on the METER, not on the strap.", calText(), "Type", () -> { d[0].dismiss(); typeMeter(); });
+        String iso = LabQuick.isolationText(gateStored(LabQuick.GATE).get("state"), gateStored(LabQuick.ISO1).get("state"), gateStored(LabQuick.ISO3).get("state"));
+        guideRow(box, "0   Rig gate", "In the exact rig wiring, a silent 45 s reading must give an ordinary ECG before any tone test.", gateLine() + "\n" + iso, "Gate", () -> { d[0].dismiss(); gateSheet(); });
+        LabQuick.Tick[] tk = LabQuick.ticks(quickStore(), ProAnalysis.uv());
+        tickRow(box, tk[0], "GAIN: uV per count", new char[] { LabQuick.G1, LabQuick.G2, LabQuick.G3, LabQuick.L1, LabQuick.L2 }, d);
+        tickRow(box, tk[1], "CORNER: high-pass", new char[] { LabQuick.C1, LabQuick.C2, LabQuick.C3 }, d);
+        tickRow(box, tk[2], "LADDER: linearity", new char[] { LabQuick.L1, LabQuick.G3, LabQuick.L2 }, d);
+    }
+
+    private void tickRow(LinearLayout box, LabQuick.Tick t, String title, final char[] ids, final Dialog[] d) {
+        guideRow(box, (t.state == 2 ? "\u25cf  " : t.state == 1 ? "\u25d0  " : "\u25cb  ") + title, t.line, t.state == 2 ? "Ticked" : t.state == 1 ? "Partly" : "Not done", "Tests", () -> { d[0].dismiss(); testsSheet(title, ids); });
+    }
+
+    private void testsSheet(String title, final char[] ids) {
+        LinearLayout box = new LinearLayout(a); box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(p.t("Each test is a short reading of its own. Wiring as in the rig gate. Tests with a sound: old phone volume at maximum (as for the meter number), effects off, the LabQ file ready at 0:00; tap Start, then PLAY on the old phone within the first 8 seconds.", 12, HealthViews.MUT, 400));
+        final Dialog[] d2 = new Dialog[1];
+        for (final char m : ids) {
+            String what = m == LabQuick.G1 ? "10 Hz at -54 dBFS, 15 s. K in uV per count." : m == LabQuick.G2 ? "20 Hz at -54 dBFS, 15 s. K at a second frequency." : m == LabQuick.G3 ? "10 Hz at -48 dBFS, 15 s. K at a second level, and a third ladder level." : m == LabQuick.C1 ? "5 Hz then 2 Hz. Gain against the 10 Hz lead-in: a bound on the corner." : m == LabQuick.C2 ? "1 Hz then 0.5 Hz. Gain 0.95 or more at 0.5 Hz ticks the box." : m == LabQuick.L1 ? "-66 and -54 dBFS, 6 s each." : m == LabQuick.L2 ? "-60 and -48 dBFS, 6 s each." : "No sound. Lift the finger off the foil three times as the cue says; the recovery after each is fitted.";
+            guideRow(box, LabQuick.title(m) + "  \u00b7  " + mmss(LabQuick.planMs(m)), what + (LabQuick.audio(m) ? " File " + LabQuick.file(m) + "." : ""), quickLast(m), "Start", () -> { d2[0].dismiss(); startQuick(m); });
+        }
+        d2[0] = p.sheet(title, box); d2[0].show();
+    }
+
+    private void gateSheet() {
+        LinearLayout box = new LinearLayout(a); box.setOrientation(LinearLayout.VERTICAL);
+        String iso = LabQuick.isolationText(gateStored(LabQuick.GATE).get("state"), gateStored(LabQuick.ISO1).get("state"), gateStored(LabQuick.ISO3).get("state"));
+        box.addView(p.t("The gate says whether the strap gives an ordinary ECG in the wiring the tone tests use: leads on in 95 % or more, 50 Hz pick-up 7 uV or less, at most one fast-recovery run, the strap's verdict 1 and its heart rate within 3 bpm of ours. " + iso, 12, HealthViews.MUT, 400));
+        final Dialog[] d2 = new Dialog[1];
+        guideRow(box, "Rig gate", "Cable tip on one clasp contact, sleeve on the foil on the LEFT index fingertip, strap snug on the left wrist, cable PLUGGED INTO the old phone, old phone silent. 45 s, keep still.", "Last: " + gateLine(), "Start", () -> { d2[0].dismiss(); startQuickGate(LabQuick.GATE); });
+        guideRow(box, "Isolation 1: not plugged in", "Only if the gate failed. Same wiring, cable NOT plugged into the old phone. 45 s.", "", "Start", () -> { d2[0].dismiss(); startQuickGate(LabQuick.ISO1); });
+        guideRow(box, "Isolation 3: with the tone", "After the gate passed. Plugged in, play LabQ_GATE_tone.wav (10 Hz) on the old phone: the ECG must survive the tone. About 1 minute.", "", "Start", () -> { d2[0].dismiss(); startQuickGate(LabQuick.ISO3); });
+        d2[0] = p.sheet("Rig gate", box); d2[0].show();
+    }
+
+    private void startQuickGate(final char m) {
+        if (p.isRunning()) { a.toast("A reading is running."); return; }
+        String wire = m == LabQuick.ISO1 ? "Cable on the strap contacts and the foil, NOT plugged into the old phone." : m == LabQuick.ISO3 ? "Cable plugged into the old phone, volume at maximum, LabQ_GATE_tone.wav ready at 0:00." : "Cable plugged into the old phone, which stays silent (nothing playing).";
+        new android.app.AlertDialog.Builder(a).setTitle(LabQuick.title(m))
+            .setMessage(wire + "\n\nCable tip to one clasp contact (bare metal, CLIPPED on, not taped), sleeve to the foil on the LEFT index fingertip, strap snug on the left wrist. Keep still, do not talk, do not touch the wiring. " + (m == LabQuick.ISO3 ? "Tap Start, then PLAY on the old phone within the first 8 seconds. " : "") + "The reading takes " + mmss(LabQuick.planMs(m)) + ".")
+            .setPositiveButton("Start", (x, y) -> { try { oldPhone = LabQuick.audio(m); internalAudio = false; dtrack = SimDirect.track(m); gateAtStart = "GATE"; start(m, LabQuick.planMs(m)); } catch (Throwable e) { a.toast("The run could not start: " + e.getClass().getSimpleName()); } })
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    private void startQuick(final char m) {
+        if (p.isRunning()) { a.toast("A reading is running."); return; }
+        final String gs = gateStateFor(m);
+        if (gs.isEmpty()) {
+            new android.app.AlertDialog.Builder(a).setTitle("The rig gate has not passed")
+                .setMessage("A tone test only counts after a silent 45 s reading in this wiring has given an ordinary ECG (in the last 4 hours). Run the gate first, or run this test anyway: it is then stored as not counted and ticks nothing.")
+                .setPositiveButton("Run the gate", (x, y) -> gateSheet())
+                .setNeutralButton("Run anyway (not counted)", (x, y) -> proceedQuick(m, "UNGATED"))
+                .setNegativeButton("Cancel", null).show();
+        } else proceedQuick(m, gs);
+    }
+
+    private void proceedQuick(final char m, final String gated) {
+        final boolean snd = LabQuick.audio(m); final boolean needMeter = (m == LabQuick.G1 || m == LabQuick.G2 || m == LabQuick.G3) && Double.isNaN(vfsPkMv());
+        String msg = snd ? "Wiring as in the rig gate (cable plugged into the old phone, sleeve on the foil, strap on the left wrist). Old phone: volume at maximum, effects off, " + LabQuick.file(m) + " ready at 0:00.\n\nTap Start, then press PLAY on the old phone within the first 8 seconds. Keep still. The reading takes " + mmss(LabQuick.planMs(m)) + "."
+            : "No old phone. Strap on the left wrist, cable on the strap contacts and the foil as in the gate. Finger on the foil; when the cue says, lift the finger clear of the foil for 10 s, then touch it again and keep still for 20 s. Three times. The reading takes " + mmss(LabQuick.planMs(m)) + ".";
+        if (needMeter) msg += "\n\nNo meter number is stored: this run still records and checks everything, but K needs the number (type it under Meter number).";
+        if (gated.equals("UNGATED")) msg += "\n\nThis run is NOT counted (no passed gate).";
+        new android.app.AlertDialog.Builder(a).setTitle(LabQuick.title(m)).setMessage(msg)
+            .setPositiveButton("Start", (x, y) -> { try { oldPhone = snd; internalAudio = false; dtrack = SimDirect.track(m); gateAtStart = gated; start(m, LabQuick.planMs(m)); } catch (Throwable e) { a.toast("The run could not start: " + e.getClass().getSimpleName()); } })
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    /** Writes the eight quick sound files to Download/sim (16-bit mono 48 kHz, as the other Lab S files). */
+    void exportQuick() {
+        a.toast("Saving the quick sounds (about 20 s)...");
+        new Thread(new Runnable() { @Override public void run() {
+            String msg; int ok = 0; char[] modes = { LabQuick.G1, LabQuick.G2, LabQuick.G3, LabQuick.C1, LabQuick.C2, LabQuick.L1, LabQuick.L2, LabQuick.ISO3 };
+            try {
+                for (char m : modes) {
+                    String name = LabQuick.file(m); long n = (long) Math.round(LabParts.seconds(m) * SR);
+                    ContentValues cv = new ContentValues(); cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name); cv.put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav"); cv.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/sim/"); cv.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                    Uri u = a.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    try (OutputStream o = a.getContentResolver().openOutputStream(u)) {
+                        o.write(LabParts.wavHeader(n)); java.util.Random rng = new java.util.Random(7); int chunk = SR / 2; byte[] buf = new byte[2 * chunk];
+                        for (long i = 0; i < n; i += chunk) { int k = (int) Math.min(chunk, n - i); LabParts.pcm(m, buf, k, i, rng); o.write(buf, 0, 2 * k); }
+                    }
+                    ContentValues done = new ContentValues(); done.put(MediaStore.MediaColumns.IS_PENDING, 0); a.getContentResolver().update(u, done, null, null); ok++;
+                }
+                rememberStep("Q", ok + " files in Download/sim");
+                msg = "Saved " + ok + " files in Download/sim (LabQ_G1 to LabQ_L2 and LabQ_GATE_tone). Copy them to the old phone.";
+            } catch (Throwable e) { msg = "The sounds could not be saved (" + ok + " of 8 done): " + e.getClass().getSimpleName(); }
+            final String fm = msg; a.runOnUiThread(() -> a.toast(fm));
+        } }, "sim-quick-wav").start();
     }
 
     // ------------------------------------------------------------------ WAV for the old phone

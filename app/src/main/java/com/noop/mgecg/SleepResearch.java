@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.69.0 (17 Nov 2026): the SLEEP REGULARITY card's sentence (the percentile against 88,975 UK adults) has its own full-width line under the big number; before, it was squeezed beside the number and clipped to one line.
 // FILE VERSION 0.54.0 (13 Nov 2026): NEW. The sleep research screen: sleep regularity (SRI against the UK Biobank anchors), the timing of your nights, the 24 h rhythm of your heart rate, what the age studies say next to your
 // own averages, why no single "sleep age" number is shown, and the twelve sources with what each one was used for and what limits it.
 // Everything here is computed on the phone from the strap's own per-second records (RhythmData). Estimates, research only, not a medical device. One person, one strap: nothing here is a norm for anyone else.
@@ -122,8 +123,9 @@ final class SleepResearch {
             LinearLayout big = new LinearLayout(a); big.setOrientation(LinearLayout.HORIZONTAL);
             big.addView(HeartGraph.label(a, String.format(Locale.UK, "%.0f", r.sri), 40, INK, 200));
             double pc = SleepRegularity.approxPercentile(r.sri);
-            big.addView(HeartGraph.label(a, "  of 100  ·  " + SleepRegularity.describe(r.sri), 13, MUT, 400), HeartGraph.lp(a, -2, -2, 22));
+            big.addView(HeartGraph.label(a, "  of 100", 13, MUT, 400), HeartGraph.lp(a, -2, -2, 22));
             rc.addView(big, HeartGraph.lp(a, -1, -2, 6));
+            rc.addView(text(a, SleepRegularity.describe(r.sri), 13, MUT), HeartGraph.lp(a, -1, -2, 2));      // 0.69.0: own full-width line (it was clipped to one line beside the number)
             rc.addView(new SriBar(a, r.sri), HeartGraph.lp(a, -1, Math.round(dp(a, 46)), 8));
             rc.addView(text(a, "Grey marks: 41, 60 and 75, the 5th percentile, the median and the 95th percentile of 88,975 UK adults measured over 7 days. In that study 41 went with a mortality hazard ratio of 1.53 and 75 with 0.90, against the median. That is a group result, not a prediction for you.", 11.5f, MUT), HeartGraph.lp(a, -1, -2, 6));
             kv(a, rc, "Compared over", r.pairs + " minute pairs, " + String.format(Locale.UK, "%.1f", r.pairs / 1440.0) + " days");
