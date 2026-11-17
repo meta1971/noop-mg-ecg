@@ -29,7 +29,7 @@ import java.util.zip.ZipOutputStream;
 
 final class ReadingPull {
     private ReadingPull() {}
-    static final String FOLDER = "MGpull";
+    static final String FOLDER = "MGpull" + CopyB.SFX;
     private static volatile boolean busy;
     private static double uvNow() { return ProAnalysis.uv(); }      // 0.54.0: the one scale setting (0.06358 by default; was 0.0621 before 0.53.0)
 

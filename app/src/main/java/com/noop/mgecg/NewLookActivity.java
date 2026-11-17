@@ -1224,7 +1224,7 @@ public class NewLookActivity extends Activity {
                 exporting = false;
                 if (isFinishing()) return;
                 new android.app.AlertDialog.Builder(this).setTitle(r.ok ? "Export finished" : "Export problem")
-                        .setMessage(r.message + (r.ok ? "\n\nOpen your Files app, then Downloads, then MGexport. These zips hold your heart recordings: share them only with people you trust." : ""))
+                        .setMessage(r.message + (r.ok ? "\n\nOpen your Files app, then Downloads, then " + EcgExport.FOLDER + ". These zips hold your heart recordings: share them only with people you trust." : ""))
                         .setPositiveButton("OK", null).show();
             });
         }, "ecg-export").start();

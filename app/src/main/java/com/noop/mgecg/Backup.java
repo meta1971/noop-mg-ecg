@@ -50,7 +50,7 @@ import java.util.zip.ZipOutputStream;
 final class Backup {
     private Backup() {}
 
-    static final String ROOT = "MGbackup";
+    static final String ROOT = "MGbackup" + CopyB.SFX;      // 0.70.0: copy B writes MGbackupB
     static final String ACTION_RUN = "com.noop.mgecg.BACKUP_RUN";
     static final int[] KEEP_CHOICES = {3, 7, 14, 30};
     private static final String PREFS = "backup";
@@ -103,7 +103,7 @@ final class Backup {
     /** Files that must not be mirrored: the app's own export and backup folders, temporary files, and anything touched in the last minute (still being written). */
     static boolean skip(String rel, long mtime, long nowMs) {
         String top = rel.indexOf('/') > 0 ? rel.substring(0, rel.indexOf('/')) : "";
-        if (top.equals("MGexports") || top.equals("MGbackup") || top.equals("export") || top.equals("cache")) return true;
+        if (top.equals(ExportCatalog.ROOT) || top.equals(ROOT) || top.equals("export") || top.equals("cache")) return true;
         String l = rel.toLowerCase(Locale.UK);
         if (l.endsWith(".tmp") || l.endsWith(".part") || l.endsWith("-journal") || l.endsWith("-wal") || l.endsWith("-shm")) return true;
         return nowMs - mtime < 60000L;

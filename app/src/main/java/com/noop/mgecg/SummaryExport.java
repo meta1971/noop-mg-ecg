@@ -40,7 +40,7 @@ import java.util.TreeMap;
 final class SummaryExport {
     private SummaryExport() {}
 
-    static final String FOLDER = "MGsummary";
+    static final String FOLDER = "MGsummary" + CopyB.SFX;
 
     static final class Result {
         String note = "";

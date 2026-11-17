@@ -35,7 +35,7 @@ final class ActivityStore {
 
     static final String PREFS = "activity";
     static final String CACHE_VERSION = "3";      // 0.39.0: sustained-walking minutes scored at HR - 24, so cached days are recomputed
-    static final String EXPORT_FOLDER = "MGactivity";
+    static final String EXPORT_FOLDER = "MGactivity" + CopyB.SFX;
 
     // ---- SQL, kept as constants so they can be checked against a real SQLite file off the phone
     static final String SQL_CREATE_MIN = "CREATE TABLE IF NOT EXISTS r18_min (ts INTEGER PRIMARY KEY, n INTEGER, hr REAL, hr_min INTEGER, hr_max INTEGER, dyn REAL, "

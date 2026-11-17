@@ -292,7 +292,7 @@ final class ReadingsTable {
               .append("   asleep 24 h ").append(fmt(r.sleep24, "%.1f")).append(" h  steps 30 min ").append(fmt(r.steps30, "%.0f")).append("  carb ").append(Double.isNaN(r.carbMin) ? "-" : String.format(Locale.UK, "%.0f min ago", r.carbMin)).append("  HR vs rest ").append(fmt(r.rhrDev, "%+.0f")).append("\n\n");
         }
         TextView tv = HeartGraph.label(a, sb.toString().trim(), 11, MUT, 400); tv.setTypeface(android.graphics.Typeface.MONOSPACE); tv.setLineSpacing(0, 1.1f); col.addView(tv, HeartGraph.lp(a, -1, -2, 6));
-        TextView ex = HeartGraph.pill(a, "Export the table as a CSV (Download/MGreports)", BLUE, 0xFF05131E);
+        TextView ex = HeartGraph.pill(a, "Export the table as a CSV (Download/" + ProReportMaker.FOLDER + ")", BLUE, 0xFF05131E);
         ex.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { export(a, rows); } }); col.addView(ex, HeartGraph.lp(a, -2, -2, 14));
     }
 
@@ -328,7 +328,7 @@ final class ReadingsTable {
             try {
                 byte[] b = csv(rows).getBytes("UTF-8"); String name = "MG_readings_table_" + new SimpleDateFormat("yyyyMMdd_HHmm", Locale.UK).format(new Date()) + ".csv";
                 ContentResolver cr = a.getContentResolver(); ContentValues cv = new ContentValues(); cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name); cv.put(MediaStore.MediaColumns.MIME_TYPE, "text/csv");
-                if (Build.VERSION.SDK_INT >= 29) { cv.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/MGreports"); cv.put(MediaStore.MediaColumns.IS_PENDING, 1); }
+                if (Build.VERSION.SDK_INT >= 29) { cv.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/" + ProReportMaker.FOLDER); cv.put(MediaStore.MediaColumns.IS_PENDING, 1); }
                 Uri u = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
                 if (u == null) msg = "Could not save the table.";
                 else { try (OutputStream os = cr.openOutputStream(u)) { os.write(b); } if (Build.VERSION.SDK_INT >= 29) { ContentValues done = new ContentValues(); done.put(MediaStore.MediaColumns.IS_PENDING, 0); cr.update(u, done, null, null); } msg = "Saved Download/MGreports/" + name; }

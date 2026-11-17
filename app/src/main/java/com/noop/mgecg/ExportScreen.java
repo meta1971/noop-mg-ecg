@@ -50,7 +50,7 @@ final class ExportScreen {
         top.addView(close);
         root.addView(top);
 
-        TextView intro = HeartGraph.label(a, "Each export is saved in Download/MGexports in its own folder, named with the date and time it was made and the period it covers, and also as one zip. Send the zip: it holds every file and an index that says what each file is and which dates it covers.", 12, MUT, 400);
+        TextView intro = HeartGraph.label(a, "Each export is saved in Download/" + ExportCatalog.ROOT + " in its own folder, named with the date and time it was made and the period it covers, and also as one zip. Send the zip: it holds every file and an index that says what each file is and which dates it covers.", 12, MUT, 400);
         intro.setLineSpacing(0, 1.2f);
         root.addView(intro, HeartGraph.lp(a, -1, -2, 8));
 

@@ -18,7 +18,7 @@ import java.util.Locale;
 
 final class ProReportMaker {
     private ProReportMaker() {}
-    static final String FOLDER = "MGreports";
+    static final String FOLDER = "MGreports" + CopyB.SFX;
     private static volatile boolean busy;
 
     /** The reading's saved report is ecg_report_<unix>.html; the live raw frames are realtime_ecg_bin_<unix>.bin saved within a few seconds of it. 0.23.2: the LARGEST file within 30 s (a one-frame stub written just before the session start event used to win as the nearest name). */

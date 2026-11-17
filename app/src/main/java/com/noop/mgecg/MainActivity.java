@@ -3612,21 +3612,33 @@ public class MainActivity extends NewLookActivity {
      * SCAN/CONNECT for a clean read.
      * ------------------------------------------------------------------
      */
-    private static final String KNOWN_STRAP_ADDR = "F2:CF:4E:DD:32:47";
-    private static final String RESEARCH_STRAP_SERIAL = "5AM0360496";
+    static final String KNOWN_STRAP_ADDR = "F2:CF:4E:DD:32:47";
+    static final String RESEARCH_STRAP_SERIAL = "5AM0360496";
     private final java.util.Set<String> ignoredStrapsThisScan =
             new java.util.HashSet<>();
+
+    /*
+     * 0.70.0 (addendum 265): the strap this copy of the app talks to is read at run time (StrapLock). Copy A: the two constants above unless the
+     * owner chose another strap. Copy B (CopyB.B): only the strap the owner picked; none until then, and copy A's strap is never offered.
+     * Empty = no strap chosen. Copy B masks the identifiers in the strap-lock log lines (idLog); the older lines still print the address.
+     */
+    private String strapAddr() { return StrapLock.addr(this, KNOWN_STRAP_ADDR); }
+    private String strapSerial() { return StrapLock.serial(this, RESEARCH_STRAP_SERIAL); }
+    private boolean addrIsStrap(String addr) { String a = strapAddr(); return a.length() > 0 && addr != null && a.equalsIgnoreCase(addr); }
+    private boolean nameIsStrap(String name) { String x = strapSerial(); return x.length() > 0 && name != null && name.contains(x); }
+    private static String idLog(String id) { return CopyB.B ? StrapLock.mask(id) : id; }
+    private boolean noStrapChosen() { return strapAddr().length() == 0 && strapSerial().length() == 0; }
 
     /** True only for the dedicated research MG (address or serial in name). */
     private boolean isResearchStrap(ScanResult r) {
         BluetoothDevice d = r.getDevice();
-        if (KNOWN_STRAP_ADDR.equalsIgnoreCase(d.getAddress())) return true;
+        if (addrIsStrap(d.getAddress())) return true;
         String name = null;
         try { name = d.getName(); } catch (SecurityException ignored) { }
         if (name == null && r.getScanRecord() != null) {
             name = r.getScanRecord().getDeviceName();
         }
-        return name != null && name.contains(RESEARCH_STRAP_SERIAL);
+        return nameIsStrap(name);
     }
 
     /*
@@ -3824,10 +3836,10 @@ public class MainActivity extends NewLookActivity {
     /** True only for the dedicated research MG, from a BluetoothDevice the OS already knows. */
     private boolean isResearchDevice(BluetoothDevice d) {
         if (d == null) return false;
-        if (KNOWN_STRAP_ADDR.equalsIgnoreCase(d.getAddress())) return true;
+        if (addrIsStrap(d.getAddress())) return true;
         String name = null;
         try { name = d.getName(); } catch (SecurityException ignored) { }
-        return name != null && name.contains(RESEARCH_STRAP_SERIAL);
+        return nameIsStrap(name);
     }
 
     /**
@@ -3838,6 +3850,7 @@ public class MainActivity extends NewLookActivity {
     private boolean connectBondedResearchStrap(String why, boolean passive) {
         if (gatt != null || pendingDevice != null) return true;
         if (adapter == null) return false;
+        if (noStrapChosen()) { logRaw("EASY_CONNECT_NO_STRAP_CHOSEN why=" + why); return false; }      // 0.70.0: copy B before the owner picks a strap
         if (!adapter.isEnabled()) logRaw("EASY_CONNECT_SWITCH_OFF why=" + why + " bleOnly=" + bleOnlyAvailable() + " (trying the BLE-only stack)");
         if (Build.VERSION.SDK_INT >= 31 &&
                 checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
@@ -3869,7 +3882,7 @@ public class MainActivity extends NewLookActivity {
             // 0.5.8: NOOP's own route (WhoopBleClient.reconnectToAddress): the strap's saved address, no bond and no scan.
             // NOOP notes the 5.0/MG never bonds with Android, so a bonded-only route (0.5.6) had nothing to use.
             try {
-                d = adapter.getRemoteDevice(KNOWN_STRAP_ADDR);
+                d = adapter.getRemoteDevice(strapAddr());
                 route = "saved_address";
             } catch (Throwable t) {
                 logRaw("EASY_CONNECT_UNAVAILABLE why=" + why + " getRemoteDevice failed: " + t);
@@ -3909,7 +3922,7 @@ public class MainActivity extends NewLookActivity {
     private boolean isOurStrap(ScanResult r) {
         BluetoothDevice d = r.getDevice();
         String addr = d.getAddress();
-        if (KNOWN_STRAP_ADDR.equalsIgnoreCase(addr)) return true;
+        if (addrIsStrap(addr)) return true;
         if (gatt != null && gatt.getDevice() != null &&
                 addr.equalsIgnoreCase(gatt.getDevice().getAddress()))
             return true;
@@ -10977,6 +10990,24 @@ public class MainActivity extends NewLookActivity {
         });
     }
 
+    /** 0.70.0: the owner chose another strap (StrapLock): drop the old link if there is one and connect to the new strap. */
+    static void requestStrapChanged(Context c) {
+        final MainActivity m = instance != null ? instance : headless;
+        if (m == null) { startLinkHost(c); return; }
+        m.mainH.post(new Runnable() {
+            @Override public void run() {
+                try {
+                    m.logRaw("STRAP_CHANGED (the owner chose a strap)");
+                    if (m.gatt != null) m.teardownDeadLink("strap_changed");
+                    m.dayLogLastReconnectMs = 0L;
+                    m.dayLogBackoffMs = 60000L;
+                    m.dayLogReconnectAttempts = 0;
+                    m.connectBondedResearchStrap("strap_changed", false);
+                } catch (Throwable t) { m.logRaw("STRAP_CHANGED_ERROR " + t); }
+            }
+        });
+    }
+
     private BluetoothGatt realtimeGatt;
     private long realtimeArmedMs = 0L;
 
@@ -13823,6 +13854,11 @@ public class MainActivity extends NewLookActivity {
     }
 
     private void scan() {
+        if (noStrapChosen()) {      // 0.70.0: copy B before the owner picks a strap: nothing to scan for
+            line("No strap chosen yet. On the Today page tap Choose strap.");
+            logRaw("SCAN_NO_STRAP_CHOSEN");
+            return;
+        }
 
         if (Build.VERSION.SDK_INT >= 31 &&
                 checkSelfPermission(
@@ -13875,9 +13911,9 @@ public class MainActivity extends NewLookActivity {
 
         ignoredStrapsThisScan.clear();
         line("SCANNING 10s... (locked to research MG " +
-                RESEARCH_STRAP_SERIAL + " / " + KNOWN_STRAP_ADDR + ")");
-        logRaw("SCAN_START lockedTo=" + RESEARCH_STRAP_SERIAL + "/" +
-                KNOWN_STRAP_ADDR);
+                idLog(strapSerial()) + " / " + idLog(strapAddr()) + ")");
+        logRaw("SCAN_START lockedTo=" + idLog(strapSerial()) + "/" +
+                idLog(strapAddr()));
         updateStatus("● SCANNING...");
 
         ScanFilter f =
@@ -13944,7 +13980,7 @@ public class MainActivity extends NewLookActivity {
                     String nm = null;
                     try { nm = d.getName(); } catch (SecurityException ignored) { }
                     line("IGNORING " + nm + " " + who +
-                            " - not the research MG (" + RESEARCH_STRAP_SERIAL + ")");
+                            " - not the research MG (" + idLog(strapSerial()) + ")");
                     logRaw("SCAN_IGNORED_NOT_RESEARCH_STRAP name=" + nm +
                             " addr=" + who);
                 }

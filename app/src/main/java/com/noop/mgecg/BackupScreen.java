@@ -47,7 +47,7 @@ final class BackupScreen {
         sv.addView(body);
         root.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        TextView intro = HeartGraph.label(a, "Every day at the time you choose, all the app's data is copied to Download/MGbackup, which stays on the phone if the app is removed. "
+        TextView intro = HeartGraph.label(a, "Every day at the time you choose, all the app's data is copied to Download/" + Backup.ROOT + ", which stays on the phone if the app is removed. "
                 + "It holds a compressed snapshot of the day-log database, the settings, and a mirror of every ECG, history, log and H10 file, copying only what is new or changed.", 13, MUT, 400);
         intro.setLineSpacing(0, 1.2f);
         body.addView(intro, HeartGraph.lp(a, -1, -2, 8));

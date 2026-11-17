@@ -651,7 +651,7 @@ public class ActivityActivity extends Activity {
                         + "Manual work, with arms and hands moving and few steps, would be missed even more. So this screen uses heart rate and wrist movement instead."), lp(-1, -2, 10));
         content.addView(explain("Correcting it",
                 "Open a period and tap \"Name it\" to label it (for example the job or the site), or \"Not activity\" to take it out of the day's totals. Your corrections are kept on the phone. "
-                        + "\"Export this day\" in Settings writes the minute-by-minute data and your labelled periods to the Download/MGactivity folder, which is what is needed to tune the detector to your work."), lp(-1, -2, 10));
+                        + "\"Export this day\" in Settings writes the minute-by-minute data and your labelled periods to the Download/" + ActivityStore.EXPORT_FOLDER + " folder, which is what is needed to tune the detector to your work."), lp(-1, -2, 10));
         content.addView(explain("What the load number means",
                 "Load adds up every minute, weighted by how hard your heart was working (Banister's training impulse, men's weighting). Long stretches at a moderate level add up to as much as short hard efforts. "
                         + "It is relative: compare one day with another, and with your own average shown under the ring. It is not a calorie count and not comparable with other people or other apps."), lp(-1, -2, 10));

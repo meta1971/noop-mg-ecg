@@ -38,7 +38,7 @@ import java.util.zip.ZipOutputStream;
 final class ExportCatalog {
     private ExportCatalog() {}
 
-    static final String ROOT = "MGexports";
+    static final String ROOT = "MGexports" + CopyB.SFX;
 
     static final class Entry {
         String id, scope, zipUri, indexUri, rawUri;

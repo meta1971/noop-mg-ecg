@@ -34,7 +34,7 @@ import java.util.zip.ZipOutputStream;
 final class EcgExport {
     private EcgExport() {}
 
-    static final String FOLDER = "MGexport";
+    static final String FOLDER = "MGexport" + CopyB.SFX;
     /** Compressed bytes after which the next file starts a new zip part. */
     static final long PART_LIMIT = 240L * 1024L * 1024L;
 
@@ -130,7 +130,7 @@ final class EcgExport {
                 running = false;
                 if (act.isFinishing()) return;
                 new android.app.AlertDialog.Builder(act).setTitle(r.ok ? "Export finished" : "Export problem")
-                        .setMessage(r.message + (r.ok ? "\n\nOpen your Files app, then Downloads, then MGexport. These zips hold your heart recordings: share them only with people you trust." : ""))
+                        .setMessage(r.message + (r.ok ? "\n\nOpen your Files app, then Downloads, then " + FOLDER + ". These zips hold your heart recordings: share them only with people you trust." : ""))
                         .setPositiveButton("OK", null).show();
             });
         }, "ecg-export").start();

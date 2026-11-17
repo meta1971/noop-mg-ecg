@@ -817,12 +817,26 @@ public class HealthActivity extends Activity {
             b.setPositiveButton("Reconnect now", new android.content.DialogInterface.OnClickListener() {
                 @Override public void onClick(android.content.DialogInterface d, int w) { MainActivity.requestReconnect(HealthActivity.this); }
             });
+        if (CopyB.B)
+            b.setNeutralButton("Change strap", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface d, int w) { StrapLock.choose(HealthActivity.this, new Runnable() { @Override public void run() { render(); } }); }
+            });
         b.setNegativeButton("Close", null);
         b.show();
     }
 
     /** The two ways the all-day log silently stops: the day logger is switched off, or the strap has gone quiet. Null when all is well. */
     private View loggerBanner(long ageSec) {
+        if (CopyB.B && !StrapLock.has(this)) {      // 0.70.0: copy B has no strap until the owner picks one
+            LinearLayout c = card(16);
+            c.addView(caps("NO STRAP CHOSEN"));
+            TextView t = tv("This copy of the app has no strap yet. Put the strap next to the phone and tap Choose strap; pick it from the list (the strongest signal is the nearest).", 13, INK, 400);
+            t.setLineSpacing(0, 1.25f);
+            t.setPadding(0, dpi(8), 0, dpi(10));
+            c.addView(t);
+            c.addView(pillButton("Choose strap", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { StrapLock.choose(HealthActivity.this, new Runnable() { @Override public void run() { render(); } }); } }), lp(-1, dpi(42), 0));
+            return c;
+        }
         if (!DayLog.enabled(this)) {
             LinearLayout c = card(16);
             c.addView(caps("DAY LOGGER IS OFF"));
@@ -2644,7 +2658,7 @@ public class HealthActivity extends Activity {
         dt.addView(exNote);
         dt.addView(pillButton("Daily backup", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { BackupScreen.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));
         dt.addView(pillButton("Storage: sizes, trim, one backup zip, restore", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { StorageScreen.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));      // 0.36.0
-        TextView bkNote = tv("Copies all the app's data every day at a time you choose into Download/MGbackup.  Backup: " + Backup.shortStatus(this), 11.5f, MUT, 400);
+        TextView bkNote = tv("Copies all the app's data every day at a time you choose into Download/" + Backup.ROOT + ".  Backup: " + Backup.shortStatus(this), 11.5f, MUT, 400);
         bkNote.setPadding(0, dpi(6), 0, 0);
         dt.addView(bkNote);
         dt2.addView(pillButton("Sleep research: regularity, body clock, sources", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { SleepResearch.show(HealthActivity.this); } }), lp(-1, dpi(44), 12));      // 0.54.0

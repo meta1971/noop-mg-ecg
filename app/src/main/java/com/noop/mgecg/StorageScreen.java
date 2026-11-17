@@ -309,7 +309,7 @@ final class StorageScreen {
         for (int k = 0; k < 6; k++) sb.append(String.format(Locale.UK, "%-28s %9s  (%d files)   backup copy %s%n", CAT[k], Backup.sizeText(s.app[k]), s.appN[k], Backup.sizeText(s.mirrorFiles[k])));
         sb.append(String.format(Locale.UK, "%-28s %9s%n", "Database", Backup.sizeText(s.db)));
         TextView t1 = text(a, sb.toString().trim(), 11, INK); t1.setTypeface(android.graphics.Typeface.MONOSPACE); c1.addView(t1, HeartGraph.lp(a, -1, -2, 8));
-        c1.addView(text(a, String.format(Locale.UK, "The app's folder and database: %s. The backup folder (Download/MGbackup): %s, of which database snapshots %s, settings %s, backup zips %s. Free on the phone: %s.", Backup.sizeText(appTot + s.db), Backup.sizeText(mTot), Backup.sizeText(s.mirrorDb), Backup.sizeText(s.mirrorPrefs), Backup.sizeText(s.mirrorZip), Backup.sizeText(s.free)), 13, INK), HeartGraph.lp(a, -1, -2, 8));
+        c1.addView(text(a, String.format(Locale.UK, "The app's folder and database: %s. The backup folder (Download/" + Backup.ROOT + "): %s, of which database snapshots %s, settings %s, backup zips %s. Free on the phone: %s.", Backup.sizeText(appTot + s.db), Backup.sizeText(mTot), Backup.sizeText(s.mirrorDb), Backup.sizeText(s.mirrorPrefs), Backup.sizeText(s.mirrorZip), Backup.sizeText(s.free)), 13, INK), HeartGraph.lp(a, -1, -2, 8));
         col.addView(c1, HeartGraph.lp(a, -1, -2, 12));
 
         LinearLayout c2 = card(a); c2.addView(HeartGraph.label(a, "FREE SPACE", 11, MUT, 400));
@@ -404,7 +404,7 @@ final class StorageScreen {
                 String name = "MG_backup_" + (everything ? "full_" : "compact_") + Backup.stamp(System.currentTimeMillis()) + ".zip"; Uri u = Backup.create(a, "zip", name, "application/zip"); OutputStream os = Backup.open(a, u, true);
                 String manifest = "MG Heart backup zip\napp " + versionName(a) + "\ncreated " + new Date() + "\n" + (everything ? "full" : "compact (no H10 ECG files, no raw history)") + "\ncontents: db/daylog.db, prefs/*.xml, files/*\nrestore: Storage > Restore from a backup zip\n";
                 final TextView mm = msg; int n = writeZip(os, root, tmp, new File(a.getApplicationInfo().dataDir, "shared_prefs"), everything, manifest, new Say() { @Override public void on(final String s) { ui.post(new Runnable() { @Override public void run() { mm.setText(s); } }); } });
-                Backup.finish(a, u); tmp.delete(); result = "Saved Download/MGbackup/zip/" + name + " (" + n + " files, " + Backup.sizeText(Backup.sizeOf(a, u)) + ")";
+                Backup.finish(a, u); tmp.delete(); result = "Saved Download/" + Backup.ROOT + "/zip/" + name + " (" + n + " files, " + Backup.sizeText(Backup.sizeOf(a, u)) + ")";
             } catch (Throwable t) { result = "The zip failed: " + t; }
             final String r = result; ui.post(new Runnable() { @Override public void run() { dlg[0].dismiss(); new AlertDialog.Builder(a).setMessage(r).setPositiveButton("OK", null).show(); reload.run(); } }); } }, "storage-zip").start();
     }
