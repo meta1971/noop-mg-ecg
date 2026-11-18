@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.71.0 (18 Nov 2026): fill() is package-visible: the Rest page draws this content as its SLEEP RESEARCH section (HealthActivity.restPage); the You page screen is unchanged.
 // 0.69.0 (17 Nov 2026): the SLEEP REGULARITY card's sentence (the percentile against 88,975 UK adults) has its own full-width line under the big number; before, it was squeezed beside the number and clipped to one line.
 // FILE VERSION 0.54.0 (13 Nov 2026): NEW. The sleep research screen: sleep regularity (SRI against the UK Biobank anchors), the timing of your nights, the 24 h rhythm of your heart rate, what the age studies say next to your
 // own averages, why no single "sleep age" number is shown, and the twelve sources with what each one was used for and what limits it.
@@ -109,7 +110,8 @@ final class SleepResearch {
     static String clock(double min) { if (Double.isNaN(min)) return "-"; int t = ((int) Math.round(min) % 1440 + 1440) % 1440; return String.format(Locale.UK, "%02d:%02d", t / 60, t % 60); }
     static String mins(double m) { return Double.isNaN(m) ? "-" : Math.round(m) + " min"; }
 
-    private static void fill(final Activity a, LinearLayout col, RhythmData.Bundle b) {
+    /** 0.71.0: package-visible, so the Rest page can draw the same content on the page itself (b may be null: the screen then says the day log could not be read). */
+    static void fill(final Activity a, LinearLayout col, RhythmData.Bundle b) {
         if (b == null || b.s == null || !b.error.isEmpty() || b.sri == null) {
             col.addView(text(a, "The day log could not be read" + (b != null && !b.error.isEmpty() ? " (" + b.error + ")" : "") + ".", 14, MUT), HeartGraph.lp(a, -1, -2, 14));
             return;

@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// 0.71.0 (18 Nov 2026): Today: a tap on a ring opens that ring's OWN PAGE (back arrow, the ring's number, then how it is worked out) instead of a drop-down card under the rings; the system Back key returns to Today at the same scroll position. Rest: the SLEEP RESEARCH section (regularity, last nights, 24 h heart-rate rhythm, age studies, sources) sits on the page itself; the two cards above it jump to it. The You page entry stays.
 // 0.64.0 (16 Nov 2026): You tab: FIND row and WELLBEING AND INSIGHTS shortcuts at the top; Heart Watch panel: IF THE PULSE FLAG SHOWS steps (no alert rule changed); sleep goal printed with one decimal.
 
 // 0.63.0 (16 Nov 2026): Today: the seven equal rings are back as in 0.61.0 (0.62.0's hero row removed); a DAILY OUTLOOK card for the plan sentence; KEY STATISTICS (the night monitor) moved up under it, each line with its distance from your usual. Taps and panels unchanged.
@@ -67,8 +68,10 @@ public class HealthActivity extends Activity {
     static volatile int pendingTab = -1;               // 0.22.0: set by the old screens when they hand back to a tab (onNewIntent is not always called)
     private volatile String syncSub = "";           // 0.20.0: the strap line of the sync strip (pages behind, battery), read off the main thread
     private TextView syncTitleTv, syncSubTv;
-    private int ringOpen = -1;                       // 0.20.0: which ring on Today is expanded (0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress; 0.54.4: 5 fatigue; 0.56.0: 6 heart watch), -1 none
-    private LinearLayout ringPanel;
+    private int ringPage = -1;                       // 0.71.0: which ring has its own page open on Today (0 recovery, 1 effort, 2 active, 3 sleep, 4 stress, 5 fatigue, 6 heart watch), -1 = the Today page itself
+    private int ringBackY;                            // 0.71.0: Today's scroll position, put back when the ring page closes
+    private final String[] ringBig = new String[7], ringLab = new String[7], ringCapT = new String[7]; private final int[] ringCol = new int[7];      // 0.71.0: what each ring shows, kept for its page
+    private LinearLayout srBox; private long srBoxAt;      // 0.71.0: the SLEEP RESEARCH section of the Rest page, kept between redraws so the scroll position survives
     private TextView liveNum, liveUnit;
     private HealthModel.Data liveData;
     private final Runnable liveTick = new Runnable() {
@@ -105,7 +108,7 @@ public class HealthActivity extends Activity {
         root.addView(content, new FrameLayout.LayoutParams(-1, -1));
         tab = Math.max(0, Math.min(4, getIntent().getIntExtra("tab", 0)));      // other screens open a given tab
         nav = new NavBar(this, tab, new NavBar.Listener() {
-            @Override public void onTab(int t) { tab = t; render(); }
+            @Override public void onTab(int t) { if (t == 0) ringPage = -1; tab = t; render(); }
         });
         FrameLayout.LayoutParams np = new FrameLayout.LayoutParams(-1, Math.round(dp(this, 68)), Gravity.BOTTOM);
         np.setMargins(Math.round(dp(this, 14)), 0, Math.round(dp(this, 14)), Math.round(dp(this, 18)));
@@ -221,7 +224,7 @@ public class HealthActivity extends Activity {
                     hs.syncRange = syncRange; hs.syncBattery = syncBattery; hs.syncSub = syncSub;
                     HealthSnap.put(hs);
                 }
-                ui.post(new Runnable() { @Override public void run() { loading = false; loadedOnce = true; StartupClock.healthLoaded(); if (!isFinishing()) { data = dd; render(); } } });
+                ui.post(new Runnable() { @Override public void run() { loading = false; loadedOnce = true; StartupClock.healthLoaded(); if (!isFinishing()) { data = dd; if (ringPage >= 0 || tab == 3) renderKeepScroll(); else render(); } } });
             }
         }, "health-load").start();
     }
@@ -750,12 +753,13 @@ public class HealthActivity extends Activity {
 
     private void openReport(java.io.File f) { startActivity(new Intent(this, ReportActivity.class).putExtra("path", f.getAbsolutePath())); }        // 0.19.2: its own process, so the logger process never loads WebView
 
-    @Override public void onBackPressed() { moveTaskToBack(true); }
+    @Override public void onBackPressed() { if (tab == 0 && ringPage >= 0) { closeRingPage(); return; } moveTaskToBack(true); }
 
     private void go(int t) { tab = t; nav.setActive(t); render(); }
 
     // ------------------------------------------------------------------ render
     private void render() {
+        if (tab != 0) ringPage = -1;
         content.removeAllViews();
         View v;
         switch (tab) {
@@ -763,7 +767,7 @@ public class HealthActivity extends Activity {
             case 2: v = ecgTab(); break;
             case 3: v = restTab(); break;
             case 4: v = youTab(); break;
-            default: v = todayTab();
+            default: v = ringPage >= 0 ? ringPageView(ringPage) : todayTab();
         }
         try {                                                                  // 0.61.0: one status strip at the top of every tab
             if (v instanceof ScrollView && ((ScrollView) v).getChildCount() > 0 && ((ScrollView) v).getChildAt(0) instanceof LinearLayout)
@@ -1152,22 +1156,58 @@ public class HealthActivity extends Activity {
         } catch (Throwable ignored) { }
     }
 
-    private void toggleRing(int i) {
-        if (ringPanel == null) return;
-        if (ringOpen == i) { ringOpen = -1; ringPanel.removeAllViews(); ringPanel.setVisibility(View.GONE); return; }
-        showRing(i);
+    // ------------------------------------------------------------------ 0.71.0: a ring has its own page
+    private static final String[] RING_NAMES = {"Recovery", "Effort", "Active", "Sleep", "Stress", "Fatigue", "Heart Watch"};
+
+    private void openRingPage(int i) {
+        try { View c0 = content.getChildAt(0); ringBackY = c0 instanceof ScrollView ? c0.getScrollY() : 0; } catch (Throwable e) { ringBackY = 0; }
+        ringPage = Math.max(0, Math.min(6, i));
+        render();
     }
 
+    /** Opens a ring's own page from anywhere: the Heart Watch row on Today, the Find row on You. */
     private void showRing(int i) {
-        if (ringPanel == null) return;
-        HealthModel.Data d = data;
-        if (d == null || d.day == null) return;
-        ringOpen = i;
-        ringPanel.removeAllViews();
+        if (tab != 0) { tab = 0; if (nav != null) nav.setActive(0); ringBackY = 0; ringPage = Math.max(0, Math.min(6, i)); render(); }
+        else openRingPage(i);
+    }
+
+    private void closeRingPage() {
+        if (ringPage < 0) return;
+        ringPage = -1;
+        render();
+        final int y = ringBackY;
+        content.post(new Runnable() { @Override public void run() { try { View c0 = content.getChildAt(0); if (c0 instanceof ScrollView) c0.scrollTo(0, y); } catch (Throwable ignored) { } } });
+    }
+
+    /** The page of one ring: back arrow, the ring's number and caption as Today showed them, then the same "how it is worked out" content the drop-down used to hold. */
+    private View ringPageView(final int i) {
+        LinearLayout col = screen();
+        TextView back = tv("\u2039  Today", 15, BLUE, 400);
+        back.setPadding(0, dpi(4), dpi(24), dpi(12));
+        back.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { closeRingPage(); } });
+        col.addView(back, lp(-2, -2, 0));
+        col.addView(head("How it is worked out", RING_NAMES[i], null));
+        final HealthModel.Data d = data;
+        if (d == null || d.day == null) { col.addView(tv("Reading your records\u2026", 14, MUT, 400), lp(-2, -2, 16)); return wrap(col); }
+        LinearLayout top = card(18);
+        LinearLayout row = hrow();
+        row.addView(tv(ringBig[i] == null ? "\u2014" : ringBig[i], 46, ringCol[i] == 0 ? INK : ringCol[i], 200));
+        LinearLayout side = new LinearLayout(this); side.setOrientation(LinearLayout.VERTICAL); side.setPadding(dpi(16), 0, 0, 0);
+        side.addView(caps(ringLab[i] == null ? RING_NAMES[i].toUpperCase(Locale.UK) : ringLab[i]));
+        TextView sc = tv(ringCapT[i] == null ? "" : ringCapT[i], 13, MUT, 400); sc.setPadding(0, dpi(6), 0, 0);
+        side.addView(sc);
+        row.addView(side, new LinearLayout.LayoutParams(0, -2, 1f));
+        top.addView(row);
+        col.addView(top, lp(-1, -2, 14));
         LinearLayout c = card(16);
-        if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else if (i == 2) fillActiveRing(c); else if (i == 4) fillStress(c, d); else if (i == 5) fillFatigue(c, d); else if (i == 6) fillHeartWatch(c, d); else fillSleep(c, d.day);      // 0.54.0: 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress; 0.54.4: 5 fatigue
-        ringPanel.addView(c, lp(-1, -2, 0));
-        ringPanel.setVisibility(View.VISIBLE);
+        try {
+            if (i == 0) fillRecovery(c, d.day); else if (i == 1) fillEffort(c, d.day); else if (i == 2) fillActiveRing(c); else if (i == 4) fillStress(c, d); else if (i == 5) fillFatigue(c, d); else if (i == 6) fillHeartWatch(c, d); else fillSleep(c, d.day);      // 0 recovery, 1 effort, 2 active, 3 sleep, 4 stress, 5 fatigue, 6 heart watch (as in 0.56.0)
+        } catch (Throwable e) { note(c, "Could not draw this page (" + e.getClass().getSimpleName() + ")."); }
+        col.addView(c, lp(-1, -2, 12));
+        if (i == 3) col.addView(pillButton("Open the Rest page", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { go(3); } }), lp(-1, dpi(46), 14));
+        if (i == 6) col.addView(pillButton("Open the Heart page", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { go(1); } }), lp(-1, dpi(46), 14));
+        col.addView(pillButton("Back to Today", 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { closeRingPage(); } }), lp(-1, dpi(46), i == 3 || i == 6 ? 10 : 14));
+        return wrap(col);
     }
 
     private void kv(LinearLayout c, String k, String v) {
@@ -1362,7 +1402,7 @@ public class HealthActivity extends Activity {
         c.addView(caps("IF THE PULSE FLAG SHOWS"), lp(-2, -2, 16));      // 0.64.0: wording per rule 50.1 (h): no disease is named; no alert rule changed
         note(c, "1. Sit down, rest the wrist on a table and keep still for a minute.\n2. Take an ECG reading of at least 30 seconds (ECG tab, START ECG) and stay still the whole time.\n3. Open that reading's report and show it, with this page, to a doctor or nurse. They read the ECG; this app only counts and times beats and cannot say what a rhythm is.\nChest pain, fainting or being unable to get your breath: do not wait for a reading, call 999.");
         final boolean on = AlertWatch.on(this);
-        c.addView(pillButton("Notify me on a CHECK of the heart rate or night signs: " + (on ? "On" : "Off"), 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { AlertWatch.setOn(HealthActivity.this, !on); showRing(6); } }), lp(-1, dpi(44), 8));
+        c.addView(pillButton("Notify me on a CHECK of the heart rate or night signs: " + (on ? "On" : "Off"), 0x1AFFFFFF, INK, new View.OnClickListener() { @Override public void onClick(View v) { AlertWatch.setOn(HealthActivity.this, !on); renderKeepScroll(); } }), lp(-1, dpi(44), 8));
         note(c, "How it works: each time the strap syncs, this compares you with your own recent record, never with other people. The pulse check uses only still, clean five-minute windows and ignores single early beats. Limits: the levels were chosen on one person's 21 days (no alert in them) and on synthetic rhythms; they are NOT validated against illness or heart events, and no wearable method is proven to predict a heart attack. The strap's ECG, read by a doctor, is what confirms a rhythm. A quiet ring does not rule anything out.");
     }
 
@@ -1463,6 +1503,7 @@ public class HealthActivity extends Activity {
         rb = java.util.Arrays.copyOf(rb, 7); rb[6] = hw == null ? "\u2014" : hw.big();
         rl = java.util.Arrays.copyOf(rl, 7); rl[6] = "HEART WATCH";
         rcap = java.util.Arrays.copyOf(rcap, 7); rcap[6] = hw == null ? "not scored" : hw.caption();
+        for (int q = 0; q < 7; q++) { ringBig[q] = q < rb.length ? rb[q] : null; ringLab[q] = q < rl.length ? rl[q] : null; ringCapT[q] = q < rcap.length ? rcap[q] : null; ringCol[q] = q < rc.length ? rc[q] : 0; }      // 0.71.0: kept for the ring's own page
         DailyViews.RingsView rings = new DailyViews.RingsView(this, rf, rc, rb, rl, rcap);
         final android.view.GestureDetector ringTap = new android.view.GestureDetector(this, new android.view.GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onSingleTapUp(android.view.MotionEvent e) { return true; }
@@ -1470,12 +1511,12 @@ public class HealthActivity extends Activity {
         rings.setClickable(true);
         rings.setOnTouchListener(new View.OnTouchListener() {
             @Override public boolean onTouch(View v, android.view.MotionEvent e) {                // 0.20.0: tap a ring to open how it is worked out
-                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) { int hit = ((DailyViews.RingsView) v).ringAt(e.getX(), e.getY()); if (hit >= 0) toggleRing(hit); }      // 0.54.4: six rings, four to a row
+                if (ringTap.onTouchEvent(e) && e.getAction() == android.view.MotionEvent.ACTION_UP) { int hit = ((DailyViews.RingsView) v).ringAt(e.getX(), e.getY()); if (hit >= 0) openRingPage(hit); }      // 0.54.4: six rings, four to a row
                 return false;
             }
         });
         col.addView(rings, lp(-1, -2, 6));      // 0.54.4: the height follows the rows
-        TextView ringHint = tv("Tap a ring to see how it is worked out. Active is your moving time all day, not workouts. Fatigue is an estimate of what has built up over days. Heart Watch flags anything unusual for you.", 11, MUT, 400);
+        TextView ringHint = tv("Tap a ring to open its page. Active is your moving time all day, not workouts. Fatigue is an estimate of what has built up over days. Heart Watch flags anything unusual for you.", 11, MUT, 400);
         ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
         col.addView(ringHint, lp(-1, -2, 0));
         TextView guideLink = tv("Quick guide: what the colours and tabs mean \u203a", 12, BLUE, 400);      // 0.55.0
@@ -1483,11 +1524,6 @@ public class HealthActivity extends Activity {
         guideLink.setPadding(0, dpi(8), 0, dpi(8));
         guideLink.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { QuickGuide.show(HealthActivity.this); } });
         col.addView(guideLink, lp(-1, -2, 2));
-        ringPanel = new LinearLayout(this);
-        ringPanel.setOrientation(LinearLayout.VERTICAL);
-        ringPanel.setVisibility(View.GONE);
-        col.addView(ringPanel, lp(-1, -2, 8));
-        if (ringOpen >= 0) showRing(ringOpen);
         LinearLayout olc = card(16);      // 0.63.0: the plan sentence in a card with its heading
         olc.addView(caps("DAILY OUTLOOK"));
         TextView plan = tv(DailyViews.plan(rec), 14, INK, 400);
@@ -2155,6 +2191,7 @@ public class HealthActivity extends Activity {
             LinearLayout col = screen();
             col.addView(head("Last night", "Rest", null));
             col.addView(tv("No complete night in the records yet. A night needs the strap worn through sleep with the day logger on; it shows here after the morning history pull.", 14, MUT, 400), lp(-2, -2, 16));
+            addRestResearch(col, new View[1]);      // 0.71.0: the sleep research does not need a complete night
             return wrap(col);
         }
         if (nightOwner != base) { nightCache.clear(); nightMiss.clear(); nightOwner = base; nightLoading = 0; }
@@ -2172,6 +2209,45 @@ public class HealthActivity extends Activity {
             return swipeWrap(col);
         }
         return restPage(base, true, all);
+    }
+
+    /** 0.71.0: the SLEEP RESEARCH section at the bottom of the Rest page: regularity, your last nights, the 24 h heart-rate rhythm, the age studies, why no sleep-age number, the twelve sources (SleepResearch.fill, the same content as the You page screen). srHead[0] gets the heading, for the cards that jump to it. */
+    private void addRestResearch(LinearLayout col, View[] srHead) {
+        LinearLayout srHd = new LinearLayout(this); srHd.setOrientation(LinearLayout.VERTICAL);
+        srHd.addView(caps("SLEEP RESEARCH"));
+        srHd.addView(tv("Regularity, body clock and the studies behind them", 12.5f, MUT, 400), lp(-2, -2, 4));
+        col.addView(srHd, lp(-1, -2, 28));
+        srHead[0] = srHd;
+        final long nowSr = System.currentTimeMillis();
+        final LinearLayout box;
+        if (srBox != null && nowSr - srBoxAt < 600000L) {
+            box = srBox;
+            if (box.getParent() instanceof ViewGroup) ((ViewGroup) box.getParent()).removeView(box);
+        } else {
+            box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+            final TextView srStat = tv("Reading the last 14 days from the day log\u2026", 13, MUT, 400);
+            box.addView(srStat, lp(-2, -2, 12));
+            srBox = box; srBoxAt = nowSr;
+            final Context appSr = getApplicationContext();
+            new Thread(new Runnable() { @Override public void run() {
+                RhythmData.Bundle bs = null;
+                try { bs = RhythmData.bundleCached(appSr); } catch (Throwable ignored) { }
+                final RhythmData.Bundle bb = bs;
+                runOnUiThread(new Runnable() { @Override public void run() {
+                    try { box.removeView(srStat); SleepResearch.fill(HealthActivity.this, box, bb); }
+                    catch (Throwable t) { srStat.setText("Could not draw the sleep research (" + t.getClass().getSimpleName() + ")."); if (srBox == box) srBox = null; }
+                } });
+            } }, "rest-sleep-research").start();
+        }
+        col.addView(box, lp(-1, -2, 0));
+    }
+
+    /** 0.71.0: scrolls the Rest page so the given heading is near the top. */
+    private void scrollRestTo(View target) {
+        try {
+            View c0 = content.getChildAt(0);
+            if (target != null && c0 instanceof ScrollView) ((ScrollView) c0).smoothScrollTo(0, Math.max(0, target.getTop() - dpi(12)));
+        } catch (Throwable ignored) { }
     }
 
     private static String dayName(long bed) { return new SimpleDateFormat("EEEE d MMMM", Locale.UK).format(new Date(bed * 1000L)); }
@@ -2233,6 +2309,7 @@ public class HealthActivity extends Activity {
 
     private View restPage(final HealthModel.Data d, boolean latest, List<TodayModel.NightStat> all) {
         LinearLayout col = screen();
+        final View[] srHead = new View[1];      // 0.71.0: the SLEEP RESEARCH heading, for the two cards that jump to it
         SleepNight.Night n = d.day.night;
         double goal = goal();
         col.addView(head(latest ? "Last night" : dayName(n.bedTs), "Rest", chip(hhmm(n.bedTs) + " to " + hhmm(n.endTs), 0)));
@@ -2346,7 +2423,7 @@ public class HealthActivity extends Activity {
                             + ". The 500 ms filler does not change the stored figure (checked on 23 sleeps of this strap). Recovery uses the stored figure.");
                 } });
             } }, "night-rr").start();
-            rrc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { SleepResearch.show(HealthActivity.this); } });
+            rrc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { scrollRestTo(srHead[0]); } });      // 0.71.0: the research is on this page
 
             final LinearLayout src = card(16);
             LinearLayout srh = hrow();
@@ -2358,9 +2435,9 @@ public class HealthActivity extends Activity {
             final TextView srBody = tv("Reading the last 14 days.", 12.5f, MUT, 400);
             srBody.setLineSpacing(0, 1.25f);
             src.addView(srBody, lp(-2, -2, 6));
-            src.addView(tv("Tap for the regularity scale, your heart-rate rhythm and the twelve sources", 12, BLUE, 400), lp(-2, -2, 8));
+            src.addView(tv("Tap to jump to the sleep research at the bottom of this page", 12, BLUE, 400), lp(-2, -2, 8));
             col.addView(src, lp(-1, -2, 12));
-            src.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { SleepResearch.show(HealthActivity.this); } });
+            src.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { scrollRestTo(srHead[0]); } });
             new Thread(new Runnable() { @Override public void run() {
                 final RhythmData.Bundle bb = RhythmData.bundleCached(appc);
                 runOnUiThread(new Runnable() { @Override public void run() {
@@ -2422,6 +2499,7 @@ public class HealthActivity extends Activity {
             wc.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { if (data != null) Trends.show(HealthActivity.this, data); } });
             col.addView(wc, lp(-1, -2, 12));
         }
+        addRestResearch(col, srHead);      // 0.71.0
         View pv = swipeWrap(col);
         if (restSel + 1 < all.size()) { TodayModel.NightStat nx = all.get(all.size() - 2 - restSel); if (!nightCache.containsKey(nx.bed) && !nightMiss.contains(nx.bed) && nightLoading == 0) prefetchNight(nx.bed); }
         return pv;
