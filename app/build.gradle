@@ -1,5 +1,6 @@
 plugins { id 'com.android.application' }
 
+// 0.71.0: copy B has its own launcher icon (amber, with a B): manifest placeholder appIcon.
 // 0.70.0: the second copy of the app, for a second strap (addendum 265). The normal build (gradle assembleDebug) is copy A, exactly as before.
 // gradle assembleDebug -PcopyB=1 builds copy B: applicationId com.noop.mgecg.b (installs BESIDE copy A), launcher name "MG Heart B",
 // versionName ending -B, its own Download folders (CopyB.SFX), and no strap until the owner picks one.
@@ -9,10 +10,10 @@ android { namespace 'com.noop.mgecg'; compileSdk 34
     buildFeatures { buildConfig true }
     defaultConfig {
         applicationId copyB ? 'com.noop.mgecg.b' : 'com.noop.mgecg'
-        minSdk 26; targetSdk 34; versionCode 181
-        versionName copyB ? '0.70.0-pro-B' : '0.70.0-pro'
+        minSdk 26; targetSdk 34; versionCode 182
+        versionName copyB ? '0.71.0-pro-B' : '0.71.0-pro'
         buildConfigField 'boolean', 'COPY_B', copyB ? 'true' : 'false'
-        manifestPlaceholders = [appLabel: copyB ? 'MG Heart B' : 'MG Heart']
+        manifestPlaceholders = [appLabel: copyB ? 'MG Heart B' : 'MG Heart', appIcon: copyB ? '@mipmap/ic_launcher_b' : '@mipmap/ic_launcher']
     }
     // One fixed signing key for every build, so each new APK installs OVER the old one and keeps its data.
     // (Without it every CI run signs with a fresh random debug key and Android refuses the update.)
