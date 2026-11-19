@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.71.2 (19 Nov 2026): BREATH cell in the header band (dimmed, last in the row so it is the first to go on a narrow screen, never over the trace): breaths a minute from the R-R of the last 60 s (LiveBreath; INFERRED from the R-R modulation, not checked against a breathing reference; "--" when there is no clear peak or no beat for 6 s).
 // FILE VERSION 0.52.1 (11 Nov 2026): the scale ignores the strap's poor-quality samples when enough good ones are in the window; frame meter (long-press on the full-screen graph). FILE VERSION 0.52.0 (10 Nov 2026): fit-to-beat scale with hold (LiveScale), the scroll on the screen-refresh clock (FrameClock + Choreographer), no wait on the data thread, one glow pass. FILE VERSION 0.48.0 (9 Nov 2026): polished look. Slate grid instead of the maroon one, a soft plot background, a trace that fades in from the left with a layered glow and a bright leading dot, small amber R ticks, rounded card, header tiles (heart rate with a pulse dot, small-caps labels over bold values, a progress bar for the clean beats), a footer for the picture notes and the noise advice. Everything is still outside the waveform: header above, footer below.
 // FILE VERSION 0.47.0 (9 Nov 2026): a calmer, bigger graph. The waveform has its own plot area; the information sits in a band above and a band below it instead of over the trace. The scroll is snapped to whole pixels (no sub-pixel shimmer), the scale eases smoothly (fast to open, slow to close, with a dead band), the per-frame allocations are gone.
 // FILE VERSION 0.44.0 (7 Nov 2026): the trace is coloured by the strap's per-second quality (3 normal, 2 amber, 0-1 grey, lead-off gap) with a small legend; tap opens the landscape full screen (long press switches auto / fixed scale); own window length for the full screen.
@@ -54,11 +55,11 @@ public class Live500View extends View {
     private boolean wasLive;
     private long staleSince;
     private final float dp;
-    private long hdrMs; private String hrS = "--", rrTxt = "--", qrsTxt = "--", nzTxt = "--", nzNote = "", cleanTxt = "--", armTxt = ""; private int nzCol; private float cleanFrac; private double lastRrMs = Double.NaN; private boolean armMoving;
+    private long hdrMs; private String hrS = "--", rrTxt = "--", qrsTxt = "--", nzTxt = "--", nzNote = "", cleanTxt = "--", armTxt = ""; private int nzCol; private float cleanFrac; private double lastRrMs = Double.NaN; private boolean armMoving; private String brTxt = "--"; private long brMs; private final LiveBreath.Tracker brT = new LiveBreath.Tracker();
     private float pt, pb, ph;                           // plot area: top, bottom, height (px)
     private String footLeft = ""; private int footLeftCol; private float fMaxLeft = 200f;
     private static final String[] NM = { "good", "fair", "poor" };
-    private final int[] cc = new int[3]; private final String[] capsA = new String[5], valsA = new String[5]; private final int[] kindA = new int[5];
+    private final int[] cc = new int[3]; private final String[] capsA = new String[6], valsA = new String[6]; private final int[] kindA = new int[6];
 
     public Live500View(Context c) {
         super(c);
@@ -192,6 +193,14 @@ public class Live500View extends View {
         hrS = (rrS > 0.25 && rrS < 2.5) ? String.format(L, "%.0f", 60.0 / rrS) : "--";
         rrTxt = !Double.isNaN(lastRrMs) ? String.format(L, "%.0f ms", lastRrMs) : "--";
         qrsTxt = qrsMv > 0f ? String.format(L, "%.2f mV", qrsMv) : "--";
+        if (now - brMs >= 1000) {      // 0.71.2: once a second (a 60 s spectrum of about 90 frequencies, a few milliseconds)
+            brMs = now;
+            try {
+                double[] bs = Live500.acceptedBeatSec(now); int nb = bs.length;
+                if (nb > 0 && -bs[nb - 1] - Live500.bufferMs / 1000.0 > 6.0) nb = 0;      // no beat for 6 s (or the 4096-beat log is full): nothing to read
+                double v = brT.update(bs, nb); brTxt = Double.isNaN(v) ? "--" : String.format(L, "%.0f /min", v);
+            } catch (RuntimeException e) { brTxt = "--"; }
+        }
         double[] b = LiveBands.rms(); double n = b == null ? Double.NaN : b[1];
         if (Double.isNaN(n)) { nzTxt = "--"; nzNote = ""; nzCol = 0; }
         else { nzTxt = String.format(L, "%.0f \u00b5V", n); nzNote = n <= 27 ? "" : n <= 40 ? "Signal fair: relax your hand, keep still" : "Signal noisy: rest the whole forearm, keep still"; nzCol = n <= 27 ? 0xFF3FB950 : n <= 40 ? 0xFFD4A72C : 0xFFE5534B; }
@@ -336,6 +345,7 @@ public class Live500View extends View {
         if (armTxt.length() > 0) { capsA[nt] = "ARM"; valsA[nt] = armTxt; kindA[nt++] = 4; }
         capsA[nt] = "QRS"; valsA[nt] = qrsTxt; kindA[nt++] = 2;
         capsA[nt] = "R-R"; valsA[nt] = rrTxt; kindA[nt++] = 3;
+        capsA[nt] = "BREATH"; valsA[nt] = brTxt; kindA[nt++] = 5;      // 0.71.2: last and dimmed
         for (int c = 0; c < nt; c++) {
             int kind = kindA[c];
             float cw = Math.max(valP.measureText(valsA[c]), capP.measureText(capsA[c]));
@@ -343,7 +353,7 @@ public class Live500View extends View {
             if (x + cw > avail) break;
             canvas.drawLine(x - 9f * dp, headH * 0.22f, x - 9f * dp, headH * 0.78f, divP);
             canvas.drawText(capsA[c], x, headH * 0.36f, capP);
-            valP.setColor(kind == 0 && nzCol != 0 ? nzCol : kind == 4 && armMoving ? 0xFFE5534B : ink);
+            valP.setColor(kind == 0 && nzCol != 0 ? nzCol : kind == 4 && armMoving ? 0xFFE5534B : kind == 5 ? a(muted, 170) : ink);
             canvas.drawText(valsA[c], x, headH * 0.70f, valP);
             if (kind == 1) { float by = headH * 0.84f, bh = 2.6f * dp; rect.set(x, by, x + cw, by + bh); canvas.drawRoundRect(rect, bh / 2, bh / 2, barBg); rect.set(x, by, x + Math.max(bh, cw * cleanFrac), by + bh); canvas.drawRoundRect(rect, bh / 2, bh / 2, barFg); }
             x += cw + 20f * dp;

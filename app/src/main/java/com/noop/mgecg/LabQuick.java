@@ -173,7 +173,7 @@ final class LabQuick {
             if (!s.ok) { Z.card.add(lab + ": NOT USABLE, " + s.why + ". Repeat this test."); continue; }
             if (!lead.ok) continue;
             valid++;
-            if (m == G1 || m == G2 || m == G3) { gainTest = true; Z.card.add(lab + ": " + (cal ? "K " + f(s.k, 4) + " uV per count (" + pct(s.vsApp) + " against the app's " + f(appUv, 4) + "), " : "no meter number stored (step 2): ") + "first half to second half " + pct(s.drift) + ", noise error " + f(100 * s.rel, 2) + " %."); }
+            if (m == G1 || m == G2 || m == G3) { gainTest = true; Z.card.add(lab + ": " + (cal ? "K " + f(s.k, 4) + " uV per count (" + pct(s.vsApp) + " against the app's " + f(appUv, 4) + "), " : "K not worked out (no meter number; the LADDER box does not need it): ") + "first half to second half " + pct(s.drift) + ", noise error " + f(100 * s.rel, 2) + " %."); }
             else if (m == C1 || m == C2) Z.card.add(lab + ": gain " + f(s.g, 3) + " against the 10 Hz lead-in (noise error " + f(100 * s.rel, 2) + " %). " + LabParts.corner(s.g, p.f, f(p.f, p.f < 1 ? 1 : 0) + " Hz"));
             else Z.card.add(lab + ": " + f(s.g, 4) + " x the lead-in; against a straight line " + pct(100 * (s.nl - 1.0)) + " (noise error " + f(100 * s.rel, 2) + " %).");
         }
@@ -348,7 +348,7 @@ final class LabQuick {
             }
         }
         // GAIN
-        if (gk.isEmpty()) { gain.state = 0; gain.line = "Not done. Needs the meter number (step 2), the gate and one of G1, G2, G3."; }
+        if (gk.isEmpty()) { gain.state = 0; gain.line = "Parked. K needs a meter number from an AC millivolt range, or a known DC step; the DT832 has no AC millivolt range, as far as known. CORNER and LADDER do not need it."; }
         else {
             double bestD = 1e9; int pi = -1, pj = -1;
             for (int i = 0; i < gk.size(); i++) for (int j = i + 1; j < gk.size(); j++) { double[] a = gk.get(i), b = gk.get(j); if (a[0] == b[0] && a[1] == b[1]) continue; double d = Math.abs(a[2] / b[2] - 1.0); boolean dr = (Double.isNaN(a[3]) || Math.abs(a[3]) <= 1.5) && (Double.isNaN(b[3]) || Math.abs(b[3]) <= 1.5); if (dr && d < bestD) { bestD = d; pi = i; pj = j; } }
