@@ -1,5 +1,6 @@
 plugins { id 'com.android.application' }
 
+// 0.71.2: Lab QUICK TICKS cut to one route of four short runs that need no meter number (rig gate, L1, G3, C2), numbered steps before each run, Next run button, meter wording corrected (the DT832 has no AC millivolt range); live graph header gets a dimmed BREATH cell (breaths a minute from the R-R, inferred, not checked against a breathing reference).
 // 0.71.1: SleepNight.clusters joins the two halves of a night split by a long wake (addendum 301).
 
 // 0.71.0: copy B has its own launcher icon (amber, with a B): manifest placeholder appIcon.
@@ -12,8 +13,8 @@ android { namespace 'com.noop.mgecg'; compileSdk 34
     buildFeatures { buildConfig true }
     defaultConfig {
         applicationId copyB ? 'com.noop.mgecg.b' : 'com.noop.mgecg'
-        minSdk 26; targetSdk 34; versionCode 183
-        versionName copyB ? '0.71.1-pro-B' : '0.71.1-pro'
+        minSdk 26; targetSdk 34; versionCode 184
+        versionName copyB ? '0.71.2-pro-B' : '0.71.2-pro'
         buildConfigField 'boolean', 'COPY_B', copyB ? 'true' : 'false'
         manifestPlaceholders = [appLabel: copyB ? 'MG Heart B' : 'MG Heart', appIcon: copyB ? '@mipmap/ic_launcher_b' : '@mipmap/ic_launcher']
     }
