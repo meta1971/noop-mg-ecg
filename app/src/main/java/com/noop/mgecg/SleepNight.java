@@ -66,6 +66,9 @@ final class SleepNight {
     /** 3 hours: the longest wake inside one night (the 0.44.0 value, unchanged; only 31-58 minute wakes have been seen in his logs). */
     static final long NIGHT_JOIN_S = 10800L;
 
+    /** 0.71.1: the sleep each of two halves of a split night must hold (1 h 45 min, seconds of SLEEP state). A GUESS: the 19 Nov halves held 2 h 21 and 2 h 10; naps seen so far are 20-85 min. */
+    static final long SPLIT_PIECE_MIN_S = 6300L;
+
     /** The size of a night: 3 h span and 2 h asleep. {startTs, endTs, sleepSeconds}. */
     static boolean nightSized(long[] c) { return c[1] - c[0] >= 3 * 3600 && c[2] >= 2 * 3600; }
 
@@ -93,10 +96,16 @@ final class SleepNight {
         // pieces or was shorter than 3 hours (14 Nov 2026: 23:06-03:08, up 58 min with 455 steps, 04:07-06:54 and 07:22-07:46 = two logged nights with 62 min of the same time in bed).
         // Now the later cluster as a whole is measured: when it is night-sized itself, and the cluster before it is too, and the gap is within 3 hours, they are one night.
         // A shorter later sleep (a nap) is still not merged (decode log 123.3 test 7: 35 min wake, then only 1 h of sleep = a nap).
+        // 0.71.1: the same test missed a night broken by a long wake into two halves that were EACH short of 3 h in bed but each long on sleep (19 Nov 2026: asleep 23:08-01:43 = 2 h 21 in a
+        // 2 h 35 span, up 90 min, asleep 03:13-05:38 = 2 h 10 in a 2 h 25 span: neither half is night-sized, so the whole night was dropped, Rest and the Today header kept showing the night
+        // before, and every sleep block since was counted as a nap). Two clusters that are NEITHER night-sized join when the gap is at most 3 h and each holds at least SPLIT_PIECE_MIN_S of
+        // sleep (a nap is shorter: 123.3 test 7, X15 2c, 2e, 2f stand because there the first part is night-sized and only a night-sized later part joins it).
         List<long[]> joined = new ArrayList<>();
         for (long[] c : out) {
             long[] p = joined.isEmpty() ? null : joined.get(joined.size() - 1);
-            if (p != null && nightSized(p) && nightSized(c) && c[0] - p[1] <= NIGHT_JOIN_S) { p[1] = c[1]; p[2] += c[2]; }
+            boolean twoNights = p != null && nightSized(p) && nightSized(c);
+            boolean twoHalves = p != null && !nightSized(p) && !nightSized(c) && p[2] >= SPLIT_PIECE_MIN_S && c[2] >= SPLIT_PIECE_MIN_S && nightSized(new long[] {p[0], c[1], p[2] + c[2]});
+            if (p != null && (twoNights || twoHalves) && c[0] - p[1] <= NIGHT_JOIN_S) { p[1] = c[1]; p[2] += c[2]; }
             else joined.add(c);
         }
         List<long[]> keep = new ArrayList<>();
