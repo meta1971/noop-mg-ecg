@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.49.0 (9 Nov 2026): the Trends screen, rebuilt. Personal first: every card compares the newest value with YOUR usual (the robust median and spread of your own earlier values), says in words whether it is in your usual range, higher or lower, and
+// FILE VERSION 0.72.0 (20 Nov 2026): ECG DAY BY DAY card (EcgSeg grid, EcgDayGrid) above the ECG cards. 0.49.0 (9 Nov 2026): the Trends screen, rebuilt. Personal first: every card compares the newest value with YOUR usual (the robust median and spread of your own earlier values), says in words whether it is in your usual range, higher or lower, and
 // whether your own line is rising, falling or steady; the ECG measures are judged against your usual for the same time of day. Nights and ECG readings sit side by side. Tap a card for the full graph.
 // Different devices give different absolute numbers; what carries over is your own trend, so nothing here is compared with a population or another device.
 
@@ -81,6 +81,7 @@ final class TrendsScreen {
         final LinearLayout nightsBox = new LinearLayout(a); nightsBox.setOrientation(LinearLayout.VERTICAL); col.addView(nightsBox, HeartGraph.lp(a, -1, -2, 8));
         col.addView(HeartGraph.label(a, "ECG READINGS", 11, MUT, 400), HeartGraph.lp(a, -1, -2, 20));
         final TextView ecgStatus = HeartGraph.label(a, "Reading your ECG readings\u2026", 13, MUT, 400); col.addView(ecgStatus, HeartGraph.lp(a, -1, -2, 8));
+        final LinearLayout dayBox = new LinearLayout(a); dayBox.setOrientation(LinearLayout.VERTICAL); col.addView(dayBox, HeartGraph.lp(a, -1, -2, 4));
         final LinearLayout ecgBox = new LinearLayout(a); ecgBox.setOrientation(LinearLayout.VERTICAL); col.addView(ecgBox, HeartGraph.lp(a, -1, -2, 4));
 
         LinearLayout foot = card(a);
@@ -118,10 +119,24 @@ final class TrendsScreen {
         dlg.getWindow().setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
         dlg.show(); render[0].run();
         new Thread(new Runnable() { @Override public void run() {
-            List<TrendSeries.Series> e = null; try { e = TrendSeries.ecg(TrendSeries.loadEcg(a, d, 400)); } catch (Throwable ignored) { }
-            final List<TrendSeries.Series> ee = e == null ? new ArrayList<TrendSeries.Series>() : e;
-            a.runOnUiThread(new Runnable() { @Override public void run() { try { ecgHolder[0] = ee; if (dlg.isShowing()) render[0].run(); } catch (Throwable ignored) { } } });
+            List<TrendSeries.Series> e = null; EcgSeg.Grid gr = null;
+            try { List<TrendSeries.EcgPoint> pts = TrendSeries.loadEcg(a, d, 400); e = TrendSeries.ecg(pts); List<EcgSeg.Pt> sp = new ArrayList<>(); for (TrendSeries.EcgPoint p : pts) sp.add(p.s); gr = EcgSeg.grid(sp, 21, System.currentTimeMillis() / 1000L, java.util.TimeZone.getDefault()); } catch (Throwable ignored) { }
+            final List<TrendSeries.Series> ee = e == null ? new ArrayList<TrendSeries.Series>() : e; final EcgSeg.Grid gg = gr;
+            a.runOnUiThread(new Runnable() { @Override public void run() { try { ecgHolder[0] = ee; if (gg != null) dayCard(a, dayBox, gg); if (dlg.isShowing()) render[0].run(); } catch (Throwable ignored) { } } });
         } }, "trends-ecg").start();
+    }
+
+    /** 0.72.0: the ECG DAY BY DAY card: the watch line, the grid (21 days) and the legend. */
+    private static void dayCard(Activity a, LinearLayout box, EcgSeg.Grid g) {
+        box.removeAllViews(); boolean any = false; for (int m : EcgSeg.ROWS) if (EcgSeg.hasRow(g, m)) { any = true; break; }
+        if (!any) return;
+        LinearLayout c = card(a); c.addView(HeartGraph.label(a, "ECG DAY BY DAY", 11, MUT, 400));
+        TextView w = HeartGraph.label(a, EcgSeg.watch(g), 13, INK, 400); w.setLineSpacing(0, 1.3f); c.addView(w, HeartGraph.lp(a, -1, -2, 8));
+        EcgDayGrid grid = new EcgDayGrid(a); final TextView pk = HeartGraph.label(a, "Tap a square for its numbers.", 12, MUT, 400);
+        grid.set(g, new EcgDayGrid.Pick() { @Override public void onPick(String t) { pk.setText(t); } });
+        c.addView(grid, HeartGraph.lp(a, -1, -2, 10)); c.addView(pk, HeartGraph.lp(a, -1, -2, 6));
+        TextView lg = HeartGraph.label(a, Explain.dayGrid(), 12, MUT, 400); lg.setLineSpacing(0, 1.25f); c.addView(lg, HeartGraph.lp(a, -1, -2, 8));
+        box.addView(c, HeartGraph.lp(a, -1, -2, 10));
     }
 
     private static LinearLayout card(Context c) {

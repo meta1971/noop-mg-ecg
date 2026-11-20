@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.49.0 (9 Nov 2026): the data of the Trends screen: one series per metric, the nights (from the strap's sleep records) and the ECG readings (from the saved reports, with the live notes for noise).
+// FILE VERSION 0.72.0 (20 Nov 2026): five more ECG series (P wave, PR interval, T wave, ST level at 60 ms, Tp-Te) read from the report's parameter table (EcgSeg), microvolt figures re-based to the scale in use now (as the readings table does), negative values allowed for P, T and ST. 0.49.0 (9 Nov 2026): the data of the Trends screen: one series per metric, the nights (from the strap's sleep records) and the ECG readings (from the saved reports, with the live notes for noise).
 // Every series carries what the screen needs to judge it against the person's own usual: which direction is better (or neutral), the smallest spread worth believing, the smallest slope worth calling a trend.
 
 import android.content.Context;
@@ -33,7 +33,7 @@ final class TrendSeries {
         }
     }
 
-    static final class EcgPoint { long ts; String grade = "-"; double hr = Double.NaN, rmssd = Double.NaN, R = Double.NaN, QRS = Double.NaN, QTcF = Double.NaN, noise = Double.NaN; int bucket; boolean good() { return grade.startsWith("A") || grade.startsWith("B"); } }
+    static final class EcgPoint { final EcgSeg.Pt s = new EcgSeg.Pt(); long ts; String grade = "-"; double hr = Double.NaN, rmssd = Double.NaN, R = Double.NaN, QRS = Double.NaN, QTcF = Double.NaN, noise = Double.NaN; int bucket; boolean good() { return grade.startsWith("A") || grade.startsWith("B"); } }
 
     static int bucketOf(long tsSec) {
         Calendar c = Calendar.getInstance(); c.setTimeInMillis(tsSec * 1000L); int h = c.get(Calendar.HOUR_OF_DAY); return h < 12 ? MORNING : h < 18 ? AFTERNOON : EVENING;
@@ -77,22 +77,29 @@ final class TrendSeries {
     /** One point per saved reading, oldest first. Reads the report files: call off the main thread. */
     static List<EcgPoint> loadEcg(Context c, HealthModel.Data d, int max) {
         List<EcgPoint> out = new ArrayList<>(); File dir = c.getExternalFilesDir(null);
+        ScaleSetting.uv();      // 0.72.0: make sure the scale is loaded before the re-base factor is read
         Map<Long, Map<String, String>> notes = ReadingNotes.all(dir); Long[] keys = notes.keySet().toArray(new Long[0]);
         int cnt = 0;
         for (HealthModel.Reading rd : d.readings) {
             if (cnt++ >= max) break; if (rd.file == null) continue;
             String n = rd.file.getName(); long ts; try { ts = Long.parseLong(n.substring("ecg_report_".length(), n.length() - ".html".length())); } catch (Exception e) { continue; }
-            ReadingsTable.Row r = new ReadingsTable.Row(); ReadingsTable.fromText(r, ReadingsTable.plain(rd.file));
+            String txt = ReadingsTable.plain(rd.file);
+            ReadingsTable.Row r = new ReadingsTable.Row(); ReadingsTable.fromText(r, txt);
             if (Double.isNaN(r.hr)) r.hr = ReadingsTable.grab(rd.hr == null ? "" : rd.hr, "(\\d+(?:\\.\\d+)?)");
             if (Double.isNaN(r.rmssd)) r.rmssd = ReadingsTable.grab(rd.hrv == null ? "" : rd.hrv, "(\\d+(?:\\.\\d+)?)");
             if (r.grade.equals("-")) r.grade = rd.grade == null ? "-" : rd.grade;
-            EcgPoint p = new EcgPoint(); p.ts = ts; p.grade = r.grade; p.hr = r.hr; p.rmssd = r.rmssd; p.R = r.R; p.QRS = r.QRS; p.QTcF = r.QTcF; p.bucket = bucketOf(ts);
             Map<String, String> nt = null; long bd = 31; for (Long k : keys) { long dd = Math.abs(k - ts); if (dd < bd) { bd = dd; nt = notes.get(k); } }
+            double fct = ScaleSetting.factorFrom(nt == null ? null : nt.get("uv_per_count")); if (Math.abs(fct - 1.0) > 1e-9 && !Double.isNaN(r.R)) r.R *= fct;      // 0.72.0: the same re-base as the readings table, so a change of scale is not read as a change of heart
+            EcgPoint p = new EcgPoint(); p.ts = ts; p.grade = r.grade; p.hr = r.hr; p.rmssd = r.rmssd; p.R = r.R; p.QRS = r.QRS; p.QTcF = r.QTcF; p.bucket = bucketOf(ts);
+            EcgSeg.fromText(p.s, txt); EcgSeg.rebase(p.s, fct);
             if (nt != null) {
                 p.noise = ReadingsTable.grab(nt.get("noise_8_25") == null ? "" : nt.get("noise_8_25"), "([\\d.]+)");
                 if (Double.isNaN(p.R)) p.R = ReadingsTable.grab(nt.get("live_R_uV") == null ? "" : nt.get("live_R_uV"), "([\\d.]+)");
                 if (Double.isNaN(p.QRS)) p.QRS = ReadingsTable.grab(nt.get("live_QRS_ms") == null ? "" : nt.get("live_QRS_ms"), "([\\d.]+)");
             }
+            EcgSeg.Pt q = p.s; q.ts = ts; q.bucket = p.bucket; q.good = p.good(); q.grade = p.grade;
+            q.v[EcgSeg.HR] = p.hr; q.v[EcgSeg.HRV] = p.rmssd; q.v[EcgSeg.NOISE] = p.noise;
+            if (Double.isNaN(q.v[EcgSeg.QRS])) q.v[EcgSeg.QRS] = p.QRS; if (Double.isNaN(q.v[EcgSeg.QTC])) q.v[EcgSeg.QTC] = p.QTcF; if (!Double.isNaN(p.R)) q.v[EcgSeg.R] = p.R;
             out.add(p);
         }
         java.util.Collections.sort(out, new java.util.Comparator<EcgPoint>() { @Override public int compare(EcgPoint a, EcgPoint b) { return Long.compare(a.ts, b.ts); } });
@@ -103,12 +110,13 @@ final class TrendSeries {
         // name, unit, decimals, colour, good direction, min spread, slope unit
         Object[][] def = {
             { "ECG HRV", "ms", 0, 0xFF4CB4FF, 1, 4.0, 1.5 }, { "ECG heart rate", "bpm", 0, 0xFFFF7A93, -1, 2.5, 1.0 }, { "QRS", "ms", 0, 0xFF2EE0B8, 0, 4.0, 1.5 },
-            { "QTc", "ms", 0, 0xFF9AA0F0, 0, 8.0, 3.0 }, { "R height", "\u00b5V", 0, 0xFFF2B35B, 0, 60.0, 25.0 }, { "Signal noise", "\u00b5V", 0, 0xFF8E93E8, -1, 4.0, 2.0 } };
+            { "QTc", "ms", 0, 0xFF9AA0F0, 0, 8.0, 3.0 }, { "R height", "\u00b5V", 0, 0xFFF2B35B, 0, 60.0, 25.0 }, { "Signal noise", "\u00b5V", 0, 0xFF8E93E8, -1, 4.0, 2.0 },
+            { "P wave", "\u00b5V", 0, 0xFFE58CFF, 0, 6.0, 2.5 }, { "PR interval", "ms", 0, 0xFF7FD6FF, 0, 8.0, 3.0 }, { "T wave", "\u00b5V", 0, 0xFFFFD27F, 0, 20.0, 8.0 }, { "ST level", "\u00b5V", 0, 0xFFFF9A7A, 0, 12.0, 5.0 }, { "Tp-Te", "ms", 0, 0xFFA5E887, 0, 5.0, 2.0 } };
         List<Series> out = new ArrayList<>();
         for (int m = 0; m < def.length; m++) {
             Series s = new Series((String) def[m][0], (String) def[m][1], "ECG READINGS", (Integer) def[m][2], (Integer) def[m][3], (Integer) def[m][4], (Double) def[m][5], (Double) def[m][6], true);
             List<EcgPoint> use = new ArrayList<>();
-            for (EcgPoint p : pts) { double x = valueOf(p, m); if (Double.isNaN(x) || x <= 0) continue; if (m != 5 && !p.good()) continue; use.add(p); }      // measures need a grade A or B reading; the noise of any reading counts
+            for (EcgPoint p : pts) { double x = valueOf(p, m); if (Double.isNaN(x) || (x <= 0 && !(m == 6 || m == 8 || m == 9))) continue; if (m != 5 && !p.good()) continue; use.add(p); }      // measures need a grade A or B reading; the noise of any reading counts
             int n = use.size(); s.day = new double[n]; s.v = new double[n]; s.ts = new long[n]; s.bucket = new int[n];
             for (int i = 0; i < n; i++) { EcgPoint p = use.get(i); s.day[i] = p.ts / 86400.0; s.v[i] = valueOf(p, m); s.ts[i] = p.ts; s.bucket[i] = p.bucket; }
             out.add(s);
@@ -116,7 +124,7 @@ final class TrendSeries {
         return out;
     }
 
-    private static double valueOf(EcgPoint p, int m) { switch (m) { case 0: return p.rmssd; case 1: return p.hr; case 2: return p.QRS; case 3: return p.QTcF; case 4: return p.R; default: return p.noise; } }
+    private static double valueOf(EcgPoint p, int m) { switch (m) { case 0: return p.rmssd; case 1: return p.hr; case 2: return p.QRS; case 3: return p.QTcF; case 4: return p.R; case 5: return p.noise; case 6: return p.s.v[EcgSeg.P]; case 7: return p.s.v[EcgSeg.PR]; case 8: return p.s.v[EcgSeg.T]; case 9: return p.s.v[EcgSeg.ST]; default: return p.s.v[EcgSeg.TPE]; } }
 
     /** The personal result for one series: for ECG metrics against the usual of the SAME time of day as the newest reading when that time of day has at least 8 readings (the amplitude and the HRV both change with the clock). ctx names it ("evening readings") or is empty. */
     static final class Judged { TrendStats.Result r; Series used; String ctx = ""; int nAll; }
