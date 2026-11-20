@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.71.3 (20 Nov 2026): the posture tag is remembered for 45 minutes only (reading_tag_ms); an older tag is cleared at Start and the 0.39.0 auto-apply of the last tag no longer applies it (324.3)
 // 0.69.0 (17 Nov 2026): Lab S runs force the live raw stream (command 126, pref ecg_liveraw_mode = 1) for the whole run and put the setting back afterwards (decode log 262: a run with it off gave no raw file); the QUICK TICKS runs (LabQuick) use it too.
 // 0.61.0 (15 Nov 2026): BEFORE YOU START card in the ready state (strap link and whether calls can ring; the arm is a reminder, not a measurement; nothing blocks the start), a one-line verdict after a reading from the end rule (ReadingEnd: 60 s of best-quality seconds, 64 clean beats) with buzz and movement counts, a Take another reading pill, and phone-buzz / arm-movement bands on the replay (reading notes ring_episodes and motion_moving_times_s). Acquisition code is unchanged.
 // 0.51.0 (10 Nov 2026): silent research notes after each reading (console catalogue, spectrum block, R17 / R16 and event 118 cross-checks, strap settings scan stats) and the Lab S scale lab (SimLabSheet), behind You > Settings > Research.
@@ -221,6 +222,7 @@ final class EcgPage {
         holder = new LinearLayout(a); holder.setOrientation(LinearLayout.VERTICAL); holder.setVisibility(View.GONE);
         col.addView(holder, new LinearLayout.LayoutParams(-1, -2));
         a.readingTag = pref("reading_tag", a.readingTag); a.positionTag = pref("position_tag", a.positionTag);
+        if (!a.readingTag.isEmpty() && System.currentTimeMillis() - pr.getLong("reading_tag_ms", 0L) > NewLookActivity.TAG_FRESH_MS) { a.readingTag = ""; pr.edit().putString("reading_tag", "").apply(); }      // 0.71.3: an old posture tag is not shown as if it applied now
         try { buildHeader(col); } catch (Throwable e) { fail("header", e); }
         try { buildStatus(col); } catch (Throwable e) { fail("status card", e); }
         try { buildRings(col); } catch (Throwable e) { fail("rings", e); }
@@ -695,7 +697,7 @@ final class EcgPage {
         setupBody = new LinearLayout(a); setupBody.setOrientation(LinearLayout.VERTICAL);
         addRow(0, "Posture", POSTURE, () -> { String s = a.readingTag; return s.isEmpty() ? POSTURE[0] : s; }, i -> {
             String s = i == 0 ? "" : POSTURE[i]; a.readingTag = s;
-            SharedPreferences.Editor e = pr.edit().putString("reading_tag", s); if (!s.isEmpty()) e.putString("reading_tag_last", s); e.apply(); });
+            SharedPreferences.Editor e = pr.edit().putString("reading_tag", s).putLong("reading_tag_ms", s.isEmpty() ? 0L : System.currentTimeMillis()); if (!s.isEmpty()) e.putString("reading_tag_last", s); e.apply(); });
         addRow(1, "Strap position", POSITION, () -> a.positionTag.isEmpty() ? POSITION[0] : a.positionTag, i -> { a.positionTag = i == 0 ? "" : POSITION[i]; pr.edit().putString("position_tag", a.positionTag).apply(); });
         addRow(2, "Where", WHERE, () -> pref("where_tag", "").isEmpty() ? WHERE[0] : pref("where_tag", ""), i -> pr.edit().putString("where_tag", i == 0 ? "" : WHERE[i]).apply());
         addRow(4, "Auto-stop", AUTO, () -> { if (!pr.getBoolean("auto_stop", true)) return AUTO[0]; double tg = a.autoTargetValue(); return tg < 3.5 ? AUTO[1] : tg < 4.5 ? AUTO[2] : AUTO[3]; }, i -> {
@@ -790,7 +792,7 @@ final class EcgPage {
             if (running) return;
             GuidedRun.Def d = GuidedRun.byId(id); if (d.id.isEmpty()) return;
             String tg = "G".equals(id) ? "Lying" : "Table";      // 0.54.0: run G is the lying-to-standing test
-            pr.edit().putString("run_id", id).putLong("run_armed_ms", System.currentTimeMillis()).putString("reading_tag", tg).putString("reading_tag_last", tg).putString("position_tag", "").apply();
+            pr.edit().putString("run_id", id).putLong("run_armed_ms", System.currentTimeMillis()).putString("reading_tag", tg).putString("reading_tag_last", tg).putLong("reading_tag_ms", System.currentTimeMillis()).putString("position_tag", "").apply();
             a.readingTag = tg; a.positionTag = ""; refreshSummary();
             a.cancelAutoCountdown();
             readyCancelled = false; readyLeft = 5; initTts();

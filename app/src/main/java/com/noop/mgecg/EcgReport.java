@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.43.0 (6 Nov 2026): the report is a one-screen summary (grade, heart rate, HRV, QT, rhythm) with everything else in closed folds; the strap card, "All readings together" and the parameter table sit under ONE "Research" fold. No number or wording of a measurement changed. 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
+// FILE VERSION 0.71.3 (20 Nov 2026): QT card says "This reading" (beat sampling only), adds the fewer-than-60-beats note and the person's own between-reading spread (ReadingRules, 318.5); 0.71.3 (20 Nov 2026): rhythm tile and summary say "signal not clean enough" when the shape gate withheld the rhythm word; 0.43.0 (6 Nov 2026): the report is a one-screen summary (grade, heart rate, HRV, QT, rhythm) with everything else in closed folds; the strap card, "All readings together" and the parameter table sit under ONE "Research" fold. No number or wording of a measurement changed. 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
 
 import java.util.List;
 import java.text.SimpleDateFormat;
@@ -434,7 +434,8 @@ public final class EcgReport {
         } else if (regular) {
             s.append("The timing between your beats looked steady.");
         } else {
-            s.append("There were not enough clean beats in a row to judge the rhythm.");
+            s.append(r.shapeBlocked ? "The signal was not clean enough to judge the rhythm (" + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape)."
+                    : "There were not enough clean beats in a row to judge the rhythm.");
         }
         if (g.letter == 'C') s.append(" Only part of this reading was clean, so treat the numbers as a guide and try again with a longer, stiller hold.");
         return esc(s.toString());
@@ -452,6 +453,7 @@ public final class EcgReport {
         if (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.REGULAR) {
             return new String[]{"Regular", r.rhythm.intervals + " even beats in a row. Regular timing is not the same as a healthy heart.", "var(--green)"};
         }
+        if (r.shapeBlocked) return new String[]{"Not judged", "Signal not clean enough: " + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape. Hold still with steady contact and repeat.", null};
         String why = r.rhythm != null && r.rhythm.reason != null && r.rhythm.reason.length() > 0 ? "Not enough clean beats in a row to judge." : "Not judged this time.";
         return new String[]{"Not judged", why, null};
     }
@@ -695,10 +697,14 @@ public final class EcgReport {
     static String qtCard(EcgIntervals.Result q, List<EcgIntervals.Band> bands) {
         StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><div class=\"k\">QT interval</div><span class=\"pill\">Experimental</span></div>");
         if (q != null && q.status == EcgIntervals.Status.OK) {
-            b.append("<div class=\"big\">").append(String.format(Locale.US, "%.0f", q.qtMs)).append(" <small>ms</small></div><p>95% range ")
-                    .append(String.format(Locale.US, "%.0f&ndash;%.0f", q.ciLoMs, q.ciHiMs)).append(" ms. Corrected for heart rate (Fridericia): <b>")
+            b.append("<div class=\"big\">").append(String.format(Locale.US, "%.0f", q.qtMs)).append(" <small>ms</small></div><p>This reading: 95% range ")
+                    .append(String.format(Locale.US, "%.0f&ndash;%.0f", q.ciLoMs, q.ciHiMs)).append(" ms (beat sampling only). Corrected for heart rate (Fridericia): <b>")
                     .append(String.format(Locale.US, "%.0f", q.qtcFMs)).append(" ms</b>, from ").append(q.beatsUsed)
-                    .append(" averaged beats. ").append(asRecordedSentence(q)).append("</p><p class=\"cap\">Single lead from wrist to finger and not checked against a 12-lead ECG. Smartwatch QT studies differ from a 12-lead by up to about 60 ms. Not a diagnosis.</p>");
+                    .append(" averaged beats. ").append(asRecordedSentence(q)).append("</p>");
+            String few = ReadingRules.fewBeatsNote(q.beatsUsed), btw = ReadingRules.betweenReadings();
+            if (!few.isEmpty()) b.append("<p class=\"cap\"><b>").append(esc(few)).append("</b></p>");
+            if (!btw.isEmpty()) b.append("<p class=\"cap\">").append(esc(btw)).append("</p>");
+            b.append("<p class=\"cap\">Single lead from wrist to finger and not checked against a 12-lead ECG. Smartwatch QT studies differ from a 12-lead by up to about 60 ms. Not a diagnosis.</p>");
         } else {
             String why = q == null ? "It needs about 40 clean beats and a clear T wave."
                     : "It needs about 40 clean beats and a clear T wave. " + esc(q.reason.isEmpty() ? "" : "This time: " + q.reason + ".");

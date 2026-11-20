@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.39.0 (3 Nov): settling switch (first 12.8 s left out, rounded up to 13 stored seconds), strip keeps the raw uV trace, the strap RMSSD (bytes 29-30) and result code (byte 23) for the report. 0.5.10 (11 Oct): own-validity gate v2 (a short noisy reading is no longer erased by the second pass); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
+// FILE VERSION 0.71.3 (20 Nov 2026): beat-shape gate (ShapeGate: 3 odd beats in a row or 5 % odd among the last 129 withhold the AF screen and the rhythm word; nothing is repaired); 0.39.0 (3 Nov): settling switch (first 12.8 s left out, rounded up to 13 stored seconds), strip keeps the raw uV trace, the strap RMSSD (bytes 29-30) and result code (byte 23) for the report. 0.5.10 (11 Oct): own-validity gate v2 (a short noisy reading is no longer erased by the second pass); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -98,6 +98,9 @@ public final class EcgR16Analyzer {
     public static final class Result {
         public int recordsIn, usableSeconds, intervals, excluded, early, rhythmOut;
         public int beatsChecked, beatsBadShape;
+        /** 0.71.3 shape gate (ShapeGate): beats judged / odd / longest odd run among the last 129, and whether the AF screen and rhythm word were withheld. */
+        public int shapeBeats, shapeOdd, shapeRun;
+        public boolean shapeBlocked;
         /** 0.5.5: usable seconds the strap rated quality 1-2, and quality 1-2 seconds our shape check dropped. */
         public int lowQSeconds, ownGateDroppedS;
         public double noiseFraction;
@@ -142,6 +145,7 @@ public final class EcgR16Analyzer {
                     (dash == null ? "" : String.format(Locale.US,
                             " nrmssd=%.4f she=%.3f tp=%d tpRandom=%b",
                             dash[0], dash[1], (int) dash[2], dash[5] > 0.5))
+                            + String.format(Locale.US, " SHAPE_GATE beats=%d odd=%d run=%d blocked=%b", shapeBeats, shapeOdd, shapeRun, shapeBlocked)
                             + (af == null ? " afState=4 why=not_run" : " " + af.toLog())
                             + (rhythm == null ? " RR_SCREEN not_run" : " RR_SCREEN " + rhythm)
                             + (breath == null ? " BREATH not_run" : " BREATH " + breath)
@@ -214,6 +218,9 @@ public final class EcgR16Analyzer {
                                 "<small>(%d beats; nRMSSD %.3f, entropy %.2f, turning points %s)</small><br>" +
                                 "<small>A clean result does not rule anything out.</small>",
                         af.window, dash[0], dash[1], dash[5] > 0.5 ? "random-like" : "not random"));
+            } else if (shapeBlocked) {
+                b.append("<small><b>Rhythm not judged: signal not clean enough</b> (").append(shapeOdd).append(" of the last ")
+                        .append(shapeBeats).append(" beats had an odd shape). Hold still with firm, steady finger contact and try again.</small>");
             } else {
                 String why = af == null || af.why.isEmpty() ? "not enough clean beats" : af.why;
                 b.append("<small>AF screen not run: ").append(why).append(" (this session had ")
@@ -263,8 +270,11 @@ public final class EcgR16Analyzer {
             StringBuilder s = new StringBuilder("<br><small><b>QT (experimental):</b> ");
             if (qt.status == EcgIntervals.Status.OK) {
                 s.append(String.format(Locale.UK,
-                        "<b>%.0f ms</b> (95%% range %.0f-%.0f) &middot; QTc Fridericia <b>%.0f ms</b> &middot; %d averaged beats, T wave %.0f &micro;V",
+                        "<b>%.0f ms</b> (this reading, 95%% range %.0f-%.0f, beat sampling only) &middot; QTc Fridericia <b>%.0f ms</b> &middot; %d averaged beats, T wave %.0f &micro;V",
                         qt.qtMs, qt.ciLoMs, qt.ciHiMs, qt.qtcFMs, qt.beatsUsed, qt.tAmpUv));
+                String few = ReadingRules.fewBeatsNote(qt.beatsUsed), btw = ReadingRules.betweenReadings();
+                if (!few.isEmpty()) s.append("<br><b>").append(few).append("</b>");
+                if (!btw.isEmpty()) s.append("<br>").append(btw);
                 s.append("<br>Wrist-to-finger single lead, not checked against a 12-lead ECG. Smartwatch QTc studies " +
                         "differ from 12-lead by up to about 60 ms. Not a diagnosis.</small>");
             } else {
@@ -280,7 +290,7 @@ public final class EcgR16Analyzer {
             EcgSegments.Result g = qt.seg;
             String no = "n/a";
             StringBuilder s = new StringBuilder("<br><br><b>Heartbeat segments</b> <small>(" + g.beats
-                    + " beats averaged; a number shows only when its range is within &plusmn;10 ms)</small><br>");
+                    + " beats averaged; a number shows only when its range is within &plusmn;10 ms; the ranges are for this reading only" + (g.beats < ReadingRules.FEW_BEATS ? "; fewer than 60 beats, so ST and T are rougher" : "") + ")</small><br>");
             s.append(String.format(Locale.UK, "Heart rate <b>%.0f</b> &middot; QRS <b>%s</b><br>", g.hrBpm,
                     g.qrsOk ? String.format(Locale.UK, "%.0f ms</b> (&plusmn;%.0f)<b>", g.qrsMs, g.qrsHwMs) : no));
             s.append("P wave <b>").append(g.pPresent ? String.format(Locale.UK, "%.0f &micro;V", Math.abs(g.pAmpUv)) : "not clear").append("</b> &middot; PR <b>")
@@ -604,6 +614,7 @@ public final class EcgR16Analyzer {
 
         List<List<Double>> rrRuns = new ArrayList<>();
         List<List<Boolean>> badRuns = new ArrayList<>();
+        List<double[]> gateWins = new ArrayList<>();   // 0.71.3: +-100 ms window of every evaluated beat, newest ShapeGate.WINDOW kept
         List<double[]> qtWins = new ArrayList<>();
         List<Double> qtRrs = new ArrayList<>();
         List<double[]> qtWide = new ArrayList<>();
@@ -630,6 +641,8 @@ public final class EcgR16Analyzer {
             int h = 50;
             List<Integer> ok = new ArrayList<>();
             for (int p : pk) if (p - h >= 0 && p + h < n) ok.add(p);
+            for (int p : ok) gateWins.add(Arrays.copyOfRange(y, p - h, p + h));
+            if (gateWins.size() > ShapeGate.WINDOW) gateWins.subList(0, gateWins.size() - ShapeGate.WINDOW).clear();
             java.util.Set<Integer> bad = new java.util.HashSet<>();
             if (ok.size() >= 5) {
                 double[] T = new double[2 * h];
@@ -748,6 +761,11 @@ public final class EcgR16Analyzer {
             return r;
         }
         r.noiseFraction = r.beatsBadShape / (double) Math.max(1, r.beatsChecked);
+        {   // 0.71.3: odd shapes among the last 129 beats block the AF screen and the rhythm word (nothing is repaired)
+            ShapeGate.Result sg = ShapeGate.checkBeats(gateWins);
+            r.shapeBeats = sg.evaluated; r.shapeOdd = sg.odd; r.shapeRun = sg.longestRun; r.shapeBlocked = sg.blocked;
+            if (sg.blocked) r.note = "signal not clean enough: " + sg.why;
+        }
         r.inconclusive = r.rhythmOut > 0.15 * r.intervals || r.noiseFraction > 0.10;
         if (!clean.isEmpty()) r.hr = 60000.0 / median(clean);
         if (nDiff > 0) r.rmssd = Math.sqrt(sumSq / nDiff);
@@ -773,7 +791,12 @@ public final class EcgR16Analyzer {
                     }
                 }
             }
-            r.af = AfScreen.screen(segs);
+            if (r.shapeBlocked) {
+                r.af = new AfScreen.Outcome();                       // state stays INCONCLUSIVE, no window, no dash
+                r.af.why = "signal not clean enough (" + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape)";
+            } else {
+                r.af = AfScreen.screen(segs);
+            }
             r.afState = r.af.state;
             r.dash = r.af.dash;
             r.screenRun = r.af.dash != null;
@@ -789,7 +812,7 @@ public final class EcgR16Analyzer {
                 beatRuns.add(bt);
             }
             double[] atr = EcgAtrial.features(atrialSegs, atrialAbs);
-            r.rhythm = EcgRhythm.analyzeRuns(beatRuns, atr == null ? null : new double[] {atr[0], atr[1], r.noiseFraction});
+            r.rhythm = r.shapeBlocked ? null : EcgRhythm.analyzeRuns(beatRuns, atr == null ? null : new double[] {atr[0], atr[1], r.noiseFraction});
 
             // EXPERIMENTAL QT: averaged beat, tangent method, bootstrap interval
             r.qt = EcgIntervals.analyse(qtWins, clean.isEmpty() ? 1.0 : median(clean) / 1000.0, qtWide);

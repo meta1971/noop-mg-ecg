@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.52.0 (10 Nov 2026): smoothing AUTO in mode 2 (NoiseTier), busy flag for the graph. FILE VERSION 0.44.0 (7 Nov 2026): strap quality byte kept per sample (snapshotQ, quality colouring of the live trace), clean view (slow Gaussian 20 ms), newestBeatDue (heart-rate pulse); 0.41.0 (5 Nov 2026): pro display (PR-point spline baseline, beat windows, averaged beat, live noise by band, verdict timing, contact value); 0.18.0 (27 Oct): the 500 Hz live graph data, with QRS-aware smoothing. Pure Java (no Android), tested off the phone against a scipy reference.
+// FILE VERSION 0.71.3 (20 Nov 2026): per-beat QRS correlation of the accepted beats is kept for the BREATH shape gate (acceptedCq); 0.52.0 (10 Nov 2026): smoothing AUTO in mode 2 (NoiseTier), busy flag for the graph. FILE VERSION 0.44.0 (7 Nov 2026): strap quality byte kept per sample (snapshotQ, quality colouring of the live trace), clean view (slow Gaussian 20 ms), newestBeatDue (heart-rate pulse); 0.41.0 (5 Nov 2026): pro display (PR-point spline baseline, beat windows, averaged beat, live noise by band, verdict timing, contact value); 0.18.0 (27 Oct): the 500 Hz live graph data, with QRS-aware smoothing. Pure Java (no Android), tested off the phone against a scipy reference.
 
 /**
  * Turns the live raw ECG frames (type 43, layout 16, command 126) into a display trace.
@@ -423,10 +423,13 @@ final class Live500 {
     static final double ACCEPT_FRAC = 0.45;                          // a beat candidate counts as a beat when its height is at least this fraction of the 90th percentile of the last 40 candidate heights (as the offline detector of decode log 50.4)
     /** 0.54.0: every accepted beat of this reading as its display time (ms on the phone clock, incl. the display delay); acceptedBeatSec() turns it into seconds from a reference. */
     private static final Object ACC = new Object(); private static final double[] accDue = new double[4096]; private static int accN;
+    /** 0.71.3: correlation (QRS window, against the running median beat of the last 40 windows) of each accepted beat, same index as accDue; NaN until the beat's window has been judged (8 windows needed). */
+    private static final double[] accCq = new double[4096]; static { java.util.Arrays.fill(accCq, Double.NaN); }
+    static double[] acceptedCq(int n) { synchronized (ACC) { double[] r = new double[n]; for (int i = 0; i < n; i++) r[i] = i < accCq.length ? accCq[i] : Double.NaN; return r; } }
     static double[] acceptedBeatSec(long refMs) { synchronized (ACC) { double[] r = new double[accN]; double bm = bufferMs; for (int i = 0; i < accN; i++) r[i] = (accDue[i] - bm - refMs) / 1000.0; return r; } }
     /** Seconds the strap marked quality 3 (its best) since the reading began. */
     static int q3Sec() { synchronized (NQ) { return cleanSec; } }
-    private static void proReset() { synchronized (ACC) { accN = 0; } bN = 0; pkDone = 0; winNext = 0; wins.clear(); candN = 0; havePend = false; lastAccApex = Long.MIN_VALUE / 2; cleanBeatN = 0; }
+    private static void proReset() { synchronized (ACC) { accN = 0; java.util.Arrays.fill(accCq, Double.NaN); } bN = 0; pkDone = 0; winNext = 0; wins.clear(); candN = 0; havePend = false; lastAccApex = Long.MIN_VALUE / 2; cleanBeatN = 0; }
     /** 0.45.0 (c): beats whose window matches the running template (correlation 0.95 or more, R height 60 to 140 % of the template's). The live counter toward the clean-beat target; the same rule as the report's beat selection (e). */
     private static volatile int cleanBeatN;
     static int cleanBeats() { return cleanBeatN; }
@@ -492,6 +495,7 @@ final class Live500 {
                 bOk[i] = corr(w, tm, PRE_W - 50, PRE_W + 225) >= DIM_GATE;
                 double tmx = 0; for (int j = PRE_W - 6; j <= PRE_W + 6; j++) tmx = Math.max(tmx, Math.abs(tm[j]));
                 double cq = corr(w, tm, PRE_W - 40, PRE_W + 60);      // the report's rule looks at the QRS (-80 to +120 ms), not at the T wave and the drift around it
+                synchronized (ACC) { int gi = winNext - 1; if (gi >= 0 && gi < accCq.length) accCq[gi] = cq; }      // 0.71.3: kept for the shape gate
                 if (cq >= 0.95 && tmx > 0 && Math.abs(mx) >= 0.6 * tmx && Math.abs(mx) <= 1.4 * tmx) cleanBeatN++;
             }
             wins.add(w); if (wins.size() > MAXWIN) wins.remove(0);

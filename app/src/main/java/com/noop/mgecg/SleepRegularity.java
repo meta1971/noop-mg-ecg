@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.71.3 (20 Nov 2026): reconciled() added. The Today header and the Rest page take the night from SleepNight (bed, end, minutes asleep with the quiet stretches credited); the wellbeing brief took it from the minute series below
+// (SLEEP minutes only), so on 19 Nov the header read 7:27 and the brief 6 h 19. reconciled() gives each night found here the bed, wake and minutes asleep of the SleepNight night it overlaps. The index itself (analyse) is unchanged.
 // FILE VERSION 0.54.0 (13 Nov 2026): NEW. Sleep regularity index and night timing from a per-minute asleep / awake series. Pure Java, no Android, tested off the phone.
 // Definition (as in the UK Biobank study, eLife 88359): the chance of being in the same state (asleep or awake) at two moments 24 h apart, scaled so that
 // 100 = perfectly regular and 0 = random timing: SRI = -100 + 200 x P(same state). Minutes with no data are left out of the pairs.
@@ -86,6 +88,36 @@ final class SleepRegularity {
         if (m >= 4) {
             r.bedSd = sd(r.nights, 0); r.wakeSd = sd(r.nights, 1); r.midSd = sd(r.nights, 2);
         }
+    }
+
+    /**
+     * 0.71.3: copies of `nights` in which each night that overlaps a SleepNight night takes that night's figures. rest[k] = {bed minute, wake minute, minutes asleep}, bed and wake on the same minute
+     * index as the series (minute 0 = local midnight of day 0). A night matches the unclaimed rest night with the longest overlap, if the overlap is at least 60 min and at least half of the night's
+     * span; a night with no match keeps its own figures. n.day is kept; bedMin and wakeMin are re-based on it. The input list and its objects are not changed.
+     */
+    static List<Night> reconciled(List<Night> nights, long[][] rest) {
+        List<Night> out = new ArrayList<Night>(nights.size());
+        boolean[] used = new boolean[rest == null ? 0 : rest.length];
+        for (Night n : nights) {
+            long base = n.day * 1440L;
+            long a0 = base + n.bedMin, a1 = base + n.wakeMin;
+            int best = -1; long bestOv = 0;
+            for (int k = 0; k < used.length; k++) {
+                if (used[k]) continue;
+                long ov = Math.min(a1, rest[k][1]) - Math.max(a0, rest[k][0]);
+                if (ov > bestOv) { bestOv = ov; best = k; }
+            }
+            Night c = new Night();
+            c.day = n.day; c.bedMin = n.bedMin; c.wakeMin = n.wakeMin; c.asleepMin = n.asleepMin;
+            if (best >= 0 && bestOv >= 60 && bestOv * 2 >= a1 - a0) {
+                used[best] = true;
+                c.bedMin = (int) (rest[best][0] - base);
+                c.wakeMin = (int) (rest[best][1] - base);
+                c.asleepMin = (int) rest[best][2];
+            }
+            out.add(c);
+        }
+        return out;
     }
 
     private static double val(Night n, int what) { return what == 0 ? n.bedMin : what == 1 ? n.wakeMin : 0.5 * (n.bedMin + n.wakeMin); }

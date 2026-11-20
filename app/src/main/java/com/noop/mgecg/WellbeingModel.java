@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.71.3 (20 Nov 2026): wording only: the "counted" line now says the hours are the Sleep page's own figure. The nights passed in are RhythmData.Bundle.nights.
 // FILE VERSION 0.58.0 (15 Nov 2026): NEW. The opinions of the wellbeing page, worked out from the nights the sleep screen already finds (SleepRegularity.Night: bed, wake, minutes asleep). Pure Java, no Android, tested off the phone
 // against the real nights. Rules: a figure is only shown if it is counted from the data; a pattern needs 5 nights each way (fewer is labelled "early signal"); a low night is called information, never a grade.
 // Work mornings are wake-ups before 07:00 (checked against his real nights: 14 of 20 in 22 Oct to 12 Nov). SRI bands (regular 71 or more, irregular 51 or less) are those of the UK Biobank study of 79,666 adults (Psychological Medicine 2025).
@@ -120,7 +121,7 @@ final class WellbeingModel {
 
         // ---- the main opinion
         String why = "Why it matters: in 79,666 UK adults, regular sleepers had 38% lower depression risk and 33% lower anxiety risk than irregular ones, whatever their hours. An association, not proof.";
-        String counted = " Hours are counted from the strap's sleep minutes, so they can differ by a few minutes from the Sleep page.";
+        String counted = " Hours are the Sleep page's own figure for that night: the strap's sleep state plus short quiet stretches in bed.";
         if (run >= 3) {
             String[] nw = {"", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"};
             o.headline = "Up at " + clock(lastWake) + " " + (run < nw.length ? nw[run] : String.valueOf(run)) + " mornings running.";

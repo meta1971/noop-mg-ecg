@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.71.3 (20 Nov 2026): stored-result line and history say "rhythm not judged (signal not clean enough)" when the shape gate (ShapeGate) withheld the rhythm word.
 // 0.51.0 (10 Nov 2026): requestStrapConfigScan() (read-only 115-118 / 121 / 128) and the reply hook for it.
 
 import android.Manifest;
@@ -4144,6 +4145,18 @@ public class MainActivity extends NewLookActivity {
     private FrameLayout ecgHistoryContainer;
     private TextView ecgHistoryText;
 
+    /** 0.71.3: hands the stored QT / QTcF of the saved readings (oldest first) to ReadingRules for the between-reading spread. */
+    private static void refreshQtBand(org.json.JSONArray arr) {
+        try {
+            java.util.List<Double> q = new java.util.ArrayList<>(), c = new java.util.ArrayList<>();
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.optJSONObject(i), s = o == null ? null : o.optJSONObject("stored");
+                if (s != null && s.optDouble("qtMs", 0.0) > 0.0) { q.add(s.optDouble("qtMs")); c.add(s.optDouble("qtcF", Double.NaN)); }
+            }
+            ReadingRules.setPast(q, c);
+        } catch (Throwable ignored) { }
+    }
+
     private synchronized void saveEcgHistoryEntry(EcgR16Analyzer.Result stored) {
         try {
             SharedPreferences prefs = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
@@ -4181,11 +4194,14 @@ public class MainActivity extends NewLookActivity {
                 r.put("screenRun", stored.screenRun);
                 r.put("afLike", stored.afLike);
                 r.put("afState", stored.afState);
+                if (stored.shapeBlocked) r.put("shapeBlocked", true);
+                if (stored.qt != null && stored.qt.status == EcgIntervals.Status.OK && stored.qt.qtMs > 0) { r.put("qtMs", stored.qt.qtMs); r.put("qtcF", stored.qt.qtcFMs); }      // 0.71.3: for the between-reading spread (ReadingRules)
                 e.put("stored", r);
             }
             if (at >= 0) arr.put(at, e); else arr.put(e);
             while (arr.length() > 200) arr.remove(0);
             prefs.edit().putString(ECG_HISTORY_KEY, arr.toString()).apply();
+            refreshQtBand(arr);
             logRaw("ECG_HISTORY_SAVED start=" + ecgSessionStartUnix +
                     (stored != null ? " withStoredAnalysis" : " strapVerdictOnly"));
             runOnUiThread(this::refreshEcgHistoryText);
@@ -4202,6 +4218,7 @@ public class MainActivity extends NewLookActivity {
         } catch (Exception ex) {
             return "History could not be read.";
         }
+        refreshQtBand(arr);
         if (arr.length() == 0) return "No ECG sessions saved yet.";
         java.text.SimpleDateFormat df = new java.text.SimpleDateFormat("EEE d MMM, HH:mm", Locale.UK);
         StringBuilder b = new StringBuilder();
@@ -4236,7 +4253,8 @@ public class MainActivity extends NewLookActivity {
             } else if (r.has("hr")) {
                 b.append(String.format(Locale.UK, "<br><small>Stored 500 Hz: HR %.0f &middot; HRV %.0f ms",
                         r.optDouble("hr"), r.optDouble("rmssd")));
-                if (r.optBoolean("screenRun")) b.append(r.optBoolean("afLike")
+                if (r.optBoolean("shapeBlocked")) b.append(" &middot; rhythm not judged (signal not clean enough)");
+                else if (r.optBoolean("screenRun")) b.append(r.optBoolean("afLike")
                         ? " &middot; <font color='#FF5555'>AF-like pattern</font>"
                         : " &middot; no AF-like pattern");
                 b.append("</small>");
@@ -12601,7 +12619,8 @@ public class MainActivity extends NewLookActivity {
                                 String.format(Locale.UK, "HR %.0f, RMSSD %.0f ms", r.hr, r.rmssd))) +
                         (r.afState == AfScreen.AF_LIKE ? ", AF-LIKE pattern (research screen)"
                                 : r.afState == AfScreen.IRREGULAR ? ", irregular rhythm, cause unclear"
-                                : r.afState == AfScreen.NOT_AF_LIKE ? ", no AF-like pattern" : "") +
+                                : r.afState == AfScreen.NOT_AF_LIKE ? ", no AF-like pattern"
+                                : r.shapeBlocked ? ", rhythm not judged (signal not clean enough)" : "") +
                         " ***");
             });
         }, "r16-analysis").start();

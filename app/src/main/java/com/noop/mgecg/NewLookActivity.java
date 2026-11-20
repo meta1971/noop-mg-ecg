@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.42.0 (5 Nov 2026): Home shows this week and the streak, a Reminders button (own times for work days and days off), app shortcuts (Take an ECG, Pull now), the widget refresh. 0.41.0 (5 Nov 2026): the reading page is built by EcgPage (dropdown setup, pinned START / STOP, live noise, averaged beat, guided runs, result card); the posChips line that crashed the restyle since 0.39.0 is fixed; Pull now on Home. 0.39.0 (3 Nov): posture tag remembered (a reading is never saved untagged once a tag was used), position chip "H10 in hands". 0.2.1 (3 Oct): restyled ECG screen
+// FILE VERSION 0.71.3 (20 Nov 2026): the posture tag is remembered for 45 minutes only (reading_tag_ms); an older tag is cleared at Start and the 0.39.0 auto-apply of the last tag no longer applies it (324.3); 0.42.0 (5 Nov 2026): Home shows this week and the streak, a Reminders button (own times for work days and days off), app shortcuts (Take an ECG, Pull now), the widget refresh. 0.41.0 (5 Nov 2026): the reading page is built by EcgPage (dropdown setup, pinned START / STOP, live noise, averaged beat, guided runs, result card); the posChips line that crashed the restyle since 0.39.0 is fixed; Pull now on Home. 0.39.0 (3 Nov): posture tag remembered (a reading is never saved untagged once a tag was used), position chip "H10 in hands". 0.2.1 (3 Oct): restyled ECG screen
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -243,7 +243,7 @@ public class NewLookActivity extends Activity {
     /** 0.54.0: arms run G (lying to standing, 3 min) for the reading that starts after the strap is ready. The arming stamp is set 4 minutes ahead so the connect wait and the 5 s countdown do not expire it (a run is valid 90 s after its stamp); it is one-shot and cleared when the reading ends. */
     private void armStand() {
         try {
-            getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit().putString("run_id", "G").putLong("run_armed_ms", System.currentTimeMillis() + 240000L).putString("reading_tag", "Lying").putString("reading_tag_last", "Lying").putString("position_tag", "").apply();
+            getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).edit().putString("run_id", "G").putLong("run_armed_ms", System.currentTimeMillis() + 240000L).putString("reading_tag", "Lying").putString("reading_tag_last", "Lying").putLong("reading_tag_ms", System.currentTimeMillis()).putString("position_tag", "").apply();
             readingTag = "Lying"; positionTag = "";
         } catch (Throwable ignored) { }
     }
@@ -839,6 +839,7 @@ public class NewLookActivity extends Activity {
     }
 
     // 0.25.1: a short buzz and a note when the fingers come off the clasp during a reading, or when there is no contact after 14 s
+    static final long TAG_FRESH_MS = 45L * 60000L;      // 0.71.3: GUESS, not measured
     private int lastWarnRun; private boolean warnedNoContact; String readingTag = ""; private Button[] tagChips;
     private TextView qualityView; private Button autoChip; private boolean autoStopped;
     static final double AUTO_TARGET_DEFAULT = 4.0; static final long AUTO_MIN_MS = 150000L, AUTO_MAX_MS = 300000L;      // 0.45.0 (j): a free reading runs 150 s at least (a rhythm verdict needs about 65 clean beats, the two-half test 128); was 60 s. Guided runs have no auto-stop      // 0.37.0: the target is a setting (3, 4 or 5 uV; default 4: from 38 reports it halves the sitting time and the ST / QT spread grows from +/-3 to +/-4 uV and +/-3 to +/-5 ms)
@@ -947,8 +948,19 @@ public class NewLookActivity extends Activity {
             lastRunningState = rs;
             if (!running && prevRs == 1) { FrameMonitor.captureWindow(System.currentTimeMillis() + 150000L); ui.postDelayed(new Runnable() { @Override public void run() { maybeStopH10(); } }, 6000L); }       // 0.23.0: the H10 stops a few seconds after the reading
             ecgStartBtn.setBackground(round(running ? RED : PRIMARY, 34));
-            if (running && readingTag.isEmpty()) {      // 0.39.0: never save a reading untagged when a tag was used before
-                String last = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getString("reading_tag_last", "");
+            boolean tagFresh = false;      // 0.71.3: a posture tag counts for TAG_FRESH_MS after it was set (324.3: it used to stay on every later reading)
+            if (running) {
+                android.content.SharedPreferences cp = getSharedPreferences("labrador_ecg_control", MODE_PRIVATE);
+                long setMs = cp.getLong("reading_tag_ms", 0L), age = System.currentTimeMillis() - setMs;
+                tagFresh = setMs > 0L && age >= 0L && age <= TAG_FRESH_MS;
+                if (!readingTag.isEmpty() && !tagFresh) {
+                    String old = readingTag; readingTag = ""; cp.edit().putString("reading_tag", "").apply();
+                    if (ecgPage != null) ecgPage.refreshSummary();
+                    toast("Posture tag \"" + old + "\" was set more than " + (TAG_FRESH_MS / 60000L) + " min ago, so it is cleared. Set it in Reading setup if it still applies.");
+                }
+            }
+            if (running && readingTag.isEmpty()) {      // 0.39.0: never save a reading untagged when a tag was used before (0.71.3: only a tag set within TAG_FRESH_MS)
+                String last = tagFresh ? getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getString("reading_tag_last", "") : "";
                 if (!last.isEmpty()) { readingTag = last; if (ecgPage != null) ecgPage.refreshSummary(); toast("Tagged " + last + " (your last tag). Change it in Reading setup."); }
                 else toast("Tip: set where you sit in Reading setup (Table, Couch, ...). Position changes the height of your R wave, so tagged readings compare fairly.");      // 0.27.2
             }

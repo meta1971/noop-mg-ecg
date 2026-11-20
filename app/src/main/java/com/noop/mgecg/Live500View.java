@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.71.2 (19 Nov 2026): BREATH cell in the header band (dimmed, last in the row so it is the first to go on a narrow screen, never over the trace): breaths a minute from the R-R of the last 60 s (LiveBreath; INFERRED from the R-R modulation, not checked against a breathing reference; "--" when there is no clear peak or no beat for 6 s).
+// FILE VERSION 0.71.3 (20 Nov 2026): BREATH goes to the footer band when the header row has no room, and shows no number while the shape gate blocks; 0.71.2 (19 Nov 2026): BREATH cell in the header band (dimmed, last in the row so it is the first to go on a narrow screen, never over the trace): breaths a minute from the R-R of the last 60 s (LiveBreath; INFERRED from the R-R modulation, not checked against a breathing reference; "--" when there is no clear peak or no beat for 6 s).
 // FILE VERSION 0.52.1 (11 Nov 2026): the scale ignores the strap's poor-quality samples when enough good ones are in the window; frame meter (long-press on the full-screen graph). FILE VERSION 0.52.0 (10 Nov 2026): fit-to-beat scale with hold (LiveScale), the scroll on the screen-refresh clock (FrameClock + Choreographer), no wait on the data thread, one glow pass. FILE VERSION 0.48.0 (9 Nov 2026): polished look. Slate grid instead of the maroon one, a soft plot background, a trace that fades in from the left with a layered glow and a bright leading dot, small amber R ticks, rounded card, header tiles (heart rate with a pulse dot, small-caps labels over bold values, a progress bar for the clean beats), a footer for the picture notes and the noise advice. Everything is still outside the waveform: header above, footer below.
 // FILE VERSION 0.47.0 (9 Nov 2026): a calmer, bigger graph. The waveform has its own plot area; the information sits in a band above and a band below it instead of over the trace. The scroll is snapped to whole pixels (no sub-pixel shimmer), the scale eases smoothly (fast to open, slow to close, with a dead band), the per-frame allocations are gone.
 // FILE VERSION 0.44.0 (7 Nov 2026): the trace is coloured by the strap's per-second quality (3 normal, 2 amber, 0-1 grey, lead-off gap) with a small legend; tap opens the landscape full screen (long press switches auto / fixed scale); own window length for the full screen.
@@ -55,7 +55,7 @@ public class Live500View extends View {
     private boolean wasLive;
     private long staleSince;
     private final float dp;
-    private long hdrMs; private String hrS = "--", rrTxt = "--", qrsTxt = "--", nzTxt = "--", nzNote = "", cleanTxt = "--", armTxt = ""; private int nzCol; private float cleanFrac; private double lastRrMs = Double.NaN; private boolean armMoving; private String brTxt = "--"; private long brMs; private final LiveBreath.Tracker brT = new LiveBreath.Tracker();
+    private long hdrMs; private String hrS = "--", rrTxt = "--", qrsTxt = "--", nzTxt = "--", nzNote = "", cleanTxt = "--", armTxt = ""; private int nzCol; private float cleanFrac; private double lastRrMs = Double.NaN; private boolean armMoving; private String brTxt = "--"; private long brMs; private boolean brFoot; private final LiveBreath.Tracker brT = new LiveBreath.Tracker();
     private float pt, pb, ph;                           // plot area: top, bottom, height (px)
     private String footLeft = ""; private int footLeftCol; private float fMaxLeft = 200f;
     private static final String[] NM = { "good", "fair", "poor" };
@@ -198,7 +198,10 @@ public class Live500View extends View {
             try {
                 double[] bs = Live500.acceptedBeatSec(now); int nb = bs.length;
                 if (nb > 0 && -bs[nb - 1] - Live500.bufferMs / 1000.0 > 6.0) nb = 0;      // no beat for 6 s (or the 4096-beat log is full): nothing to read
-                double v = brT.update(bs, nb); brTxt = Double.isNaN(v) ? "--" : String.format(L, "%.0f /min", v);
+                // 0.71.3: shape gate (ShapeGate) over the beats that feed the estimate: 3 odd beats in a row or 5 % odd = no number, tracker restarts
+                ShapeGate.Result sg = ShapeGate.checkLast(bs, Live500.acceptedCq(nb), nb, LiveBreath.WIN_S);
+                double v; if (sg.blocked) { brT.reset(); v = Double.NaN; } else v = brT.update(bs, nb);
+                brTxt = Double.isNaN(v) ? "--" : String.format(L, "%.0f /min", v);
             } catch (RuntimeException e) { brTxt = "--"; }
         }
         double[] b = LiveBands.rms(); double n = b == null ? Double.NaN : b[1];
@@ -325,7 +328,7 @@ public class Live500View extends View {
 
         // ---- header band
         float legW = 0f; if (qc && m > 250) { for (String s2 : NM) legW += 6f * dp + 4f * dp + label.measureText(s2) + 8f * dp; }
-        fMaxLeft = w - rightPad - legW - 28f * dp;
+        fMaxLeft = w - rightPad - legW - 28f * dp - (brFoot ? label.measureText("BREATH 88 /min") + 14f * dp : 0f);      // 0.71.3: room for BREATH when it sits in the footer
         refreshHeader(now);
         boolean pp = paper; int ink = pp ? 0xFF14171F : 0xFFE8EEF7, muted = pp ? 0xFF4A4F5C : 0xFF8795AB, tcol = pp ? 0xFF1B7F5C : 0xFF35E0A1;
         canvas.drawRect(0, 0, w, headH, hdrBg);
@@ -346,6 +349,7 @@ public class Live500View extends View {
         capsA[nt] = "QRS"; valsA[nt] = qrsTxt; kindA[nt++] = 2;
         capsA[nt] = "R-R"; valsA[nt] = rrTxt; kindA[nt++] = 3;
         capsA[nt] = "BREATH"; valsA[nt] = brTxt; kindA[nt++] = 5;      // 0.71.2: last and dimmed
+        boolean brHead = false;
         for (int c = 0; c < nt; c++) {
             int kind = kindA[c];
             float cw = Math.max(valP.measureText(valsA[c]), capP.measureText(capsA[c]));
@@ -356,11 +360,17 @@ public class Live500View extends View {
             valP.setColor(kind == 0 && nzCol != 0 ? nzCol : kind == 4 && armMoving ? 0xFFE5534B : kind == 5 ? a(muted, 170) : ink);
             canvas.drawText(valsA[c], x, headH * 0.70f, valP);
             if (kind == 1) { float by = headH * 0.84f, bh = 2.6f * dp; rect.set(x, by, x + cw, by + bh); canvas.drawRoundRect(rect, bh / 2, bh / 2, barBg); rect.set(x, by, x + Math.max(bh, cw * cleanFrac), by + bh); canvas.drawRoundRect(rect, bh / 2, bh / 2, barFg); }
+            if (kind == 5) brHead = true;
             x += cw + 20f * dp;
         }
+        brFoot = !brHead;      // 0.71.3: a BREATH cell that does not fit the header row is drawn in the footer band (it was dropped without a trace on a portrait phone, 324.4)
         // ---- footer band: advice when the signal is not good, otherwise what the picture is; the colour legend on the right
         float fy = h - footH * 0.32f;
         label.setColor(footLeftCol != 0 ? footLeftCol : muted); canvas.drawText(footLeft, pad, fy, label);
+        if (brFoot) {
+            String bs2 = "BREATH " + brTxt; float bw2 = label.measureText(bs2), edge = (qc && m > 250) ? w - rightPad - legW : w - rightPad, bx2 = edge - bw2 - 14f * dp;
+            if (bx2 >= pad + label.measureText(footLeft) + 12f * dp) { label.setColor(a(muted, 170)); canvas.drawText(bs2, bx2, fy, label); }
+        }
         if (qc && m > 250) {                                                                // 0.44.0 legend, in the footer
             cc[0] = trace.getColor(); cc[1] = trA.getColor(); cc[2] = trG.getColor();
             float gap = 8f * dp, rad = 3f * dp, lx = w - rightPad - legW + gap; label.setColor(muted);

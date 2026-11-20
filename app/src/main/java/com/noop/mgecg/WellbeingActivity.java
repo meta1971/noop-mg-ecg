@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// FILE VERSION 0.71.3 (20 Nov 2026): the page, the Today brief card and the wake map read RhythmData.Bundle.nights (the nights as the Today header and the Rest page find them) instead of sri.nights.
 // 0.64.0 (16 Nov 2026): mood and energy two-tap check with YOUR OWN PATTERN (Mind64), calm minute log with before / after RMSSD from the strap's live beats, if-then plan, week on one page, preview cards WORK-DAY LOAD and OVERNIGHT GAP (Pair64, opt-in).
 
 // FILE VERSION 0.61.0 (15 Nov 2026): text size setting (UxKit.scaled); the intent extra focus_evening scrolls to the three good things (from the wind-down reminder and the "This evening" card).
@@ -91,7 +92,7 @@ public class WellbeingActivity extends Activity {
             int planBed = p.getInt("plan_bed_min", -1);
             long planFrom = p.getLong("plan_from_day", 0L);
             long baseEpochDay = Math.floorDiv(b.s.baseLocalSec, 86400L);
-            return WellbeingModel.compute(b.sri.nights, b.sri.sri, baseEpochDay, planBed, planFrom);
+            return WellbeingModel.compute(b.nights, b.sri.sri, baseEpochDay, planBed, planFrom);
         } catch (Throwable t) {
             return null;
         }
@@ -116,12 +117,12 @@ public class WellbeingActivity extends Activity {
             long planFrom = p.getLong("plan_from_day", 0L);
             long baseEpochDay = Math.floorDiv(b.s.baseLocalSec, 86400L);
             Pack k = new Pack();
-            k.o = WellbeingModel.compute(b.sri.nights, b.sri.sri, baseEpochDay, planBed, planFrom);
-            k.sc = WellbeingExtra.scatter(b.sri.nights);
-            k.bars = WellbeingExtra.bars(b.sri.nights, baseEpochDay);
-            k.bests = WellbeingExtra.bests(b.sri.nights, baseEpochDay);
+            k.o = WellbeingModel.compute(b.nights, b.sri.sri, baseEpochDay, planBed, planFrom);
+            k.sc = WellbeingExtra.scatter(b.nights);
+            k.bars = WellbeingExtra.bars(b.nights, baseEpochDay);
+            k.bests = WellbeingExtra.bests(b.nights, baseEpochDay);
             k.ecg = WellbeingExtra.ecg(ecgReadings(c), System.currentTimeMillis(), TimeZone.getDefault());
-            try { k.wake = Mind64.hoursByWakeDay(b.sri.nights, baseEpochDay); } catch (Throwable ignored) { }
+            try { k.wake = Mind64.hoursByWakeDay(b.nights, baseEpochDay); } catch (Throwable ignored) { }
             return k;
         } catch (Throwable t) {
             return null;
@@ -150,7 +151,7 @@ public class WellbeingActivity extends Activity {
         try {
             RhythmData.Bundle b = RhythmData.bundleCached(c);
             if (b == null || b.sri == null || b.s == null) return new java.util.HashMap<Long, Double>();
-            return Mind64.hoursByWakeDay(b.sri.nights, Math.floorDiv(b.s.baseLocalSec, 86400L));
+            return Mind64.hoursByWakeDay(b.nights, Math.floorDiv(b.s.baseLocalSec, 86400L));
         } catch (Throwable t) { return new java.util.HashMap<Long, Double>(); }
     }
 
