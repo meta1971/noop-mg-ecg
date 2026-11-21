@@ -34,6 +34,10 @@
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
     <queries>
         <package android:name="com.termux" />
+        <!-- 0.78.0 TRI-GO: this copy may see and start the other two copies (Android 11 package visibility) -->
+        <package android:name="com.noop.mgecg" />
+        <package android:name="com.noop.mgecg.b" />
+        <package android:name="com.noop.mgecg.c" />
     </queries>
 
     <!-- All-day logger: keep running in the background and show its status -->
