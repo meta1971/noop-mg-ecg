@@ -1,5 +1,7 @@
 plugins { id 'com.android.application' }
 
+// 0.75.1: long values on the recovery page go under their label (they squeezed it to one letter per line), headings get space above.
+// 0.75.0: Strap position gets Ankle R and Ankle L; the recovery page shows the night behind the two numbers (lowest 5 minutes, hour by hour, HRV filter share, where the night sits among the nights compared with).
 // 0.71.2: Lab QUICK TICKS cut to one route of four short runs that need no meter number (rig gate, L1, G3, C2), numbered steps before each run, Next run button, meter wording corrected (the DT832 has no AC millivolt range); live graph header gets a dimmed BREATH cell (breaths a minute from the R-R, inferred, not checked against a breathing reference).
 // 0.71.1: SleepNight.clusters joins the two halves of a night split by a long wake (addendum 301).
 
@@ -13,8 +15,8 @@ android { namespace 'com.noop.mgecg'; compileSdk 34
     buildFeatures { buildConfig true }
     defaultConfig {
         applicationId copyB ? 'com.noop.mgecg.b' : 'com.noop.mgecg'
-        minSdk 26; targetSdk 34; versionCode 189
-        versionName copyB ? '0.74.0-pro-B' : '0.74.0-pro'
+        minSdk 26; targetSdk 34; versionCode 191
+        versionName copyB ? '0.75.1-pro-B' : '0.75.1-pro'
         buildConfigField 'boolean', 'COPY_B', copyB ? 'true' : 'false'
         manifestPlaceholders = [appLabel: copyB ? 'MG Heart B' : 'MG Heart', appIcon: copyB ? '@mipmap/ic_launcher_b' : '@mipmap/ic_launcher']
     }
