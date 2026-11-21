@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.76.0 (21 Nov 2026, addenda 365-366): peaks() aligns the beats TWICE (the template of the second pass is built from beats already aligned). Cause: the first template is built from unaligned detector peaks, and a biphasic QRS (lead III on the ankle: about -411 / +126 uV, lobes about 16 ms apart) smears it, so the alignment locked onto either lobe: 7 ms timing jitter against the H10 and 32-36 % of beats cut by the shape gate on the ankle readings; with the second pass 1.4-3.2 ms and 0-1 % (copy A unchanged: 1.1-1.4 ms, 0 %). New diagnostics only (nothing is excluded for them): ALIGN2 (what the old one-pass alignment would have cut, how far the second pass moved the peaks) and LATE_ART (beat windows disturbed 350-650 ms after R) in the R16_ANALYSIS line.
 // FILE VERSION 0.71.3 (20 Nov 2026): beat-shape gate (ShapeGate: 3 odd beats in a row or 5 % odd among the last 129 withhold the AF screen and the rhythm word; nothing is repaired); 0.39.0 (3 Nov): settling switch (first 12.8 s left out, rounded up to 13 stored seconds), strip keeps the raw uV trace, the strap RMSSD (bytes 29-30) and result code (byte 23) for the report. 0.5.10 (11 Oct): own-validity gate v2 (a short noisy reading is no longer erased by the second pass); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
 
 import java.util.ArrayList;
@@ -103,6 +104,9 @@ public final class EcgR16Analyzer {
         public boolean shapeBlocked;
         /** 0.5.5: usable seconds the strap rated quality 1-2, and quality 1-2 seconds our shape check dropped. */
         public int lowQSeconds, ownGateDroppedS;
+        /** 0.76.0 diagnostics: beats the old one-pass alignment would have cut as odd-shaped / checked, the shift (ms) between the old and the new alignment, and beat windows disturbed 350-650 ms after R (nothing is excluded for them). */
+        public int alignOldBad, alignOldChecked, lateArt, lateChecked;
+        public double alignShiftMedMs = Double.NaN, alignShiftP95Ms = Double.NaN, lateThrUv = Double.NaN;
         public double noiseFraction;
         public double hr = Double.NaN, rmssd = Double.NaN;
         public int fastRecoverySeconds, leadOffSeconds;
@@ -146,6 +150,7 @@ public final class EcgR16Analyzer {
                             " nrmssd=%.4f she=%.3f tp=%d tpRandom=%b",
                             dash[0], dash[1], (int) dash[2], dash[5] > 0.5))
                             + String.format(Locale.US, " SHAPE_GATE beats=%d odd=%d run=%d blocked=%b", shapeBeats, shapeOdd, shapeRun, shapeBlocked)
+                            + String.format(Locale.US, " ALIGN2 oldBad=%d/%d shiftMedMs=%.1f shiftP95Ms=%.1f LATE_ART n=%d/%d thrUv=%.0f", alignOldBad, alignOldChecked, alignShiftMedMs, alignShiftP95Ms, lateArt, lateChecked, lateThrUv)
                             + (af == null ? " afState=4 why=not_run" : " " + af.toLog())
                             + (rhythm == null ? " RR_SCREEN not_run" : " RR_SCREEN " + rhythm)
                             + (breath == null ? " BREATH not_run" : " BREATH " + breath)
@@ -429,7 +434,12 @@ public final class EcgR16Analyzer {
 
     // ----------------------------------------------------------------- beats
 
-    static List<Integer> peaks(double[] x) {
+    /** 0.76.0: number of template alignments (1 = the old behaviour); a third pass changed nothing on the real readings (peaks stay within 2 ms). */
+    static final int ALIGN_PASSES = 2;
+
+    static List<Integer> peaks(double[] x) { return peaks(x, ALIGN_PASSES); }
+
+    static List<Integer> peaks(double[] x, int passes) {
         int n = x.length;
         double[] y = filtfilt(x);
         double hi = percentile(y, 0, n, 99.5), lo = -percentile(y, 0, n, 0.5);
@@ -449,8 +459,9 @@ public final class EcgR16Analyzer {
                 pk.add(i); last = i;
             }
         }
-        // template alignment
+        // template alignment (0.76.0: repeated; each pass builds its template from the beats the pass before aligned)
         int h = (int) (0.10 * FS), L = (int) (0.025 * FS);
+        for (int pass = 0; pass < Math.max(1, passes); pass++) {
         List<Integer> good = new ArrayList<>();
         for (int p : pk) if (p - h - L >= 0 && p + h + L < n) good.add(p);
         if (good.size() < 5) return pk;
@@ -494,7 +505,9 @@ public final class EcgR16Analyzer {
             }
             if (ref.isEmpty() || q - ref.get(ref.size() - 1) >= refr) ref.add(q);
         }
-        return ref;
+        pk = ref;
+        }
+        return pk;
     }
 
     // --------------------------------------------------------------- analyse
@@ -618,6 +631,7 @@ public final class EcgR16Analyzer {
         List<double[]> qtWins = new ArrayList<>();
         List<Double> qtRrs = new ArrayList<>();
         List<double[]> qtWide = new ArrayList<>();
+        List<Double> alignShift = new ArrayList<>();   // 0.76.0 diagnostics
         for (List<byte[]> run : runs) {
             if (run.size() - SETTLE_S < MIN_RUN_S) continue;
             List<byte[]> use = run.subList(SETTLE_S, run.size());
@@ -655,6 +669,30 @@ public final class EcgR16Analyzer {
                     T[j] = srt.length % 2 == 1 ? srt[m] : (srt[m - 1] + srt[m]) / 2.0;
                 }
                 for (int p : ok) if (pearson(y, p - h, T) < 0.8) bad.add(p);
+            }
+            {   // 0.76.0 diagnostics: the same gate on the OLD one-pass alignment, and how far the second pass moved the peaks (nothing here changes a result)
+                List<Integer> pk1 = peaks(x, 1);
+                List<Integer> ok1 = new ArrayList<>();
+                for (int p : pk1) if (p - h >= 0 && p + h < n) ok1.add(p);
+                if (ok1.size() >= 5) {
+                    double[] T1 = new double[2 * h];
+                    double[] col1 = new double[ok1.size()];
+                    for (int j = 0; j < 2 * h; j++) {
+                        for (int g = 0; g < ok1.size(); g++) col1[g] = y[ok1.get(g) - h + j];
+                        double[] s1 = col1.clone();
+                        Arrays.sort(s1);
+                        int m1 = s1.length / 2;
+                        T1[j] = s1.length % 2 == 1 ? s1[m1] : (s1[m1 - 1] + s1[m1]) / 2.0;
+                    }
+                    for (int p : ok1) if (pearson(y, p - h, T1) < 0.8) r.alignOldBad++;
+                    r.alignOldChecked += ok1.size();
+                }
+                int j1 = 0;
+                for (int p : pk) {
+                    if (pk1.isEmpty()) break;
+                    while (j1 + 1 < pk1.size() && Math.abs(pk1.get(j1 + 1) - p) <= Math.abs(pk1.get(j1) - p)) j1++;
+                    alignShift.add(Math.abs(pk1.get(j1) - p) * 1000.0 / FS);
+                }
             }
             // v2: keep-in-run pass: every beat in a suspect quality 1-2 second is excluded, the run is not split
             if (!splitOnDrop && !drop.isEmpty()) for (int p : pk) if (drop.contains(seqOf(use, p))) bad.add(p);
@@ -813,6 +851,37 @@ public final class EcgR16Analyzer {
             }
             double[] atr = EcgAtrial.features(atrialSegs, atrialAbs);
             r.rhythm = r.shapeBlocked ? null : EcgRhythm.analyzeRuns(beatRuns, atr == null ? null : new double[] {atr[0], atr[1], r.noiseFraction});
+
+            // 0.76.0 diagnostics only: the shift of the second alignment, and beat windows disturbed 350-650 ms after R (about the median window; flagged above max(50 uV, 3 x the median); nothing is excluded for it)
+            if (!alignShift.isEmpty()) {
+                double[] sh = new double[alignShift.size()];
+                for (int i = 0; i < sh.length; i++) sh[i] = alignShift.get(i);
+                Arrays.sort(sh);
+                r.alignShiftMedMs = sh[sh.length / 2];
+                r.alignShiftP95Ms = sh[(int) Math.min(sh.length - 1, Math.floor(0.95 * sh.length))];
+            }
+            if (qtWins.size() >= 20) {
+                int a0 = EcgIntervals.PRE + 175, a1 = EcgIntervals.PRE + 325, nw = qtWins.size();
+                double[] med = new double[a1 - a0], colw = new double[nw];
+                for (int j = a0; j < a1; j++) {
+                    for (int g = 0; g < nw; g++) colw[g] = qtWins.get(g)[j];
+                    double[] sw = colw.clone();
+                    Arrays.sort(sw);
+                    med[j - a0] = nw % 2 == 1 ? sw[nw / 2] : (sw[nw / 2 - 1] + sw[nw / 2]) / 2.0;
+                }
+                double[] rm = new double[nw];
+                for (int g = 0; g < nw; g++) {
+                    double ss = 0;
+                    for (int j = a0; j < a1; j++) { double d = qtWins.get(g)[j] - med[j - a0]; ss += d * d; }
+                    rm[g] = Math.sqrt(ss / (a1 - a0));
+                }
+                double[] rs = rm.clone();
+                Arrays.sort(rs);
+                double thr = Math.max(50.0, 3.0 * (nw % 2 == 1 ? rs[nw / 2] : (rs[nw / 2 - 1] + rs[nw / 2]) / 2.0));
+                r.lateThrUv = thr;
+                r.lateChecked = nw;
+                for (int g = 0; g < nw; g++) if (rm[g] > thr) r.lateArt++;
+            }
 
             // EXPERIMENTAL QT: averaged beat, tangent method, bootstrap interval
             r.qt = EcgIntervals.analyse(qtWins, clean.isEmpty() ? 1.0 : median(clean) / 1000.0, qtWide);
