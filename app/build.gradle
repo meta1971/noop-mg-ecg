@@ -13,8 +13,8 @@ android { namespace 'com.noop.mgecg'; compileSdk 34
     buildFeatures { buildConfig true }
     defaultConfig {
         applicationId copyB ? 'com.noop.mgecg.b' : 'com.noop.mgecg'
-        minSdk 26; targetSdk 34; versionCode 187
-        versionName copyB ? '0.72.1-pro-B' : '0.72.1-pro'
+        minSdk 26; targetSdk 34; versionCode 188
+        versionName copyB ? '0.73.0-pro-B' : '0.73.0-pro'
         buildConfigField 'boolean', 'COPY_B', copyB ? 'true' : 'false'
         manifestPlaceholders = [appLabel: copyB ? 'MG Heart B' : 'MG Heart', appIcon: copyB ? '@mipmap/ic_launcher_b' : '@mipmap/ic_launcher']
     }
