@@ -689,7 +689,7 @@ final class EcgPage {
     }
 
     private static final String[] POSTURE = { "No tag", "Table", "Couch", "Lying", "Standing", "After exercise" };
-    private static final String[] POSITION = { "Wrist", "Chest V2", "Chest V4", "Chest V5", "Chest V6", "Bicep L", "Bicep R", "H10 in hands" };
+    private static final String[] POSITION = { "Wrist", "Chest V2", "Chest V4", "Chest V5", "Chest V6", "Bicep L", "Bicep R", "Ankle R", "Ankle L", "H10 in hands" };      // 0.75.0: Ankle R and Ankle L (strap B on the ankle, addendum 354)
     private static final String[] WHERE = { "Not set", "Home", "Work", "Truck", "Outside", "Other" };
     private static final String[] AUTO = { "Off", "3 uV", "4 uV", "5 uV" };
     private static final String[] ENDS = { "Report quality (the Auto-stop level)", "Enough data (60 s good signal, strap HRV)" };      // 0.54.0

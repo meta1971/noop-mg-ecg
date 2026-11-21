@@ -499,6 +499,9 @@ public class HealthActivity extends Activity {
         return t;
     }
 
+    /** 0.75.1: a caps heading with space above it (caps() alone sits hard against the paragraph before it). */
+    private void head(LinearLayout c, String s) { c.addView(caps(s), lp(-2, -2, 16)); }
+
     private LinearLayout.LayoutParams lp(int w, int h, float topDp) {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
         p.topMargin = dpi(topDp);
@@ -1211,6 +1214,11 @@ public class HealthActivity extends Activity {
     }
 
     private void kv(LinearLayout c, String k, String v) {
+        if (v.length() > 22) {      // 0.75.1: a long value goes under its label (side by side it squeezed the label to one letter per line, seen on the 0.74.0 recovery page)
+            LinearLayout col = new LinearLayout(this); col.setOrientation(LinearLayout.VERTICAL);
+            col.addView(tv(k, 13, INK, 400)); col.addView(tv(v, 13, INK, 600));
+            c.addView(col, lp(-1, -2, 8)); return;
+        }
         LinearLayout r = hrow();
         r.addView(tv(k, 13, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
         r.addView(tv(v, 13, INK, 600));
@@ -1249,6 +1257,7 @@ public class HealthActivity extends Activity {
             try { recoveryDetail(c, day); } catch (Throwable ignored) { }      // 0.74.0
         }
         if (n != null) {
+            head(c, "THE NIGHT");      // 0.75.0
             kv(c, "In bed", hhmm(n.bedTs) + " to " + hhmm(n.endTs) + " (" + HealthModel.hm(n.tibH) + ")");      // 0.74.0
             kv(c, "Slept", HealthModel.hm(n.tstH) + (n.effPct > 0 ? ", " + Math.round(n.effPct) + " % of the time in bed" : ""));
             if (n.settleMin > 0) kv(c, "Settled after", Math.round(n.settleMin) + " min");
@@ -1263,6 +1272,7 @@ public class HealthActivity extends Activity {
             if (Double.isNaN(n.hrLow5)) miss.append("resting rate; ");
             if (Double.isNaN(n.rmssd)) miss.append("overnight HRV; ");
             if (miss.length() > 0) kv(c, "Missing for this night", miss.substring(0, miss.length() - 2));
+            try { recoveryNight(c, day); } catch (Throwable ignored) { }      // 0.75.0
         }
         note(c, "An estimate from this strap's own records. Optical HRV reads higher than an ECG strap's; your own nights absorb that. Not WHOOP's recovery and not a medical measure.");
     }
@@ -1273,9 +1283,9 @@ public class HealthActivity extends Activity {
         TodayModel.RecDetail r = TodayModel.recoveryDetail(day.nowStat, day.earlierNights);
         if (r == null) return;
         Locale L = Locale.UK;
-        c.addView(caps("BEHIND THE NUMBER"));
+        head(c, "BEHIND THE NUMBER");
         kv(c, "Your usual resting rate", String.format(L, "%.1f bpm, spread %.1f bpm", r.mr, r.sr) + (r.srFloor ? " (the 2 bpm floor)" : ""));
-        kv(c, "Your usual HRV", String.format(L, "%.0f ms, spread %.0f %%", Math.exp(r.ml), 100.0 * (Math.exp(r.sl) - 1.0)) + (r.slFloor ? " (the 15 % floor)" : ""));
+        kv(c, "Your usual HRV", String.format(L, "%.0f ms, spread %.0f %%", Math.exp(r.ml), 100.0 * (Math.exp(r.sl) - 1.0)) + (r.slFloor ? " (at the floor, about 16 %)" : ""));
         kv(c, "What each part adds", String.format(L, "resting rate %+.2f, HRV %+.2f, together %+.2f", 0.5 * r.zr, 0.5 * r.zh, r.z));
         note(c, String.format(L, "Score = 100 x the normal curve at %+.2f = %.0f %%. Each part is half of its z-score.", r.z, r.score));
         for (int dir = 1; dir >= -1; dir -= 2) {
@@ -1289,10 +1299,11 @@ public class HealthActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         for (TodayModel.NightStat s : r.use) {      // newest first
             double[] rc = TodayModel.recovery(s, day.earlierNights);
-            sb.append(df.format(new java.util.Date((s.bed + 43200L) * 1000L))).append(": ").append(Math.round(s.hrLow5)).append(" bpm, ").append(Math.round(s.rmssd)).append(" ms").append(rc == null ? "" : ", " + Math.round(rc[0]) + " %").append("\n");
+            sb.append(df.format(new java.util.Date((s.bed + 43200L) * 1000L))).append(": ").append(Math.round(s.hrLow5)).append(" bpm, ").append(Math.round(s.rmssd)).append(" ms").append(rc == null ? "" : ", " + Math.round(rc[0]) + " %" + String.format(L, " (rate %+.1f, HRV %+.1f)", rc[1], rc[2])).append("\n");      // 0.75.0: the two z-scores
         }
-        c.addView(caps("THE " + r.use.size() + " NIGHTS COMPARED WITH"));
+        head(c, "THE " + r.use.size() + " NIGHTS COMPARED WITH");
         note(c, sb.toString().trim());
+        note(c, "Each line: that night's resting rate, HRV, its own recovery against the nights before it, and its two z-scores (plus means better than its usual).");      // 0.75.0
         java.util.List<TodayModel.NightStat> all = new java.util.ArrayList<TodayModel.NightStat>(day.earlierNights);
         all.add(day.nowStat);
         java.util.Collections.sort(all, new java.util.Comparator<TodayModel.NightStat>() { @Override public int compare(TodayModel.NightStat a, TodayModel.NightStat b) { return Long.compare(a.bed, b.bed); } });
@@ -1302,8 +1313,52 @@ public class HealthActivity extends Activity {
             if (st.length() > 0) st.append("  \u00b7  ");
             st.append(new java.text.SimpleDateFormat("EEE d", L).format(new java.util.Date((s.bed + 43200L) * 1000L))).append(" ").append(rc == null ? "\u2014" : Math.round(rc[0]) + " %");
         }
-        c.addView(caps("LAST 7 NIGHTS"));
+        head(c, "LAST 7 NIGHTS");
         note(c, st.toString());
+    }
+
+    private static String rcN0(double v) { return Double.isNaN(v) ? "-" : String.valueOf(Math.round(v)); }
+
+    private static String rcByHour(double[] v) {
+        int last = v == null ? 0 : v.length;
+        while (last > 0 && Double.isNaN(v[last - 1])) last--;
+        StringBuilder s = new StringBuilder();
+        for (int i = 0; i < last; i++) { if (i > 0) s.append("  "); s.append(Double.isNaN(v[i]) ? "\u2014" : String.valueOf(Math.round(v[i]))); }
+        return s.toString();
+    }
+
+    /** 0.75.0: the night behind the two numbers: when the lowest 5 minutes were, the first and last 3 hours, hour by hour in bed, how much of the beat-to-beat timing the HRV used, and where this night sits among the nights compared with. All from fields SleepNight and TodayModel already hold; nothing new is measured. */
+    private void recoveryNight(LinearLayout c, TodayModel.Day day) {
+        SleepNight.Night n = day.night;
+        if (n == null) return;
+        head(c, "HEART RATE AND HRV THROUGH THE NIGHT");
+        if (!Double.isNaN(n.hrLow5)) kv(c, "Lowest 5-minute heart rate", Math.round(n.hrLow5) + " bpm" + (n.hrLow5Ts > 0 ? " at " + hhmm(n.hrLow5Ts) + ", " + HealthModel.hmShort(Math.max(0L, n.hrLow5Ts - n.bedTs)) + " in" : ""));
+        if (!Double.isNaN(n.hrMean)) kv(c, "Average heart rate in bed", Math.round(n.hrMean) + " bpm");
+        if (!Double.isNaN(n.hrFirst3) || !Double.isNaN(n.hrLast3)) kv(c, "Heart rate, first 3 h / last 3 h", rcN0(n.hrFirst3) + " / " + rcN0(n.hrLast3) + " bpm");
+        if (!Double.isNaN(n.rmFirst3) || !Double.isNaN(n.rmLast3)) kv(c, "HRV, first 3 h / last 3 h", rcN0(n.rmFirst3) + " / " + rcN0(n.rmLast3) + " ms");
+        String hh = rcByHour(n.hrByHour), hv = rcByHour(n.rmssdByHour);
+        if (hh.length() > 0) note(c, "Heart rate by hour in bed, first hour first (bpm): " + hh);
+        if (hv.length() > 0) note(c, "HRV by hour in bed, first hour first (ms; a dash means too little clean timing in that hour): " + hv);
+        if (!Double.isNaN(n.rrKeptPct)) kv(c, "HRV counted from", Math.round(n.rrKeptPct) + " % of the beat intervals");
+        if (!Double.isNaN(n.rmssdAll) && !Double.isNaN(n.rmssd)) kv(c, "HRV with no filter", Math.round(n.rmssdAll) + " ms (the score used " + Math.round(n.rmssd) + " ms)");
+        note(c, "The score's HRV uses only the seconds the strap does not mark as degraded or as having lost the pulse lock; the rest are left out.");
+        kv(c, "In bed but still / awake / up", Math.round(n.minStill) + " / " + Math.round(n.minWake) + " / " + Math.round(n.minUp) + " min");
+        kv(c, "Restless spells", String.valueOf(n.restless.size()));
+        if (n.partialStart || n.partialEnd) note(c, "The log starts or ends while the band is in sleep, so these numbers cover only the logged part of the night.");
+        if (day.nowStat == null || day.earlierNights == null) return;
+        TodayModel.RecDetail r = TodayModel.recoveryDetail(day.nowStat, day.earlierNights);
+        if (r == null || r.use.isEmpty()) return;
+        double loR = 1e9, hiR = -1e9, loH = 1e9, hiH = -1e9; int rateLower = 0, hrvHigher = 0;
+        for (TodayModel.NightStat s : r.use) {
+            loR = Math.min(loR, s.hrLow5); hiR = Math.max(hiR, s.hrLow5); loH = Math.min(loH, s.rmssd); hiH = Math.max(hiH, s.rmssd);
+            if (s.hrLow5 < day.nowStat.hrLow5) rateLower++;
+            if (s.rmssd > day.nowStat.rmssd) hrvHigher++;
+        }
+        head(c, "WHERE THIS NIGHT SITS");
+        kv(c, "Resting rate this night", Math.round(day.nowStat.hrLow5) + " bpm");
+        note(c, "The " + r.use.size() + " nights compared with ran " + Math.round(loR) + " to " + Math.round(hiR) + " bpm; " + rateLower + " of them were lower than this night.");
+        kv(c, "HRV this night", Math.round(day.nowStat.rmssd) + " ms");
+        note(c, "Those nights ran " + Math.round(loH) + " to " + Math.round(hiH) + " ms; " + hrvHigher + " of them were higher than this night.");
     }
 
     private void fillEffort(LinearLayout c, TodayModel.Day day) {
