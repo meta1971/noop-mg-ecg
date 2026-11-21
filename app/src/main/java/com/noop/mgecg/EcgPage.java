@@ -157,9 +157,10 @@ final class EcgPage {
                 } catch (Throwable ignored) { }
                 for (int i = 0; i < 40; i++) {                                     // event 118 comes about 5 s after the reading, stored by the next pull
                     List<StrapEvents.Raw> ev = StrapEvents.raw(ctx, 118, startSec - 20, startSec + (long) dur + 150, 5);
-                    if (!ev.isEmpty()) {
-                        for (java.util.Map.Entry<String, String> e : CrossChecks.ev118(ev.get(ev.size() - 1).in, meanFull).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue());
-                        try { if (f16keep != null) for (java.util.Map.Entry<String, String> e : CrossChecks.ev118Window(ev.get(ev.size() - 1).in, f16keep).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); } catch (Throwable ignored) { }      // 0.51.1
+                    byte[] own118 = ev.isEmpty() ? null : CrossChecks.own118(ev, startSec + (long) dur);      // 0.74.0: the reading's own event, not the last one in the window
+                    if (own118 != null) {
+                        for (java.util.Map.Entry<String, String> e : CrossChecks.ev118(own118, meanFull).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue());
+                        try { if (f16keep != null) for (java.util.Map.Entry<String, String> e : CrossChecks.ev118Window(own118, f16keep).entrySet()) ReadingNotes.put(d, startSec, e.getKey(), e.getValue()); } catch (Throwable ignored) { }      // 0.51.1
                         break;
                     }
                     try { Thread.sleep(5000L); } catch (InterruptedException ignored) { }

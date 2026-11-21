@@ -48,6 +48,7 @@ final class TodayModel {
         double recovery = Double.NaN;           // 1-99, or NaN while the baseline is too short
         int baselineNights;
         double zRhr = Double.NaN, zHrv = Double.NaN;
+        NightStat nowStat; List<NightStat> earlierNights;      // 0.74.0: for the detail under the recovery circle
         int maxHr = 167;
         List<long[]> naps = new ArrayList<>();  // 0.44.0: naps since the latest night {startTs, endTs, sleepSeconds}
         double napH;                            // hours asleep in those naps; the night's own numbers (efficiency, HRV, recovery) never include them
@@ -124,6 +125,43 @@ final class TodayModel {
         return new double[] {score, zr, zh, n};
     }
 
+    /** 0.74.0: everything behind one recovery number (the same filter, sort, floors and formula as recovery(); a test compares the two). */
+    static final class RecDetail { double mr, sr, ml, sl, zr, zh, z, score; boolean srFloor, slFloor; List<NightStat> use; }
+
+    static RecDetail recoveryDetail(NightStat now, List<NightStat> earlier) {
+        if (now == null || Double.isNaN(now.hrLow5) || Double.isNaN(now.rmssd) || now.rmssd <= 0) return null;
+        List<NightStat> use = new ArrayList<>();
+        for (NightStat s : earlier) {
+            if (s.bed >= now.bed) continue;
+            if (Double.isNaN(s.hrLow5) || Double.isNaN(s.rmssd) || s.rmssd <= 0) continue;
+            use.add(s);
+        }
+        Collections.sort(use, new Comparator<NightStat>() {
+            @Override public int compare(NightStat a, NightStat b) { return Long.compare(b.bed, a.bed); }
+        });
+        if (use.size() > MAX_BASELINE) use = use.subList(0, MAX_BASELINE);
+        int n = use.size();
+        if (n < MIN_BASELINE) return null;
+        double mr = 0, ml = 0;
+        for (NightStat s : use) { mr += s.hrLow5; ml += Math.log(s.rmssd); }
+        mr /= n; ml /= n;
+        double vr = 0, vl = 0;
+        for (NightStat s : use) { vr += (s.hrLow5 - mr) * (s.hrLow5 - mr); double d = Math.log(s.rmssd) - ml; vl += d * d; }
+        double sr0 = Math.sqrt(vr / Math.max(1, n - 1)), sl0 = Math.sqrt(vl / Math.max(1, n - 1));
+        RecDetail r = new RecDetail();
+        r.mr = mr; r.ml = ml; r.sr = Math.max(2.0, sr0); r.sl = Math.max(0.15, sl0); r.srFloor = sr0 < 2.0; r.slFloor = sl0 < 0.15;
+        r.zr = (mr - now.hrLow5) / r.sr; r.zh = (Math.log(now.rmssd) - ml) / r.sl; r.z = 0.5 * r.zr + 0.5 * r.zh;
+        r.score = Math.min(99.0, Math.max(1.0, 100.0 * phi(r.z))); r.use = use;
+        return r;
+    }
+
+    /** 0.74.0: inverse of phi by bisection (p in 0..1). */
+    static double phiInv(double p) {
+        double lo = -8, hi = 8;
+        for (int i = 0; i < 60; i++) { double mid = 0.5 * (lo + hi); if (phi(mid) < p) lo = mid; else hi = mid; }
+        return 0.5 * (lo + hi);
+    }
+
     static NightStat statOf(SleepNight.Night n, Spo2.Summary sp) {
         NightStat s = new NightStat();
         s.bed = n.bedTs;
@@ -170,6 +208,7 @@ final class TodayModel {
                 d.spo2 = Spo2.summarize(Spo2.windows(nr));
                 d.sleepPct = 100.0 * (d.night.tstH + d.napH) / sleepGoalH;                  // 0.44.0: the sleep ring shows night plus naps
                 NightStat now = statOf(d.night, d.spo2);
+                d.nowStat = now; d.earlierNights = earlier;
                 double[] rec = recovery(now, earlier);
                 if (rec != null) { d.recovery = rec[0]; d.zRhr = rec[1]; d.zHrv = rec[2]; d.baselineNights = (int) rec[3]; }
                 else {

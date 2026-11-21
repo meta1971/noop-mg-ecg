@@ -158,11 +158,13 @@ public class MainActivity extends NewLookActivity {
     private final UUID serialNumberChar =
             UUID.fromString("00002A25-0000-1000-8000-00805f9b34fb");
 
+    // 0.74.0: these two were swapped before (2A26 was called Hardware Revision). Bluetooth SIG: 2A26 = Firmware Revision String, 2A27 = Hardware Revision String.
+    // Strap B (addendum 350): 2A26 reads 50.35.3.0 = the firmware version of its history-start frames, 2A27 reads WS50_r00 = the board. Log lines from older builds carry the swapped labels.
     private final UUID hardwareRevisionChar =
-            UUID.fromString("00002A26-0000-1000-8000-00805f9b34fb");
+            UUID.fromString("00002A27-0000-1000-8000-00805f9b34fb");
 
     private final UUID firmwareRevisionChar =
-            UUID.fromString("00002A27-0000-1000-8000-00805f9b34fb");
+            UUID.fromString("00002A26-0000-1000-8000-00805f9b34fb");
 
     /*
      * Generic Attribute Service / Service Changed - never subscribed
@@ -10298,6 +10300,7 @@ public class MainActivity extends NewLookActivity {
                             Protocol.hex(value) + ")");
 
                     logRaw("DEVICE_INFO " + label + "=" + text);
+                    try { StrapData.noteDeviceInfo(this, label, text); } catch (Throwable ignored) { }      // 0.74.0: the Strap data page shows firmware, board and model
                 }
 
             } else {
@@ -12371,6 +12374,7 @@ public class MainActivity extends NewLookActivity {
         final double ampMv = Double.isNaN(r.rAmpUv) ? 1.0 : r.rAmpUv / 1000.0;
         final double top = Math.max(1.6, 1.5 * ampMv);
         final double bot = -Math.max(1.2, 0.8 * top);
+        final boolean flipStrip = r.inverted;      // 0.74.0: a recording whose R waves point down is drawn flipped; the stored files stay as recorded
         final double spc = rowSec * (double) fs / plotW;          // ECG samples per pixel column
 
         android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
@@ -12388,7 +12392,7 @@ public class MainActivity extends NewLookActivity {
                 totalSec, ScaleSetting.uv(),
                 Double.isNaN(r.hr) ? "-" : String.format(Locale.UK, "%.1f", r.hr),
                 Double.isNaN(r.rmssd) ? "-" : String.format(Locale.UK, "%.1f", r.rmssd),
-                s.beats.length), 16, 68, p);
+                s.beats.length) + (flipStrip ? "  |  drawn flipped (came in upside down)" : ""), 16, 68, p);
         p.setColor(0xFF555555);
         p.setTextSize(16f);
         c.drawText("Red = strap quality 3, grey = below 3, blue ticks = R peaks"
@@ -12439,7 +12443,7 @@ public class MainActivity extends NewLookActivity {
                 double mn = Double.MAX_VALUE, mx = -Double.MAX_VALUE;
                 double firstV = Double.NaN, lastV = Double.NaN;
                 for (int i = a; i < Math.max(b, a + 1) && i < s1; i++) {
-                    double v = s.mv[i];
+                    double v = flipStrip ? -s.mv[i] : s.mv[i];
                     if (Double.isNaN(v)) continue;
                     if (Double.isNaN(firstV)) firstV = v;
                     lastV = v;

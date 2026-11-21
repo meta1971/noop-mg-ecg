@@ -424,7 +424,7 @@ public class EcgWaveformView extends View {
                 xs[i] = w - shift - (n - 1 - i) * pxPerSample;
             }
             float v = Math.max(displayMin, Math.min(displayMax, samples[pos]));
-            ys[i] = h - ((v - displayMin) / range) * h;
+            ys[i] = scale.flip ? ((v - displayMin) / range) * h : h - ((v - displayMin) / range) * h;      // 0.74.0: a down-pointing R wave is mirrored so it reads the usual way up
         }
         if (!sweepMode && n > 0) seg[segs++] = 0;
 
@@ -448,10 +448,10 @@ public class EcgWaveformView extends View {
         canvas.drawText(
                 String.format(java.util.Locale.UK,
                         "%+.1f to %+.1f mV \u00b7 small box 0.1 mV \u00b7 large 0.5 mV",
-                        displayMin * UV_PER_COUNT / 1000.0,
-                        displayMax * UV_PER_COUNT / 1000.0),
+                        (scale.flip ? -displayMax : displayMin) * UV_PER_COUNT / 1000.0,
+                        (scale.flip ? -displayMin : displayMax) * UV_PER_COUNT / 1000.0),
                 12, 30, scaleLabelPaint);
-        canvas.drawText((autoScale ? "auto scale" : "fixed scale") + " \u00b7 " + (sweepMode ? "sweep" : "scroll")
+        canvas.drawText((autoScale ? "auto scale" : "fixed scale") + (scale.flip ? " \u00b7 shown flipped" : "") + " \u00b7 " + (sweepMode ? "sweep" : "scroll")
                         + String.format(java.util.Locale.UK, " \u00b7 %.1f s behind live", playout.lagSeconds()),
                 12, 58, scaleLabelPaint);
 

@@ -82,16 +82,36 @@ final class EcgSeg {
     static double zOf(List<Pt> pts, int i, int m) {
         Pt q = pts.get(i); if (!eligible(q, m)) return Double.NaN;
         double tMax = q.ts - GAP_DAYS * 86400.0, tMin = tMax - BASE_DAYS * 86400.0;
-        double[] all = new double[i], bk = new double[i]; int na = 0, nb = 0;
+        double[] all = new double[i], bk = new double[i], allH = new double[i], bkH = new double[i]; int na = 0, nb = 0;
         for (int j = 0; j < i; j++) {
             Pt o = pts.get(j); if (!eligible(o, m) || o.ts > tMax || o.ts < tMin) continue;
-            all[na++] = o.v[m]; if (o.bucket == q.bucket) bk[nb++] = o.v[m];
+            all[na] = o.v[m]; allH[na++] = o.v[HR]; if (o.bucket == q.bucket) { bk[nb] = o.v[m]; bkH[nb++] = o.v[HR]; }
         }
-        double[] use = nb >= MIN_BUCKET ? bk : all; int n = nb >= MIN_BUCKET ? nb : na;
+        double[] use = nb >= MIN_BUCKET ? bk : all, useH = nb >= MIN_BUCKET ? bkH : allH; int n = nb >= MIN_BUCKET ? nb : na;
         if (n < MIN_BASE) return Double.NaN;
+        double qv = q.v[m];
+        if (m == T && !Double.isNaN(q.v[HR])) {      // 0.74.0: the T wave rides on heart rate (about -3.6 uV per bpm, r -0.72 on 61 readings, addendum 345.3), so it is compared at THIS reading's heart rate
+            double[] adj = adjustToHr(use, useH, n, q.v[HR]);
+            if (adj != null) { use = adj; n = adj.length; }
+        }
         double med = TrendStats.median(use, n); double[] dev = new double[n]; for (int k = 0; k < n; k++) dev[k] = Math.abs(use[k] - med);
         double spread = Math.max(1.4826 * TrendStats.median(dev, n), FLOOR[m]);
-        return (q.v[m] - med) / spread;
+        return (qv - med) / spread;
+    }
+
+    /** 0.74.0: baseline values moved to heart rate hrQ along the Theil-Sen slope of value on heart rate over the baseline readings that have both. Null (no adjustment) with fewer than HR_ADJ_MIN of them, a heart-rate range under HR_ADJ_RANGE bpm or fewer than 10 usable pairs. CHOICES (8, 6, 10), not validated beyond the post hoc test of 345.4 item 5. */
+    static final int HR_ADJ_MIN = 8; static final double HR_ADJ_RANGE = 6.0;
+    static double[] adjustToHr(double[] val, double[] hr, int n, double hrQ) {
+        double[] x = new double[n], y = new double[n]; int k = 0; double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
+        for (int j = 0; j < n; j++) if (!Double.isNaN(hr[j]) && !Double.isNaN(val[j])) { x[k] = hr[j]; y[k] = val[j]; k++; if (hr[j] < lo) lo = hr[j]; if (hr[j] > hi) hi = hr[j]; }
+        if (k < HR_ADJ_MIN || hi - lo < HR_ADJ_RANGE) return null;
+        double[] sl = new double[k * (k - 1) / 2]; int c = 0;
+        for (int a = 0; a < k; a++) for (int b = a + 1; b < k; b++) if (Math.abs(x[b] - x[a]) >= 0.5) sl[c++] = (y[b] - y[a]) / (x[b] - x[a]);
+        if (c < 10) return null;
+        double slope = TrendStats.median(sl, c);
+        double[] out = new double[k];
+        for (int j = 0; j < k; j++) out[j] = y[j] + slope * (hrQ - x[j]);
+        return out;
     }
 
     // ------------------------------------------------------------------ colours of the grid (ARGB)
@@ -150,7 +170,7 @@ final class EcgSeg {
     static String pick(Grid g, int m, int d) {
         if (d < 0 || d >= g.days || g.cnt[m][d] == 0) return NAME[m] + "  \u00b7  " + (d >= 0 && d < g.days ? dayName(g, d) : "") + "  \u00b7  no reading";
         String s = NAME[m] + "  \u00b7  " + dayName(g, d) + "  \u00b7  " + num(m, g.val[m][d]) + " " + UNIT[m] + "  \u00b7  " + g.cnt[m][d] + (g.cnt[m][d] == 1 ? " reading" : " readings");
-        return Double.isNaN(g.z[m][d]) ? s + "  \u00b7  still learning your usual" : s + "  \u00b7  " + zs(g.z[m][d]) + " spreads from your usual";
+        return Double.isNaN(g.z[m][d]) ? s + "  \u00b7  still learning your usual" : s + "  \u00b7  " + zs(g.z[m][d]) + " spreads from your usual" + (m == T ? " (at the same heart rate)" : "");
     }
 
     /** The line under the grid: what moved on the newest measured day and whether it held on the one before. Never a diagnosis.

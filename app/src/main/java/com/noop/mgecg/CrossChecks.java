@@ -124,6 +124,19 @@ final class CrossChecks {
      * reading so the rule is tested on many: ev118_n1_ours, ev118_mean_ours, ev118_min_ours, ev118_max_ours, ev118_E_over_mean, ev118_C_over_min,
      * ev118_D_over_max, ev118_AB_ms, ev118_rr_ms.
      */
+    /** 0.74.0: the reading's own event 118. A later short session writes a 118 whose body is all FF (A and B 4294967295); it must not be taken for the reading's (addendum 350.1: ev118_A_ms 4294967295 in the notes of strap B's first reading). Among the valid bodies the one whose strap time is nearest endSec; null while none is valid. */
+    static byte[] own118(List<StrapEvents.Raw> ev, long endSec) {
+        byte[] best = null; long bd = Long.MAX_VALUE;
+        if (ev == null) return null;
+        for (StrapEvents.Raw r : ev) {
+            if (r == null || r.in == null || r.in.length < 19 || (r.in[0] & 0xFF) != 2) continue;
+            if (r.in.length >= 13 && (u32(r.in, 5) == 0xFFFFFFFFL || u32(r.in, 9) == 0xFFFFFFFFL)) continue;
+            long dd = Math.abs(r.ts - endSec);
+            if (dd < bd) { bd = dd; best = r.in; }
+        }
+        return best;
+    }
+
     static Map<String, String> ev118Window(byte[] in, List<byte[]> f16) {
         Map<String, String> m = new LinkedHashMap<>();
         if (in == null || in.length < 31 || (in[0] & 0xFF) != 2 || f16 == null || f16.size() < 40) return m;

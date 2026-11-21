@@ -41,6 +41,28 @@ final class StrapData {
 
     static String clock(long sec) { return new SimpleDateFormat("EEE d MMM HH:mm:ss", Locale.UK).format(new Date(sec * 1000L)); }
 
+    /** 0.74.0: the last Device Information strings, kept for the Strap data page (no serial is stored). */
+    static void noteDeviceInfo(Context a, String label, String text) {
+        if (label == null || text == null) return;
+        String key = "Firmware Revision".equals(label) ? "fw" : "Hardware Revision".equals(label) ? "board" : "Model Number".equals(label) ? "model" : "Manufacturer Name".equals(label) ? "manuf" : null;
+        if (key == null) return;
+        a.getSharedPreferences("device_info", Context.MODE_PRIVATE).edit().putString(key, text.trim()).putLong("at_ms", System.currentTimeMillis()).apply();
+    }
+
+    /** 0.74.0: Firmware, Board and Model rows from the stored Device Information strings, inserted at position at. */
+    static void addDeviceRows(Context a, List<String[]> st, int at) {
+        try {
+            android.content.SharedPreferences p = a.getSharedPreferences("device_info", Context.MODE_PRIVATE);
+            long ms = p.getLong("at_ms", 0L);
+            if (ms <= 0) { st.add(Math.min(at, st.size()), row("STATUS", "Firmware", "not read yet", "Read from the strap's Device Information service each time the link is made; nothing stored yet.")); return; }
+            String when = ageText(Math.max(0L, (System.currentTimeMillis() - ms) / 1000L)) + " ago";
+            String fw = p.getString("fw", ""), bd = p.getString("board", ""), md = p.getString("model", ""), mf = p.getString("manuf", "");
+            st.add(Math.min(at, st.size()), row("STATUS", "Firmware", fw.length() == 0 ? "?" : fw, "Device Information string 2A26. Read " + when + ". Builds before 0.74.0 printed this one as \"Hardware Revision\" (the two labels were swapped)."));
+            st.add(Math.min(at + 1, st.size()), row("STATUS", "Board", bd.length() == 0 ? "?" : bd, "Device Information string 2A27. Read " + when + "."));
+            st.add(Math.min(at + 2, st.size()), row("STATUS", "Model", ((mf.length() == 0 ? "" : mf + " ") + md).trim(), "Manufacturer and model strings of the Device Information service."));
+        } catch (Throwable ignored) { }
+    }
+
     static String ageText(long sec) {
         if (sec < 0) sec = 0;
         if (sec < 90) return sec + " s";
@@ -433,6 +455,7 @@ final class StrapData {
                     try { android.bluetooth.BluetoothAdapter ad = android.bluetooth.BluetoothAdapter.getDefaultAdapter(); if (ad != null) btv = ad.isEnabled() ? "ON" : "switch OFF (BLE-only or off)"; } catch (Throwable ignored) { }
                     android.content.SharedPreferences ck = a.getSharedPreferences("clockchk", Context.MODE_PRIVATE);
                     st.add(Math.min(3, st.size()), row("STATUS", "Phone Bluetooth", btv, "The official WHOOP app runs ECG only on a fully ready link (connected, bonded, hello exchanged, clock set). The live raw stream also works with the Bluetooth switch off (BLE-only): the readings of 28 and 29 Oct ran that way."));
+                    addDeviceRows(a, st, 4);      // 0.74.0
                     if (ck.getLong("at_ms", 0L) > 0) st.add(Math.min(4, st.size()), row("STATUS", "Strap clock", String.format(java.util.Locale.UK, "%+.2f s against the phone", ck.getFloat("diff_s", 0f)), "Measured after the last clock set (includes the Bluetooth delay of some tens of milliseconds). Before the sub-second set it was about -0.4 to -1.1 s."));
                     // 0.19.0: logger health: why the app process ended, crashes, swipes, the 15 minute alarm, battery and overlay settings
                     android.content.SharedPreferences ld = a.getSharedPreferences("linkdiag", Context.MODE_PRIVATE);

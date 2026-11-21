@@ -195,7 +195,7 @@ final class Explain {
     /** 0.72.0: the legend under the ECG day grid. */
     static String dayGrid() {
         return "Each square is that day's distance from YOUR usual for the same time of day: the middle and spread of your own readings taken at least 3 days earlier. Teal = within one spread, amber = above, blue = below, stronger = further (two spreads is the edge of your usual). "
-             + "Heart rate, HRV and R height are shown but do not raise the line above. A fixed offset (strap, wrist, electrode place, scale) cancels; a change from your usual shows. Single lead, informal, not a diagnosis. Chest pain, fainting or a racing or very irregular heartbeat needs medical help, not this page.";
+             + "Heart rate, HRV and R height are shown but do not raise the line above. The T wave row is compared at the same heart rate as the reading (T rides on heart rate), once 8 earlier readings with a spread of at least 6 bpm allow it. A fixed offset (strap, wrist, electrode place, scale) cancels; a change from your usual shows. Single lead, informal, not a diagnosis. Chest pain, fainting or a racing or very irregular heartbeat needs medical help, not this page.";
     }
 
     static String[][] reportMethod() {

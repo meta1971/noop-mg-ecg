@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.70.0 (17 Nov 2026): which strap this copy of the app talks to, chosen at run time (addendum 197.4: "a third strap needs no rebuild").
+// FILE VERSION 0.74.0 (21 Nov 2026): copy B knows the last four characters of strap B's label (B_NAME_TAIL): when exactly one strap in range has a name ending with them, Choose strap picks it without a list; several, only those are listed; none, the list is as before. Not a hard lock (the advertised name form of strap B is not in the files held), and no serial or address is compiled in. FILE VERSION 0.70.0 (17 Nov 2026): which strap this copy of the app talks to, chosen at run time (addendum 197.4: "a third strap needs no rebuild").
 // Copy A (the normal build) keeps the strap typed into MainActivity unless the owner chooses another; copy B (CopyB.B) has NO strap until the owner
 // picks one from a list of the straps in range (Today > the link chip > Change strap, or the "No strap chosen" card). The pick is two strings in the
 // preference file strap_lock: the Bluetooth address and the serial read from the advertised name. In copy B the strap of copy A is never offered, so the
@@ -39,6 +39,9 @@ final class StrapLock {
     private StrapLock() { }
 
     static final String PREFS = "strap_lock";
+    /** 0.74.0: the last four characters printed on strap B's case (copy B only; copy A never reads it). Four characters, not the serial. */
+    static final String B_NAME_TAIL = "0609";
+    static boolean tailMatch(String name) { return CopyB.B && B_NAME_TAIL.length() > 0 && name != null && name.trim().endsWith(B_NAME_TAIL); }
     static final long SCAN_MS = 8000L;
 
     // ------------------------------------------------------------------ pure helpers (tested off the phone in XQ70)
@@ -146,6 +149,12 @@ final class StrapLock {
         Collections.sort(addrs, new Comparator<String>() {
             @Override public int compare(String x, String y) { return Integer.parseInt(found.get(y)[1]) - Integer.parseInt(found.get(x)[1]); }
         });
+        if (CopyB.B) {      // 0.74.0: strap B is the one whose name ends with its label tail
+            List<String> hit = new ArrayList<String>();
+            for (String ad : addrs) if (tailMatch(found.get(ad)[0])) hit.add(ad);
+            if (hit.size() == 1) { picked(a, hit.get(0), found.get(hit.get(0))[0], done); return; }
+            if (hit.size() > 1) { addrs.clear(); addrs.addAll(hit); }
+        }
         AlertDialog.Builder b = new AlertDialog.Builder(a, android.R.style.Theme_DeviceDefault_Dialog_Alert);
         if (addrs.isEmpty()) {
             b.setTitle("No strap found")
@@ -166,16 +175,20 @@ final class StrapLock {
                 .setItems(items, new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int which) {
                         String addr = addrs.get(which);
-                        String name = found.get(addr)[0];
-                        save(a, addr, serialFromName(name));
-                        toast(a, "Strap chosen. Connecting.");
-                        if (DayLog.enabled(a)) MainActivity.requestStrapChanged(a);
-                        else { DayLog.setEnabled(a, true); DayLogService.start(a); MainActivity.startLinkHost(a); }
-                        if (done != null) done.run();
+                        picked(a, addr, found.get(addr)[0], done);
                     }
                 })
                 .setNegativeButton("None of these", null)
                 .show();
+    }
+
+    /** Saves the chosen strap and starts or restarts the link (0.74.0: the body of the list tap, shared with the automatic pick). */
+    private static void picked(Activity a, String addr, String name, Runnable done) {
+        save(a, addr, serialFromName(name));
+        toast(a, "Strap chosen. Connecting.");
+        if (DayLog.enabled(a)) MainActivity.requestStrapChanged(a);
+        else { DayLog.setEnabled(a, true); DayLogService.start(a); MainActivity.startLinkHost(a); }
+        if (done != null) done.run();
     }
 
     private static boolean permitted(Activity a) {

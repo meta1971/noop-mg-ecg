@@ -33,6 +33,7 @@ public class Live500View extends View {
     private final float[] v = new float[Live500.CAP], tmp = new float[Live500.CAP];
     private final double[] t = new double[Live500.CAP];
     private final double[] bt = new double[128]; private final float[] ba = new float[128]; private final boolean[] bo = new boolean[128];
+    private boolean flipView = false; private long lastFlipMs = 0L;      // 0.74.0: a lead whose R waves point down is shown mirrored (addendum 350); decided on the snapshot, sticky
     private final Path path = new Path(), calPath = new Path(), pathA = new Path(), pathG = new Path(), tri = new Path(), clipP = new Path();
     private final RectF rect = new RectF();
     private final byte[] qv = new byte[Live500.CAP];
@@ -146,6 +147,18 @@ public class Live500View extends View {
         shPlot = new LinearGradient(0, 0, 0, Math.max(1, h), paper ? 0xFFFFFDF9 : 0xFF0F151D, paper ? 0xFFFAF4EA : 0xFF0B0F15, Shader.TileMode.CLAMP);
     }
 
+    /** 0.74.0: every 0.6 s on a fresh snapshot (recorded sign): the 0.3 and 99.7 percentiles of the good samples about the median. Down-pointing when the negative side is 1.3 times the positive one; back to upright when the positive side is 1.3 times the negative one. The snapshot is the recorded sign here (it is mirrored after this call). */
+    private void decideFlip(long now, int m) {
+        if (now - lastFlipMs < 600 || m < 500) return;
+        lastFlipMs = now;
+        int k = 0;
+        for (int i = 0; i < m; i++) if (!Float.isNaN(v[i]) && qv[i] >= 2) tmp[k++] = v[i];
+        if (k < 400) return;
+        java.util.Arrays.sort(tmp, 0, k);
+        float med = tmp[k / 2], pPos = tmp[Math.min(k - 1, (int) (k * 0.997f))] - med, pNeg = med - tmp[(int) (k * 0.003f)];
+        if (pNeg > 1.3f * pPos) flipView = true; else if (pPos > 1.3f * pNeg) flipView = false;
+    }
+
     private void updateScale(long now, int m) {
         if (now - lastScaleMs < 300 || m < 250) return;
         lastScaleMs = now;
@@ -212,7 +225,7 @@ public class Live500View extends View {
         if (RingGuard.active(now)) { footLeft = "Phone buzzing: a step in the trace is likely"; footLeftCol = 0xFFF2B84B; }      // 0.57.0
         else if (nzNote.length() > 0) { footLeft = nzNote; footLeftCol = nzCol; }
         else {
-            String[] parts = { "Lead I", "500 Hz", Live500.modeLabel(), String.format(L, "%.1f s delay", Live500.delaySeconds()), autoScale ? "auto scale" : "fixed -1 to +2 mV" };
+            String[] parts = { flipView ? "Lead I (shown flipped)" : "Lead I", "500 Hz", Live500.modeLabel(), String.format(L, "%.1f s delay", Live500.delaySeconds()), autoScale ? "auto scale" : "fixed -1 to +2 mV" };
             int np = parts.length; String left;
             while (true) { StringBuilder sb = new StringBuilder(); for (int i = 0; i < np; i++) { if (i > 0) sb.append("  \u00b7  "); sb.append(parts[i]); } left = sb.toString(); if (np <= 2 || label.measureText(left) <= fMaxLeft) break; np--; }
             footLeft = left; footLeftCol = 0;
@@ -243,7 +256,7 @@ public class Live500View extends View {
         float rightPad = winOverrideMs > 0 ? 58f * dp : 12f * dp;                  // the full screen has its close button top right
         float headH = Math.min(58f * dp, 0.22f * h), footH = Math.min(22f * dp, 0.09f * h);
         pt = headH; pb = h - footH; ph = Math.max(10f, pb - pt);
-        int m; if (busyNow && haveSnap) m = snapM; else { m = Live500.snapshotQ(now, win, v, t, qv); snapM = m; haveSnap = true; }
+        int m; if (busyNow && haveSnap) m = snapM; else { m = Live500.snapshotQ(now, win, v, t, qv); snapM = m; haveSnap = true; decideFlip(now, m); if (flipView) for (int i = 0; i < m; i++) v[i] = -v[i]; }      // 0.74.0
         updateScale(now, m); easeScale(now);
         float lo = autoScale ? sc.yMin : -1f, hi = autoScale ? sc.yMax : 2f, span = Math.max(0.3f, hi - lo);
         double msPerPx = win / Math.max(1, w); final double nowQ = Math.floor(nowD / msPerPx) * msPerPx;
@@ -289,7 +302,7 @@ public class Live500View extends View {
 
         boolean pro = Live500.pro; lastRrMs = Double.NaN;
         if (pro && m > 0) {
-            int nb = busyNow ? nbCache : Live500.proBeats(now, win, bt, ba, bo); nbCache = nb;
+            int nb; if (busyNow) nb = nbCache; else { nb = Live500.proBeats(now, win, bt, ba, bo); if (flipView) for (int i = 0; i < nb; i++) ba[i] = -ba[i]; } nbCache = nb;
             for (int i = 0; i < nb; i++) {                                                   // dim the beats that do not match the typical shape
                 if (!bo[i] && !sweep) { float xa = xOf(bt[i] - 250, nowQ, w, win), xb = xOf(bt[i] + 450, nowQ, w, win); canvas.drawRect(Math.max(0, xa), pt, Math.min(w, xb), pb, veil); }
             }

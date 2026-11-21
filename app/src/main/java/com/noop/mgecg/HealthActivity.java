@@ -1246,14 +1246,64 @@ public class HealthActivity extends Activity {
             }
             note(c, "Score = 100 x the normal curve of the average of the two z-scores. One spread is your own usual night-to-night change. A lower resting rate and a higher HRV both raise it.");
             rows(c, Explain.recoveryBands());
+            try { recoveryDetail(c, day); } catch (Throwable ignored) { }      // 0.74.0
         }
         if (n != null) {
-            kv(c, "Slept", HealthModel.hm(n.tstH));
+            kv(c, "In bed", hhmm(n.bedTs) + " to " + hhmm(n.endTs) + " (" + HealthModel.hm(n.tibH) + ")");      // 0.74.0
+            kv(c, "Slept", HealthModel.hm(n.tstH) + (n.effPct > 0 ? ", " + Math.round(n.effPct) + " % of the time in bed" : ""));
+            if (n.settleMin > 0) kv(c, "Settled after", Math.round(n.settleMin) + " min");
+            kv(c, "Records present", Math.round(n.coveragePct) + " % of the seconds in bed" + (n.coveragePct < 90 ? " (gaps lower the confidence)" : ""));
             if (!Double.isNaN(n.brMedian)) kv(c, "Breathing", String.format(Locale.UK, "%.1f a minute", n.brMedian));
             if (!Double.isNaN(n.skinMedian)) kv(c, "Skin temperature (night median)", String.format(Locale.UK, "%.1f \u00b0C", n.skinMedian));
             kv(c, "Not in the score", "sleep, breathing, skin, SpO2");
+            StringBuilder miss = new StringBuilder();      // 0.74.0: inputs this night did not have
+            if (Double.isNaN(n.brMedian)) miss.append("breathing; ");
+            if (Double.isNaN(n.skinMedian)) miss.append("skin temperature; ");
+            if (day.spo2 == null) miss.append("SpO2; ");
+            if (Double.isNaN(n.hrLow5)) miss.append("resting rate; ");
+            if (Double.isNaN(n.rmssd)) miss.append("overnight HRV; ");
+            if (miss.length() > 0) kv(c, "Missing for this night", miss.substring(0, miss.length() - 2));
         }
         note(c, "An estimate from this strap's own records. Optical HRV reads higher than an ECG strap's; your own nights absorb that. Not WHOOP's recovery and not a medical measure.");
+    }
+
+    /** 0.74.0: what stands behind the recovery number: the baseline (mean and spread of resting rate, geometric mean and spread of HRV), what each part adds, what would move it by 10, the baseline nights and the last 7 scores. All from the nights the app already holds. */
+    private void recoveryDetail(LinearLayout c, TodayModel.Day day) {
+        if (day.nowStat == null || day.earlierNights == null) return;
+        TodayModel.RecDetail r = TodayModel.recoveryDetail(day.nowStat, day.earlierNights);
+        if (r == null) return;
+        Locale L = Locale.UK;
+        c.addView(caps("BEHIND THE NUMBER"));
+        kv(c, "Your usual resting rate", String.format(L, "%.1f bpm, spread %.1f bpm", r.mr, r.sr) + (r.srFloor ? " (the 2 bpm floor)" : ""));
+        kv(c, "Your usual HRV", String.format(L, "%.0f ms, spread %.0f %%", Math.exp(r.ml), 100.0 * (Math.exp(r.sl) - 1.0)) + (r.slFloor ? " (the 15 % floor)" : ""));
+        kv(c, "What each part adds", String.format(L, "resting rate %+.2f, HRV %+.2f, together %+.2f", 0.5 * r.zr, 0.5 * r.zh, r.z));
+        note(c, String.format(L, "Score = 100 x the normal curve at %+.2f = %.0f %%. Each part is half of its z-score.", r.z, r.score));
+        for (int dir = 1; dir >= -1; dir -= 2) {
+            double target = r.score + 10.0 * dir;
+            if (target < 2.0 || target > 98.0) continue;
+            double dz = TodayModel.phiInv(target / 100.0) - r.z;
+            double dRhr = -2.0 * dz * r.sr, hrvPct = 100.0 * (Math.exp(2.0 * dz * r.sl) - 1.0);
+            note(c, String.format(L, "To reach %.0f %% (%s10): resting rate %.1f bpm %s, or HRV %.0f %% %s, the other part unchanged.", target, dir > 0 ? "+" : "\u2212", Math.abs(dRhr), dRhr < 0 ? "lower" : "higher", Math.abs(hrvPct), hrvPct > 0 ? "higher" : "lower"));
+        }
+        java.text.SimpleDateFormat df = new java.text.SimpleDateFormat("EEE d MMM", L);
+        StringBuilder sb = new StringBuilder();
+        for (TodayModel.NightStat s : r.use) {      // newest first
+            double[] rc = TodayModel.recovery(s, day.earlierNights);
+            sb.append(df.format(new java.util.Date((s.bed + 43200L) * 1000L))).append(": ").append(Math.round(s.hrLow5)).append(" bpm, ").append(Math.round(s.rmssd)).append(" ms").append(rc == null ? "" : ", " + Math.round(rc[0]) + " %").append("\n");
+        }
+        c.addView(caps("THE " + r.use.size() + " NIGHTS COMPARED WITH"));
+        note(c, sb.toString().trim());
+        java.util.List<TodayModel.NightStat> all = new java.util.ArrayList<TodayModel.NightStat>(day.earlierNights);
+        all.add(day.nowStat);
+        java.util.Collections.sort(all, new java.util.Comparator<TodayModel.NightStat>() { @Override public int compare(TodayModel.NightStat a, TodayModel.NightStat b) { return Long.compare(a.bed, b.bed); } });
+        StringBuilder st = new StringBuilder();
+        for (int i = Math.max(0, all.size() - 7); i < all.size(); i++) {
+            TodayModel.NightStat s = all.get(i); double[] rc = TodayModel.recovery(s, all);
+            if (st.length() > 0) st.append("  \u00b7  ");
+            st.append(new java.text.SimpleDateFormat("EEE d", L).format(new java.util.Date((s.bed + 43200L) * 1000L))).append(" ").append(rc == null ? "\u2014" : Math.round(rc[0]) + " %");
+        }
+        c.addView(caps("LAST 7 NIGHTS"));
+        note(c, st.toString());
     }
 
     private void fillEffort(LinearLayout c, TodayModel.Day day) {
@@ -1448,6 +1498,8 @@ public class HealthActivity extends Activity {
         }
         if (d == null || d.day == null || d.day.newestTs == 0) {
             col.addView(head("Hi, " + name(), "Today", null));
+            View emptyBanner = loggerBanner(0L);      // 0.74.0: copy B with no strap chosen shows its Choose strap card here too (it used to be hidden behind this early return)
+            if (emptyBanner != null) col.addView(emptyBanner, lp(-1, -2, 12));
             LinearLayout c = card(18);
             c.addView(caps("NO RECORDS YET"));
             TextView t = tv("Turn on the day logger and pull the strap's history. This screen fills in from the strap's own per-second records.", 14, MUT, 400);
@@ -1455,6 +1507,8 @@ public class HealthActivity extends Activity {
             c.addView(t);
             col.addView(c, lp(-1, -2, 18));
             col.addView(pillButton("Open the day logger", BLUE, 0xFF05131E, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, DayLogActivity.class)); } }), lp(-1, dpi(46), 14));
+            col.addView(rowCard("Strap data", "Every value the strap sends while worn: link, clock, storage, firmware, events (works before the first record)",
+                    new View.OnClickListener() { @Override public void onClick(View v) { StrapData.show(HealthActivity.this); } }), lp(-1, -2, 12));      // 0.74.0
             return wrap(col);
         }
         TodayModel.Day day = d.day;

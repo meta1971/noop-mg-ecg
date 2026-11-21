@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.2.3 (3 Oct): live graph auto-scale (calmer zoom)
+// FILE VERSION 0.74.0 (21 Nov 2026): flip flag (a lead whose R wave points down is drawn mirrored so it reads the usual way up; the samples are not changed). FILE VERSION 0.2.3 (3 Oct): live graph auto-scale (calmer zoom)
 
 import java.util.Arrays;
 
@@ -20,10 +20,13 @@ public final class EcgAutoScale {
     static final float ABOVE = 1.6f, BELOW = 0.65f;                       // window = peak x (1.6 above, 0.65 below baseline)
 
     public float min = DEFAULT_MIN, max = DEFAULT_MAX;
+    /** 0.74.0: true while the R waves point down (strap on the right wrist with the left finger, addendum 350). Sticky: it changes only when one side is 1.3 times the other. The view mirrors the trace; min and max stay in recorded coordinates. */
+    public boolean flip = false;
 
     public void reset() {
         min = DEFAULT_MIN;
         max = DEFAULT_MAX;
+        flip = false;
     }
 
     /** vals[0..n) are the samples currently on screen (any order), in microvolts. */
@@ -45,6 +48,7 @@ public final class EcgAutoScale {
         float pPos = s[Math.min(n - 1, (int) (0.99 * (n - 1)))] - med;
         float pNeg = med - s[Math.max(0, (int) (0.01 * (n - 1)))];
         boolean inverted = pNeg > 1.3f * pPos;
+        if (inverted) flip = true; else if (pPos > 1.3f * pNeg) flip = false;
         float peak = Math.max(pPos, pNeg);
         if (peak < 1f) return;
 
