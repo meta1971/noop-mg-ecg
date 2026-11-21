@@ -1,5 +1,7 @@
 plugins { id 'com.android.application' }
 
+// 0.77.0: copy C, the third copy of the app for a third strap (addendum 369). gradle assembleDebug -PcopyC=1: applicationId com.noop.mgecg.c (installs beside A and B), launcher name "MG Heart C", versionName ending -C,
+// its own Download folders (CopyB.SFX = C), no strap until the owner picks one, and strap B is never offered in its list. Copy A and copy B behave exactly as in 0.76.0.
 // 0.76.0: beats are aligned twice in EcgR16Analyzer.peaks() (ankle / lead III readings: 7 ms jitter and one third of beats cut by the shape gate before, 1-3 ms and 0-1 % after; copy A unchanged); ALIGN2 and LATE_ART diagnostics in the R16_ANALYSIS line.
 // 0.75.1: long values on the recovery page go under their label (they squeezed it to one letter per line), headings get space above.
 // 0.75.0: Strap position gets Ankle R and Ankle L; the recovery page shows the night behind the two numbers (lowest 5 minutes, hour by hour, HRV filter share, where the night sits among the nights compared with).
@@ -11,15 +13,17 @@ plugins { id 'com.android.application' }
 // gradle assembleDebug -PcopyB=1 builds copy B: applicationId com.noop.mgecg.b (installs BESIDE copy A), launcher name "MG Heart B",
 // versionName ending -B, its own Download folders (CopyB.SFX), and no strap until the owner picks one.
 def copyB = project.hasProperty('copyB')
+def copyC = project.hasProperty('copyC')
 
 android { namespace 'com.noop.mgecg'; compileSdk 34
     buildFeatures { buildConfig true }
     defaultConfig {
-        applicationId copyB ? 'com.noop.mgecg.b' : 'com.noop.mgecg'
-        minSdk 26; targetSdk 34; versionCode 192
-        versionName copyB ? '0.76.0-pro-B' : '0.76.0-pro'
+        applicationId copyC ? 'com.noop.mgecg.c' : (copyB ? 'com.noop.mgecg.b' : 'com.noop.mgecg')
+        minSdk 26; targetSdk 34; versionCode 193
+        versionName copyC ? '0.77.0-pro-C' : (copyB ? '0.77.0-pro-B' : '0.77.0-pro')
         buildConfigField 'boolean', 'COPY_B', copyB ? 'true' : 'false'
-        manifestPlaceholders = [appLabel: copyB ? 'MG Heart B' : 'MG Heart', appIcon: copyB ? '@mipmap/ic_launcher_b' : '@mipmap/ic_launcher']
+        buildConfigField 'boolean', 'COPY_C', copyC ? 'true' : 'false'
+        manifestPlaceholders = [appLabel: copyC ? 'MG Heart C' : (copyB ? 'MG Heart B' : 'MG Heart'), appIcon: copyC ? '@mipmap/ic_launcher_c' : (copyB ? '@mipmap/ic_launcher_b' : '@mipmap/ic_launcher')]
     }
     // One fixed signing key for every build, so each new APK installs OVER the old one and keeps its data.
     // (Without it every CI run signs with a fresh random debug key and Android refuses the update.)
