@@ -233,11 +233,91 @@ public class NewLookActivity extends Activity {
             ui.postDelayed(() -> openReport(new File(rp)), 700);
         } else if (in.getBooleanExtra("start_ecg", false)) {
             in.removeExtra("start_ecg");
+            final long triAt = in.getLongExtra(TriGo.X_AT, 0L);      // 0.78.0 TRI-GO: started by another copy
+            final String triCh = in.getStringExtra(TriGo.X_CHAIN) == null ? "" : in.getStringExtra(TriGo.X_CHAIN), triHm = in.getStringExtra(TriGo.X_HOME) == null ? "" : in.getStringExtra(TriGo.X_HOME);
+            in.removeExtra(TriGo.X_AT); in.removeExtra(TriGo.X_CHAIN); in.removeExtra(TriGo.X_HOME);
+            if (triAt > 0L) {
+                long tn = System.currentTimeMillis();
+                if (TriGo.acceptable(triAt, tn) && TriGo.isCopy(triHm)) {
+                    triAtMs = triAt; triHome = triHm; counting = false;
+                    triLog("TRI_GO_ARMED at_ms=" + triAt + " in_ms=" + (triAt - tn) + " copy=" + TriGo.suffix(getPackageName()) + " rest=" + triCh);
+                    ui.postDelayed(() -> triForward(triCh, triHm, triAt), TriGo.FORWARD_MS);
+                } else triLog("TRI_GO_REFUSED at_ms=" + triAt + " now_ms=" + tn);
+            }
             if (in.getBooleanExtra("stand_test", false)) { in.removeExtra("stand_test"); armStand(); }      // 0.54.0 idea 4: the morning reminder's Stand test action
             fromNew = true;
             showStarting("Getting your strap ready\u2026", "");
             ui.postDelayed(() -> takeEcg(), 250);
         }
+    }
+
+    // ------------------------------------------------------------------ 0.78.0 TRI-GO: one tap starts the reading in all installed copies (A, B, C) at one phone-clock time
+    private long triAtMs;                                  // 0 = not armed; the shared start, phone clock (ms)
+    private String triHome = "";                           // the copy that was tapped (brought back to the front at the end of the chain)
+    private final Runnable triRun = new Runnable() { @Override public void run() { triTick(); } };
+
+    /** App-log line through MainActivity.logRaw (private there, so by reflection; the plain Android log if that fails). */
+    void triLog(String s) {
+        try { java.lang.reflect.Method m = MainActivity.class.getDeclaredMethod("logRaw", String.class); m.setAccessible(true); m.invoke(this, s); }
+        catch (Throwable e) { android.util.Log.i("TRI_GO", s); }
+    }
+
+    private boolean triInstalled(String pkg) {
+        try { getPackageManager().getPackageInfo(pkg, 0); return true; } catch (Throwable e) { return false; }
+    }
+
+    /** The Lab's T row: this copy fixes the start time (now + 30 s), arms itself and launches the other installed copies in turn; the last one brings this copy back to the front. */
+    void triGo() {
+        try {
+            if (ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP")) { toast("A reading is already running here."); return; }
+            if (state != ST_ECG || ecgStartBtn == null) { toast("Open the ECG page first."); return; }
+            final long at = System.currentTimeMillis() + TriGo.LEAD_MS;
+            final String self = getPackageName();
+            boolean[] inst = new boolean[TriGo.PKGS.length];
+            for (int i = 0; i < inst.length; i++) inst[i] = TriGo.PKGS[i].equals(self) || triInstalled(TriGo.PKGS[i]);
+            final String chain = TriGo.chain(self, inst);
+            counting = false;                                          // the 5 s countdown must not also start it
+            triAtMs = at; triHome = self;
+            triLog("TRI_GO_TAP at_ms=" + at + " copy=" + TriGo.suffix(self) + " chain=" + chain);
+            toast(chain.isEmpty() ? "TRI-GO: no other copy is installed; this strap only." : "TRI-GO: opening the other copies; all start together at the time shown.");
+            ui.removeCallbacks(triRun); ui.post(triRun);
+            if (!chain.isEmpty()) ui.postDelayed(() -> triForward(chain, self, at), 400L);
+        } catch (Throwable e) { triAtMs = 0L; toast("TRI-GO failed: " + e); }
+    }
+
+    /** Launches the next copy of the chain with the shared start time (explicit intent, the widget's flags), or, when the chain is empty, brings the copy that was tapped back to the front. */
+    private void triForward(String chain, String home, long at) {
+        try {
+            String next = TriGo.first(chain);
+            android.content.Intent it = new android.content.Intent().setClassName(next.isEmpty() ? home : next, TriGo.ACTIVITY)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK | android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            if (next.isEmpty()) {
+                if (!TriGo.isCopy(home) || home.equals(getPackageName())) return;
+                triLog("TRI_GO_HOME to=" + TriGo.suffix(home));
+            } else {
+                it.putExtra("stay", true).putExtra("start_ecg", true).putExtra(TriGo.X_AT, at).putExtra(TriGo.X_CHAIN, TriGo.rest(chain)).putExtra(TriGo.X_HOME, home);
+                triLog("TRI_GO_LAUNCH to=" + TriGo.suffix(next) + " at_ms=" + at);
+            }
+            startActivity(it);
+        } catch (Throwable e) { triLog("TRI_GO_FORWARD_FAILED " + e); }
+    }
+
+    /** Waits for the reading page (the strap may still be connecting), shows the countdown pill, and at the start time presses START (at once and logged late if the page came up after it). */
+    private void triTick() {
+        if (triAtMs <= 0L) return;
+        long now = System.currentTimeMillis();
+        if (isFinishing() || isDestroyed() || TriGo.expired(triAtMs, now)) { triLog("TRI_GO_DROPPED at_ms=" + triAtMs + " state=" + state); triAtMs = 0L; hideCountdown(); return; }
+        if (state != ST_ECG || ecgStartBtn == null) { ui.postDelayed(triRun, 300L); return; }
+        if (ecgStartBtn.getText().toString().startsWith("STOP")) { triAtMs = 0L; hideCountdown(); return; }
+        long left = triAtMs - now;
+        if (left <= 0L) {
+            long at = triAtMs; triAtMs = 0L; counting = false; hideCountdown();
+            triLog("TRI_GO_FIRE at_ms=" + at + " now_ms=" + now + " late_ms=" + (now - at));
+            ecgStartBtn.performClick();
+            return;
+        }
+        if (ecgPage != null) ecgPage.setCountdown(TriGo.pill(triAtMs, now, java.util.TimeZone.getDefault()));
+        ui.postDelayed(triRun, TriGo.tickDelay(left));
     }
 
     /** 0.54.0: arms run G (lying to standing, 3 min) for the reading that starts after the strap is ready. The arming stamp is set 4 minutes ahead so the connect wait and the 5 s countdown do not expire it (a run is valid 90 s after its stamp); it is one-shot and cleared when the reading ends. */
@@ -576,6 +656,7 @@ public class NewLookActivity extends Activity {
 
     /** Five seconds to get the fingers on, then the same press of the Start button that you would make. Tap the card to cancel; the setting is in Settings. */
     private void beginCountdown() {
+        if (triAtMs > 0L) { counting = false; sawRunning = false; ui.removeCallbacks(triRun); ui.post(triRun); return; }      // 0.78.0 TRI-GO: the shared start time replaces the 5 s countdown
         if (!getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getBoolean("ecg_autostart", true)) return;
         counting = true;
         countLeft = 5;
@@ -592,6 +673,7 @@ public class NewLookActivity extends Activity {
     /** 0.43.0: the Lab starts a test with its own get-ready pill, so the 5 s auto-start must not also press START. */
     void cancelAutoCountdown() {
         counting = false;
+        triAtMs = 0L;                                        // 0.78.0: a tap on the pill, or a guided run, also cancels a TRI-GO start in this copy
         hideCountdown();
     }
 

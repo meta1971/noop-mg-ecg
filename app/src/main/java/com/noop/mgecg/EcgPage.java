@@ -770,6 +770,17 @@ final class EcgPage {
                 LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, dp(42)); gp.leftMargin = dp(10); row.addView(go, gp);
                 box.addView(row, lp(-1, -2, 8));
             }
+            {                                                                               // 0.78.0 TRI-GO: one tap starts the reading in all installed copies at one shared time
+                LinearLayout row = hrow(); row.setBackground(HealthViews.glass(a, 16)); row.setPadding(dp(16), dp(12), dp(12), dp(12));
+                LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.VERTICAL);
+                mid.addView(t("T   TRI-GO: start all three", 15, INK, 400), new LinearLayout.LayoutParams(-2, -2));
+                TextView pl = t("Starts the reading in copies A, B and C at one shared time, 30 s after the tap, so both hands can be on the clasps. The other copies open one after the other and this one comes back. Each copy needs its strap connected.", 12, MUT, 400); pl.setLineSpacing(0, 1.2f); mid.addView(pl, lp(-2, -2, 3));
+                row.addView(mid, new LinearLayout.LayoutParams(0, -2, 1f));
+                TextView go = pill("Start", BLUE, DARK); go.setPadding(dp(18), 0, dp(18), 0);
+                go.setOnClickListener(v -> { if (dd[0] != null) dd[0].dismiss(); a.triGo(); });
+                LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, dp(42)); gp.leftMargin = dp(10); row.addView(go, gp);
+                box.addView(row, lp(-1, -2, 8));
+            }
             if (pr.getBoolean("research_lab_s", false)) {      // 0.51.0: behind You > Settings > Research
                 LinearLayout row = hrow(); row.setBackground(HealthViews.glass(a, 16)); row.setPadding(dp(16), dp(12), dp(12), dp(12));
                 LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.VERTICAL);
