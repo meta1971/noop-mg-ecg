@@ -1,0 +1,39 @@
+name: Build MG Heart C APK (third strap)
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Install platform 34 + build-tools
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: assembleDebug copy C
+        run: gradle assembleDebug -PcopyC=1 --stacktrace
+
+      - name: Upload copy C APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mg-heart-c-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
