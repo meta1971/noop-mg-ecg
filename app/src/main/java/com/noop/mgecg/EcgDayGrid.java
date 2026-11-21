@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.72.0 (20 Nov 2026): the day grid of the Trends screen. One row per ECG measure, one column per day (oldest left, today right). A cell is the day's median distance from YOUR usual of the same time of day
+// FILE VERSION 0.72.1 (20 Nov 2026): a vertical swipe on the grid scrolls the page again (0.72.0 blocked it). 0.72.0 (20 Nov 2026): the day grid of the Trends screen. One row per ECG measure, one column per day (oldest left, today right). A cell is the day's median distance from YOUR usual of the same time of day
 // (EcgSeg.grid): grey-green = within one spread, amber = above, blue = below, stronger colour = further (two spreads or more is the edge of what is usual for you). Empty = no reading that day or still learning. Tap a cell for its numbers.
 
 import android.content.Context;
@@ -55,13 +55,25 @@ final class EcgDayGrid extends View {
         }
     }
 
+    private float downX, downY; private boolean horizontal;
+
+    /** A tap selects a square; a mostly horizontal drag moves the selection along the grid; a vertical swipe is left to the page so it still scrolls. */
     @Override public boolean onTouchEvent(MotionEvent e) {
         if (g == null || rows.length == 0) return false;
-        if (e.getAction() == MotionEvent.ACTION_DOWN || e.getAction() == MotionEvent.ACTION_MOVE) {
-            float gridW = getWidth() - labW, cw = gridW / g.days; int d = (int) ((e.getX() - labW) / cw), r = (int) ((e.getY() - headH) / cellH);
-            if (d >= 0 && d < g.days && r >= 0 && r < rows.length) { selR = r; selC = d; invalidate(); if (pick != null) pick.onPick(EcgSeg.pick(g, rows[r], d)); }
-            getParent().requestDisallowInterceptTouchEvent(true);
+        int act = e.getAction();
+        if (act == MotionEvent.ACTION_DOWN) { downX = e.getX(); downY = e.getY(); horizontal = false; select(e); return true; }
+        if (act == MotionEvent.ACTION_MOVE) {
+            float dx = Math.abs(e.getX() - downX), dy = Math.abs(e.getY() - downY), slop = dp(getContext(), 8);
+            if (!horizontal && dy > slop && dy > dx) return false;                 // vertical: let the ScrollView take it
+            if (dx > slop && dx >= dy) { horizontal = true; if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true); }
+            if (horizontal) select(e);
+            return true;
         }
         return true;
+    }
+
+    private void select(MotionEvent e) {
+        float gridW = getWidth() - labW, cw = gridW / g.days; int d = (int) ((e.getX() - labW) / cw), r = (int) ((e.getY() - headH) / cellH);
+        if (e.getX() >= labW && d >= 0 && d < g.days && r >= 0 && r < rows.length) { selR = r; selC = d; invalidate(); if (pick != null) pick.onPick(EcgSeg.pick(g, rows[r], d)); }
     }
 }
