@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.73.0 (21 Nov 2026): QTc in the grid is the headline QT card value (P_QTCF); the other segments are unchanged.
 // FILE VERSION 0.72.0 (20 Nov 2026): ECG segments day by day. One Pt per saved reading (P, PR, QRS, ST, T, Tp-Te, QTc, heart rate, HRV, R, noise) read from the report's parameter table,
 // and the DAY GRID: for every measure, every day, how far that day's readings sit from YOUR usual of the same time of day (middle and spread of your own readings taken at least 3 days earlier), in your own spread units.
 // Nothing here is compared with a population or another device: an offset that never changes (electrode place, strap, scale) cancels, a change from your usual shows. The watch line names what moved and whether it held for 2 or more measured days.
@@ -48,7 +49,8 @@ final class EcgSeg {
     private static final Pattern P_T = Pattern.compile("T wave ([+-]\\d+) \u00b5V \\((?:upright|inverted)\\)");
     private static final Pattern P_QRS = Pattern.compile("QRS duration (\\d+) ms");
     private static final Pattern P_PR = Pattern.compile("PR interval (\\d+) ms \\(\u00b1\\d+\\)");
-    private static final Pattern P_QTCF = Pattern.compile("QTc Fridericia (\\d+) ms");
+    /** 0.73.0: QTc is the headline QT card value (EcgIntervals, the same engine as the QT in the readings table), not the parameter-table value (EcgSegments): against a chest strap its gap had half the spread (addendum 343.4). */
+    private static final Pattern P_QTCF = Pattern.compile("Corrected for heart rate \\(Fridericia\\): (\\d+) ms");
     private static final Pattern P_TPE = Pattern.compile("T peak to T end \\(Tp-Te\\) (\\d+) ms");
     private static final Pattern P_ST = Pattern.compile("ST at the J point / 60 ms / 80 ms \\(against the PR baseline\\) ([+-]\\d+) / ([+-]\\d+) / ([+-]\\d+) \u00b5V");
 

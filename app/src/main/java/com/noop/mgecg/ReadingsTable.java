@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.73.0 (21 Nov 2026): QTc Fridericia is now the headline QT card value, from the same engine as the QT beside it (before it was the parameter-table value, 17 ms higher on the strap); the old value, PR, Tp-Te, ST J and 80, the QT range, beats and average-beat noise are new columns at the end of the csv.
 // FILE VERSION 0.54.0 (13 Nov 2026): every microvolt figure is shown at the ECG scale in use now (ScaleSetting; each reading stores the scale it was made with, older ones are re-based), the scale tag, and the context of every reading without a tap (hours awake, previous 24 h asleep, steps 30 min, minutes since a carb meal, HR against resting) with the band of your own similar readings. 0.42.0 (5 Nov 2026): this week and the streak, and your own typical range with the latest reading beside it, at the top of the screen. 0.41.0 (5 Nov 2026): the CSV also carries the strap's verdict, average HR, HRV release, the full event 118 / 119 numbers, the live noise by band and the notes of the reading page (where, run, why noisy). 0.33.0 (1 Nov 2026): "Your readings": one row per saved ECG reading with the measurements from its report (R, T, P, QRS, QTc, ST), the strap's own end-of-reading amplitude (event 118),
 // and the context the strap recorded around it (steps in the previous hour, still share, skin temperature, wrist orientation), plus the Polar H10 chest R when its ECG file covers the reading.
 // Plotted against the clock hour, and exported as one CSV (Download/MGreports). Measurements are single-lead and informal; not a diagnosis.
@@ -51,6 +52,7 @@ final class ReadingsTable {
 
     static final class Row {
         long ts; String grade = "-"; double hr = Double.NaN, rmssd = Double.NaN, dur = Double.NaN, R = Double.NaN, T = Double.NaN, P = Double.NaN, QRS = Double.NaN, QT = Double.NaN, QTcF = Double.NaN, ST = Double.NaN;
+        double qtcTable = Double.NaN, PR = Double.NaN, TPE = Double.NaN, stJ = Double.NaN, st80 = Double.NaN, qtLo = Double.NaN, qtHi = Double.NaN, beats = Double.NaN, avgNoise = Double.NaN;       // 0.73.0
         double E = Double.NaN, steps1h = Double.NaN, still30 = Double.NaN, skin = Double.NaN, gravZ = Double.NaN, h10R = Double.NaN, clock = Double.NaN;
         double evB = Double.NaN, evC = Double.NaN, evD = Double.NaN, evN = Double.NaN, evN1 = Double.NaN, evN2 = Double.NaN, e119n2 = Double.NaN, e119q3 = Double.NaN;      // 0.41.0: event 118 / 119 numbers
         java.util.Map<String, String> nt = new java.util.HashMap<String, String>();                                                                              // 0.41.0: reading_notes.csv
@@ -69,6 +71,8 @@ final class ReadingsTable {
         } catch (Throwable t) { return ""; }
     }
 
+    static double grabN(String t, String re, int g) { Matcher m = Pattern.compile(re).matcher(t); if (!m.find()) return Double.NaN; try { return Double.parseDouble(m.group(g)); } catch (Exception e) { return Double.NaN; } }
+
     static double grab(String t, String re) { Matcher m = Pattern.compile(re).matcher(t); if (!m.find()) return Double.NaN; try { return Double.parseDouble(m.group(1)); } catch (Exception e) { return Double.NaN; } }
 
     /** Fills the report measurements of a row from the report text. */
@@ -77,7 +81,10 @@ final class ReadingsTable {
         double m = grab(t, "Your reading .*? \u00b7 (\\d+) min"), s = grab(t, "min (\\d+) s"); if (!Double.isNaN(m)) r.dur = m * 60 + (Double.isNaN(s) ? 0 : s);
         r.hr = grab(t, "Heart rate (\\d+) (?:bpm|per minute)"); r.rmssd = grab(t, "HRV \\(RMSSD\\) (\\d+) ms");
         double rs = grab(t, "R wave height ([\\d.]+) \u00b5V standard"); if (Double.isNaN(rs)) rs = grab(t, "R wave height ([\\d.]+) \u00b5V"); if (Double.isNaN(rs)) { double mv = grab(t, "R wave height ([\\d.]+) mV"); if (!Double.isNaN(mv)) rs = mv * 1000.0; }
-        r.R = rs; r.QRS = grab(t, "QRS duration (\\d+) ms"); r.QT = grab(t, "QT interval Experimental (\\d+) ms"); r.QTcF = grab(t, "QTc Fridericia (\\d+) ms"); r.P = grab(t, "P wave seen, (\\d+) \u00b5V");
+        r.R = rs; r.QRS = grab(t, "QRS duration (\\d+) ms"); r.QT = grab(t, "QT interval Experimental (\\d+) ms"); r.QTcF = grab(t, "Corrected for heart rate \\(Fridericia\\): (\\d+) ms");
+        r.qtcTable = grab(t, "QTc Fridericia (\\d+) ms"); r.PR = grab(t, "PR interval (\\d+) ms \\(\u00b1\\d+\\)"); r.TPE = grab(t, "T peak to T end \\(Tp-Te\\) (\\d+) ms");
+        r.stJ = grabN(t, "ST at the J point / 60 ms / 80 ms \\(against the PR baseline\\) ([+-]\\d+) / ([+-]\\d+) / ([+-]\\d+) \u00b5V", 1); r.st80 = grabN(t, "ST at the J point / 60 ms / 80 ms \\(against the PR baseline\\) ([+-]\\d+) / ([+-]\\d+) / ([+-]\\d+) \u00b5V", 3);
+        r.qtLo = grabN(t, "95% range (\\d+)\u2013(\\d+) ms", 1); r.qtHi = grabN(t, "95% range (\\d+)\u2013(\\d+) ms", 2); r.beats = grab(t, "from (\\d+) averaged beats"); r.avgNoise = grab(t, "Beat-to-beat noise of the average ([\\d.]+) \u00b5V"); r.P = grab(t, "P wave seen, (\\d+) \u00b5V");
         r.ST = grab(t, "ST level, 60 ms after J ([+-]?\\d+) \u00b5V"); r.T = grab(t, "T wave (\\d+) \u00b5V");
     }
 
@@ -188,7 +195,7 @@ final class ReadingsTable {
             if (dir != null) { r.nt = ReadingNotes.forReading(dir, ts); }
             String un = r.nt == null ? null : r.nt.get("uv_per_count");      // 0.54.0: re-base the counts-linear figures (R, T, P, ST) to the scale in use now; E and the H10 are not made from counts
             try { if (un != null && un.length() > 0) { double t0 = Double.parseDouble(un.trim()); if (t0 > 0.02 && t0 < 0.2) r.uvThen = t0; } } catch (NumberFormatException ignored) { }
-            double fct = ScaleSetting.factorFrom(un); if (Math.abs(fct - 1.0) > 1e-9) { r.R *= fct; r.T *= fct; r.P *= fct; r.ST *= fct; }
+            double fct = ScaleSetting.factorFrom(un); if (Math.abs(fct - 1.0) > 1e-9) { r.R *= fct; r.T *= fct; r.P *= fct; r.ST *= fct; r.stJ *= fct; r.st80 *= fct; r.avgNoise *= fct; }
             context(c, r); context2(c, r); if (dir != null) { r.h10R = h10R(dir, ts, Double.isNaN(r.dur) ? 120 : r.dur); r.tag = ReadingTag.forReading(dir, ts); }
             out.add(r);
         }
@@ -197,13 +204,14 @@ final class ReadingsTable {
     private static double parse(String s) { return grab(s == null ? "" : s, "(\\d+(?:\\.\\d+)?)"); }
 
     static String csv(List<Row> rows) {
-        StringBuilder sb = new StringBuilder("time_local,grade,duration_s,hr,rmssd_ms,R_uV,T_uV,P_uV,QRS_ms,QT_ms,QTc_fridericia_ms,ST_uV,strap_E_uV,steps_previous_hour,still_share_previous_30min,skin_c,gravity_z,h10_R_uV,strap_over_h10,tag,hours_awake,expected_R_uV_your_line,R_vs_line_pct,result_code,strap_avg_hr,verdict_s,hrv_first_s,hrv_first_ms,ev_B_ms,ev_C,ev_D,ev_N,ev_n1,ev_n2,ev119_n2,ev119_q3_pct,where,position,run,why_noisy,stop,noise_0p5_5_uV,noise_8_25_uV,noise_25_48_uV,noise_mains_uV,noise_52_100_uV,contact_z,live_R_uV,live_QRS_ms,live_dip_uV,live_QT_ms,beats_live,app,scale_uv_per_count_reading,scale_uv_per_count_now,scale_provisional,asleep_previous_24h_h,steps_previous_30min,minutes_since_carb_meal,hr_minus_resting_bpm\n");
+        StringBuilder sb = new StringBuilder("time_local,grade,duration_s,hr,rmssd_ms,R_uV,T_uV,P_uV,QRS_ms,QT_ms,QTc_fridericia_ms,ST_uV,strap_E_uV,steps_previous_hour,still_share_previous_30min,skin_c,gravity_z,h10_R_uV,strap_over_h10,tag,hours_awake,expected_R_uV_your_line,R_vs_line_pct,result_code,strap_avg_hr,verdict_s,hrv_first_s,hrv_first_ms,ev_B_ms,ev_C,ev_D,ev_N,ev_n1,ev_n2,ev119_n2,ev119_q3_pct,where,position,run,why_noisy,stop,noise_0p5_5_uV,noise_8_25_uV,noise_25_48_uV,noise_mains_uV,noise_52_100_uV,contact_z,live_R_uV,live_QRS_ms,live_dip_uV,live_QT_ms,beats_live,app,scale_uv_per_count_reading,scale_uv_per_count_now,scale_provisional,asleep_previous_24h_h,steps_previous_30min,minutes_since_carb_meal,hr_minus_resting_bpm,qtc_fridericia_table_ms,pr_ms,tp_te_ms,st_j_uv,st_80_uv,qt_range_lo_ms,qt_range_hi_ms,qt_beats,avg_beat_noise_uv\n");
         SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.UK);
         for (Row r : rows) { sb.append(f.format(new Date(r.ts * 1000L))).append(',').append(r.grade).append(',').append(c0(r.dur)).append(',').append(c0(r.hr)).append(',').append(c0(r.rmssd)).append(',').append(c0(r.R)).append(',').append(c0(r.T)).append(',').append(c0(r.P)).append(',').append(c0(r.QRS)).append(',').append(c0(r.QT)).append(',').append(c0(r.QTcF)).append(',').append(c0(r.ST)).append(',').append(c0(r.E)).append(',').append(c0(r.steps1h)).append(',').append(c2(r.still30)).append(',').append(c1(r.skin)).append(',').append(c2(r.gravZ)).append(',').append(c0(r.h10R)).append(',').append(Double.isNaN(r.R) || Double.isNaN(r.h10R) ? "" : String.format(Locale.US, "%.2f", r.R / r.h10R)).append(',').append(r.tag.replace(',', ' ')).append(',').append(c1(r.hoursAwake)).append(',').append(c0(r.expectedR)).append(',').append(c1(r.rVsLine));
             for (String k : NOTE_KEYS_A) sb.append(',').append(nt(r, k));
             sb.append(',').append(c0(r.evB)).append(',').append(c0(r.evC)).append(',').append(c0(r.evD)).append(',').append(c0(r.evN)).append(',').append(c0(r.evN1)).append(',').append(c0(r.evN2)).append(',').append(c0(r.e119n2)).append(',').append(c1(r.e119q3));
             for (String k : NOTE_KEYS_B) sb.append(',').append(nt(r, k));
             sb.append(',').append(String.format(Locale.US, "%.5f", r.uvThen)).append(',').append(String.format(Locale.US, "%.5f", ScaleSetting.uv())).append(',').append(ScaleSetting.verified() ? "no" : "yes").append(',').append(c1(r.sleep24)).append(',').append(c0(r.steps30)).append(',').append(c0(r.carbMin)).append(',').append(c1(r.rhrDev));
+            sb.append(',').append(c0(r.qtcTable)).append(',').append(c0(r.PR)).append(',').append(c0(r.TPE)).append(',').append(c0(r.stJ)).append(',').append(c0(r.st80)).append(',').append(c0(r.qtLo)).append(',').append(c0(r.qtHi)).append(',').append(c0(r.beats)).append(',').append(c1(r.avgNoise));
             sb.append('\n'); }
         return sb.toString();
     }
