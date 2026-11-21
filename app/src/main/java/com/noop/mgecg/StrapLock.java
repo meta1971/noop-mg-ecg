@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.74.0 (21 Nov 2026): copy B knows the last four characters of strap B's label (B_NAME_TAIL): when exactly one strap in range has a name ending with them, Choose strap picks it without a list; several, only those are listed; none, the list is as before. Not a hard lock (the advertised name form of strap B is not in the files held), and no serial or address is compiled in. FILE VERSION 0.70.0 (17 Nov 2026): which strap this copy of the app talks to, chosen at run time (addendum 197.4: "a third strap needs no rebuild").
+// FILE VERSION 0.77.0 (21 Nov 2026): copy C (CopyB.C) never offers strap B (names ending with B_NAME_TAIL) and never auto-picks by tail; copy A and copy B unchanged. FILE VERSION 0.74.0 (21 Nov 2026): copy B knows the last four characters of strap B's label (B_NAME_TAIL): when exactly one strap in range has a name ending with them, Choose strap picks it without a list; several, only those are listed; none, the list is as before. Not a hard lock (the advertised name form of strap B is not in the files held), and no serial or address is compiled in. FILE VERSION 0.70.0 (17 Nov 2026): which strap this copy of the app talks to, chosen at run time (addendum 197.4: "a third strap needs no rebuild").
 // Copy A (the normal build) keeps the strap typed into MainActivity unless the owner chooses another; copy B (CopyB.B) has NO strap until the owner
 // picks one from a list of the straps in range (Today > the link chip > Change strap, or the "No strap chosen" card). The pick is two strings in the
 // preference file strap_lock: the Bluetooth address and the serial read from the advertised name. In copy B the strap of copy A is never offered, so the
@@ -41,7 +41,9 @@ final class StrapLock {
     static final String PREFS = "strap_lock";
     /** 0.74.0: the last four characters printed on strap B's case (copy B only; copy A never reads it). Four characters, not the serial. */
     static final String B_NAME_TAIL = "0609";
-    static boolean tailMatch(String name) { return CopyB.B && B_NAME_TAIL.length() > 0 && name != null && name.trim().endsWith(B_NAME_TAIL); }
+    static boolean tailMatch(String name) { return CopyB.B && !CopyB.C && isStrapB(name); }
+    /** 0.77.0: true when the advertised name ends with strap B's label tail (pure; copy C uses it to keep strap B out of its list). */
+    static boolean isStrapB(String name) { return B_NAME_TAIL.length() > 0 && name != null && name.trim().endsWith(B_NAME_TAIL); }
     static final long SCAN_MS = 8000L;
 
     // ------------------------------------------------------------------ pure helpers (tested off the phone in XQ70)
@@ -140,6 +142,7 @@ final class StrapLock {
         try { name = d.getName(); } catch (SecurityException ignored) { }
         if (name == null && r.getScanRecord() != null) name = r.getScanRecord().getDeviceName();
         if (CopyB.B && excluded(addr, name, MainActivity.KNOWN_STRAP_ADDR, MainActivity.RESEARCH_STRAP_SERIAL)) return;      // never offer copy A's strap
+        if (CopyB.C && isStrapB(name)) return;      // 0.77.0: copy C never offers strap B (copy B's strap)
         found.put(addr, new String[] { name == null ? "" : name, String.valueOf(r.getRssi()) });
     }
 
