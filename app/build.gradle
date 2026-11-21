@@ -1,5 +1,6 @@
 plugins { id 'com.android.application' }
 
+// 0.78.0: TRI-GO (Lab > T): one tap in copy A, B or C starts the ECG reading in all installed copies at one shared phone-clock time (TriGo.java, NewLookActivity, EcgPage, manifest <queries>). No change to the strap links, the day logger or the exports.
 // 0.77.0: copy C, the third copy of the app for a third strap (addendum 369). gradle assembleDebug -PcopyC=1: applicationId com.noop.mgecg.c (installs beside A and B), launcher name "MG Heart C", versionName ending -C,
 // its own Download folders (CopyB.SFX = C), no strap until the owner picks one, and strap B is never offered in its list. Copy A and copy B behave exactly as in 0.76.0.
 // 0.76.0: beats are aligned twice in EcgR16Analyzer.peaks() (ankle / lead III readings: 7 ms jitter and one third of beats cut by the shape gate before, 1-3 ms and 0-1 % after; copy A unchanged); ALIGN2 and LATE_ART diagnostics in the R16_ANALYSIS line.
@@ -19,8 +20,8 @@ android { namespace 'com.noop.mgecg'; compileSdk 34
     buildFeatures { buildConfig true }
     defaultConfig {
         applicationId copyC ? 'com.noop.mgecg.c' : (copyB ? 'com.noop.mgecg.b' : 'com.noop.mgecg')
-        minSdk 26; targetSdk 34; versionCode 193
-        versionName copyC ? '0.77.0-pro-C' : (copyB ? '0.77.0-pro-B' : '0.77.0-pro')
+        minSdk 26; targetSdk 34; versionCode 194
+        versionName copyC ? '0.78.0-pro-C' : (copyB ? '0.78.0-pro-B' : '0.78.0-pro')
         buildConfigField 'boolean', 'COPY_B', copyB ? 'true' : 'false'
         buildConfigField 'boolean', 'COPY_C', copyC ? 'true' : 'false'
         manifestPlaceholders = [appLabel: copyC ? 'MG Heart C' : (copyB ? 'MG Heart B' : 'MG Heart'), appIcon: copyC ? '@mipmap/ic_launcher_c' : (copyB ? '@mipmap/ic_launcher_b' : '@mipmap/ic_launcher')]
