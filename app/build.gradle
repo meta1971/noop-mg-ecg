@@ -1,5 +1,13 @@
 plugins { id 'com.android.application' }
 
+// 0.87.0: wording only: the corner texts cite the phone-free step decays of 24 Nov (0.38-0.42 Hz, decode log 434) and say the microvolt scale is not yet confirmed by a known voltage. Scale constant unchanged (0.06358).
+// 0.86.0: Full pull: the time column of ecg_500hz_live.csv and ecg_500hz_stored_r16.csv is the sample clock (no 10 ms stamp steps, no false 0.51 s gap after the first frame; decode log 430).
+// 0.85.0: wording only: the start-up corner card states the measured stability of the 0.40 Hz corner (decode log 429) instead of a skin-contact dependence.
+// 0.84.0: a reading whose beat shapes block the rhythm word but whose beat gaps are uneven by the 128-beat screen now reads "Inconclusive" instead of "Not judged" (decode log 426); never AF-like.
+// 0.83.0: each report shows the reading's OWN low-frequency corner, from its start-up decay, when the start-up stayed inside the amplifier's range (decode log 423.2, 425); stored with the reading (startTauS). Files: EcgR16Analyzer, EcgReport, MainActivity (+ the 0.79.0-0.82.0 files).
+// 0.82.0: the whole analyser was run on clinical ECG records packed as strap frames (decode log 424). The 128-beat screen's AF-like result now needs the timing model (with its P-wave input) to call the rhythm irregular too; otherwise the reading is shown as uneven (Inconclusive). On those records: AF still AF-like in 84-87 % and never Regular; normal rhythm with 3 or more ectopic beats a minute AF-like 8 % -> 0 %, without ectopics 2.2 % -> 1.2 %. File: EcgR16Analyzer (+ the 0.79.0-0.81.0 files).
+// 0.81.0: AF screen tested on public records (decode log 420, 421): the strict AF-like flag is withdrawn when the beat spacing rises and falls smoothly (turning-point share under 0.50; healthy false alarms 1.95 % -> under 1 %, AF loss 0.16 % at 60 s); the Regular tile says it cannot see atrial flutter; live NOISE ring caption "relax the hand". Files: EcgRhythm, EcgReport, EcgPage (+ the 0.79.0 and 0.80.0 files).
+// 0.80.0: NOT-A-HEART GATE: a record with a 10 Hz test tone of 15,000 counts or more, or whose largest repeating wave is under 150 uV, is "Not judged" (test tones were saved as Regular 86 bpm, a 36 uV rig beat as AF-like pattern; decode log 404.6, 405, 407). The readings table keeps the AS-RECORDED QT (the model value beside it) so readings before and after 0.79.0 compare. Lab tone onset must hold 3 s (389.3). Notes contact_i / contact_q. ProPdf wording on the strap high-pass. Whole tree compiled against android.jar API 34. Files: EcgR16Analyzer, EcgReport, MainActivity, Live500, EcgPage, LabParts, ProPdf (+ the 0.79.0 files).
 // 0.79.0: ECG SCENARIOS (addenda 413, 414). The headline QT / T / ST now undo a 0.40 Hz strap input high-pass by default (as recorded is printed beside it and is one tap away). Every report lists the same averaged beat under each candidate strap high-pass model (as recorded, 0.03, 0.27, 0.35, 0.40, 0.50, 0.60, 1.50 Hz and one custom corner): QT, QTcF, T, ST, R. Settings > Your numbers: ECG strap model (which one is the headline; default as recorded), custom corner, and the roll-off correction of the 0.5-150 Hz detail beat (on by default). Each reading notes its model (strap_hp_fc_hz). Files: EcgScenario (new), EcgIntervals, EcgReport, EcgR16Analyzer, EcgPage, HealthActivity, MainActivity, NewLookActivity.
 // 0.78.0: TRI-GO (Lab > T): one tap in copy A, B or C starts the ECG reading in all installed copies at one shared phone-clock time (TriGo.java, NewLookActivity, EcgPage, manifest <queries>). No change to the strap links, the day logger or the exports.
 // 0.77.0: copy C, the third copy of the app for a third strap (addendum 369). gradle assembleDebug -PcopyC=1: applicationId com.noop.mgecg.c (installs beside A and B), launcher name "MG Heart C", versionName ending -C,
@@ -21,8 +29,8 @@ android { namespace 'com.noop.mgecg'; compileSdk 34
     buildFeatures { buildConfig true }
     defaultConfig {
         applicationId copyC ? 'com.noop.mgecg.c' : (copyB ? 'com.noop.mgecg.b' : 'com.noop.mgecg')
-        minSdk 26; targetSdk 34; versionCode 195
-        versionName copyC ? '0.79.0-pro-C' : (copyB ? '0.79.0-pro-B' : '0.79.0-pro')
+        minSdk 26; targetSdk 34; versionCode 203
+        versionName copyC ? '0.87.0-pro-C' : (copyB ? '0.87.0-pro-B' : '0.87.0-pro')
         buildConfigField 'boolean', 'COPY_B', copyB ? 'true' : 'false'
         buildConfigField 'boolean', 'COPY_C', copyC ? 'true' : 'false'
         manifestPlaceholders = [appLabel: copyC ? 'MG Heart C' : (copyB ? 'MG Heart B' : 'MG Heart'), appIcon: copyC ? '@mipmap/ic_launcher_c' : (copyB ? '@mipmap/ic_launcher_b' : '@mipmap/ic_launcher')]
