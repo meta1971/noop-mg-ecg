@@ -245,6 +245,7 @@ public final class EcgReport {
         b = fQt;
         // ---- QT
         b.append(qtCard(r.qt, r.qtBands));
+        b.append(scenarioCard(r.qt));
         b.append(bandsCard(r.qtBands));
 
         b = fRes;
@@ -334,7 +335,7 @@ public final class EcgReport {
                 b.append(row("Q to S span", String.format(Locale.US, "%.0f ms between the dips either side of R", r.qt.qsSpanMs)));
             }
             if (r.inverted) b.append(row("Orientation", "Recording came in upside down; flipped for display and measurement"));
-            b.append(row("QT method", "Start = where the QRS begins (slope), end = 15 ms after the tangent on the T wave meets the baseline, measured on the beat as recorded (no high-pass is undone; the chip's own input coupling is a very slow analog high-pass, inferred at 0.02 to 0.05 Hz, far below the band of the beat); 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
+            b.append(row("QT method", "Start = where the QRS begins (slope), end = 15 ms after the tangent on the T wave meets the baseline, measured on the beat as recorded (from 0.79.0 a 0.40 Hz strap input high-pass is undone on the averaged beat by default: start-up decays on skin and the tone runs of 22 and 23 Nov both give it; the card \"Strap filter scenarios\" lists the same beat under every model, as recorded included, and Settings, Your numbers, ECG strap model changes it); 95% range from " + EcgIntervals.BOOTSTRAPS + " resamples"));
         }
         if (r.rhythm != null && r.rhythm.features != null) {
             b.append(row("Rhythm screen", String.format(Locale.US, "%d intervals, nRMSSD %.3f, sample entropy %.2f", r.rhythm.intervals, r.rhythm.features[0], r.rhythm.features[4])));
@@ -525,7 +526,7 @@ public final class EcgReport {
                 "A beat that arrives clearly sooner than the pattern predicts, followed by a longer pause. Occasional early beats happen in most healthy people. This count comes from timing alone, so it cannot say where in the heart they start."));
         b.append(why("QT interval and corrected QT",
                 "QT is the time from the start of the QRS (the main spike) to the end of the T wave, which is the heart's electrical recharging after each beat. It shortens as the heart speeds up, so it is corrected for rate. This report uses Fridericia's formula, QT divided by the cube root of the beat-to-beat gap in seconds, which holds up better than Bazett's at faster and slower rates.",
-                "The start is found where the QRS begins (slope method). The end is found with the tangent method: a line along the steepest downslope of the T wave is extended to the baseline, and the end is taken 15 ms after that crossing, as published tangent methods do. The averaged beat is measured as recorded and no high-pass correction is applied, because whether the strap's stored ECG has a high-pass of its own is not settled (the 18 Oct step test that suggested it was withdrawn on 19 Oct). On 23 readings taken alongside a Polar H10 (13 to 23 Oct 2026), the same method on the same minutes gave a strap QT a median 12 ms longer (the middle half of readings 10 to 16 ms longer) while the shape of the QRS matched, so the difference is steady and does not change a trend. The two leads differ, so some difference is expected, and this is one person and one strap, not a validation. Earlier versions of this report undid an assumed 1.5 Hz high-pass, which made the QT read about 30-40 ms longer; that assumption has been withdrawn, so QT values from this version are not comparable with older reports. The range shown comes from 200 resamplings of the averaged beats.",
+                "The start is found where the QRS begins (slope method). The end is found with the tangent method: a line along the steepest downslope of the T wave is extended to the baseline, and the end is taken 15 ms after that crossing, as published tangent methods do. From version 0.79.0 a 0.40 Hz first-order high-pass of the strap's input is undone on the averaged beat before measuring (start-up decays on skin and test tones on 22 and 23 Nov 2026 both give that corner; a known battery step is still owed as proof), and the as-recorded value is printed beside it. The Polar H10 figures that follow were measured as recorded. On 23 readings taken alongside a Polar H10 (13 to 23 Oct 2026), the same method on the same minutes gave a strap QT a median 12 ms longer (the middle half of readings 10 to 16 ms longer) while the shape of the QRS matched, so the difference is steady and does not change a trend. The two leads differ, so some difference is expected, and this is one person and one strap, not a validation. Versions before 18 Oct undid an assumed 1.5 Hz high-pass (QT about 30-40 ms longer; withdrawn), versions from 18 Oct to 0.78.0 undid nothing, and the 0.40 Hz correction reads about 10 ms longer than as recorded on the wrist, so compare QT values only within one of these three periods or use the as-recorded value. The range shown comes from 200 resamplings of the averaged beats.",
                 "It needs about 40 clean beats, a T wave at least 8 times the noise, and a rate between 40 and 110 beats a minute, and it is withheld when the rhythm is uneven. It is experimental and has not been checked against a 12-lead ECG."));
         b.append(why("The average heartbeat, R wave height and T wave vs noise",
                 "Every clean beat is laid on top of the others and averaged, which cancels random noise and leaves the typical beat. <b>P</b> is the top chambers contracting, <b>Q R S</b> the main pump, <b>T</b> the pump resetting.",
@@ -669,7 +670,9 @@ public final class EcgReport {
                 .append("</div>");
         b.append("<p class=\"cap\">The strap records 500 samples a second with no 40 Hz cut-off, so a wider view is possible. Averaging ")
                 .append(q.beatsUsed).append(" beats removes most of the noise, which is why detail above 40 Hz shows here but not in a single beat. "
-                        + "Sharper or deeper points on the detail trace are real signal that the standard view smooths away. This is a morphology view: it does not change the heart rate, "
+                        + "Sharper or deeper points on the detail trace are real signal that the standard view smooths away. "
+                        + (EcgIntervals.HF_COMP ? "The strap's gain above 40 Hz falls (0.90 at 70 Hz, 0.77 at 110 Hz, measured with test tones on 23 Nov), and the detail trace is corrected for that up to 100 Hz; the effect on the spike height is about 1 %. " : "The correction for the strap's roll-off above 40 Hz is switched off. ")
+                        + "This is a morphology view: it does not change the heart rate, "
                         + "the rhythm timing or any other number, because a wider band did not make beat timing more precise in testing. Not a diagnosis.</p></section>");
         return b.toString();
     }
@@ -691,7 +694,28 @@ public final class EcgReport {
     /** The QT as recorded, before the strap's apparent high-pass is undone, so the correction is never hidden. */
     static String asRecordedSentence(EcgIntervals.Result q) {
         if (EcgIntervals.STRAP_HP_FC_HZ <= 0 || Double.isNaN(q.qtAsRecordedMs)) return "";
-        return String.format(Locale.US, "As recorded, without undoing an assumed strap high-pass (withdrawn 18 Oct 2026), it reads <b>%.0f ms</b>.", q.qtAsRecordedMs);
+        return String.format(Locale.US, "This headline undoes a %.2f Hz strap high-pass (%s). As recorded, with nothing undone, as builds before 0.79.0 measured it, it reads <b>%.0f ms</b>.", EcgIntervals.STRAP_HP_FC_HZ, esc(EcgIntervals.scenarioName(EcgIntervals.STRAP_HP_FC_HZ)), q.qtAsRecordedMs);
+    }
+
+    /** 0.79.0: the same averaged beat measured under every candidate strap high-pass model (EcgIntervals.SCEN_FC). Empty when there is no table. */
+    static String scenarioCard(EcgIntervals.Result q) {
+        if (q == null || q.scen == null || q.scen.length == 0 || q.avg == null) return "";
+        StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><div class=\"k\">Strap filter scenarios</div><span class=\"pill\">Experimental</span></div>");
+        b.append("<p class=\"hint\">The same averaged beat, measured as if the strap had each of these high-pass filters and it were undone. The 0.40 Hz input pole is the best-supported model and the default; it is not yet proven with a known step.</p><div class=\"rows\">");
+        for (double[] s : q.scen) {
+            boolean head = Math.abs(s[0] - q.headlineFcHz) < 1e-6;
+            String v = Double.isNaN(s[1])
+                    ? String.format(Locale.US, "QT not measurable &middot; T %.0f &micro;V &middot; ST %+.0f &micro;V", s[3], s[4])
+                    : String.format(Locale.US, "QT %.0f ms &middot; QTcF %.0f &middot; T %.0f &micro;V &middot; ST %+.0f &micro;V &middot; R %.0f &micro;V", s[1], s[2], s[3], s[4], s[5]);
+            if (Double.isNaN(s[3])) v = "No T wave found";
+            else if (!Double.isNaN(s[1]) && !Double.isNaN(q.qtAsRecordedMs) && Math.abs(s[1] - q.qtAsRecordedMs) > 80)
+                v = String.format(Locale.US, "QT not reliable under this model (%.0f ms: the T wave end moved) &middot; T %.0f &micro;V &middot; ST %+.0f &micro;V", s[1], s[3], s[4]);
+            b.append(row(esc(EcgIntervals.scenarioName(s[0])) + (head ? " <b>(headline)</b>" : ""), v));
+        }
+        b.append("</div><p class=\"cap\">Evidence for 0.40 Hz: the strap's own start-ups on skin decay as one exponential of 0.39 to 0.41 s (282 start-ups), the tone rig's start-up decay (0.44 to 0.45 s), and the tone curve (one pole near 0.40 Hz that moved with a series resistor exactly as the amplitude did). "
+                + "Against: the Polar H10 comparison (strap QT already longer as recorded; the leads differ) and slower decays of 2 to 9 s after overload. The sister chips' own high-pass would be 0.27 to 0.50 Hz with a 1 &micro;F capacitor. "
+                + "A battery step with no phone in the path is the proof still owed. Change the headline under Settings &rsaquo; Your numbers &rsaquo; ECG strap model. The other cards of this report (waves and segments, rhythm) are always as recorded. Not a diagnosis.</p></section>");
+        return b.toString();
     }
 
     static String qtCard(EcgIntervals.Result q, List<EcgIntervals.Band> bands) {

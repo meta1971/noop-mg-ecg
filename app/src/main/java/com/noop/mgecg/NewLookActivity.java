@@ -114,6 +114,7 @@ public class NewLookActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         ScaleSetting.load(this);                                       // 0.54.0
+        EcgScenario.load(this);                                        // 0.79.0
         EcgReport.reportDir = getExternalFilesDir(null);
         EcgReport.appCtx = getApplicationContext();                    // 0.39.0
         try { EcgReminder.schedule(getApplicationContext()); EcgWidget.refreshAll(getApplicationContext()); publishShortcuts(); } catch (Throwable ignored) { }      // 0.42.0

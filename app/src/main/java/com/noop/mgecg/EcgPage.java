@@ -895,6 +895,7 @@ final class EcgPage {
                     long[] pk = PackWatch.lastRecord(a); ReadingNotes.put(dir(), startMs / 1000L, "pack_last_record", pk == null ? "unknown" : pk[0] + "@" + pk[1] + "s");
                     String pw = PackWatch.warning(pk); if (pw != null) { a.toast(pw); if (stSub != null) stSub.setText(pw); }
                 } catch (Throwable ignored) { }
+                ReadingNotes.put(dir(), startMs / 1000L, "strap_hp_fc_hz", EcgScenario.note());      // 0.79.0: the strap model the headline QT of this reading uses
                 ReadingNotes.put(dir(), startMs / 1000L, "uv_per_count", String.format(Locale.US, "%.5f", ScaleSetting.uv()));      // 0.53.0: the scale every microvolt note of this reading uses (earlier readings: 0.0621)
                 try { ConsoleCatalog.begin(dir(), startMs / 1000L); } catch (Throwable ignored) { }      // 0.51.0: new console templates are counted per reading
                 if (simRun && sim != null) ReadingNotes.put(dir(), startMs / 1000L, "run", "S" + sim.mode);

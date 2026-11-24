@@ -10388,6 +10388,7 @@ public class MainActivity extends NewLookActivity {
         StartupClock.mark(StartupClock.MAIN_CREATE);  // 0.67.0
         CrashLog.install(this);                       // 0.19.0
         ScaleSetting.load(this);                      // 0.54.0: the ECG scale (one versioned setting)
+        EcgScenario.load(this);                       // 0.79.0: the strap model of the headline QT
 
         super.onCreate(b);
         try { if (headless == null || !headless.ecgSessionRunning) QuietPhone.end(this); } catch (Throwable ignored) { }      // 0.57.0: if the app was killed in the middle of a quiet-phone reading, put the notification filter back

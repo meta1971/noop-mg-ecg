@@ -1,5 +1,7 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.7.0 (23 Nov): (1) SCENARIOS: every reading measures the same averaged beat under each candidate strap high-pass model (Result.scen); the headline model is a setting
+//   (EcgScenario, default as recorded); (2) the 0.5-150 Hz detail beat is corrected for the strap's measured roll-off above 40 Hz (addenda 413, 414)
 // FILE VERSION 0.6.0 (20 Oct): segments (EcgSegments) computed on the same kept beats; step-test claim about the strap high-pass withdrawn
 // (0.2.8, 3 Oct: slope-based QRS onset, shape gate 0.60, QT per heart-rate band, wide-band detail beat)
 
@@ -67,7 +69,54 @@ public final class EcgIntervals {
      *  selection bias and its fall/rise ratio cannot show DC coupling, so whether the stored ECG has a high-pass of its own is NOT settled.
      *  The 0.51 Hz second-order filter belongs to the strap's live stream (R17) relative to R16. Set to 1.5 to restore the old behaviour.
      *  0.54.4 (decode log 191): the chip's own input coupling is an EXTERNAL capacitor on CAPP / CAPN (ADI's board: 1 uF = 0.5 Hz); the strap's step decays need 10-22 uF, a corner of 0.02-0.05 Hz (INFERRED). That is far below the T wave's band, which is why 0 stays right. */
-    public static volatile double STRAP_HP_FC_HZ = 0;
+    public static volatile double STRAP_HP_FC_HZ = 0.40;
+    /*  0.79.0 (23 Nov 2026, addendum 414): the default is 0.40 Hz again, on three independent measurements (INFERRED, strong, not yet proven by a known step):
+     *  (1) REAL SKIN, no phone: 282 natural start-ups; the unsaturated ones decay as ONE exponential, tau 0.39-0.41 s (0.40 Hz), amplitude 0.995-1.002 of the step, linear in step size (279.2, 280, 282);
+     *  (2) tone rig: start-up decay 0.443-0.452 s; (3) tone curve 5..0.25 Hz: one pole 0.40-0.44 Hz that moved x0.949 with a 100.4 kOhm series resistor, equal to the amplitude loading 0.948:
+     *  a series capacitor of about 0.2 uF into about 1.8 MOhm at the strap's input (412). The slower decays (2-9 s after steps, 2.4 s after fast-recovery runs) follow overload, not the small-signal corner.
+     *  The 30 Oct "flat spectrum down to 0.0125 Hz" cannot exclude a pole (the drift's own spectrum is unknown; on 23 Nov the spectrum rises to low frequency with a knee near 0.2-0.4 Hz).
+     *  The parked battery step (no phone in the path) is the proof. As recorded stays one tap away (EcgScenario) and is printed beside every headline. */
+
+    /** 23 Nov 2026 (addenda 408-414): the candidate strap high-pass models. None is settled, so every reading is measured under all of them and the report lists them.
+     *  0     as recorded: 30 Oct test (no strap high-pass down to 0.01 Hz); H10 comparison (strap QT already +12 ms long as recorded).
+     *  0.03  slow input coupling: the 8-9 Nov step decays (2-8 s), 10-22 uF (decode log 191).
+     *  0.27 / 0.35 / 0.50  the chip's own analog high-pass if the strap has the sister chips' 1 uF between CAPP and CAPN: R 600 / 450 / 320 kOhm (MAX30001 / MAX30003 data sheets;
+     *        the MAX86176's own sheet is under NDA, so this is INFERRED from the family).
+     *  0.40  the load-dependent pole of the 22-23 Nov tone runs (0.403 and 0.437 fit; start-up decay 0.40 Hz on the tone rig).
+     *  0.60  upper test: where the wrist lead's ST reaches zero on 23 Nov (post hoc, one reading).
+     *  1.50  the assumption of builds before 18 Oct (withdrawn; kept so old reports can be compared). */
+    public static final double[] SCEN_FC = {0, 0.03, 0.27, 0.35, 0.40, 0.50, 0.60, 1.50};
+    public static final String[] SCEN_NAME = {
+            "As recorded (no strap high-pass)",
+            "Slow input coupling, 0.03 Hz (step decays)",
+            "Chip high-pass 0.27 Hz (1 uF, 600 kOhm)",
+            "Chip high-pass 0.35 Hz (1 uF, 450 kOhm)",
+            "Strap input pole 0.40 Hz (start-ups, tone runs)",
+            "Chip high-pass 0.50 Hz (1 uF, 320 kOhm)",
+            "Upper test 0.60 Hz",
+            "Old assumption 1.50 Hz (withdrawn 18 Oct)"};
+    /** One more corner of the owner's choice for the table (0 = none). */
+    public static volatile double SCEN_CUSTOM_HZ = 0;
+
+    public static double[] scenarioFcs() {
+        double cu = SCEN_CUSTOM_HZ;
+        boolean add = cu > 0;
+        for (double f : SCEN_FC) if (Math.abs(f - cu) < 1e-6) add = false;
+        if (!add) return SCEN_FC.clone();
+        double[] o = Arrays.copyOf(SCEN_FC, SCEN_FC.length + 1);
+        o[SCEN_FC.length] = cu;
+        return o;
+    }
+
+    public static String scenarioName(double fc) {
+        for (int i = 0; i < SCEN_FC.length; i++) if (Math.abs(SCEN_FC[i] - fc) < 1e-6) return SCEN_NAME[i];
+        return String.format(Locale.US, "Custom corner %.2f Hz", fc);
+    }
+
+    /** Strap response above 40 Hz measured with tones against 54 dB-below-full-scale (addenda 408-413): gain = exp(-(f / 213 Hz)^2)
+     *  (20 Hz 0.99, 40 Hz 0.97, 70 Hz 0.90, 110 Hz 0.77, 190 Hz 0.45), linear phase. The detail beat undoes it up to HF_COMP_MAX_HZ and holds that gain above. */
+    public static volatile boolean HF_COMP = true;
+    public static final double HF_COMP_S_HZ = 213.0, HF_COMP_MAX_HZ = 100.0;
 
     public enum Status { OK, TOO_FEW_BEATS, NO_CLEAR_T_WAVE, UNCERTAIN, RATE_OUT_OF_RANGE, FAILED }
 
@@ -78,6 +127,10 @@ public final class EcgIntervals {
         public double rrS = Double.NaN;
         public double qtMs = Double.NaN, ciLoMs = Double.NaN, ciHiMs = Double.NaN, qtcFMs = Double.NaN;
         public double qtAsRecordedMs = Double.NaN;   // same beat and T-end method, strap high-pass NOT undone
+        /** Scenario table: one row per strap high-pass model, {cornerHz, qtMs, qtcFMs, |T| uV, ST uV, R uV}; NaN where the beat has no measurable T wave under that model. Null if not computed. */
+        public double[][] scen;
+        /** The corner the headline numbers of this result used (STRAP_HP_FC_HZ at the time). */
+        public double headlineFcHz = 0;
         public double qrsOnsetMs = Double.NaN, tApexMs = Double.NaN, tEndMs = Double.NaN;
         public double tAmpUv = Double.NaN, rAmpUv = Double.NaN, noiseUv = Double.NaN;
         /** QRS shape of the averaged beat (research; QRS duration is logged only, never shown). */
@@ -125,7 +178,46 @@ public final class EcgIntervals {
         double[] y = zeroPhase(uv, hp[0], hp[1]);
         y = zeroPhase(y, lp[0], lp[1]);
         double[][] nt = notch(50.0, 30.0);
-        return zeroPhase(y, nt[0], nt[1]);
+        y = zeroPhase(y, nt[0], nt[1]);
+        return HF_COMP ? hfCompensate(y) : y;
+    }
+
+    private static double[] hfKernel;
+
+    /** Symmetric (zero-phase) FIR that undoes exp(-(f/213)^2) up to 100 Hz: 129 taps, Hann window, unity gain at 0 Hz. */
+    static synchronized double[] hfKernel() {
+        if (hfKernel != null) return hfKernel;
+        final int M = 1024, N = 64;
+        double[] h = new double[2 * N + 1];
+        double sum = 0;
+        for (int n = -N; n <= N; n++) {
+            double acc = 0;
+            for (int k = 0; k < M; k++) {
+                double f = (k <= M / 2 ? k : M - k) * (double) FS / M;
+                double g = Math.exp(Math.pow(Math.min(f, HF_COMP_MAX_HZ) / HF_COMP_S_HZ, 2));
+                acc += g * Math.cos(2 * Math.PI * k * n / M);
+            }
+            double w = 0.5 + 0.5 * Math.cos(Math.PI * n / (N + 1));
+            h[n + N] = acc / M * w;
+            sum += h[n + N];
+        }
+        for (int i = 0; i < h.length; i++) h[i] /= sum;
+        hfKernel = h;
+        return h;
+    }
+
+    /** Zero-phase high-band compensation (see HF_COMP). Edges are zero-padded; callers skip the first and last seconds anyway. */
+    static double[] hfCompensate(double[] y) {
+        double[] h = hfKernel();
+        int N = (h.length - 1) / 2, n = y.length;
+        double[] o = new double[n];
+        for (int i = 0; i < n; i++) {
+            double a = 0;
+            int j0 = Math.max(-N, -i), j1 = Math.min(N, n - 1 - i);
+            for (int j = j0; j <= j1; j++) a += h[j + N] * y[i + j];
+            o[i] = a;
+        }
+        return o;
     }
 
     static double[][] notch(double f0, double q) {
@@ -294,6 +386,17 @@ public final class EcgIntervals {
         fill(r, m);
         double[] m0 = measure(avg, rrMedianS, 0, TEND_METHOD);
         if (m0 != null) r.qtAsRecordedMs = m0[3];
+        r.headlineFcHz = STRAP_HP_FC_HZ;
+        try {
+            double[] fcs = scenarioFcs();
+            r.scen = new double[fcs.length][];
+            for (int si = 0; si < fcs.length; si++) {
+                double[] ms = measure(avg, rrMedianS, fcs[si], TEND_METHOD);
+                boolean okQt = ms != null && ms[3] > 150 && ms[3] < 600;
+                r.scen[si] = ms == null ? new double[]{fcs[si], Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN}
+                        : new double[]{fcs[si], okQt ? ms[3] : Double.NaN, okQt ? ms[3] / Math.cbrt(rrMedianS) : Double.NaN, Math.abs(ms[7]), ms[9], ms[8]};
+            }
+        } catch (Throwable t) { r.scen = null; }
         r.rAmpUv = m[8];
         r.tAmpUv = Math.abs(m[7]);
         r.stUv = m[9];

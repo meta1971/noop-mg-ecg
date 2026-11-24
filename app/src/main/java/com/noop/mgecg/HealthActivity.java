@@ -101,6 +101,7 @@ public class HealthActivity extends Activity {
         StartupClock.healthStart();              // 0.67.0
         FrameMonitor.captureTo(getExternalFilesDir(null));          // 0.25.0: raw copies of undecoded frames
         ScaleSetting.load(this);                                    // 0.54.0
+        EcgScenario.load(this);                                     // 0.79.0
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         root.addView(new GlowBg(this), new FrameLayout.LayoutParams(-1, -1));
@@ -2714,7 +2715,7 @@ public class HealthActivity extends Activity {
         final NavG gG = navGroup("settings", "graph", "ECG graph", "Window, style, theme, smoothing, quality colours");
         final NavG gP = navGroup("settings", "phone", "During a reading", "Phone-buzz guard, silence the phone");
         final NavG gA = navGroup("settings", "alerts", "Alerts and strap link", "Morning summary, battery alert, restart the link");
-        final NavG gN = navGroup("settings", "numbers", "Your numbers", "Sleep goal, maximum heart rate, ECG scale");
+        final NavG gN = navGroup("settings", "numbers", "Your numbers", "Sleep goal, maximum heart rate, ECG scale, ECG strap model");
         final NavG gR = navGroup("settings", "research", "Research and tests", "Scale lab, strap settings reader, test switches");
         NavG[] sg = { gE, gG, gP, gA, gN, gR };
         for (NavG g : sg) col.addView(g.card, lp(-1, -2, 8));
@@ -2827,6 +2828,20 @@ public class HealthActivity extends Activity {
         chainLink.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
             new AlertDialog.Builder(HealthActivity.this).setTitle("ECG chain").setMessage(AfeDecode.chainSummary()).setPositiveButton("OK", null).show(); } });
         gN.body.addView(chainLink);
+        // 0.79.0: the strap high-pass model behind the headline QT / T / ST (every report lists all models), a custom corner for that list, and the roll-off correction of the detail beat
+        final TextView strapModelV = tv(EcgScenario.headlineShort(), 14, BLUE, 600);
+        final TextView strapModelNote = tv(EcgScenario.status(), 11.5f, MUT, 400);
+        gN.body.addView(valueRow("ECG strap model (headline)", strapModelV, new View.OnClickListener() {
+            @Override public void onClick(View v) { EcgScenario.next(HealthActivity.this); strapModelV.setText(EcgScenario.headlineShort()); strapModelNote.setText(EcgScenario.status()); }
+        }), lp(-1, dpi(52), 0));
+        strapModelNote.setLineSpacing(0, 1.2f); strapModelNote.setPadding(0, 0, 0, dpi(6));
+        gN.body.addView(strapModelNote);
+        final TextView strapCustomV = tv(EcgScenario.customShort(), 14, BLUE, 600);
+        gN.body.addView(valueRow("Custom corner in the scenario list", strapCustomV, new View.OnClickListener() { @Override public void onClick(View v) { askCustomCorner(strapCustomV, strapModelV, strapModelNote); } }), lp(-1, dpi(52), 0));
+        final TextView strapHfV = tv(EcgScenario.hf() ? "On" : "Off", 14, BLUE, 600);
+        gN.body.addView(valueRow("Detail beat: undo roll-off above 40 Hz", strapHfV, new View.OnClickListener() {
+            @Override public void onClick(View v) { EcgScenario.toggleHf(HealthActivity.this); strapHfV.setText(EcgScenario.hf() ? "On" : "Off"); }
+        }), lp(-1, dpi(52), 0));
         col.addView(sectionHead("DATA AND TOOLS", "data"), lp(-1, -2, 22));
         final NavG gD = navGroup("data", "data", "Your data", "Import, export and send, daily backup, storage");
         final NavG gT = navGroup("data", "tools", "Tools and research screens", "Sleep research, day logger, ECG export, live frames, older screens");
@@ -3004,6 +3019,26 @@ public class HealthActivity extends Activity {
                 .setNegativeButton("Reset", new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface di, int w) { ScaleSetting.reset(HealthActivity.this); target.setText(String.format(Locale.UK, "%.5f", ScaleSetting.uv())); note.setText(ScaleSetting.status()); }
                 }).show();
+    }
+
+    /** 0.79.0: one extra high-pass corner for the scenario list of every report (0 removes it). */
+    private void askCustomCorner(final TextView target, final TextView head, final TextView note) {
+        final EditText e = new EditText(this);
+        e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        e.setText(String.format(Locale.US, "%.2f", EcgIntervals.SCEN_CUSTOM_HZ));
+        new AlertDialog.Builder(this).setTitle("Custom corner, Hz")
+                .setMessage("Adds one more strap high-pass corner (0.01 to 3 Hz) to the scenario list of every new report. 0 removes it. To make it the headline, tap \"ECG strap model\" until it shows.")
+                .setView(e)
+                .setPositiveButton("Set", new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface di, int w) {
+                        try {
+                            double v = Double.parseDouble(e.getText().toString().trim().replace(',', '.'));
+                            if (EcgScenario.setCustom(HealthActivity.this, v)) { target.setText(EcgScenario.customShort()); head.setText(EcgScenario.headlineShort()); note.setText(EcgScenario.status()); }
+                            else android.widget.Toast.makeText(HealthActivity.this, "0, or a corner between 0.01 and 3 Hz.", android.widget.Toast.LENGTH_SHORT).show();
+                        } catch (NumberFormatException ignored) { }
+                    }
+                })
+                .setNegativeButton("Cancel", null).show();
     }
 
     private void applyScale(EditText e, boolean verified, TextView target, TextView note) {

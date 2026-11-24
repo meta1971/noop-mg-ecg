@@ -571,6 +571,7 @@ public final class EcgR16Analyzer {
 
     private static Result analyse0(List<byte[]> records, java.util.Set<Long> drop, java.util.Set<Long> suspect, boolean splitOnDrop) {
         Result r = new Result();
+        EcgScenario.ensure();      // 0.79.0: the strap-model setting, also when no screen has loaded it yet
         r.recordsIn = records.size();
         List<byte[]> recs = new ArrayList<>(records);
         recs.sort((a, b) -> Long.compare(u32(a, 11) & 0xffffffffL, u32(b, 11) & 0xffffffffL));
