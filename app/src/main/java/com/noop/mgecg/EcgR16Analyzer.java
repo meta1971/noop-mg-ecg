@@ -1,7 +1,7 @@
 package com.noop.mgecg;
 
 // FILE VERSION 0.76.0 (21 Nov 2026, addenda 365-366): peaks() aligns the beats TWICE (the template of the second pass is built from beats already aligned). Cause: the first template is built from unaligned detector peaks, and a biphasic QRS (lead III on the ankle: about -411 / +126 uV, lobes about 16 ms apart) smears it, so the alignment locked onto either lobe: 7 ms timing jitter against the H10 and 32-36 % of beats cut by the shape gate on the ankle readings; with the second pass 1.4-3.2 ms and 0-1 % (copy A unchanged: 1.1-1.4 ms, 0 %). New diagnostics only (nothing is excluded for them): ALIGN2 (what the old one-pass alignment would have cut, how far the second pass moved the peaks) and LATE_ART (beat windows disturbed 350-650 ms after R) in the R16_ANALYSIS line.
-// FILE VERSION 0.71.3 (20 Nov 2026): beat-shape gate (ShapeGate: 3 odd beats in a row or 5 % odd among the last 129 withhold the AF screen and the rhythm word; nothing is repaired); 0.39.0 (3 Nov): settling switch (first 12.8 s left out, rounded up to 13 stored seconds), strip keeps the raw uV trace, the strap RMSSD (bytes 29-30) and result code (byte 23) for the report. 0.5.10 (11 Oct): own-validity gate v2 (a short noisy reading is no longer erased by the second pass); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
+// FILE VERSION 0.84.0 (24 Nov 2026): a shape-blocked reading whose beat gaps the 128-beat screen finds uneven is marked blockedUneven (decode log 426); 0.71.3 (20 Nov 2026): beat-shape gate (ShapeGate: 3 odd beats in a row or 5 % odd among the last 129 withhold the AF screen and the rhythm word; nothing is repaired); 0.39.0 (3 Nov): settling switch (first 12.8 s left out, rounded up to 13 stored seconds), strip keeps the raw uV trace, the strap RMSSD (bytes 29-30) and result code (byte 23) for the report. 0.5.10 (11 Oct): own-validity gate v2 (a short noisy reading is no longer erased by the second pass); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -102,6 +102,10 @@ public final class EcgR16Analyzer {
         /** 0.71.3 shape gate (ShapeGate): beats judged / odd / longest odd run among the last 129, and whether the AF screen and rhythm word were withheld. */
         public int shapeBeats, shapeOdd, shapeRun;
         public boolean shapeBlocked;
+        /** 0.84.0 diagnostics: what the two timing screens say on a shape-blocked reading (-1 / null when not blocked). Not shown as a verdict. */
+        public int blockedAfState = -1; public EcgRhythm.Result blockedRhythm;
+        /** 0.84.0 (decode log 426): shape-blocked AND the 128-beat screen found the beat gaps uneven. Shown as "Inconclusive", never as AF-like. */
+        public boolean blockedUneven;
         /** 0.5.5: usable seconds the strap rated quality 1-2, and quality 1-2 seconds our shape check dropped. */
         public int lowQSeconds, ownGateDroppedS;
         /** 0.76.0 diagnostics: beats the old one-pass alignment would have cut as odd-shaped / checked, the shift (ms) between the old and the new alignment, and beat windows disturbed 350-650 ms after R (nothing is excluded for them). */
@@ -117,6 +121,14 @@ public final class EcgR16Analyzer {
         /** 0.1.7 screen outcome: AfScreen.AF_LIKE / IRREGULAR / NOT_AF_LIKE / INCONCLUSIVE, and its detail. */
         public int afState = AfScreen.INCONCLUSIVE;
         public AfScreen.Outcome af;
+        /** 0.80.0: set when the record is not a heartbeat (a 10 Hz test tone, or a beat too small to be one): the reason in plain words. The rhythm is then not judged. */
+        public String notHeart;
+        /** 0.80.0: 10 Hz line of the record, counts (90th percentile of the one-second values). */
+        public double tone10Counts = Double.NaN;
+        /** 0.80.0: median over the full seconds of the peak-to-peak of the record after a 100 ms moving average is removed and a 20 ms average applied (50 Hz cancels), uV. A heartbeat gives its R-to-S height here. */
+        public double fastPpUv = Double.NaN;
+        /** 0.83.0 (decode log 423.2, 425): this reading's own start-up decay, when the start-up stayed inside the range: time constant in seconds (NaN when not measurable) and the step in counts. */
+        public double startTauS = Double.NaN, startStepCounts = Double.NaN;
         /** RR-irregularity screen (EcgRhythm) on the raw beat timing of the accepted runs; null if it did not run. */
         public EcgRhythm.Result rhythm;
         /** 0.3.2 breathing rate from R-wave height and beat timing (research only); null if it did not run. */
@@ -223,6 +235,9 @@ public final class EcgR16Analyzer {
                                 "<small>(%d beats; nRMSSD %.3f, entropy %.2f, turning points %s)</small><br>" +
                                 "<small>A clean result does not rule anything out.</small>",
                         af.window, dash[0], dash[1], dash[5] > 0.5 ? "random-like" : "not random"));
+            } else if (shapeBlocked && blockedUneven) {
+                b.append("<small><b>Rhythm inconclusive: uneven beat gaps and odd-shaped beats</b> (").append(shapeOdd).append(" of the last ")
+                        .append(shapeBeats).append(" beats had an odd shape). Movement or poor contact can cause both. Hold still with firm, steady finger contact and try again.</small>");
             } else if (shapeBlocked) {
                 b.append("<small><b>Rhythm not judged: signal not clean enough</b> (").append(shapeOdd).append(" of the last ")
                         .append(shapeBeats).append(" beats had an odd shape). Hold still with firm, steady finger contact and try again.</small>");
@@ -581,6 +596,9 @@ public final class EcgR16Analyzer {
             if (EcgWhoopSpec.r16LeadOffCount(f) > 250
                     || EcgWhoopSpec.r16LeadOffMeanI(f) > EcgWhoopSpec.LEAD_OFF_I_THRESHOLD) r.leadOffSeconds++;
         }
+        r.tone10Counts = tone10(recs);
+        r.fastPpUv = fastPp(recs);
+        double[] su = startupDecay(recs); if (su != null) { r.startTauS = su[0]; r.startStepCounts = su[1]; }
         List<Double> ampAll = new ArrayList<>(), noiseAll = new ArrayList<>();
         List<Double> brT = new ArrayList<>(), brA = new ArrayList<>();   // 0.3.2: per-beat R-S height for breathing
         int invRuns = 0, runsMeasured = 0;
@@ -852,6 +870,14 @@ public final class EcgR16Analyzer {
             }
             double[] atr = EcgAtrial.features(atrialSegs, atrialAbs);
             r.rhythm = r.shapeBlocked ? null : EcgRhythm.analyzeRuns(beatRuns, atr == null ? null : new double[] {atr[0], atr[1], r.noiseFraction});
+            if (r.shapeBlocked) { try { r.blockedAfState = AfScreen.screen(segs).state; r.blockedRhythm = EcgRhythm.analyzeRuns(beatRuns, atr == null ? null : new double[] {atr[0], atr[1], r.noiseFraction}); } catch (RuntimeException ex) { r.blockedAfState = -1; r.blockedRhythm = null; }
+                r.blockedUneven = r.blockedAfState == AfScreen.AF_LIKE || r.blockedAfState == AfScreen.IRREGULAR; }
+            // 0.82.0 (decode log 424): on clinical records run through this whole analyser, 27 of 28 false "AF-like" results on normal rhythm came from AfScreen alone while the timing model
+            // (EcgRhythm, with the P-wave input) called the same beats regular. AfScreen's AF-like now needs the timing model to call the rhythm irregular too; otherwise it is shown as uneven (Inconclusive).
+            if (r.afState == AfScreen.AF_LIKE && !(r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR)) {
+                r.afState = AfScreen.IRREGULAR; r.afLike = false;
+                if (r.af != null) { r.af.state = AfScreen.IRREGULAR; r.af.why = "AF-like by the 128-beat screen, not confirmed by the timing model"; }
+            }
 
             // 0.76.0 diagnostics only: the shift of the second alignment, and beat windows disturbed 350-650 ms after R (about the median window; flagged above max(50 uV, 3 x the median); nothing is excluded for it)
             if (!alignShift.isEmpty()) {
@@ -896,7 +922,90 @@ public final class EcgR16Analyzer {
             // heart rate changed during the recording (for example recovering from exercise): measure per band
             if (!uneven) r.qtBands = EcgIntervals.bands(qtWins, qtRrs);
         }
+        notHeartGate(r);
         return r;
+    }
+
+    /** 0.80.0 (decode log 404.6, 405, 407): test-tone readings were saved as "Regular, 86 bpm" and a rig reading with a 36 uV beat as "AF-like pattern". */
+    public static final double TONE_GATE_COUNTS = 15000, MIN_HEART_PP_UV = 200;
+
+    /** One exponential + level fitted to the first 1.6 s of the record (25-sample medians), only when the first 400 samples stay under 120,000 counts, the step is 3,000 counts or more
+     *  and the fit leaves under 8 % of the step. Returns {tau s, step counts, residual share} or null. Same rule as the offline script of decode log 418.2. */
+    static double[] startupDecay(List<byte[]> recs) {
+        double[] x = new double[1500]; int n = 0;
+        for (byte[] f : recs) {
+            if (f.length != 1584) continue;
+            int c = EcgWhoopSpec.r16Count(f); if (c <= 0) { if (n > 0) break; else continue; }
+            for (int i = 0; i < c && n < x.length; i++) x[n++] = EcgWhoopSpec.r16Sample(f, i);
+            if (n >= x.length) break;
+        }
+        if (n < 1200) return null;
+        for (int i = 0; i < 400; i++) if (Math.abs(x[i]) >= 120000) return null;
+        int nb = n / 25; double[] tb = new double[nb], yb = new double[nb]; int m = 0;
+        for (int b = 0; b < nb; b++) {
+            double t = (b * 25 + 12.5) / 500.0; if (t <= 0.02 || t >= 1.6) continue;
+            double[] w = Arrays.copyOfRange(x, b * 25, b * 25 + 25); Arrays.sort(w); tb[m] = t; yb[m] = w[12]; m++;
+        }
+        if (m < 20) return null;
+        double best = Double.MAX_VALUE, bTau = Double.NaN, bA = 0;
+        for (int k = 0; k <= 120; k++) {
+            double tau = 0.10 * Math.pow(30.0, k / 120.0);       // 0.10 .. 3.0 s
+            double se = 0, s1 = m, sy = 0, see = 0, sey = 0;
+            for (int i = 0; i < m; i++) { double e = Math.exp(-tb[i] / tau); se += e; see += e * e; sy += yb[i]; sey += e * yb[i]; }
+            double det = see * s1 - se * se; if (Math.abs(det) < 1e-12) continue;
+            double A = (sey * s1 - se * sy) / det, B = (see * sy - se * sey) / det, ss = 0;
+            for (int i = 0; i < m; i++) { double d = yb[i] - (A * Math.exp(-tb[i] / tau) + B); ss += d * d; }
+            if (ss < best) { best = ss; bTau = tau; bA = A; }
+        }
+        double sd = Math.sqrt(best / m);
+        if (Double.isNaN(bTau) || Math.abs(bA) < 3000 || sd > 0.08 * Math.abs(bA) || bTau <= 0.1001 || bTau >= 2.99) return null;
+        return new double[]{bTau, bA, sd / Math.abs(bA)};
+    }
+
+    static double fastPp(List<byte[]> recs) {
+        List<Double> a = new ArrayList<>();
+        double uv = ScaleSetting.uv();
+        for (byte[] f : recs) {
+            if (f.length != 1584 || EcgWhoopSpec.r16Count(f) != 500 || EcgWhoopSpec.r16LeadOffCount(f) > 0) continue;
+            double[] x = new double[500], c = new double[501];
+            for (int i = 0; i < 500; i++) { x[i] = EcgWhoopSpec.r16Sample(f, i) * uv; c[i + 1] = c[i] + x[i]; }
+            double[] y = new double[500], d = new double[501];
+            for (int i = 0; i < 500; i++) { int lo = Math.max(0, i - 25), hi = Math.min(500, i + 26); y[i] = x[i] - (c[hi] - c[lo]) / (hi - lo); d[i + 1] = d[i] + y[i]; }
+            double mn = Double.MAX_VALUE, mx = -Double.MAX_VALUE;
+            for (int i = 30; i + 10 <= 470; i++) { double v = (d[i + 10] - d[i]) / 10; if (v < mn) mn = v; if (v > mx) mx = v; }
+            a.add(mx - mn);
+        }
+        if (a.size() < 8) return Double.NaN;
+        java.util.Collections.sort(a);
+        return a.get(a.size() / 2);
+    }
+
+    /** 10 Hz line of the record: one lock-in value per full second, their 90th percentile, in counts. */
+    static double tone10(List<byte[]> recs) {
+        List<Double> a = new ArrayList<>();
+        for (byte[] f : recs) {
+            if (f.length != 1584 || EcgWhoopSpec.r16Count(f) != 500) continue;
+            double m = 0; for (int i = 0; i < 500; i++) m += EcgWhoopSpec.r16Sample(f, i); m /= 500;
+            double si = 0, sq = 0;
+            for (int i = 0; i < 500; i++) { double ph = 2 * Math.PI * 10.0 * i / 500.0, v = EcgWhoopSpec.r16Sample(f, i) - m; si += v * Math.cos(ph); sq += v * Math.sin(ph); }
+            a.add(2.0 * Math.hypot(si / 500, sq / 500));
+        }
+        if (a.size() < 8) return Double.NaN;
+        java.util.Collections.sort(a);
+        return a.get((int) Math.min(a.size() - 1, Math.floor(0.9 * (a.size() - 1) + 0.5)));
+    }
+
+    static void notHeartGate(Result r) {
+        if (!Double.isNaN(r.tone10Counts) && r.tone10Counts >= TONE_GATE_COUNTS)
+            r.notHeart = String.format(Locale.UK, "A 10 Hz test tone is in this record (%.0f counts), so it is not read as a heartbeat.", r.tone10Counts);
+        else if (!Double.isNaN(r.fastPpUv) && r.fastPpUv < MIN_HEART_PP_UV)
+            r.notHeart = String.format(Locale.UK, "The fast part of this record is only %.0f uV peak to peak, too small to be read as a heartbeat.", r.fastPpUv);
+        if (r.notHeart == null) return;
+        r.afState = AfScreen.INCONCLUSIVE; r.afLike = false; r.screenRun = false; r.dash = null; r.rhythm = null;
+        if (r.af != null) { r.af.state = AfScreen.INCONCLUSIVE; r.af.dash = null; r.af.why = "not a heartbeat record"; }
+        if (r.qt != null && r.qt.status == EcgIntervals.Status.OK) { r.qt.status = EcgIntervals.Status.UNCERTAIN; r.qt.reason = "the record is not a heartbeat"; }
+        r.qtBands = null;
+        if (r.tone10Counts >= TONE_GATE_COUNTS) { r.hr = Double.NaN; r.rmssd = Double.NaN; }
     }
 
     /*

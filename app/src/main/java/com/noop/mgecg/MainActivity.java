@@ -4197,7 +4197,15 @@ public class MainActivity extends NewLookActivity {
                 r.put("afLike", stored.afLike);
                 r.put("afState", stored.afState);
                 if (stored.shapeBlocked) r.put("shapeBlocked", true);
-                if (stored.qt != null && stored.qt.status == EcgIntervals.Status.OK && stored.qt.qtMs > 0) { r.put("qtMs", stored.qt.qtMs); r.put("qtcF", stored.qt.qtcFMs); }      // 0.71.3: for the between-reading spread (ReadingRules)
+                if (stored.blockedUneven) r.put("blockedUneven", true);              // 0.84.0
+                if (stored.notHeart != null) r.put("notHeart", stored.notHeart);      // 0.80.0
+                if (!Double.isNaN(stored.startTauS)) { r.put("startTauS", stored.startTauS); r.put("startStepCounts", stored.startStepCounts); }      // 0.83.0
+                if (stored.qt != null && stored.qt.status == EcgIntervals.Status.OK && stored.qt.qtMs > 0) {      // 0.80.0: the between-reading table keeps the AS-RECORDED QT so readings before and after 0.79.0 compare; the model value is stored beside it
+                    boolean asRec = !Double.isNaN(stored.qt.qtAsRecordedMs) && stored.qt.qtAsRecordedMs > 0;
+                    double qtT = asRec ? stored.qt.qtAsRecordedMs : stored.qt.qtMs;
+                    r.put("qtMs", qtT); r.put("qtcF", stored.qt.qtcFMs * qtT / stored.qt.qtMs);
+                    r.put("qtModelMs", stored.qt.qtMs); r.put("strapHpFcHz", stored.qt.headlineFcHz);
+                }      // 0.71.3: for the between-reading spread (ReadingRules)
                 e.put("stored", r);
             }
             if (at >= 0) arr.put(at, e); else arr.put(e);
@@ -4255,7 +4263,8 @@ public class MainActivity extends NewLookActivity {
             } else if (r.has("hr")) {
                 b.append(String.format(Locale.UK, "<br><small>Stored 500 Hz: HR %.0f &middot; HRV %.0f ms",
                         r.optDouble("hr"), r.optDouble("rmssd")));
-                if (r.optBoolean("shapeBlocked")) b.append(" &middot; rhythm not judged (signal not clean enough)");
+                if (r.optBoolean("shapeBlocked")) b.append(r.optBoolean("blockedUneven") ? " &middot; rhythm inconclusive (uneven gaps, odd-shaped beats)" : " &middot; rhythm not judged (signal not clean enough)");
+                if (r.has("notHeart")) b.append(" &middot; not a heartbeat record");
                 else if (r.optBoolean("screenRun")) b.append(r.optBoolean("afLike")
                         ? " &middot; <font color='#FF5555'>AF-like pattern</font>"
                         : " &middot; no AF-like pattern");
@@ -12625,6 +12634,7 @@ public class MainActivity extends NewLookActivity {
                         (r.afState == AfScreen.AF_LIKE ? ", AF-LIKE pattern (research screen)"
                                 : r.afState == AfScreen.IRREGULAR ? ", irregular rhythm, cause unclear"
                                 : r.afState == AfScreen.NOT_AF_LIKE ? ", no AF-like pattern"
+                                : r.shapeBlocked && r.blockedUneven ? ", rhythm inconclusive (uneven gaps, odd-shaped beats)"
                                 : r.shapeBlocked ? ", rhythm not judged (signal not clean enough)" : "") +
                         " ***");
             });

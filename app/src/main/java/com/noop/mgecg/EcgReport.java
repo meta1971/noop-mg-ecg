@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.71.3 (20 Nov 2026): QT card says "This reading" (beat sampling only), adds the fewer-than-60-beats note and the person's own between-reading spread (ReadingRules, 318.5); 0.71.3 (20 Nov 2026): rhythm tile and summary say "signal not clean enough" when the shape gate withheld the rhythm word; 0.43.0 (6 Nov 2026): the report is a one-screen summary (grade, heart rate, HRV, QT, rhythm) with everything else in closed folds; the strap card, "All readings together" and the parameter table sit under ONE "Research" fold. No number or wording of a measurement changed. 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
+// FILE VERSION 0.87.0 (24 Nov 2026): corner wording follows the phone-free step decays of 24 Nov (decode log 434: 0.38-0.42 Hz); the scenario card says the microvolt scale is not yet confirmed; 0.85.0 (24 Nov 2026): start-up corner card no longer says the corner depends on the skin contact (decode log 429: 0.399-0.406 Hz on three tone runs); 0.84.0 (24 Nov 2026): rhythm tile and summary say "Inconclusive" when a shape-blocked reading also has uneven beat gaps (decode log 426); 0.71.3 (20 Nov 2026): QT card says "This reading" (beat sampling only), adds the fewer-than-60-beats note and the person's own between-reading spread (ReadingRules, 318.5); 0.71.3 (20 Nov 2026): rhythm tile and summary say "signal not clean enough" when the shape gate withheld the rhythm word; 0.43.0 (6 Nov 2026): the report is a one-screen summary (grade, heart rate, HRV, QT, rhythm) with everything else in closed folds; the strap card, "All readings together" and the parameter table sit under ONE "Research" fold. No number or wording of a measurement changed. 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
 
 import java.util.List;
 import java.text.SimpleDateFormat;
@@ -246,6 +246,7 @@ public final class EcgReport {
         // ---- QT
         b.append(qtCard(r.qt, r.qtBands));
         b.append(scenarioCard(r.qt));
+        b.append(startupNote(r));
         b.append(bandsCard(r.qtBands));
 
         b = fRes;
@@ -435,7 +436,8 @@ public final class EcgReport {
         } else if (regular) {
             s.append("The timing between your beats looked steady.");
         } else {
-            s.append(r.shapeBlocked ? "The signal was not clean enough to judge the rhythm (" + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape)."
+            s.append(r.shapeBlocked && r.blockedUneven ? "The beat gaps were uneven and " + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape, so the rhythm is inconclusive: repeat with a still hand and steady contact."
+                    : r.shapeBlocked ? "The signal was not clean enough to judge the rhythm (" + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape)."
                     : "There were not enough clean beats in a row to judge the rhythm.");
         }
         if (g.letter == 'C') s.append(" Only part of this reading was clean, so treat the numbers as a guide and try again with a longer, stiller hold.");
@@ -444,16 +446,20 @@ public final class EcgReport {
 
     /** {value, caption, colourVar} */
     static String[] rhythmTile(EcgR16Analyzer.Result r) {
+        if (r.notHeart != null) return new String[]{"Not judged", r.notHeart, null};      // 0.80.0: test tones and beats too small to be a heart
         boolean irregular = r.afState == AfScreen.IRREGULAR || r.afState == AfScreen.AF_LIKE
                 || (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.IRREGULAR);
         if (irregular) {
             boolean afl = r.afState == AfScreen.AF_LIKE || (r.rhythm != null && r.rhythm.strong);
             return afl ? new String[]{"AF-like pattern", "A pattern also seen with atrial fibrillation. This research screen cannot diagnose it: repeat the reading, and speak to a doctor if it keeps happening.", "var(--red)"}
-                    : new String[]{"Inconclusive", "The beat timing or the P waves were not clearly regular. Early beats, movement or poor contact can cause this. This is not a diagnosis.", "var(--amber)"};
+                    : (r.rhythm != null && r.rhythm.smooth)
+                        ? new String[]{"Inconclusive", "The beat spacing was uneven but rose and fell smoothly, as it does with breathing in many healthy hearts. This is not a diagnosis; repeat the reading if unsure.", "var(--amber)"}
+                        : new String[]{"Inconclusive", "The beat timing or the P waves were not clearly regular. Early beats, movement or poor contact can cause this. This is not a diagnosis.", "var(--amber)"};
         }
         if (r.rhythm != null && r.rhythm.verdict == EcgRhythm.Verdict.REGULAR) {
-            return new String[]{"Regular", r.rhythm.intervals + " even beats in a row. Regular timing is not the same as a healthy heart.", "var(--green)"};
+            return new String[]{"Regular", r.rhythm.intervals + " even beats in a row. Regular timing is not the same as a healthy heart: this screen reads beat timing only and cannot see rhythms that keep a steady beat, such as atrial flutter.", "var(--green)"};
         }
+        if (r.shapeBlocked && r.blockedUneven) return new String[]{"Inconclusive", "The beat gaps were uneven and " + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape. Movement or poor contact can cause both; so can early beats or an irregular rhythm. Hold still with steady contact and repeat. This is not a diagnosis.", "var(--amber)"};   // 0.84.0 (426)
         if (r.shapeBlocked) return new String[]{"Not judged", "Signal not clean enough: " + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape. Hold still with steady contact and repeat.", null};
         String why = r.rhythm != null && r.rhythm.reason != null && r.rhythm.reason.length() > 0 ? "Not enough clean beats in a row to judge." : "Not judged this time.";
         return new String[]{"Not judged", why, null};
@@ -697,6 +703,14 @@ public final class EcgReport {
         return String.format(Locale.US, "This headline undoes a %.2f Hz strap high-pass (%s). As recorded, with nothing undone, as builds before 0.79.0 measured it, it reads <b>%.0f ms</b>.", EcgIntervals.STRAP_HP_FC_HZ, esc(EcgIntervals.scenarioName(EcgIntervals.STRAP_HP_FC_HZ)), q.qtAsRecordedMs);
     }
 
+    /** 0.83.0: this reading's own start-up decay, when it could be measured (decode log 423.2, 425). */
+    static String startupNote(EcgR16Analyzer.Result r) {
+        if (r == null || Double.isNaN(r.startTauS)) return "";
+        double fc = 1.0 / (2 * Math.PI * r.startTauS);
+        return String.format(Locale.US, "<section class=\"card\"><div class=\"k\">This reading's own low-frequency corner</div><p class=\"hint\">At the start of this reading the trace settled from a step of %,.0f counts with a time constant of <b>%.2f s</b>, which is a high-pass corner of <b>%.2f Hz</b>. "
+                + "Step decays measured on 24 Nov 2026 with no phone in the circuit put the strap's own corner at 0.40 Hz (0.38 to 0.42 Hz), and 282 start-ups agree, so a value far from 0.40 here points to a disturbed start-up (movement, a contact still settling), not to a different corner. Measured only when the start-up stays inside the amplifier's range. Experimental.</p></section>", Math.abs(r.startStepCounts), r.startTauS, fc);
+    }
+
     /** 0.79.0: the same averaged beat measured under every candidate strap high-pass model (EcgIntervals.SCEN_FC). Empty when there is no table. */
     static String scenarioCard(EcgIntervals.Result q) {
         if (q == null || q.scen == null || q.scen.length == 0 || q.avg == null) return "";
@@ -714,7 +728,7 @@ public final class EcgReport {
         }
         b.append("</div><p class=\"cap\">Evidence for 0.40 Hz: the strap's own start-ups on skin decay as one exponential of 0.39 to 0.41 s (282 start-ups), the tone rig's start-up decay (0.44 to 0.45 s), and the tone curve (one pole near 0.40 Hz that moved with a series resistor exactly as the amplitude did). "
                 + "Against: the Polar H10 comparison (strap QT already longer as recorded; the leads differ) and slower decays of 2 to 9 s after overload. The sister chips' own high-pass would be 0.27 to 0.50 Hz with a 1 &micro;F capacitor. "
-                + "A battery step with no phone in the path is the proof still owed. Change the headline under Settings &rsaquo; Your numbers &rsaquo; ECG strap model. The other cards of this report (waves and segments, rhythm) are always as recorded. Not a diagnosis.</p></section>");
+                + "Step decays with no phone in the path (24 Nov 2026) gave 0.38 to 0.42 Hz for the strap's own corner. The amplitude scale (microvolts per count) is NOT yet confirmed by a known voltage, so every microvolt figure carries that open question; times and shapes do not. Change the headline under Settings &rsaquo; Your numbers &rsaquo; ECG strap model. The other cards of this report (waves and segments, rhythm) are always as recorded. Not a diagnosis.</p></section>");
         return b.toString();
     }
 

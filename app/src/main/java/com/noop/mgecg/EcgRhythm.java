@@ -54,6 +54,10 @@ public final class EcgRhythm {
         public final double suspectFraction; // NaN if not computed
         public final double probability;     // model output 0..1; NaN if not calibrated
         public boolean strong;               // score above the strict AF-like cutoff
+        /** 0.81.0: share of interval-to-interval changes that reverse direction (a random series gives 0.67; breathing-driven sinus rhythm about 0.45). NaN when too short. */
+        public double turnShare = Double.NaN;
+        /** 0.81.0: the strict AF-like flag was withdrawn because the spacing rose and fell smoothly (turnShare under SMOOTH_TURN_SHARE). */
+        public boolean smooth;
         public double[] atrial;              // v4: {P-wave amplitude / R, split-half reliability, bad-shape share}; null if unavailable
         public String model = "A";           // A = timing only, B = timing + P wave
 
@@ -100,6 +104,19 @@ public final class EcgRhythm {
     }
 
     /** Several runs (for example separate quality-3 stretches). Uses the longest clean piece of any of them. */
+    public static final double SMOOTH_TURN_SHARE = 0.50;
+
+    static double turningShare(double[] rr) {
+        if (rr == null || rr.length < 12) return Double.NaN;
+        int n = 0, t = 0; double prev = 0;
+        for (int i = 1; i < rr.length; i++) {
+            double d = rr[i] - rr[i - 1]; if (d == 0) continue;
+            if (prev != 0) { n++; if (d * prev < 0) t++; }
+            prev = d;
+        }
+        return n < 8 ? Double.NaN : t / (double) n;
+    }
+
     public static Result analyzeRuns(List<double[]> runs) {
         return analyzeRuns(runs, null);
     }
@@ -181,6 +198,11 @@ public final class EcgRhythm {
         Result res = new Result(p >= lo ? Verdict.IRREGULAR : Verdict.REGULAR,
                 "", n, hr, f, susp, p);
         res.strong = p >= hi;
+        // 0.81.0 (decode log 421): on the MIT-BIH Normal Sinus Rhythm Database 1.95 % of one-minute windows scored AF-like, 444 of 449 through this flag, nearly all with RMSSD 100-200 ms
+        // (strong breathing-driven sinus rhythm). Their intervals rise and fall smoothly; AF does not. Under 0.50 the flag is withdrawn (the verdict stays IRREGULAR, shown as Inconclusive):
+        // removes 57.5 % of those windows; loses 0.16 % of AF windows at 60 s, 1.16 % at 30 s, 0 % at 180 s (afdb), 1 of 98 (mitdb). Chosen on these data, not on a held-out set.
+        res.turnShare = turningShare(rrIn);
+        if (res.strong && !Double.isNaN(res.turnShare) && res.turnShare < SMOOTH_TURN_SHARE) { res.strong = false; res.smooth = true; }
         res.atrial = atrial;
         res.model = model;
         return res;

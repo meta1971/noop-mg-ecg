@@ -74,7 +74,12 @@ final class LabParts {
         int nA = (int) ((c.length / (double) FS - 2.0) / 0.1); if (nA < 70) return Double.NaN;
         double[] A = new double[nA]; for (int i = 0; i < nA; i++) { double t = 1.0 + 0.1 * i; A[i] = SimDirect.lockIn(c, 10.0, t - 0.5, t + 0.5); }
         double[] base = Arrays.copyOf(A, 40); Arrays.sort(base); double b0 = base[20]; int i0 = -1;
-        for (int i = 0; i < nA; i++) if (A[i] > 8 * Math.max(b0, 1e-9) && A[i] > 20) { i0 = i; break; }
+        // 0.80.0 (decode log 389.3): a click at PLAY passed the old one-window test and every later window was misplaced. The tone must now hold: 25 of the next 30 windows (3 s) above the same limit.
+        for (int i = 0; i + 30 < nA; i++) {
+            if (!(A[i] > 8 * Math.max(b0, 1e-9) && A[i] > 20)) continue;
+            int hold = 0; for (int k = 1; k <= 30; k++) if (A[i + k] > 8 * Math.max(b0, 1e-9) && A[i + k] > 20) hold++;
+            if (hold >= 25) { i0 = i; break; }
+        }
         if (i0 < 0) return Double.NaN;
         double[] pl = Arrays.copyOfRange(A, Math.min(nA - 1, i0 + 15), Math.min(nA, i0 + 45)); Arrays.sort(pl); double plateau = pl.length == 0 ? A[i0] : pl[pl.length / 2];
         int j = i0; while (j < nA - 1 && A[j] < 0.5 * plateau) j++;

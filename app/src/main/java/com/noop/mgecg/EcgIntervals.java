@@ -75,7 +75,7 @@ public final class EcgIntervals {
      *  (2) tone rig: start-up decay 0.443-0.452 s; (3) tone curve 5..0.25 Hz: one pole 0.40-0.44 Hz that moved x0.949 with a 100.4 kOhm series resistor, equal to the amplitude loading 0.948:
      *  a series capacitor of about 0.2 uF into about 1.8 MOhm at the strap's input (412). The slower decays (2-9 s after steps, 2.4 s after fast-recovery runs) follow overload, not the small-signal corner.
      *  The 30 Oct "flat spectrum down to 0.0125 Hz" cannot exclude a pole (the drift's own spectrum is unknown; on 23 Nov the spectrum rises to low frequency with a knee near 0.2-0.4 Hz).
-     *  The parked battery step (no phone in the path) is the proof. As recorded stays one tap away (EcgScenario) and is printed beside every headline. */
+     *  24 Nov 2026 (decode log 434): four step decays with 100 ohm across the leads and no phone gave 0.382-0.416 s (0.38-0.42 Hz): the strap's own corner. As recorded stays one tap away (EcgScenario) and is printed beside every headline. */
 
     /** 23 Nov 2026 (addenda 408-414): the candidate strap high-pass models. None is settled, so every reading is measured under all of them and the report lists them.
      *  0     as recorded: 30 Oct test (no strap high-pass down to 0.01 Hz); H10 comparison (strap QT already +12 ms long as recorded).
@@ -91,7 +91,7 @@ public final class EcgIntervals {
             "Slow input coupling, 0.03 Hz (step decays)",
             "Chip high-pass 0.27 Hz (1 uF, 600 kOhm)",
             "Chip high-pass 0.35 Hz (1 uF, 450 kOhm)",
-            "Strap input pole 0.40 Hz (start-ups, tone runs)",
+            "Strap corner 0.40 Hz (start-ups, step decays)",
             "Chip high-pass 0.50 Hz (1 uF, 320 kOhm)",
             "Upper test 0.60 Hz",
             "Old assumption 1.50 Hz (withdrawn 18 Oct)"};

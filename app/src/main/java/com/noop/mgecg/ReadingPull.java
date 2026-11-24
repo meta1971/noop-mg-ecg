@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.86.0 (24 Nov 2026): the two 500 Hz ECG files carry the sample clock (sampleClock) instead of the strap's frame stamp (decode log 430).
 // 0.51.0 (10 Nov 2026): the Full pull also carries ecg_psd_<start>.csv, console_new.txt, console_templates.csv, afe_regs.csv and strap_config.csv.
 
 // FILE VERSION 0.43.0 (6 Nov 2026): events.txt is collected OUTSIDE the 1.5 MB cap (the cap now limits only app_log_excerpt.txt; before, readings over about 2.5 min lost the end events 118 / 119 / 124 stop); make() takes a callback and says "Saved: ready to upload"; makeBatch() writes ONE zip with a folder per reading (Home: Send all new). 0.25.0 (29 Oct 2026): "Full pull" of ONE reading: a small zip with everything the app holds for that reading (live raw frames, the stored 500 Hz, 100 Hz, per-second, 50 Hz optical, 100 Hz motion and pulse records, events, log lines, H10 files, the report), with readable CSV copies. Research only.
@@ -37,6 +38,26 @@ final class ReadingPull {
     private static float f32(byte[] f, int o) { return Float.intBitsToFloat((int) ProAnalysis.u32(f, o)); }
     private static short s16(byte[] f, int o) { return (short) ((f[o] & 0xFF) | ((f[o + 1] & 0xFF) << 8)); }
     private static double ft(byte[] f) { return ProAnalysis.u32(f, 15) + ProAnalysis.u16(f, 19) / 32768.0; }
+    /** 0.86.0 (decode log 430): start time of every layout-16 frame on the sample clock. The strap stamps a frame on a 10 ms tick, and about 1 frame in 100 is stamped one tick late or early
+     *  while the counter and the samples stay continuous; a first frame with fewer than 500 samples holds the END of its second. Inside a run of consecutive counters the time is
+     *  anchor + samples so far / 500, the anchor being the median of (stamp - samples so far / 500) over the run. A frame outside any run keeps its own stamp. */
+    static double[] sampleClock(List<byte[]> fr) {
+        int m = fr.size(); double[] out = new double[m]; int i = 0;
+        while (i < m) {
+            int j = i; while (j + 1 < m && ProAnalysis.u32(fr.get(j + 1), 11) == ProAnalysis.u32(fr.get(j), 11) + 1) j++;
+            int len = j - i + 1; double[] off = new double[len]; long[] cum = new long[len]; long c = 0; boolean seen = false;
+            for (int k = 0; k < len; k++) {
+                byte[] f = fr.get(i + k); int n = Math.min(500, ProAnalysis.u16(f, 32)); double st = ft(f);
+                if (!seen && n > 0 && n < 500) st += (500 - n) / 500.0;      // short first frame: its samples end the second
+                if (n > 0) seen = true;
+                cum[k] = c; off[k] = st - c / 500.0; c += n;
+            }
+            double[] so = off.clone(); Arrays.sort(so); double anchor = len % 2 == 1 ? so[len / 2] : (so[len / 2 - 1] + so[len / 2]) / 2.0;
+            for (int k = 0; k < len; k++) out[i + k] = anchor + cum[k] / 500.0;
+            i = j + 1;
+        }
+        return out;
+    }
     private static String hex(byte[] f) { StringBuilder sb = new StringBuilder(f.length * 2); for (byte b : f) sb.append(String.format("%02X", b & 0xFF)); return sb.toString(); }
 
     /** Builds every file of the pull (name to bytes). Pure Java: also used by the off-phone test. */
@@ -65,7 +86,8 @@ final class ReadingPull {
         out.put("README.txt", README.replace("0.06358 uV per count", String.format(java.util.Locale.US, "%.5f", ScaleSetting.uv()) + " uV per count" + ScaleSetting.tag()).getBytes("UTF-8"));
         // ECG 500 Hz live
         StringBuilder sb = new StringBuilder("unix_time_s,sample,microvolts,lead_on,fast_recovery,rail,quality\n");
-        for (byte[] f : live16) { double t = ft(f); int n = ProAnalysis.u16(f, 32); int q = f[21] & 0xFF; for (int k = 0; k < n && k < 500; k++) { int b0 = f[34 + 3 * k] & 0xFF; int r = ((b0 & 3) << 16) | ((f[35 + 3 * k] & 0xFF) << 8) | (f[36 + 3 * k] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; sb.append(String.format(Locale.UK, "%.4f,%d,%.2f,%d,%d,%d,%d\n", t + k / 500.0, k, r * uvNow(), (b0 & 0x80) != 0 ? 1 : 0, (b0 & 0x40) != 0 ? 1 : 0, Math.abs(r) >= 126900 ? 1 : 0, q)); } }
+        double[] clk16 = sampleClock(live16); int fi16 = 0;
+        for (byte[] f : live16) { double t = clk16[fi16++]; int n = ProAnalysis.u16(f, 32); int q = f[21] & 0xFF; for (int k = 0; k < n && k < 500; k++) { int b0 = f[34 + 3 * k] & 0xFF; int r = ((b0 & 3) << 16) | ((f[35 + 3 * k] & 0xFF) << 8) | (f[36 + 3 * k] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; sb.append(String.format(Locale.UK, "%.4f,%d,%.2f,%d,%d,%d,%d\n", t + k / 500.0, k, r * uvNow(), (b0 & 0x80) != 0 ? 1 : 0, (b0 & 0x40) != 0 ? 1 : 0, Math.abs(r) >= 126900 ? 1 : 0, q)); } }
         out.put("ecg_500hz_live.csv", sb.toString().getBytes("UTF-8"));
         // R17 100 Hz filtered live
         sb = new StringBuilder("unix_time_s,sample,microvolts_filtered\n");
@@ -85,7 +107,7 @@ final class ReadingPull {
         out.put("motion_100hz_r21.csv", sb.toString().getBytes("UTF-8"));
         // stored 500 Hz copy (gap filler) and pulse packets, raw
         sb = new StringBuilder("unix_time_s,layout,hex\n"); for (byte[] f : S.r26) sb.append(String.format(Locale.UK, "%.4f,26,%s\n", ft(f), hex(f))); out.put("pulse_packets_r26_hex.csv", sb.toString().getBytes("UTF-8"));
-        sb = new StringBuilder("unix_time_s,sample,microvolts\n"); for (byte[] f : S.r16) { double t = ft(f); int n = ProAnalysis.u16(f, 32); for (int k = 0; k < n && k < 500; k++) { int r = ((f[34 + 3 * k] & 3) << 16) | ((f[35 + 3 * k] & 0xFF) << 8) | (f[36 + 3 * k] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; sb.append(String.format(Locale.UK, "%.4f,%d,%.2f\n", t + k / 500.0, k, r * uvNow())); } }
+        sb = new StringBuilder("unix_time_s,sample,microvolts\n"); double[] clkS = sampleClock(S.r16); int fiS = 0; for (byte[] f : S.r16) { double t = clkS[fiS++]; int n = ProAnalysis.u16(f, 32); for (int k = 0; k < n && k < 500; k++) { int r = ((f[34 + 3 * k] & 3) << 16) | ((f[35 + 3 * k] & 0xFF) << 8) | (f[36 + 3 * k] & 0xFF); if ((r & 0x20000) != 0) r -= 0x40000; sb.append(String.format(Locale.UK, "%.4f,%d,%.2f\n", t + k / 500.0, k, r * uvNow())); } }
         out.put("ecg_500hz_stored_r16.csv", sb.toString().getBytes("UTF-8"));
         // log lines and events from the app logs
         StringBuilder ev = new StringBuilder(), lg = new StringBuilder();
@@ -124,6 +146,7 @@ final class ReadingPull {
         + "ecg_500hz_live.csv: the live 500 Hz ECG (layout 16), microvolts at 0.06358 uV per count (from app 0.53.0; earlier pulls used 0.0621); lead_on 1 = electrode contact, fast_recovery 1 = the strap's recovery flag, rail 1 = amplifier limit; quality = the strap's 0 to 3 per second.\n"
         + "ecg_100hz_filtered_live.csv: the strap's own filtered 100 Hz stream (layout 17), 1 uV per count.\n"
         + "ecg_500hz_stored_r16.csv: the stored copy of layout 16 delivered by the history pull (fills gaps in the live stream).\n"
+        + "Time column of the two 500 Hz files (from app 0.86.0): the sample clock, not the strap's frame stamp. The strap stamps each one-second frame on a 10 ms tick and about 1 frame in 100 lands a tick off while the samples are continuous; a first frame with fewer than 500 samples holds the end of its second. Earlier pulls show these as steps of 10 ms and as a 0.51 s gap after the first 245 samples: neither is in the data.\n"
         + "per_second_r18.csv: one row a second: heart rate, up to four beat intervals in ms (optical), accel_step_g, gravity vector, step counter, optical quality, skin temperature, activity class, sleep state, bytes 33 and 36 (flags, not decoded).\n"
         + "optical_50hz_r20.csv: the raw optical record, 50 samples a second. block 0 = green LED (the pulse; perfusion about 5 %), 1 and 2 configured (127.5 and 53 mA) but empty in ECG sessions, 3 = LED current 0 (dark reading; it follows the green level, not room light), 4 = LED at 2 mA, INFERRED infrared, slot A near and slot B far photodiode (A/B about 10, the same ratio the firmware wear detector logs as opt_ir_m_ratio); slots A and B are the two photodiodes; value = signed 24-bit counts; led_current_mA from the block header.\n"
         + "motion_100hz_r21.csv: accelerometer in g (4096 counts per g) and gyroscope in degrees per second (16.384 counts per dps), 100 samples a second.\n"

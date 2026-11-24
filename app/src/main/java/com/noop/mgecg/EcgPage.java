@@ -959,7 +959,7 @@ final class EcgPage {
             double nv = !Double.isNaN(n825) ? n825 : nz;
             int ncol = Double.isNaN(nv) ? MUT : nv <= 27 ? GREEN : nv <= 40 ? GOLD : ROSE;
             setRing(0, hrFrac(hrNow), ROSE, hrNow, "HEART RATE", "live");
-            setRing(1, Double.isNaN(nv) ? 0f : clamp01(1.0 - nv / 60.0), ncol, Double.isNaN(nv) ? "--" : String.format(Locale.UK, "%.0f", nv), "NOISE", "uV, usual 15-27");
+            setRing(1, Double.isNaN(nv) ? 0f : clamp01(1.0 - nv / 60.0), ncol, Double.isNaN(nv) ? "--" : String.format(Locale.UK, "%.0f", nv), "NOISE", Double.isNaN(nv) || nv <= 27 ? "uV, usual 15-27" : nv <= 40 ? "uV, a little high" : "uV: relax the hand");      // 0.81.0 (decode log 418.6)
             setRing(2, clamp01(Math.min(100, pg) / 100.0), VIOLET, Math.min(100, pg) + "%", "STRAP CHECK", cd != 0 && pg == 100 ? "result " + cd : "its own analysis");
             drawRings();
             greetView.setText(String.format(Locale.UK, "ECG  \u00b7  %d:%02d", el / 60000, (el / 1000) % 60));
@@ -1100,6 +1100,7 @@ final class EcgPage {
             String[] bn = { "noise_0p5_5", "noise_8_25", "noise_25_48", "noise_mains", "noise_52_100" };
             for (int i = 0; i < 5; i++) if (!Double.isNaN(b[i])) ReadingNotes.put(d, startSec, bn[i], String.format(Locale.US, "%.1f", b[i]));
             double z = Live500.medianZ(); if (!Double.isNaN(z)) ReadingNotes.put(d, startSec, "contact_z", String.format(Locale.US, "%.1f", z));
+            double[] ziq = Live500.medianIQ(); if (!Double.isNaN(ziq[0])) { ReadingNotes.put(d, startSec, "contact_i", String.format(Locale.US, "%.1f", ziq[0])); ReadingNotes.put(d, startSec, "contact_q", String.format(Locale.US, "%.1f", ziq[1])); }      // 0.80.0
             ReadingNotes.put(d, startSec, "beats_live", String.valueOf(Live500.beatCount()));
             vc = Live500.verdictCode; if (vc != 0) { ReadingNotes.put(d, startSec, "result", String.valueOf(vc)); ReadingNotes.put(d, startSec, "strap_hr", String.valueOf(Live500.verdictHr)); ReadingNotes.put(d, startSec, "verdict_s", String.format(Locale.US, "%.0f", (Live500.verdictMs - Live500.sessionMs) / 1000.0)); }
             if (Live500.hrvMs != 0) { ReadingNotes.put(d, startSec, "hrv_first_s", String.format(Locale.US, "%.0f", (Live500.hrvMs - Live500.sessionMs) / 1000.0)); ReadingNotes.put(d, startSec, "hrv_first_ms", String.valueOf(Live500.hrvVal)); }

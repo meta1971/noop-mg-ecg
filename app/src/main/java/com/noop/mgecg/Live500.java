@@ -178,7 +178,7 @@ final class Live500 {
             peakLevel = 0; initMax = 0; inited = false; pkCount = 0; firstPeak = -1;
             bufferMs = pro ? PRO_BUFFER_MS : BUFFER_MS; proReset(); LiveBands.reset(); tier.reset(); kSlow = kernel(slowSigmaMs());
         }
-        sessionMs = System.currentTimeMillis(); verdictMs = 0; hrvMs = 0; hrvVal = 0; verdictCode = 0; verdictHr = 0; lastHrv = 65535; synchronized (ZL) { zList.clear(); }
+        sessionMs = System.currentTimeMillis(); verdictMs = 0; hrvMs = 0; hrvVal = 0; verdictCode = 0; verdictHr = 0; lastHrv = 65535; synchronized (ZL) { zList.clear(); ziList.clear(); zqList.clear(); }
     }
 
     static long frames() { synchronized (LOCK) { return frames; } }
@@ -441,7 +441,13 @@ final class Live500 {
         double[] z = new double[n];
         for (int k = 0; k < n; k++) { int i = (f[1535 + 2 * k] & 0xFF) | ((f[1536 + 2 * k] & 0xFF) << 8); int q = (short) ((f[1557 + 2 * k] & 0xFF) | ((f[1558 + 2 * k] & 0xFF) << 8)); z[k] = Math.sqrt((double) i * i + (double) q * q); }
         double m = med(z); synchronized (ZL) { if (zList.size() < 1200) zList.add(m); }
+        double[] zi = new double[n], zq = new double[n];      // 0.80.0: I and Q kept apart (decode log 417, 418.3: a per-strap floor; the word is not an ohmmeter)
+        for (int k = 0; k < n; k++) { zi[k] = (f[1535 + 2 * k] & 0xFF) | ((f[1536 + 2 * k] & 0xFF) << 8); zq[k] = (short) ((f[1557 + 2 * k] & 0xFF) | ((f[1558 + 2 * k] & 0xFF) << 8)); }
+        double mi = med(zi), mq = med(zq); synchronized (ZL) { if (ziList.size() < 1200) { ziList.add(mi); zqList.add(mq); } }
     }
+    private static final java.util.ArrayList<Double> ziList = new java.util.ArrayList<>(), zqList = new java.util.ArrayList<>();
+    /** Median lead-off I and Q over the reading ({NaN, NaN} when none). */
+    static double[] medianIQ() { synchronized (ZL) { int s = ziList.size(); if (s == 0) return new double[]{Double.NaN, Double.NaN}; double[] a = new double[s], b = new double[s]; for (int i = 0; i < s; i++) { a[i] = ziList.get(i); b[i] = zqList.get(i); } return new double[]{med(a), med(b)}; } }
     /** Median lead-off magnitude over the reading (NaN when none). */
     static double medianZ() { synchronized (ZL) { int s = zList.size(); if (s == 0) return Double.NaN; double[] x = new double[s]; for (int i = 0; i < s; i++) x[i] = zList.get(i); return med(x); } }
 

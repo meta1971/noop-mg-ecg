@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.71.3 (20 Nov 2026): rhythm item says "signal not clean enough" when the shape gate withheld the rhythm word; 0.5.11 (12 Oct): rhythm-timing sentence prints the AF screen's own three measures against its own limits (was sample entropy against the Shannon limit); 0.2.7 (3 Oct): research-only reading; heart-rate trend and banded QT
+// FILE VERSION 0.84.0 (24 Nov 2026): rhythm item says "inconclusive" when a shape-blocked reading also has uneven beat gaps (426); 0.71.3 (20 Nov 2026): rhythm item says "signal not clean enough" when the shape gate withheld the rhythm word; 0.5.11 (12 Oct): rhythm-timing sentence prints the AF screen's own three measures against its own limits (was sample entropy against the Shannon limit); 0.2.7 (3 Oct): research-only reading; heart-rate trend and banded QT
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -109,8 +109,9 @@ public final class EcgOpinion {
                     "The beat-to-beat timing was steady" + d + ". That is the pattern of a normal sinus rhythm, but timing alone cannot confirm it: it says nothing about the shape of the beats, and a short recording can miss a rhythm that comes and goes."));
             sum.append(sum.length() > 0 ? ", " : "").append("steady beat timing");
         } else {
-            o.items.add(new Item("Rhythm timing", "not judged", LIMITED,
-                    r.shapeBlocked ? "The signal was not clean enough to judge the rhythm: " + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape. A stiller hold with steady finger contact usually fixes that."
+            o.items.add(new Item("Rhythm timing", r.shapeBlocked && r.blockedUneven ? "inconclusive" : "not judged", LIMITED,
+                    r.shapeBlocked && r.blockedUneven ? "The beat gaps were uneven and " + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape. Movement or poor contact can cause both, and so can early beats or an irregular rhythm, so no rhythm word is given. A stiller hold with steady finger contact is the next step."
+                    : r.shapeBlocked ? "The signal was not clean enough to judge the rhythm: " + r.shapeOdd + " of the last " + r.shapeBeats + " beats had an odd shape. A stiller hold with steady finger contact usually fixes that."
                     : "There were not enough clean beats in a row to judge the rhythm. A longer, stiller hold usually fixes that."));
         }
 
