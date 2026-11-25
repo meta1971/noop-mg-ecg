@@ -1,5 +1,7 @@
 plugins { id 'com.android.application' }
 
+// 0.89.0: slow-tone scale check (SlowTone.java): a reading that holds the LabQ_BOTH.wav tones gets a report card with the strap's amplitude per block and the factor that turns the meter's swing into uV per count; scale wording updated to the first direct check (0.055, 0.048-0.063; decode log 438). Scale constant unchanged.
+// 0.88.0: (1) EXPERIMENTAL strap-held alarm: Alarm sheet > 'Strap keeps the alarm itself' sends the next alarm to the strap (SET_ALARM_TIME gen5, slot 1) so it buzzes with no phone near; off by default; (2) lead runs L1 / L2 / L3 in the ECG Lab: TRI-GO with a tag and a wearing text, notes lead_run / lead_copy / lead_role (decode log 436).
 // 0.87.0: wording only: the corner texts cite the phone-free step decays of 24 Nov (0.38-0.42 Hz, decode log 434) and say the microvolt scale is not yet confirmed by a known voltage. Scale constant unchanged (0.06358).
 // 0.86.0: Full pull: the time column of ecg_500hz_live.csv and ecg_500hz_stored_r16.csv is the sample clock (no 10 ms stamp steps, no false 0.51 s gap after the first frame; decode log 430).
 // 0.85.0: wording only: the start-up corner card states the measured stability of the 0.40 Hz corner (decode log 429) instead of a skin-contact dependence.
@@ -29,8 +31,8 @@ android { namespace 'com.noop.mgecg'; compileSdk 34
     buildFeatures { buildConfig true }
     defaultConfig {
         applicationId copyC ? 'com.noop.mgecg.c' : (copyB ? 'com.noop.mgecg.b' : 'com.noop.mgecg')
-        minSdk 26; targetSdk 34; versionCode 203
-        versionName copyC ? '0.87.0-pro-C' : (copyB ? '0.87.0-pro-B' : '0.87.0-pro')
+        minSdk 26; targetSdk 34; versionCode 205
+        versionName copyC ? '0.89.0-pro-C' : (copyB ? '0.89.0-pro-B' : '0.89.0-pro')
         buildConfigField 'boolean', 'COPY_B', copyB ? 'true' : 'false'
         buildConfigField 'boolean', 'COPY_C', copyC ? 'true' : 'false'
         manifestPlaceholders = [appLabel: copyC ? 'MG Heart C' : (copyB ? 'MG Heart B' : 'MG Heart'), appIcon: copyC ? '@mipmap/ic_launcher_c' : (copyB ? '@mipmap/ic_launcher_b' : '@mipmap/ic_launcher')]
