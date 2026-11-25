@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.89.0 (25 Nov 2026): Result.slowTone (SlowTone.find on the whole reading; decode log 438).
 // FILE VERSION 0.76.0 (21 Nov 2026, addenda 365-366): peaks() aligns the beats TWICE (the template of the second pass is built from beats already aligned). Cause: the first template is built from unaligned detector peaks, and a biphasic QRS (lead III on the ankle: about -411 / +126 uV, lobes about 16 ms apart) smears it, so the alignment locked onto either lobe: 7 ms timing jitter against the H10 and 32-36 % of beats cut by the shape gate on the ankle readings; with the second pass 1.4-3.2 ms and 0-1 % (copy A unchanged: 1.1-1.4 ms, 0 %). New diagnostics only (nothing is excluded for them): ALIGN2 (what the old one-pass alignment would have cut, how far the second pass moved the peaks) and LATE_ART (beat windows disturbed 350-650 ms after R) in the R16_ANALYSIS line.
 // FILE VERSION 0.84.0 (24 Nov 2026): a shape-blocked reading whose beat gaps the 128-beat screen finds uneven is marked blockedUneven (decode log 426); 0.71.3 (20 Nov 2026): beat-shape gate (ShapeGate: 3 odd beats in a row or 5 % odd among the last 129 withhold the AF screen and the rhythm word; nothing is repaired); 0.39.0 (3 Nov): settling switch (first 12.8 s left out, rounded up to 13 stored seconds), strip keeps the raw uV trace, the strap RMSSD (bytes 29-30) and result code (byte 23) for the report. 0.5.10 (11 Oct): own-validity gate v2 (a short noisy reading is no longer erased by the second pass); contains lastResult and the report hook in strip(); QT per heart-rate band, wide-band detail beat
 
@@ -129,6 +130,8 @@ public final class EcgR16Analyzer {
         public double fastPpUv = Double.NaN;
         /** 0.83.0 (decode log 423.2, 425): this reading's own start-up decay, when the start-up stayed inside the range: time constant in seconds (NaN when not measurable) and the step in counts. */
         public double startTauS = Double.NaN, startStepCounts = Double.NaN;
+        /** 0.89.0 (decode log 438): the slow-tone scale check found in this reading, or null. */
+        public SlowTone.Result slowTone;
         /** RR-irregularity screen (EcgRhythm) on the raw beat timing of the accepted runs; null if it did not run. */
         public EcgRhythm.Result rhythm;
         /** 0.3.2 breathing rate from R-wave height and beat timing (research only); null if it did not run. */
@@ -599,6 +602,7 @@ public final class EcgR16Analyzer {
         r.tone10Counts = tone10(recs);
         r.fastPpUv = fastPp(recs);
         double[] su = startupDecay(recs); if (su != null) { r.startTauS = su[0]; r.startStepCounts = su[1]; }
+        try { r.slowTone = SlowTone.find(SlowTone.counts(recs)); } catch (Throwable ignored) { }      // 0.89.0
         List<Double> ampAll = new ArrayList<>(), noiseAll = new ArrayList<>();
         List<Double> brT = new ArrayList<>(), brA = new ArrayList<>();   // 0.3.2: per-beat R-S height for breathing
         int invRuns = 0, runsMeasured = 0;

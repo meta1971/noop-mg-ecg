@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.43.9 (7 Nov 2026): the alarm ALWAYS fires at its time (the 3-hour skip after a reading is removed; it silenced the 13:01 test on 7 Nov). 0.43.8 (7 Nov 2026): the buzz is the byte-verified MG command (MainActivity.buzzStrap: opcode 19, payload 01 47 152 0 x 8 loop), one short buzz every 4 s until the double-tap; the guessed methods are gone. 0.43.7 (7 Nov 2026): the MG buzz repeats every 6 s until a live DOUBLE_TAP event (id 14) from the strap, "Stop buzz" or Snooze in the note, or the cap (1, 3, 5 or 10 min, default 5); the strap link is reopened and the buzz resent when it drops. 0.43.6 (6 Nov 2026): the alarm buzzes the MG, not the phone (MainActivity.buzzStrap; opens the strap link first when it is down, retries for about 30 s; the phone buzz is a separate option, off), Monday to Friday and Saturday-Sunday have their own times (setSlot), buzz length 1 / 3 / 5. 0.43.5: the reminder BUZZES the phone (own vibrator on the alarm stream, six pulses) and its note is high priority and silent; the Today page sets a morning and an evening time (setSimple). 0.42.0 (5 Nov 2026): reading reminders with their own times for work days and days off (and a one-tap "today is a work day / day off" override). Decode log 50.6 items 1 and 2:
+// FILE VERSION 0.88.0 (24 Nov 2026): EXPERIMENTAL strap-held alarm (strap_alarm, off by default): the next alarm time is also sent to the strap (SET_ALARM_TIME gen5, slot 1) so it buzzes with no phone near; re-sent after each connection and each alarm (decode log 436). 0.43.9 (7 Nov 2026): the alarm ALWAYS fires at its time (the 3-hour skip after a reading is removed; it silenced the 13:01 test on 7 Nov). 0.43.8 (7 Nov 2026): the buzz is the byte-verified MG command (MainActivity.buzzStrap: opcode 19, payload 01 47 152 0 x 8 loop), one short buzz every 4 s until the double-tap; the guessed methods are gone. 0.43.7 (7 Nov 2026): the MG buzz repeats every 6 s until a live DOUBLE_TAP event (id 14) from the strap, "Stop buzz" or Snooze in the note, or the cap (1, 3, 5 or 10 min, default 5); the strap link is reopened and the buzz resent when it drops. 0.43.6 (6 Nov 2026): the alarm buzzes the MG, not the phone (MainActivity.buzzStrap; opens the strap link first when it is down, retries for about 30 s; the phone buzz is a separate option, off), Monday to Friday and Saturday-Sunday have their own times (setSlot), buzz length 1 / 3 / 5. 0.43.5: the reminder BUZZES the phone (own vibrator on the alarm stream, six pulses) and its note is high priority and silent; the Today page sets a morning and an evening time (setSimple). 0.42.0 (5 Nov 2026): reading reminders with their own times for work days and days off (and a one-tap "today is a work day / day off" override). Decode log 50.6 items 1 and 2:
 // morning 08:00-10:00 and evening 19:00-21:00 on the same day were the planned Run E; shifts differ, so every time can be changed or switched off.
 // The alarm goes to DayLogReceiver (no manifest change). Since 0.43.9 an alarm is never skipped because of an earlier reading.
 
@@ -70,6 +70,33 @@ final class EcgReminder {
     static void setStandMorning(Context c, boolean on) { sp(c).edit().putBoolean("stand_morning", on).apply(); }
     static int buzzMethod(Context c) { return Math.max(0, Math.min(2, sp(c).getInt("buzz_method", 0))); }
 
+    /** 0.88.0 EXPERIMENTAL: the strap keeps the next alarm itself (MainActivity.strapAlarmSet), so it buzzes with no phone near. Off unless switched on. The phone's alarm stays as it is. */
+    static boolean strapAlarmOn(Context c) { return sp(c).getBoolean("strap_alarm", false); }
+    /** Sends the next alarm time to the strap when it differs from what was last sent (or that was over 12 h ago), or clears the strap's alarm when none is due or the switch is off. Needs the strap link; without it nothing is stored and the next connection tries again. */
+    static void armStrap(Context c0) {
+        try {
+            Context c = c0.getApplicationContext(); SharedPreferences p = sp(c); long armed = p.getLong("strap_armed_ms", 0L), sent = p.getLong("strap_armed_sent", 0L), now = System.currentTimeMillis();
+            long[] n = strapAlarmOn(c) ? next(now, TimeZone.getDefault(), load(c)) : null;
+            if (n == null) { if (armed != 0L && MainActivity.strapAlarmClear()) p.edit().putLong("strap_armed_ms", 0L).putLong("strap_armed_sent", now).apply(); return; }
+            if (armed == n[0] && now - sent < 12L * 3600000L) return;
+            if (MainActivity.strapAlarmSet(n[0])) p.edit().putLong("strap_armed_ms", n[0]).putLong("strap_armed_sent", now).apply();
+        } catch (Throwable ignored) { }
+    }
+    /** The 21-byte gen5 SET_ALARM_TIME body: [0x04][slot][unix seconds u32 LE][sub-seconds u16 LE in 1/32768 s][47, 152, 0 x 6][loop control u16 0][overall loop 7][30 s][alarm type 0]. Pure (tested off the phone). */
+    static byte[] strapAlarmBody(long atMs, int slot) {
+        long sec = atMs / 1000L; int sub = (int) ((atMs % 1000L) * 32768L / 1000L);
+        return new byte[] { 0x04, (byte) slot, (byte) sec, (byte) (sec >> 8), (byte) (sec >> 16), (byte) (sec >> 24), (byte) sub, (byte) (sub >> 8), 47, (byte) 152, 0, 0, 0, 0, 0, 0, 0, 0, 7, 30, 0 };
+    }
+    static String strapAlarmStatus(Context c) {
+        try {
+            SharedPreferences p = sp(c); long armed = p.getLong("strap_armed_ms", 0L), sent = p.getLong("strap_armed_sent", 0L);
+            if (!strapAlarmOn(c)) return "Off: the alarm needs this phone within Bluetooth range.";
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("EEE d MMM HH:mm", Locale.UK);
+            if (armed == 0L) return "On, but nothing has been sent to the strap yet (it is sent when the strap is connected).";
+            return "Sent to the strap: " + f.format(new java.util.Date(armed)) + " (sent " + f.format(new java.util.Date(sent)) + "). Experimental: not yet proven to fire on the MG.";
+        } catch (Throwable t) { return ""; }
+    }
+
     private static volatile boolean buzzing; private static volatile long buzzStart; private static volatile int buzzGen; private static volatile int buzzUsed;
     static int buzzMaxMin(Context c) { return sp(c).getInt("buzz_max_min", 5); }
 
@@ -131,8 +158,9 @@ final class EcgReminder {
             Context c = c0.getApplicationContext(); AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE); if (am == null) return;
             PendingIntent pi = PendingIntent.getBroadcast(c, REQ, new Intent(c, DayLogReceiver.class).setAction(A_FIRE), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
             long[] n = next(System.currentTimeMillis(), TimeZone.getDefault(), load(c));
-            if (n == null) { am.cancel(pi); return; }
+            if (n == null) { am.cancel(pi); armStrap(c); return; }
             if (Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, n[0], pi); else am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, n[0], pi);
+            armStrap(c);                                           // 0.88.0: the strap-held copy of the same alarm (experimental, off by default)
         } catch (Throwable ignored) { }
     }
 

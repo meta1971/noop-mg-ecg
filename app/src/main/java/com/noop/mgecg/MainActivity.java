@@ -9947,6 +9947,8 @@ public class MainActivity extends NewLookActivity {
                     " seq=0x" + String.format("%02X", thisSeq & 0xff) +
                     " raw=" + Protocol.hex(f));
 
+            mainH.postDelayed(new Runnable() { @Override public void run() { try { EcgReminder.armStrap(MainActivity.this); } catch (Throwable ignored) { } } }, 5000L);      // 0.88.0: the strap-held alarm is (re)sent after the clock of each connection
+
             line("");
             line("TX SET_CLOCK (corrected 8-byte)");
             line("TX EPOCH=" + epochNow +
@@ -10931,6 +10933,30 @@ public class MainActivity extends NewLookActivity {
         final int loop = Math.max(0, Math.min(255, overallLoop));
         m.mainH.post(new Runnable() { @Override public void run() {
             try { m.sendPuffinPayload(19, new byte[] { 0x01, 47, (byte) 152, 0, 0, 0, 0, 0, 0, 0, 0, (byte) loop }, "BUZZ_RUN_HAPTIC_PATTERN_MAVERICK(19) loop " + loop); } catch (Throwable ignored) { }
+        } });
+        return true;
+    }
+
+    /**
+     * 0.88.0 EXPERIMENTAL (decode log 436): the strap's OWN alarm, which fires with no phone near. OpenStrap protocol lib/src/commands.dart (commit fbadb5b, 13 Nov 2026), gen5 forms:
+     * SET_ALARM_TIME = opcode 66, 21-byte payload [0x04][slot 1..6][unix seconds u32 LE][sub-seconds u16 LE, 1/32768 s][12-byte haptic pattern][alarm type 0]; the pattern is the strap's own wake buzz
+     * [47, 152, 0 x 6][loop control u16 = 0][overall loop 7][duration 30 s]. GET_ALARM_TIME = 67 [0x04][slot]. DISABLE_ALARM = 69 [0x02][slot]. OpenStrap marks these as NOT verified for waking a gen5 strap.
+     * Slot 1 only. The strap answers in the log (events 56 STRAP_DRIVEN_ALARM_SET, 57 executed, 59 auto-disable, 60 HAPTICS_FIRED). Returns false when the strap link is not ready.
+     */
+    static boolean strapAlarmSet(final long atMs) {
+        final MainActivity m = instance != null ? instance : headless;
+        if (m == null || m.gatt == null || m.cmdWrite == null || atMs <= 0L) return false;
+        final long sec = atMs / 1000L; final byte[] p = EcgReminder.strapAlarmBody(atMs, 1);
+        m.mainH.post(new Runnable() { @Override public void run() {
+            try { m.sendPuffinPayload(66, p, "SET_ALARM_TIME_GEN5(66) slot 1 at " + sec); m.sendPuffinPayload(67, new byte[] { 0x04, 0x01 }, "GET_ALARM_TIME_GEN5(67) slot 1"); } catch (Throwable ignored) { }
+        } });
+        return true;
+    }
+    static boolean strapAlarmClear() {
+        final MainActivity m = instance != null ? instance : headless;
+        if (m == null || m.gatt == null || m.cmdWrite == null) return false;
+        m.mainH.post(new Runnable() { @Override public void run() {
+            try { m.sendPuffinPayload(69, new byte[] { 0x02, 0x01 }, "DISABLE_ALARM_GEN5(69) slot 1"); m.sendPuffinPayload(67, new byte[] { 0x04, 0x01 }, "GET_ALARM_TIME_GEN5(67) slot 1"); } catch (Throwable ignored) { }
         } });
         return true;
     }

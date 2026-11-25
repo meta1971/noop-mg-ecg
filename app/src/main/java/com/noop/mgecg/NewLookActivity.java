@@ -236,11 +236,12 @@ public class NewLookActivity extends Activity {
             in.removeExtra("start_ecg");
             final long triAt = in.getLongExtra(TriGo.X_AT, 0L);      // 0.78.0 TRI-GO: started by another copy
             final String triCh = in.getStringExtra(TriGo.X_CHAIN) == null ? "" : in.getStringExtra(TriGo.X_CHAIN), triHm = in.getStringExtra(TriGo.X_HOME) == null ? "" : in.getStringExtra(TriGo.X_HOME);
-            in.removeExtra(TriGo.X_AT); in.removeExtra(TriGo.X_CHAIN); in.removeExtra(TriGo.X_HOME);
+            final String triRn = in.getStringExtra(TriGo.X_RUN) == null ? "" : in.getStringExtra(TriGo.X_RUN);
+            in.removeExtra(TriGo.X_AT); in.removeExtra(TriGo.X_CHAIN); in.removeExtra(TriGo.X_HOME); in.removeExtra(TriGo.X_RUN);
             if (triAt > 0L) {
                 long tn = System.currentTimeMillis();
                 if (TriGo.acceptable(triAt, tn) && TriGo.isCopy(triHm)) {
-                    triAtMs = triAt; triHome = triHm; counting = false;
+                    triAtMs = triAt; triHome = triHm; counting = false; triLead = TriGo.isRun(triRn) ? triRn : "";
                     triLog("TRI_GO_ARMED at_ms=" + triAt + " in_ms=" + (triAt - tn) + " copy=" + TriGo.suffix(getPackageName()) + " rest=" + triCh);
                     ui.postDelayed(() -> triForward(triCh, triHm, triAt), TriGo.FORWARD_MS);
                 } else triLog("TRI_GO_REFUSED at_ms=" + triAt + " now_ms=" + tn);
@@ -254,6 +255,7 @@ public class NewLookActivity extends Activity {
 
     // ------------------------------------------------------------------ 0.78.0 TRI-GO: one tap starts the reading in all installed copies (A, B, C) at one phone-clock time
     private long triAtMs;                                  // 0 = not armed; the shared start, phone clock (ms)
+    private String triLead = "";                           // 0.88.0: the lead run of this shared start (TriGo.RUNS) or ""
     private String triHome = "";                           // the copy that was tapped (brought back to the front at the end of the chain)
     private final Runnable triRun = new Runnable() { @Override public void run() { triTick(); } };
 
@@ -268,8 +270,11 @@ public class NewLookActivity extends Activity {
     }
 
     /** The Lab's T row: this copy fixes the start time (now + 30 s), arms itself and launches the other installed copies in turn; the last one brings this copy back to the front. */
-    void triGo() {
+    void triGo() { triGo(""); }
+    /** 0.88.0: the same shared start, tagged as a lead run (TriGo.RUNS); every copy writes lead_run and lead_role into the notes of its reading. */
+    void triGo(String run) {
         try {
+            triLead = TriGo.isRun(run) ? run : "";
             if (ecgStartBtn != null && ecgStartBtn.getText().toString().startsWith("STOP")) { toast("A reading is already running here."); return; }
             if (state != ST_ECG || ecgStartBtn == null) { toast("Open the ECG page first."); return; }
             final long at = System.currentTimeMillis() + TriGo.LEAD_MS;
@@ -279,12 +284,16 @@ public class NewLookActivity extends Activity {
             final String chain = TriGo.chain(self, inst);
             counting = false;                                          // the 5 s countdown must not also start it
             triAtMs = at; triHome = self;
-            triLog("TRI_GO_TAP at_ms=" + at + " copy=" + TriGo.suffix(self) + " chain=" + chain);
+            triLog("TRI_GO_TAP at_ms=" + at + " copy=" + TriGo.suffix(self) + " chain=" + chain + " run=" + triLead);
             toast(chain.isEmpty() ? "TRI-GO: no other copy is installed; this strap only." : "TRI-GO: opening the other copies; all start together at the time shown.");
             ui.removeCallbacks(triRun); ui.post(triRun);
             if (!chain.isEmpty()) ui.postDelayed(() -> triForward(chain, self, at), 400L);
         } catch (Throwable e) { triAtMs = 0L; toast("TRI-GO failed: " + e); }
     }
+
+    /** 0.88.0: the lead run of the reading that is starting now ("" for an ordinary reading); read once by the ECG page when it writes the notes. A run tag older than the TRI-GO give-up time is dropped. */
+    private long triRunFiredMs;
+    String takeLeadRun() { String r = triLead; triLead = ""; return r != null && TriGo.isRun(r) && System.currentTimeMillis() - triRunFiredMs < 90000L ? r : ""; }
 
     /** Launches the next copy of the chain with the shared start time (explicit intent, the widget's flags), or, when the chain is empty, brings the copy that was tapped back to the front. */
     private void triForward(String chain, String home, long at) {
@@ -296,7 +305,7 @@ public class NewLookActivity extends Activity {
                 if (!TriGo.isCopy(home) || home.equals(getPackageName())) return;
                 triLog("TRI_GO_HOME to=" + TriGo.suffix(home));
             } else {
-                it.putExtra("stay", true).putExtra("start_ecg", true).putExtra(TriGo.X_AT, at).putExtra(TriGo.X_CHAIN, TriGo.rest(chain)).putExtra(TriGo.X_HOME, home);
+                it.putExtra("stay", true).putExtra("start_ecg", true).putExtra(TriGo.X_AT, at).putExtra(TriGo.X_CHAIN, TriGo.rest(chain)).putExtra(TriGo.X_HOME, home).putExtra(TriGo.X_RUN, triLead);
                 triLog("TRI_GO_LAUNCH to=" + TriGo.suffix(next) + " at_ms=" + at);
             }
             startActivity(it);
@@ -313,7 +322,8 @@ public class NewLookActivity extends Activity {
         long left = triAtMs - now;
         if (left <= 0L) {
             long at = triAtMs; triAtMs = 0L; counting = false; hideCountdown();
-            triLog("TRI_GO_FIRE at_ms=" + at + " now_ms=" + now + " late_ms=" + (now - at));
+            triLog("TRI_GO_FIRE at_ms=" + at + " now_ms=" + now + " late_ms=" + (now - at) + " run=" + triLead);
+            triRunFiredMs = now;
             ecgStartBtn.performClick();
             return;
         }
@@ -674,7 +684,7 @@ public class NewLookActivity extends Activity {
     /** 0.43.0: the Lab starts a test with its own get-ready pill, so the 5 s auto-start must not also press START. */
     void cancelAutoCountdown() {
         counting = false;
-        triAtMs = 0L;                                        // 0.78.0: a tap on the pill, or a guided run, also cancels a TRI-GO start in this copy
+        triAtMs = 0L; triLead = "";                          // 0.78.0: a tap on the pill, or a guided run, also cancels a TRI-GO start in this copy
         hideCountdown();
     }
 

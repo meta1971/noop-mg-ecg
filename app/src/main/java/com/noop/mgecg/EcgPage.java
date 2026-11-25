@@ -781,6 +781,17 @@ final class EcgPage {
                 LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, dp(42)); gp.leftMargin = dp(10); row.addView(go, gp);
                 box.addView(row, lp(-1, -2, 8));
             }
+            for (final String lrun : TriGo.RUNS) {                                          // 0.88.0: lead runs = TRI-GO with a tag and a wearing text; the copies write lead_run / lead_role into their notes
+                LinearLayout row = hrow(); row.setBackground(HealthViews.glass(a, 16)); row.setPadding(dp(16), dp(12), dp(12), dp(12));
+                LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.VERTICAL);
+                mid.addView(t(TriGo.runTitle(lrun), 15, INK, 400), new LinearLayout.LayoutParams(-2, -2));
+                TextView pl = t(TriGo.runHow(lrun) + " Starts all copies together 30 s after the tap. Afterwards: Full pull in each copy that was used.", 12, MUT, 400); pl.setLineSpacing(0, 1.2f); mid.addView(pl, lp(-2, -2, 3));
+                row.addView(mid, new LinearLayout.LayoutParams(0, -2, 1f));
+                TextView go = pill("Start", BLUE, DARK); go.setPadding(dp(18), 0, dp(18), 0);
+                go.setOnClickListener(v -> { if (dd[0] != null) dd[0].dismiss(); a.triGo(lrun); });
+                LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, dp(42)); gp.leftMargin = dp(10); row.addView(go, gp);
+                box.addView(row, lp(-1, -2, 8));
+            }
             if (pr.getBoolean("research_lab_s", false)) {      // 0.51.0: behind You > Settings > Research
                 LinearLayout row = hrow(); row.setBackground(HealthViews.glass(a, 16)); row.setPadding(dp(16), dp(12), dp(12), dp(12));
                 LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.VERTICAL);
@@ -895,6 +906,9 @@ final class EcgPage {
                     long[] pk = PackWatch.lastRecord(a); ReadingNotes.put(dir(), startMs / 1000L, "pack_last_record", pk == null ? "unknown" : pk[0] + "@" + pk[1] + "s");
                     String pw = PackWatch.warning(pk); if (pw != null) { a.toast(pw); if (stSub != null) stSub.setText(pw); }
                 } catch (Throwable ignored) { }
+                try { String lr = a.takeLeadRun(); if (!lr.isEmpty()) {                          // 0.88.0: lead runs L1 / L2 / L3 (TRI-GO with a tag)
+                    String letter = TriGo.suffix(a.getPackageName());
+                    ReadingNotes.put(dir(), startMs / 1000L, "lead_run", lr); ReadingNotes.put(dir(), startMs / 1000L, "lead_copy", letter); ReadingNotes.put(dir(), startMs / 1000L, "lead_role", TriGo.role(lr, letter)); } } catch (Throwable ignored) { }
                 ReadingNotes.put(dir(), startMs / 1000L, "strap_hp_fc_hz", EcgScenario.note());      // 0.79.0: the strap model the headline QT of this reading uses
                 ReadingNotes.put(dir(), startMs / 1000L, "uv_per_count", String.format(Locale.US, "%.5f", ScaleSetting.uv()));      // 0.53.0: the scale every microvolt note of this reading uses (earlier readings: 0.0621)
                 try { ConsoleCatalog.begin(dir(), startMs / 1000L); } catch (Throwable ignored) { }      // 0.51.0: new console templates are counted per reading

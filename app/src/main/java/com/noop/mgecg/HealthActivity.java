@@ -2071,6 +2071,17 @@ public class HealthActivity extends Activity {
                 ep.edit().putInt("buzz_max_min", w == 0 ? 1 : w == 1 ? 3 : w == 2 ? 5 : 10).apply(); fillAlarmSheet(box); } }).show(); } });
         lr.addView(lv); box.addView(lr);
         switchRow(box, "Also buzz this phone", ep.getBoolean("buzz_phone", false), "buzz_phone", ep, false);
+        {                                                                              // 0.88.0: the strap-held alarm (experimental)
+            final boolean son = EcgReminder.strapAlarmOn(this);
+            LinearLayout sr = hrow(); sr.setPadding(0, dpi(12), 0, dpi(2));
+            LinearLayout sl = new LinearLayout(this); sl.setOrientation(LinearLayout.VERTICAL);
+            sl.addView(tv("Strap keeps the alarm itself", 14, INK, 400)); TextView ss = tv("Buzzes with no phone near. " + EcgReminder.strapAlarmStatus(this), 11, MUT, 400); ss.setLineSpacing(0, 1.2f); sl.addView(ss, lp(-2, -2, 2));
+            sr.addView(sl, new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView sv = HeartGraph.pill(this, son ? "On  \u25be" : "Off  \u25be", 0x0DFFFFFF, INK);
+            sv.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                ep.edit().putBoolean("strap_alarm", !son).apply(); EcgReminder.armStrap(getApplicationContext()); fillAlarmSheet(box); } });
+            sr.addView(sv); box.addView(sr);
+        }
         boolean linked = MainActivity.linkRunning();
         TextView lk = tv("MG link: " + (linked ? "connected" : "not connected now. At alarm time the app reconnects first (up to 30 s)."), 11, linked ? GREEN : MUT, 400);
         lk.setPadding(0, dpi(10), 0, 0); box.addView(lk);
