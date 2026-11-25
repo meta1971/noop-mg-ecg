@@ -113,6 +113,11 @@ public class ReportActivity extends Activity {
         pills.addView(save, new LinearLayout.LayoutParams(0, dp(44), 1f));
         root.addView(bar, new LinearLayout.LayoutParams(-1, -2));
         root.addView(pills, new LinearLayout.LayoutParams(-1, -2));
+        final TextView docBtn = pill("Doctor page");                       // 0.91.0: the one-page printout (hidden section of the report); Save PDF then prints it
+        docBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { toggleDoctor(docBtn); } });
+        final LinearLayout pills2 = new LinearLayout(this); pills2.setOrientation(LinearLayout.HORIZONTAL); pills2.setPadding(dp(12), 0, dp(12), dp(8));
+        pills2.addView(docBtn, new LinearLayout.LayoutParams(-1, dp(44)));
+        root.addView(pills2, new LinearLayout.LayoutParams(-1, -2));
 
         webView = new WebView(this);
         webView.setBackgroundColor(BG);
@@ -126,13 +131,24 @@ public class ReportActivity extends Activity {
     }
 
     private String rawHtml;
+    private boolean docMode;
+
+    /** 0.91.0: shows the Doctor page alone (the report's hidden "dp" section) or goes back to the report. Reports written before 0.91.0 have no such section. */
+    private void toggleDoctor(TextView btn) {
+        if (rawHtml == null || webView == null) return;
+        if (!rawHtml.contains("class=\"dp\"")) { Toast.makeText(this, "This report was made before the Doctor page existed.", Toast.LENGTH_LONG).show(); return; }
+        docMode = !docMode;
+        btn.setText(docMode ? "Back to report" : "Doctor page");
+        webView.loadDataWithBaseURL(null, withFont(docMode ? rawHtml.replace("<body>", "<body class=\"doc\">") : rawHtml), "text/html", "UTF-8", null);
+        webView.scrollTo(0, 0);
+    }
 
     /** 0.43.0: the report has closed folds on screen; a PDF must hold everything, so the page is loaded again with every fold open before it is printed. */
     private void printReport() {
         try {
             final PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
             if (pm == null || webView == null) return;
-            if (rawHtml == null || !rawHtml.contains("<details class=\"fold\"")) { printNow(pm); return; }
+            if (docMode || rawHtml == null || !rawHtml.contains("<details class=\"fold\"")) { printNow(pm); return; }      // 0.91.0: the Doctor page is already on screen as it will print
             webView.setWebViewClient(new WebViewClient() { @Override public void onPageFinished(WebView v, String url) { v.setWebViewClient(new WebViewClient()); printNow(pm); } });
             webView.loadDataWithBaseURL(null, withFont(rawHtml.replace("<details class=\"fold\"", "<details class=\"fold\" open")), "text/html", "UTF-8", null);
         } catch (Throwable t) {
@@ -142,7 +158,7 @@ public class ReportActivity extends Activity {
 
     private void printNow(PrintManager pm) {
         try {
-            String name = "ECG report";
+            String name = docMode ? "ECG strips" : "ECG report";
             pm.print(name, webView.createPrintDocumentAdapter(name), new PrintAttributes.Builder().build());
         } catch (Throwable t) {
             Toast.makeText(this, "Could not start printing: " + t.getMessage(), Toast.LENGTH_LONG).show();

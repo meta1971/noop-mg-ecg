@@ -1,6 +1,6 @@
 package com.noop.mgecg;
 
-// FILE VERSION 0.89.0 (25 Nov 2026): slow-tone scale check card (SlowTone); scale wording follows the first direct check (decode log 438). 0.87.0 (24 Nov 2026): corner wording follows the phone-free step decays of 24 Nov (decode log 434: 0.38-0.42 Hz); the scenario card says the microvolt scale is not yet confirmed; 0.85.0 (24 Nov 2026): start-up corner card no longer says the corner depends on the skin contact (decode log 429: 0.399-0.406 Hz on three tone runs); 0.84.0 (24 Nov 2026): rhythm tile and summary say "Inconclusive" when a shape-blocked reading also has uneven beat gaps (decode log 426); 0.71.3 (20 Nov 2026): QT card says "This reading" (beat sampling only), adds the fewer-than-60-beats note and the person's own between-reading spread (ReadingRules, 318.5); 0.71.3 (20 Nov 2026): rhythm tile and summary say "signal not clean enough" when the shape gate withheld the rhythm word; 0.43.0 (6 Nov 2026): the report is a one-screen summary (grade, heart rate, HRV, QT, rhythm) with everything else in closed folds; the strap card, "All readings together" and the parameter table sit under ONE "Research" fold. No number or wording of a measurement changed. 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
+// FILE VERSION 0.91.0 (25 Nov 2026): report overhaul: one-sentence answer, Everyday/Research toggle (CSS only), averaged beat on top, own-range bars (OwnRange), rhythm card, QT ladder, recovery windows (RecoveryWindows), hidden Doctor page (DoctorPage). 0.89.0 (25 Nov 2026): slow-tone scale check card (SlowTone); scale wording follows the first direct check (decode log 438). 0.87.0 (24 Nov 2026): corner wording follows the phone-free step decays of 24 Nov (decode log 434: 0.38-0.42 Hz); the scenario card says the microvolt scale is not yet confirmed; 0.85.0 (24 Nov 2026): start-up corner card no longer says the corner depends on the skin contact (decode log 429: 0.399-0.406 Hz on three tone runs); 0.84.0 (24 Nov 2026): rhythm tile and summary say "Inconclusive" when a shape-blocked reading also has uneven beat gaps (decode log 426); 0.71.3 (20 Nov 2026): QT card says "This reading" (beat sampling only), adds the fewer-than-60-beats note and the person's own between-reading spread (ReadingRules, 318.5); 0.71.3 (20 Nov 2026): rhythm tile and summary say "signal not clean enough" when the shape gate withheld the rhythm word; 0.43.0 (6 Nov 2026): the report is a one-screen summary (grade, heart rate, HRV, QT, rhythm) with everything else in closed folds; the strap card, "All readings together" and the parameter table sit under ONE "Research" fold. No number or wording of a measurement changed. 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
 
 import java.util.List;
 import java.text.SimpleDateFormat;
@@ -72,7 +72,9 @@ public final class EcgReport {
                 if (r.recordsIn >= 20) { lastReportStart = t; lastReportRecords = r.recordsIn; }
                 lastRes = r; lastStrip = s;      // 0.42.3: only for a real report. Before, a late tail overwrote these first, and the refresh then looked for the events in the tail
             }
-            String html = html(r, s, null);
+            excludeName = "ecg_report_" + t + ".html";
+            String html;
+            try { html = html(r, s, null); } finally { excludeName = null; }
             java.io.File f = new java.io.File(dir, "ecg_report_" + t + ".html");
             java.io.FileOutputStream out = new java.io.FileOutputStream(f);
             try {
@@ -206,7 +208,7 @@ public final class EcgReport {
                 .append("<meta name=\"ecg-hr\" content=\"").append(Double.isNaN(hrMeta) ? "-" : String.valueOf(Math.round(hrMeta))).append("\">")
                 .append("<meta name=\"ecg-hrv\" content=\"").append(hrvMeta).append("\">")
                 .append("<meta name=\"ecg-rhythm\" content=\"").append(esc(rtMeta[0].replace("&ndash;", "-"))).append("\">")
-                .append("<title>ECG report</title><style>").append(CSS).append("</style></head><body><main>");
+                .append("<title>ECG report</title><style>").append(CSS).append("</style></head><body><input type=\"radio\" name=\"v\" id=\"vE\" class=\"vr\" checked><input type=\"radio\" name=\"v\" id=\"vR\" class=\"vr\"><main>");
 
         long start = meta.startUnix != 0 ? meta.startUnix : (strip != null ? strip.startUnix : 0);
         int secs = r.secondStates.length > 0 ? r.secondStates.length : r.recordsIn;
@@ -217,14 +219,22 @@ public final class EcgReport {
         final StringBuilder main = b;      // 0.43.0: summary on top, folds below
         StringBuilder fFound = new StringBuilder(), fHr = new StringBuilder(), fQt = new StringBuilder(), fGraph = new StringBuilder(), fRel = new StringBuilder(), fRes = new StringBuilder();
 
-        // ---- quality
+        // ---- the answer, then quality, the toggle, the averaged beat, the four numbers, own range, rhythm
+        b.append("<section class=\"card ans\"><div class=\"k\">In short</div><p class=\"ans-t\">").append(foundSentence(r, g, usableReading)).append("</p></section>");
         b.append("<section class=\"card q\">").append(ring(g)).append("<div><div class=\"k\">Reading quality</div><div class=\"big\">")
                 .append(g.word).append("</div><p>").append(qualitySentence(r, g, secs, meta)).append("</p>").append(noiseLine(strip)).append("</div></section>");
+        b.append("<div class=\"tgl\"><label for=\"vE\">Everyday</label><label for=\"vR\">Research</label></div>");
+        b.append(heroCard(r, usableReading));
         b.append(summaryTiles(r, usableReading));
-        b = fFound;
-
-        // ---- what we found
-        b.append("<section class=\"card\"><h2>What we found</h2><p class=\"lead\">").append(foundSentence(r, g, usableReading)).append("</p></section>");
+        {
+            EcgIntervals.Result q0 = r.qt;
+            double hrN = usableReading && !Double.isNaN(reportHr(r)) ? Math.round(reportHr(r)) : Double.NaN;
+            double hrvN = (usableReading && !r.inconclusive && !Double.isNaN(r.rmssd)) ? Math.round(r.rmssd) : Double.NaN;
+            double qtN = usableReading && q0 != null && q0.status == EcgIntervals.Status.OK ? q0.qtMs : Double.NaN;
+            String ex = excludeName != null ? excludeName : nameOf(strip, meta);
+            b.append(OwnRange.card(hrN, hrvN, qtN, reportDir, ex, ReadingRules.pastQtList()));
+        }
+        b.append(rhythmCard(r, usableReading));
 
         b = fHr;
         // ---- tiles
@@ -245,6 +255,7 @@ public final class EcgReport {
         b = fQt;
         // ---- QT
         b.append(qtCard(r.qt, r.qtBands));
+        b.append(qtLadder(r.qt));
         b.append(scenarioCard(r.qt));
         b.append(startupNote(r));
         b.append(SlowTone.card(r.slowTone, ScaleSetting.uv()));                 // 0.89.0
@@ -264,25 +275,11 @@ public final class EcgReport {
                         .append(tr).append("<p class=\"cap\">").append(r.inverted ? "This recording came in upside down, which happens when the two electrode contacts are the other way round, for example with the other hand or wrist. It is flipped here so the main spike points up. " : "").append("Every tall spike is one beat. The space between spikes sets your heart rate: wider gaps mean a slower rate. Small wobbles between beats are movement and muscle noise.</p></section>");
             }
             if (r.qt != null && r.qt.avg != null) {
-                b.append("<section class=\"card\"><h2>Your average heartbeat</h2><p class=\"hint\">").append(r.qt.beatsUsed)
-                        .append(" clean beats laid on top of each other and averaged.</p>").append(avgChart(r.qt))
-                        .append("<p class=\"cap\"><b>P</b> the top chambers firing. <b>Q R S</b> the main pump firing. <b>T</b> the pump resetting. QT is the time from the start of Q to the end of T.</p>")
-                        .append("<div class=\"grid2\"><div class=\"mini\"><span>R wave height</span><b>")
-                        .append(String.format(Locale.US, "%.2f mV", r.qt.rAmpUv / 1000.0)).append("</b></div><div class=\"mini\"><span>T wave vs noise</span><b>")
-                        .append(String.format(Locale.US, "%.0f&times;", r.qt.tAmpUv / Math.max(1e-9, r.qt.noiseUv))).append("</b></div></div></section>");
                 fRes.append(detailCard(r.qt));
                 fRes.append(segmentsCard(r.qt));
                 fRes.append(parameterTable(r));
             }
             if (r.rrMs.length >= 8) {
-                double[] ax = tachAxis(r);
-                b.append("<section class=\"card\"><h2>Time between beats</h2><p class=\"hint\">Each dot is the gap before one heartbeat.</p>")
-                        .append(tachChart(r, ax)).append("<p class=\"cap\">").append(tachCaption(r)).append("</p></section>");
-                String po = poincare(r, ax);
-                if (po != null) {
-                    b.append("<section class=\"card\"><h2>Steadiness plot</h2><p class=\"hint\">Each dot compares one gap with the next.</p>")
-                            .append(po).append("<p class=\"cap\">A tight cluster on the dashed line means a steady rhythm. A wide scatter means uneven timing.</p></section>");
-                }
                 String hrc = hrChart(r);
                 if (hrc != null) {
                     b.append("<section class=\"card\"><h2>Heart rate across the reading</h2><p class=\"hint\">Average in 12 second steps.</p>")
@@ -290,6 +287,7 @@ public final class EcgReport {
                 }
             }
         }
+        b.append(RecoveryWindows.card(strip));
         b.append(EcgReportExtras.cards(r, strip));   // wrist pulse and movement cards (0.1.0, 23 Oct 2026)
         if (r.secondStates.length > 0) {
             b.append("<section class=\"card\"><h2>Which seconds counted</h2><p class=\"hint\">Only clean, settled seconds are measured.</p>")
@@ -356,11 +354,88 @@ public final class EcgReport {
         b.append("</ol></details></section>");
 
         b = main;
-        b.append(fold("What we found", fFound)).append(fold("Heart rate, HRV and rhythm", fHr)).append(fold("QT interval", fQt)).append(fold("Graphs", fGraph))
-                .append(fold("How reliable, and for next time", fRel)).append(fold("Research", fRes));
+        b.append(fold("How reliable, and for next time", fRel));
+        b.append("<div class=\"rs\">").append(fold("Heart rate, HRV and rhythm", fHr)).append(fold("QT interval", fQt)).append(fold("Graphs", fGraph)).append(fold("Research", fRes)).append("</div>");
         b.append("<p class=\"foot\">Research instrumentation. Not a medical device and not a diagnosis. It cannot detect or rule out any heart condition.</p>");
+        b.append(DoctorPage.section(r, strip, g, usableReading, start));
         b.append("</main></body></html>");
         return b.toString();
+    }
+
+    /** 0.91.0: set by saveReportFile to this reading's own file name, so the range cards leave it out when a report is written again. */
+    static volatile String excludeName;
+
+    static String nameOf(EcgR16Analyzer.Strip strip, Meta meta) {
+        long t = meta != null && meta.startUnix != 0 ? meta.startUnix : (strip != null ? strip.startUnix : 0L);
+        return t >= 1672531200L && t <= 1924992000L ? "ecg_report_" + t + ".html" : "";
+    }
+
+    /** 0.91.0: the averaged beat as the top card of the report (it used to sit in the Graphs fold). */
+    static String heroCard(EcgR16Analyzer.Result r, boolean usable) {
+        if (!usable || r.qt == null || r.qt.avg == null) return "";
+        EcgIntervals.Result q = r.qt;
+        return "<section class=\"card\"><div class=\"k\">Your average heartbeat</div><p class=\"hint\" style=\"margin-top:4px\">" + q.beatsUsed
+                + " clean beats laid on top of each other and averaged.</p>" + avgChart(q)
+                + "<p class=\"cap\"><b>P</b> the top chambers firing. <b>Q R S</b> the main pump firing. <b>T</b> the pump resetting. QT is the time from the start of Q to the end of T.</p>"
+                + "<div class=\"grid2\"><div class=\"mini\"><span>R wave height</span><b>" + String.format(Locale.US, "%.2f mV", q.rAmpUv / 1000.0)
+                + "</b></div><div class=\"mini\"><span>T wave vs noise</span><b>" + String.format(Locale.US, "%.0f&times;", q.tAmpUv / Math.max(1e-9, q.noiseUv)) + "</b></div></div></section>";
+    }
+
+    /** 0.91.0: the timing screen's word, the gap plot and the steadiness plot in one card (they were two cards in the Graphs fold). */
+    static String rhythmCard(EcgR16Analyzer.Result r, boolean usable) {
+        if (!usable || r.rrMs.length < 8) return "";
+        String[] rt = rhythmTile(r);
+        double[] ax = tachAxis(r);
+        StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><div class=\"k\">Rhythm</div><span class=\"pill n\">Beat timing only</span></div><div class=\"big\""
+                + (rt[2] != null ? " style=\"color:" + rt[2] + "\"" : "") + ">" + rt[0] + "</div><p class=\"cap\">" + rt[1] + "</p>");
+        b.append("<h3>Time between beats</h3><p class=\"hint\">Each dot is the gap before one heartbeat.</p>").append(tachChart(r, ax)).append("<p class=\"cap\">").append(tachCaption(r)).append("</p>");
+        String po = poincare(r, ax);
+        if (po != null) b.append("<h3>Steadiness plot</h3><p class=\"hint\">Each dot compares one gap with the next.</p>").append(po)
+                .append("<p class=\"cap\">A tight cluster on the dashed line means a steady rhythm. A wide scatter means uneven timing.</p>");
+        return b.append("</section>").toString();
+    }
+
+    /** 0.91.0: the QT under each strap-filter scenario as one dot per scenario on a shared axis. Shows how far the answer depends on the assumed filter; it is not an error bar. */
+    static String qtLadder(EcgIntervals.Result q) {
+        if (q == null || q.scen == null || q.scen.length == 0 || q.avg == null) return "";
+        double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
+        for (double[] s : q.scen) if (qtUsable(q, s)) { lo = Math.min(lo, s[1]); hi = Math.max(hi, s[1]); }
+        if (lo > hi) return "";
+        double step = (hi - lo) < 50 ? 10 : 20;
+        lo = Math.floor((lo - 8) / step) * step; hi = Math.ceil((hi + 8) / step) * step;
+        final int rowH = 24, top = 6, L = 84, H = top + q.scen.length * rowH + 24;
+        double pw = W - L - 30;
+        StringBuilder b = new StringBuilder("<section class=\"card\"><div class=\"row2\"><div class=\"k\">QT under each filter</div><span class=\"pill\">Experimental</span></div>");
+        b.append("<p class=\"hint\">The same averaged beat, measured as if the strap had each high-pass filter. The amber dot is the headline.</p>");
+        b.append(svgOpen(H, "QT in milliseconds under each assumed strap filter"));
+        for (double t = lo; t <= hi + 1e-9; t += step) {
+            double x = L + (t - lo) / (hi - lo) * pw;
+            b.append(line(x, top, x, H - 20, "gl")).append(text(x, H - 6, String.valueOf(Math.round(t)), "axis", "middle"));
+        }
+        for (int i = 0; i < q.scen.length; i++) {
+            double[] s = q.scen[i];
+            double y = top + i * rowH + rowH / 2.0;
+            b.append(text(0, y + 4, s[0] == 0 ? "As recorded" : String.format(Locale.US, "%.2f Hz", s[0]), "axis", "start"));
+            if (qtUsable(q, s)) {
+                boolean head = Math.abs(s[0] - q.headlineFcHz) < 1e-6;
+                double x = L + (s[1] - lo) / (hi - lo) * pw;
+                b.append(dot(x, y, head ? 7 : 5, head ? "mark" : "dotb")).append(text(x + 11, y + 4, String.format(Locale.US, "%.0f", s[1]), "axis", "start"));
+            } else {
+                b.append(text(L + 6, y + 4, "no clean QT", "axis", "start"));
+            }
+        }
+        b.append("</svg><p class=\"cap\">Spread of the dots: ").append(String.format(Locale.US, "%.0f ms", spreadOf(q))).append(" between the lowest and highest usable scenario. This is the modelling uncertainty of the strap's filter, not a measurement error bar.</p></section>");
+        return b.toString();
+    }
+
+    private static boolean qtUsable(EcgIntervals.Result q, double[] s) {
+        return !Double.isNaN(s[1]) && !Double.isNaN(s[3]) && (Double.isNaN(q.qtAsRecordedMs) || Math.abs(s[1] - q.qtAsRecordedMs) <= 80);
+    }
+
+    private static double spreadOf(EcgIntervals.Result q) {
+        double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
+        for (double[] s : q.scen) if (qtUsable(q, s)) { lo = Math.min(lo, s[1]); hi = Math.max(hi, s[1]); }
+        return hi - lo;
     }
 
     /** 0.43.0: a closed fold (native details element, no script). Empty content gives nothing. The print path opens every fold first (ReportActivity.printReport). */
@@ -1231,7 +1306,7 @@ public final class EcgReport {
             + "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:'Outfit',-apple-system,Roboto,'Segoe UI',system-ui,sans-serif;line-height:1.45}"
             + "main{max-width:480px;margin:0 auto;padding:20px 16px 32px;display:flex;flex-direction:column;gap:14px}"
             + "h1{font-size:30px;font-weight:300;margin:0}h2{font-size:17px;font-weight:600;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin:4px 0 0}"
-            + ".card{background:var(--card);border:1px solid rgba(255,255,255,.07);border-radius:26px;padding:18px 20px}.q{display:flex;gap:16px;align-items:center}.q p{margin:4px 0 0;color:var(--muted);font-size:14px}"
+            + ".card{background:var(--card);border:1px solid rgba(255,255,255,.07);border-radius:22px;padding:18px 20px}.q{display:flex;gap:16px;align-items:center}.q p{margin:4px 0 0;color:var(--muted);font-size:14px}"
             + ".k{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}.big{font-size:24px;font-weight:300;margin-top:4px}"
             + ".lead{font-size:15px;line-height:1.5;margin:6px 0 0}.hint{font-size:13px;color:var(--muted);margin:0 0 10px}.cap{font-size:14px;line-height:1.45;color:var(--muted);margin:10px 0 0}"
             + ".grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.tile{min-height:140px}.tile .cap{font-size:13px;margin-top:8px}"
@@ -1254,7 +1329,13 @@ public final class EcgReport {
             + "details.why summary::-webkit-details-marker{display:none}details.why summary::after{content:\" \\25be\";color:var(--muted)}details.why[open] summary::after{content:\" \\25b4\"}"
             + ".legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:2px 0 8px}.sw{display:inline-block;width:18px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}.sw.g{background:var(--green)}.sw.w{background:#cfd8e3}.trace.thin2{stroke:#cfd8e3;stroke-width:1.2;fill:none}.wb p{font-size:14px;line-height:1.5;color:var(--muted);margin:0 0 10px}ol.src{margin:8px 0 0;padding-left:18px;font-size:12px;line-height:1.5;color:var(--muted)}"
             + ".ct{min-height:0;padding:14px 16px;border-radius:22px}.ct .val{font-size:34px;margin-top:6px}"
-            + "details.fold{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:26px}details.fold>summary{cursor:pointer;list-style:none;padding:16px 20px;font-size:16px;font-weight:600;display:flex;justify-content:space-between;align-items:center}"
+            + "details.fold{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:22px}details.fold>summary{cursor:pointer;list-style:none;padding:16px 20px;font-size:16px;font-weight:600;display:flex;justify-content:space-between;align-items:center}"
             + "details.fold>summary::-webkit-details-marker{display:none}details.fold>summary::after{content:\"\\25be\";color:var(--muted)}details.fold[open]>summary::after{content:\"\\25b4\"}"
-            + "details.fold>.fb{display:flex;flex-direction:column;gap:14px;padding:0 10px 12px}@media print{details.fold{border:none;background:none}}";
+            + "details.fold>.fb{display:flex;flex-direction:column;gap:14px;padding:0 10px 12px}@media print{details.fold{border:none;background:none}}"
+            + ".vr{position:absolute;opacity:0;pointer-events:none}.tgl{display:flex;gap:4px;padding:4px;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07)}"
+            + ".tgl label{flex:1;text-align:center;padding:9px 0;border-radius:999px;font-size:14px;font-weight:600;color:var(--muted);cursor:pointer}"
+            + "#vE:checked~main label[for=vE],#vR:checked~main label[for=vR]{background:var(--card);color:var(--text);box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}"
+            + ".rs{display:flex;flex-direction:column;gap:14px}#vE:checked~main .rs{display:none}@media print{.tgl,.vr{display:none}#vE:checked~main .rs{display:flex}}"
+            + ".ans-t{font-size:19px;font-weight:300;line-height:1.45;margin:6px 0 0}.pill.n{border-color:var(--line);color:var(--muted)}"
+            + DoctorPage.CSS;
 }

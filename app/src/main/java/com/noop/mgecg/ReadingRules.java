@@ -61,6 +61,8 @@ final class ReadingRules {
     private static volatile List<Double> pastQt = null, pastQtcF = null;
     static void setPast(List<Double> qt, List<Double> qtcF) { pastQt = qt; pastQtcF = qtcF; }
     static void clearPast() { pastQt = null; pastQtcF = null; }
+    /** 0.91.0: a copy of the stored QT list (oldest first), or null when the history was never loaded. */
+    static List<Double> pastQtList() { List<Double> q = pastQt; return q == null ? null : new ArrayList<>(q); }
 
     /** One sentence for beside the in-reading range; empty when the history was never loaded. */
     static String betweenReadings() {

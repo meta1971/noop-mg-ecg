@@ -1111,6 +1111,8 @@ public final class EcgR16Analyzer {
         public int[] pulseShow = new int[0];
         /** Wrist motion, 100 Hz, mg of acceleration change within each second; NaN = none. See EcgAux. */
         public double[] motionMg = new double[0];
+        /** 0.91.0: per sample on the same grid as mv: 1 = at the rail (|counts| >= 126976), 2 = inside the strap's own fast-recovery window (tag bit 6), 0 = neither or no sample. Read from the stored frames, not estimated. */
+        public byte[] flags = new byte[0];
         /** 0.39.0: unfiltered trace in uV on the same sample grid as mv (NaN = rail, fast recovery or no sample). */
         public double[] rawUv = new double[0];
         /** 0.39.0: sample index of the first stored record that holds samples (the event 118 anchor is this + 1.01 s). */
@@ -1135,6 +1137,7 @@ public final class EcgR16Analyzer {
         double[] raw = new double[n];
         Arrays.fill(raw, Double.NaN);
         byte[] q = new byte[n];
+        byte[] flg = new byte[n];
         for (byte[] f : recs) {
             long idx = (u32(f, 11) & 0xffffffffL) - first;
             if (idx < 0 || idx >= nRec) continue;
@@ -1143,7 +1146,8 @@ public final class EcgR16Analyzer {
             for (int k = 0; k < cnt; k++) {
                 int v = EcgWhoopSpec.r16Sample(f, k);
                 // rail samples and the amplifier's fast-recovery window are not ECG
-                if (Math.abs(v) >= EcgWhoopSpec.R16_RAIL || EcgWhoopSpec.r16FastRecovery(f, k)) continue;
+                if (EcgWhoopSpec.r16FastRecovery(f, k)) { flg[base + k] = 2; continue; }
+                if (Math.abs(v) >= EcgWhoopSpec.R16_RAIL) { flg[base + k] = 1; continue; }
                 raw[base + k] = v;
             }
         }
@@ -1176,6 +1180,7 @@ public final class EcgR16Analyzer {
         }
         s.mv = mv;
         s.quality = q;
+        s.flags = flg;
         s.rawUv = new double[n];
         for (int k = 0; k < n; k++) s.rawUv[k] = Double.isNaN(raw[k]) ? Double.NaN : raw[k] * ScaleSetting.uv();
         long firstWithSamples = -1;
