@@ -62,6 +62,13 @@ final class SimLabSheet {
         guideRow(box, "5   Level ladder", "Four levels of the same tone. PLAY LabS_5_levels.wav. Result: uV per count at each level and the straightness.", doneText("L"), "Start", () -> { d[0].dismiss(); startPart('L'); });
         guideRow(box, "6   Low tones (high-pass corner)", "5, 2, 1 and 0.5 Hz. PLAY LabS_6_low.wav. Result: an upper bound for the high-pass corner.", doneText("H"), "Start", () -> { d[0].dismiss(); startPart('H'); });
         guideRow(box, "7   High tones", "20 to 200 Hz. PLAY LabS_7_high.wav. Result: the response above 10 Hz.", doneText("U"), "Start", () -> { d[0].dismiss(); startPart('U'); });
+        // 0.90.0: RHYTHM REPLAY (LabRhythm): known rhythms played by the OLD phone, truth beat times in LabR_truth.csv
+        TextView rh = p.t("RHYTHM REPLAY (OLD PHONE PLAYS)", 11, 0xFF6EC3FF, 600); rh.setLetterSpacing(0.12f); box.addView(rh, p.lp(-1, -2, 18));
+        TextView ri = p.t("Known heartbeats, with every beat time and size known, played into the strap. Same wiring as the steps above (cable tip to one clasp contact, sleeve to the foil on the LEFT index fingertip, strap on the left wrist). Tap Save once, copy the sounds to the old phone, then Start a run and press PLAY on the old phone within 8 s. Nothing is applied to the app.", 12, HealthViews.MUT, 400);
+        ri.setLineSpacing(0, 1.2f); box.addView(ri, p.lp(-1, -2, 4));
+        guideRow(box, "R0   Save R1 to R5 and the truth file", "About 45 MB: five sound files and LabR_truth.csv in Download/sim.", doneText("R0"), "Save", () -> { d[0].dismiss(); exportRhythm(false); });
+        guideRow(box, "R0   Save E, F, G for the old phone", "About 100 MB: the three older scenario tracks as sound files, plus the AF reference.", doneText("R9"), "Save", () -> { d[0].dismiss(); exportRhythm(true); });
+        for (final char rm : LabRhythm.EXPORT) guideRow(box, LabRhythm.id(rm) + "   " + LabRhythm.title(rm), LabRhythm.what(rm), doneText("R" + LabRhythm.number(rm)), "Start", () -> { d[0].dismiss(); startRhythm(rm); });
         // 0.52.1: DIRECT runs (SimDirect): this phone's audio straight to the pods, no divider, no DC; nothing over -48 dBFS reaches the strap
         TextView dh = p.t("LONGER RUNS (THE OLD ONES, NEED THIS PHONE'S OWN AUDIO OUTPUT)", 11, 0xFF6EC3FF, 600); dh.setLetterSpacing(0.12f); box.addView(dh, p.lp(-1, -2, 18));
         TextView di = p.t("This phone's audio straight to the two pods: small signals made digitally (1 mV = -60 dBFS), no resistors, no DC. Wiring: cable tip to the clasp contact (bare metal, CLIPPED on, not taped), cable sleeve to foil on the LEFT index fingertip (the strap arm, so your own heartbeat is not added), strap snug on the left wrist. Run W first, calibrate once with the meter (M), then D to G. " + calText(), 12, HealthViews.MUT, 400);
@@ -143,9 +150,9 @@ final class SimLabSheet {
         if (LabQuick.is(mode) && !oldPhone) { p.simCue(LabQuick.cue(mode, s, planMs)); return elMs >= planMs; }      // 0.69.0: gate (silent), isolation 1, C3 lift test
         if (SimDirect.isDirect(mode)) {      // 0.52.1
             if (!oldPhone && track == null && !stopAudio && dtrack != null && elMs >= (long) (SimDirect.AUDIO_AT_S * 1000)) playDirect(dtrack, true);
-            if (oldPhone && LabParts.is(mode)) {      // 0.64.0: the old phone plays; the analysis finds the tone by itself
-                int lf = (int) Math.max(0, (planMs - elMs) / 1000);
-                p.simCue(s < 2 ? "Get ready. Press PLAY on the old phone within 8 s of Start, then hands off." : s < 9 ? "PRESS PLAY on the old phone now (" + (8 - s) + " s left to press it), then hands off." : LabParts.title(mode) + String.format(Locale.UK, "  \u00b7  keep still, %d:%02d left", lf / 60, lf % 60));
+            if (oldPhone && (LabParts.is(mode) || LabRhythm.plays(mode))) {      // 0.64.0 / 0.90.0: the old phone plays; the analysis finds the signal by itself
+                int lf = (int) Math.max(0, (planMs - elMs) / 1000); final int win = LabRhythm.plays(mode) ? 4 : 8;
+                p.simCue(s < 2 ? "Get ready. Press PLAY on the old phone within " + win + " s of Start, then hands off." : s < win + 1 ? "PRESS PLAY on the old phone now (" + (win - s) + " s left to press it), then hands off." : (LabParts.is(mode) ? LabParts.title(mode) : LabRhythm.title(mode)) + String.format(Locale.UK, "  \u00b7  keep still, %d:%02d left", lf / 60, lf % 60));
                 return elMs >= planMs;
             }
             double ps = elMs / 1000.0 - SimDirect.AUDIO_AT_S; String seg = "";
@@ -346,6 +353,52 @@ final class SimLabSheet {
         } }, "sim-parts-wav").start();
     }
 
+    /** 0.90.0: a rhythm replay run (r s t u v, or E F G) played by the old phone. */
+    private void startRhythm(final char m) {
+        if (p.isRunning()) { a.toast("A reading is running."); return; }
+        final SimDirect.Track t0 = SimDirect.track(m); final long ms = LabRhythm.planMs(t0);
+        new android.app.AlertDialog.Builder(a).setTitle(LabRhythm.id(m) + ": " + LabRhythm.title(m))
+            .setMessage("Wiring as in the wire check (cable tip to one clasp contact, sleeve to the foil on the LEFT index fingertip, strap snug on the left wrist, nothing touching the wiring). Old phone: volume at maximum, effects off, " + LabRhythm.file(m) + " ready at 0:00.\n\nTap Start, then press PLAY on the old phone within the first 4 seconds (the strap's own analysis runs about seconds 7 to 37, the rhythm must be running by then). The reading takes " + (int) (ms / 60000) + ":" + String.format(Locale.UK, "%02d", (int) ((ms / 1000) % 60)) + ". Keep still and do not touch the wiring." + (m == LabRhythm.OVERDRIVE ? "\n\nThis one is deliberately LOUDER than the other runs: bursts up to -28 dBFS (about 40 mV at 1 V full scale) to push the strap to its clip. Far below any electrode limit; the others stay under -48 dBFS." : ""))
+            .setPositiveButton("Start (old phone plays)", (x, y) -> { try { oldPhone = true; internalAudio = false; dtrack = t0; start(m, ms); } catch (Throwable e) { a.toast("The run could not start: " + e.getClass().getSimpleName()); } })
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    private Uri newDownload(String name, String mime) {
+        ContentValues cv = new ContentValues(); cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name); cv.put(MediaStore.MediaColumns.MIME_TYPE, mime); cv.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/sim/"); cv.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        return a.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+    }
+    private void finishDownload(Uri u) { ContentValues done = new ContentValues(); done.put(MediaStore.MediaColumns.IS_PENDING, 0); a.getContentResolver().update(u, done, null, null); }
+    private void writeText(String name, String text) throws java.io.IOException {
+        Uri u = newDownload(name, "text/csv");
+        try (OutputStream o = a.getContentResolver().openOutputStream(u)) { o.write(text.getBytes("UTF-8")); }
+        finishDownload(u);
+    }
+
+    /** 0.90.0: R1 to R5 (all = false) or E, F, G (all = true) as 16-bit mono 48 kHz WAV files, each starting with 10 s of silence, plus the truth CSV (and the AF reference). */
+    void exportRhythm(final boolean longOnes) {
+        a.toast("Saving the sounds (about " + (longOnes ? "40" : "15") + " s)...");
+        new Thread(new Runnable() { @Override public void run() {
+            String msg; int ok = 0; String cur = "";
+            try {
+                char[] modes = longOnes ? new char[] { 'E', 'F', 'G' } : new char[] { 'r', 's', 't', 'u', 'v' };
+                for (char m : modes) {
+                    cur = LabRhythm.file(m); SimDirect.Track tr = SimDirect.track(m); long n = LabRhythm.samples(tr);
+                    Uri u = newDownload(cur, "audio/wav");
+                    try (OutputStream o = a.getContentResolver().openOutputStream(u)) {
+                        o.write(LabParts.wavHeader(n)); java.util.Random rng = new java.util.Random(7); int chunk = SR / 2; byte[] buf = new byte[2 * chunk];
+                        for (long i = 0; i < n; i += chunk) { int k = (int) Math.min(chunk, n - i); LabRhythm.pcm(tr, buf, k, i, rng); o.write(buf, 0, 2 * k); }
+                    }
+                    finishDownload(u); ok++;
+                }
+                writeText("LabR_truth.csv", LabRhythm.truthCsv());
+                if (longOnes) writeText("LabR_8_G_ref.csv", LabRhythm.refCsv('G'));
+                rememberStep(longOnes ? "R9" : "R0", ok + " sound files and LabR_truth.csv in Download/sim");
+                msg = "Saved " + ok + " files and LabR_truth.csv in Download/sim. Copy the .wav files to the old phone.";
+            } catch (Throwable e) { msg = "The sounds could not be saved (" + ok + " done, at " + cur + "): " + e.getClass().getSimpleName(); }
+            final String fm = msg; a.runOnUiThread(() -> a.toast(fm));
+        } }, "sim-rhythm-wav").start();
+    }
+
     private void startWiring() {
         if (p.isRunning()) { a.toast("A reading is running."); return; }
         playGen++; if (mode == 'M') stopAudio();
@@ -407,7 +460,7 @@ final class SimLabSheet {
 
     private void analyseDirect(final long startSec, final File dir, final char m) {
         a.toast("Analysing the run (a few seconds)...");
-        final double pr = playRelS, vfs = vfsPkMv(); final SimDirect.Track tr = dtrack != null && dtrack.mode == m ? dtrack : null;
+        final double pr = playRelS, vfs = vfsPkMv(); final boolean op = oldPhone; final SimDirect.Track tr = dtrack != null && dtrack.mode == m ? dtrack : null;
         new Thread(new Runnable() { @Override public void run() {
             SimDirect.Result R = null; String err = null;
             try {
@@ -415,9 +468,10 @@ final class SimLabSheet {
                 if (bin == null) err = "No live raw file was found for this run. The live raw stream (You > Settings > Live raw 500 Hz) is forced on for Lab S runs; if it still failed, the strap link dropped: repeat the run.";
                 else {
                     List<byte[]> fr = SpectrumBlock.r16(java.nio.file.Files.readAllBytes(bin.toPath()));
-                    R = LabQuick.is(m) ? quickResult(m, fr, vfs) : m == 'W' ? SimDirect.wiring(fr) : m == 'D' ? SimDirect.analyseTones(fr, vfs) : LabParts.is(m) ? LabParts.analyse(m, SimDirect.counts(fr), vfs) : SimDirect.analyseEcg(tr != null ? tr : SimDirect.track(m), fr, vfs, pr);
+                    R = LabQuick.is(m) ? quickResult(m, fr, vfs) : m == 'W' ? SimDirect.wiring(fr) : m == 'D' ? SimDirect.analyseTones(fr, vfs) : LabParts.is(m) ? LabParts.analyse(m, SimDirect.counts(fr), vfs) : LabRhythm.plays(m) ? LabRhythm.analyse(tr != null ? tr : SimDirect.track(m), fr, vfs, pr, op) : SimDirect.analyseEcg(tr != null ? tr : SimDirect.track(m), fr, vfs, pr);
                     if (LabQuick.is(m)) storeQuick(m, R);      // 0.69.0: the stored result feeds the three boxes
                     if ((m == 'W' || LabParts.is(m)) && !LabQuick.is(m)) { String first = R.card.isEmpty() ? "" : R.card.get(0); rememberStep(String.valueOf(m), first.length() > 150 ? first.substring(0, 150) : first); }      // 0.64.0: shown under the step
+                    if (LabRhythm.plays(m)) { String first = R.card.isEmpty() ? "" : R.card.get(0); rememberStep("R" + LabRhythm.number(m), (op ? "old phone: " : "this phone: ") + (first.length() > 130 ? first.substring(0, 130) : first)); }      // 0.90.0
                     if (!Double.isNaN(pr)) R.notes.put("sim_play_rel_s", String.format(Locale.US, "%.2f", pr));
                     R.notes.put("simd_cal_ts", String.valueOf(ctl().getLong("sim_cal_ts", 0L) / 1000L));
                     for (Map.Entry<String, String> e : R.notes.entrySet()) ReadingNotes.put(dir, startSec, e.getKey(), e.getValue());

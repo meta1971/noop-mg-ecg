@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// 0.90.0 (25 Nov 2026): RHYTHM REPLAY (LabRhythm): modes r s t u v are short known-rhythm and overdrive tracks; E, F, G can be played by the OLD phone (WAV export in SimLabSheet); load, place, toArr, regular are package-private for it; fill() lets mode v go to 0.06 of full scale.
 // 0.64.0 (16 Nov 2026): modes N, S, L, H, U are the short Lab S parts (LabParts); isDirect, title, track, fill and peakFs hand them over.
 
 // FILE VERSION 0.52.2 (11 Nov 2026): W wiring check and the strap's own contact verdict in every direct result. FILE VERSION 0.52.1 (11 Nov 2026): the DIRECT phone-audio Lab runs (decode log 151, 152, 154, 155): no divider and no DC. The strap input is high impedance, so the phone's headphone output can drive the two
@@ -31,8 +32,8 @@ final class SimDirect {
     static final class Seg { String name = "", kind = ""; double start, end, param = Double.NaN; double[] beats = new double[0]; }
     static final class Track { char mode; double seconds; float[] ecg; final List<Seg> segs = new ArrayList<>(); }
 
-    static boolean isDirect(char m) { return m == 'D' || m == 'E' || m == 'F' || m == 'G' || m == 'W' || LabParts.is(m); }
-    static String title(char m) { return m == 'W' ? "Wiring check" : m == 'M' ? "Meter calibration" : m == 'D' ? "Direct tones" : m == 'E' ? "ECG scenarios A" : m == 'F' ? "ECG scenarios B" : m == 'G' ? "AF replay" : LabParts.title(m); }
+    static boolean isDirect(char m) { return m == 'D' || m == 'E' || m == 'F' || m == 'G' || m == 'W' || LabParts.is(m) || LabRhythm.is(m); }
+    static String title(char m) { return m == 'W' ? "Wiring check" : m == 'M' ? "Meter calibration" : m == 'D' ? "Direct tones" : m == 'E' ? "ECG scenarios A" : m == 'F' ? "ECG scenarios B" : m == 'G' ? "AF replay" : LabRhythm.is(m) ? LabRhythm.title(m) : LabParts.title(m); }
 
     // ------------------------------------------------------------------ tone tracks (analytic)
     private static double db(double d) { return Math.pow(10.0, d / 20.0); }
@@ -55,7 +56,7 @@ final class SimDirect {
 
     // ------------------------------------------------------------------ ECG tracks (constructed at 500 Hz, millivolts)
     private static double[] tpl; private static float[] ma, em, af;
-    private static synchronized void load() {
+    static synchronized void load() {
         if (tpl != null) return;
         short[] t = SimData.decode(SimData.TEMPLATE, SimData.TEMPLATE_N); double[] T = new double[t.length]; for (int i = 0; i < t.length; i++) T[i] = t[i] / 10000.0;
         int m = (int) (0.05 * FS), m2 = (int) (0.10 * FS); for (int i = 0; i < m; i++) T[i] *= 0.5 * (1 - Math.cos(Math.PI * i / m)); for (int i = 0; i < m2; i++) T[T.length - m2 + i] *= 0.5 * (1 + Math.cos(Math.PI * i / m2));
@@ -66,15 +67,16 @@ final class SimDirect {
     }
     private static float[] upsample(short[] x, int k, double unit) { float[] y = new float[x.length * k]; for (int i = 0; i < y.length; i++) { double p = i / (double) k; int j = (int) p; double fr = p - j; double a = x[Math.min(x.length - 1, j)], b = x[Math.min(x.length - 1, j + 1)]; y[i] = (float) ((a + (b - a) * fr) * unit); } return y; }
 
-    private static void place(float[] x, double[] beats, double t0, double amp) {
+    static void place(float[] x, double[] beats, double t0, double amp) {
         for (double b : beats) { int i0 = (int) Math.round((t0 + b - 0.30) * FS); for (int j = 0; j < tpl.length; j++) { int k = i0 + j; if (k >= 0 && k < x.length) x[k] += (float) (tpl[j] * amp); } }
     }
-    private static double[] toArr(List<Double> l) { double[] a = new double[l.size()]; for (int i = 0; i < a.length; i++) a[i] = l.get(i); return a; }
-    private static double[] regular(double dur, double hr) { List<Double> l = new ArrayList<>(); for (double t = 0.4; t < dur - 0.5; t += 60.0 / hr) l.add(t); return toArr(l); }
+    static double[] toArr(List<Double> l) { double[] a = new double[l.size()]; for (int i = 0; i < a.length; i++) a[i] = l.get(i); return a; }
+    static double[] regular(double dur, double hr) { List<Double> l = new ArrayList<>(); for (double t = 0.4; t < dur - 0.5; t += 60.0 / hr) l.add(t); return toArr(l); }
     private static final double RR = 60.0 / 70.0;
 
     static synchronized Track track(char mode) {
         if (mode == 'N' || LabParts.is(mode)) return LabParts.track(mode);      // 0.64.0: the short Lab S parts
+        if (LabRhythm.is(mode)) { load(); return LabRhythm.track(mode); }      // 0.90.0: rhythm replay and overdrive
         load(); Track tr = new Track(); tr.mode = mode;
         if (mode == 'M') { tr.seconds = CAL_S; return tr; }
         if (mode == 'D') { tr.seconds = TONES_S; for (int i = 0; i < 4; i++) { Seg s = new Seg(); s.name = "L" + (int) -LEVEL_DB[i]; s.kind = "level"; s.start = 8 * i; s.end = 8 * i + 6; s.param = LEVEL_DB[i]; tr.segs.add(s); } for (int j = 0; j < FREQ.length; j++) { Seg s = new Seg(); s.name = "F" + FREQ_KEY[j]; s.kind = "tone"; s.start = 34 + 8 * j; s.end = s.start + 6; s.param = FREQ[j]; tr.segs.add(s); } return tr; }
@@ -119,7 +121,7 @@ final class SimDirect {
             else if (tr.mode == 'D') v = toneValue(t);
             else if (tr.mode == 'N' || LabParts.is(tr.mode)) v = LabParts.value(tr.mode, t);
             else { double p = t * FS; int j = (int) p; double f = p - j; float[] e = tr.ecg; int L = e.length; if (j + 2 >= L) v = 0; else { double p0 = e[Math.max(0, j - 1)], p1 = e[j], p2 = e[j + 1], p3 = e[j + 2]; v = 0.5 * (2 * p1 + (-p0 + p2) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f + (-p0 + 3 * p1 - 3 * p2 + p3) * f * f * f) * FS_PER_MV; } }
-            if (tr.mode != 'M' && tr.mode != 'N') { if (v > MAX_STRAP_FS) v = MAX_STRAP_FS; else if (v < -MAX_STRAP_FS) v = -MAX_STRAP_FS; v += (rng.nextDouble() - rng.nextDouble()) / 32768.0; }
+            if (tr.mode != 'M' && tr.mode != 'N') { double cap = tr.mode == LabRhythm.OVERDRIVE ? LabRhythm.MAX_FS_OVERDRIVE : MAX_STRAP_FS; if (v > cap) v = cap; else if (v < -cap) v = -cap; v += (rng.nextDouble() - rng.nextDouble()) / 32768.0; }
             out[i] = (float) v;
         }
     }
@@ -199,13 +201,15 @@ final class SimDirect {
     private static double[] band(double[] x) { double[] y = ProDsp.filtfilt(x, ProDsp.butterLow(4, 40, FS)); return ProDsp.filtfilt(y, ProDsp.butterHigh2(5, FS)); }
 
     /** Modes E, F, G. playRelS = seconds from the reading start to the audio start as the phone saw it (NaN: 10 s assumed); the lag is searched +-4 s around it. */
-    static Result analyseEcg(Track tr, List<byte[]> fr, double vfsPkMv, double playRelS) {
+    static Result analyseEcg(Track tr, List<byte[]> fr, double vfsPkMv, double playRelS) { return analyseEcg(tr, fr, vfsPkMv, playRelS, false); }
+    /** 0.90.0: oldPhone = the old phone was started by hand up to 8 s after Start (file lead 1 s), so the audio is searched around 5 s (+-7 s). */
+    static Result analyseEcg(Track tr, List<byte[]> fr, double vfsPkMv, double playRelS, boolean oldPhone) {
         Result R = new Result(); R.notes.put("simd_mode", String.valueOf(tr.mode)); double[] c = counts(fr);
         if (c.length < 40 * FS || tr.ecg == null) { R.card.add("The record is shorter than 40 s: no result."); return R; }
         double[] ref = new double[tr.ecg.length]; for (int i = 0; i < ref.length; i++) ref[i] = tr.ecg[i]; double[] rb = band(ref), cb = band(c);
-        double exp = Double.isNaN(playRelS) ? AUDIO_AT_S : playRelS; int nRef = rb.length;      // the WHOLE track: a regular rhythm alone repeats every beat and would give several equal answers
+        boolean oph = oldPhone && Double.isNaN(playRelS); double hw = oph ? LabRhythm.OLD_HALF_S : 4.0; double exp = Double.isNaN(playRelS) ? (oldPhone ? LabRhythm.OLD_CENTRE_S : AUDIO_AT_S) : playRelS; int nRef = rb.length;      // the WHOLE track: a regular rhythm alone repeats every beat and would give several equal answers
         // coarse lag on a 100 Hz grid (10 ms steps), then every 2 ms around the best
-        int best = -1; double bestV = -1e300; int lo = (int) ((exp - 4) * FS), hi = (int) ((exp + 4) * FS);
+        int best = -1; double bestV = -1e300; int lo = (int) ((exp - hw) * FS), hi = (int) ((exp + hw) * FS);
         for (int L = lo; L <= hi; L += 5) { double s = 0; for (int i = 0; i < nRef; i += 5) { int k = L + i; if (k >= 0 && k < cb.length) s += cb[k] * rb[i]; } if (Math.abs(s) > bestV) { bestV = Math.abs(s); best = L; } }
         int best2 = best; bestV = -1e300; for (int L = best - 6; L <= best + 6; L++) { double s = 0; for (int i = 0; i < nRef; i++) { int k = L + i; if (k >= 0 && k < cb.length) s += cb[k] * rb[i]; } if (Math.abs(s) > bestV) { bestV = Math.abs(s); best2 = L; } }
         int lag = best2; R.notes.put("simd_lag_s", f(lag / (double) FS, 3)); boolean cal = !Double.isNaN(vfsPkMv) && vfsPkMv > 0; if (cal) R.notes.put("simd_vfs_mV", f(vfsPkMv, 1));
