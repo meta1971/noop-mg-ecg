@@ -1124,7 +1124,12 @@ public final class EcgR16Analyzer {
     }
 
     /** @param records stored R16 frames (1584 bytes each), any order */
-    public static Strip strip(List<byte[]> records) {
+    public static Strip strip(List<byte[]> records) { return stripImpl(records, true); }
+
+    /** 0.92.0: the same strip with no side effects (no pooling of the beats, no report rewrite): for the strip viewer, which may open a reading that was analysed a moment ago. */
+    public static Strip stripQuiet(List<byte[]> records) { return stripImpl(records, false); }
+
+    private static Strip stripImpl(List<byte[]> records, boolean publish) {
         Strip s = new Strip();
         List<byte[]> recs = new ArrayList<>();
         for (byte[] f : records) if (f.length == 1584) recs.add(f);
@@ -1196,7 +1201,7 @@ public final class EcgR16Analyzer {
         s.startUnix = u32(recs.get(0), 15) & 0xffffffffL;
         s.firstSeq = first;
         Result analysed = lastResult;
-        if (analysed != null && analysed.recordsIn == records.size()) { PooledSegments.addReading(EcgReport.appCtx, s); EcgReport.saveReportFile(analysed, s); }   // 0.40.0: pool the beats
+        if (publish && analysed != null && analysed.recordsIn == records.size()) { PooledSegments.addReading(EcgReport.appCtx, s); EcgReport.saveReportFile(analysed, s); }   // 0.40.0: pool the beats
         return s;
     }
 

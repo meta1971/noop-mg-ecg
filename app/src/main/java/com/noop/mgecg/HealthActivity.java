@@ -1634,6 +1634,7 @@ public class HealthActivity extends Activity {
         guideLink.setPadding(0, dpi(8), 0, dpi(8));
         guideLink.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { QuickGuide.show(HealthActivity.this); } });
         col.addView(guideLink, lp(-1, -2, 2));
+        try { View uc = ecgUsualCard(true); if (uc != null) col.addView(uc, lp(-1, -2, 10)); } catch (Throwable ignored) { }      // 0.92.0: the newest ECG on the main screen
         LinearLayout olc = card(16);      // 0.63.0: the plan sentence in a card with its heading
         olc.addView(caps("DAILY OUTLOOK"));
         TextView plan = tv(DailyViews.plan(rec), 14, INK, 400);
@@ -2193,6 +2194,7 @@ public class HealthActivity extends Activity {
                 col.addView(new DailyViews.RingsView(this, rf, rc, rb, rl, rcap), lp(-1, dpi(196), 6));
             }
         } catch (Throwable ignored) { }
+        try { View uc = ecgUsualCard(false); if (uc != null) col.addView(uc, lp(-1, -2, 12)); } catch (Throwable ignored) { }      // 0.92.0
         try {                                                              // this week and the streak
             long[] st = new long[n]; for (int i = 0; i < n; i++) st[i] = d.readings.get(i).timeMs / 1000L;
             EcgStreak.Out so = EcgStreak.compute(st, System.currentTimeMillis(), java.util.TimeZone.getDefault());
@@ -2263,6 +2265,50 @@ public class HealthActivity extends Activity {
     // 0.27.0: which days the reader opened or closed in this session
     private static final java.util.Set<String> openDays = new java.util.HashSet<>(), closedDays = new java.util.HashSet<>();
     private static long readingUnix(HealthModel.Reading r) { try { String n = r.file.getName(); java.util.regex.Matcher m = java.util.regex.Pattern.compile("(1[6-9][0-9]{8})").matcher(n); if (m.find()) return Long.parseLong(m.group(1)); return r.file.lastModified() / 1000L; } catch (Throwable t) { return 0; } }
+    private static boolean isAB(String g) { if (g == null) return false; String u = g.toUpperCase(Locale.UK); return u.startsWith("A") || u.startsWith("B"); }
+
+    private static double numOf(String s) { try { return Double.parseDouble(s.trim()); } catch (Throwable t) { return Double.NaN; } }
+
+    private static double[] toArr(java.util.List<Double> l) { double[] a = new double[l.size()]; for (int i = 0; i < a.length; i++) a[i] = l.get(i); return a; }
+
+    /**
+     * 0.92.0: the newest ECG reading of grade A or B against the same person's earlier A and B readings (heart rate and HRV, the same neutral range bar and the same 10th to 90th percentile rule as the Rest page),
+     * with the report and the interactive strip one tap away. On Today it shows only while the newest reading is under three days old. Null when there is nothing honest to show.
+     */
+    private View ecgUsualCard(boolean onToday) {
+        HealthModel.Data d = data;
+        if (d == null || d.readings == null || d.readings.isEmpty()) return null;
+        final HealthModel.Reading r0 = d.readings.get(0);
+        if (r0.file == null || !isAB(r0.grade)) return null;
+        if (onToday && System.currentTimeMillis() - r0.timeMs > 3L * 86400000L) return null;
+        double hr = numOf(r0.hr), hv = numOf(r0.hrv);
+        java.util.List<Double> eh = new java.util.ArrayList<Double>(), ev = new java.util.ArrayList<Double>();
+        for (int i = Math.min(d.readings.size() - 1, 80); i >= 1; i--) {
+            HealthModel.Reading q = d.readings.get(i);
+            if (!isAB(q.grade)) continue;
+            eh.add(numOf(q.hr)); ev.add(numOf(q.hrv));
+        }
+        UxLogic.Range rH = UxLogic.range(toArr(eh), hr), rV = UxLogic.range(toArr(ev), hv);
+        LinearLayout c = card(16);
+        c.addView(caps(onToday ? "YOUR LATEST ECG" : "LATEST ECG AGAINST YOUR USUAL"));
+        c.addView(tv(r0.when + ("-".equals(r0.rhythm) || r0.rhythm == null ? "" : "  \u00b7  " + r0.rhythm), 14, INK, 600), lp(-2, -2, 6));
+        if (rH.ok()) rangeRow(c, "Heart rate", UxLogic.num(hr) + " bpm", UxLogic.num(rH.lo) + " to " + UxLogic.num(rH.hi), rH, hr);
+        if (rV.ok()) rangeRow(c, "HRV (RMSSD)", UxLogic.num(hv) + " ms", UxLogic.num(rV.lo) + " to " + UxLogic.num(rV.hi), rV, hv);
+        if (!rH.ok() && !rV.ok()) {
+            c.addView(tv("Your usual range appears after " + UxLogic.RANGE_MIN_N + " earlier readings of grade A or B. So far: " + Math.max(rH.n, rV.n) + ". No average of other people is used in its place.", 12.5f, MUT, 400), lp(-2, -2, 10));
+        } else {
+            TextView cap = tv("The band is the middle 80 % of your own earlier grade A and B readings (up to " + UxLogic.RANGE_MAX_N + "), the tick is their median. Outside the band means different from your usual, not good or bad.", 11.5f, MUT, 400);
+            cap.setLineSpacing(0, 1.2f);
+            c.addView(cap, lp(-2, -2, 12));
+        }
+        LinearLayout row = hrow();
+        LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, dpi(44), 1f); a.rightMargin = dpi(8);
+        row.addView(pillButton("Open report", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { openReport(r0.file); } }), a);
+        row.addView(pillButton("Strip", 0x1A2FA8F0, BLUE, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, StripActivity.class).putExtra("path", r0.file.getAbsolutePath())); } }), new LinearLayout.LayoutParams(0, dpi(44), 1f));
+        c.addView(row, lp(-1, -2, 12));
+        return c;
+    }
+
     private View readingCard(final HealthModel.Reading r) {
                 LinearLayout c = card(16);
                 LinearLayout h = hrow();

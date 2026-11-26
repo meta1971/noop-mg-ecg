@@ -116,7 +116,11 @@ public class ReportActivity extends Activity {
         final TextView docBtn = pill("Doctor page");                       // 0.91.0: the one-page printout (hidden section of the report); Save PDF then prints it
         docBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { toggleDoctor(docBtn); } });
         final LinearLayout pills2 = new LinearLayout(this); pills2.setOrientation(LinearLayout.HORIZONTAL); pills2.setPadding(dp(12), 0, dp(12), dp(8));
-        pills2.addView(docBtn, new LinearLayout.LayoutParams(-1, dp(44)));
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0, dp(44), 1f); dlp.rightMargin = dp(8);
+        pills2.addView(docBtn, dlp);
+        TextView stripBtn = pill("Strip");                                  // 0.92.0: the interactive strip of this reading (StripActivity)
+        stripBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new android.content.Intent(ReportActivity.this, StripActivity.class).putExtra("path", path)); } });
+        pills2.addView(stripBtn, new LinearLayout.LayoutParams(0, dp(44), 1f));
         root.addView(pills2, new LinearLayout.LayoutParams(-1, -2));
 
         webView = new WebView(this);
