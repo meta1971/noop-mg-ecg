@@ -21,19 +21,20 @@ final class TrendSeries {
         String name, unit, group, key; int dec, color, good;          // good: +1 higher is better, -1 lower is better, 0 neither
         double minSpread, slopeUnit;
         double[] day = new double[0], v = new double[0]; long[] ts = new long[0]; int[] bucket = new int[0];     // day = unix days; ts = unix seconds; bucket only for ECG (-1 for nights)
+        int[] pos = new int[0];        // 0.94.0: ECG only: where the strap was worn for each point: 0 wrist, 1 ankle, -1 anywhere else or not noted
         boolean ecg;
         Series(String name, String unit, String group, int dec, int color, int good, double minSpread, double slopeUnit, boolean ecg) { this.name = name; this.unit = unit; this.group = group; this.dec = dec; this.color = color; this.good = good; this.minSpread = minSpread; this.slopeUnit = slopeUnit; this.ecg = ecg; this.key = name; }
         int size() { return v.length; }
         /** The same series cut to one time of day (ECG only). */
         Series onlyBucket(int b) {
             Series s = new Series(name, unit, group, dec, color, good, minSpread, slopeUnit, ecg); int n = 0; for (int x : bucket) if (x == b) n++;
-            s.day = new double[n]; s.v = new double[n]; s.ts = new long[n]; s.bucket = new int[n]; int k = 0;
-            for (int i = 0; i < v.length; i++) if (bucket[i] == b) { s.day[k] = day[i]; s.v[k] = v[i]; s.ts[k] = ts[i]; s.bucket[k] = b; k++; }
+            s.day = new double[n]; s.v = new double[n]; s.ts = new long[n]; s.bucket = new int[n]; s.pos = new int[n]; int k = 0;
+            for (int i = 0; i < v.length; i++) if (bucket[i] == b) { s.day[k] = day[i]; s.v[k] = v[i]; s.ts[k] = ts[i]; s.bucket[k] = b; s.pos[k] = i < pos.length ? pos[i] : -1; k++; }
             return s;
         }
     }
 
-    static final class EcgPoint { final EcgSeg.Pt s = new EcgSeg.Pt(); long ts; String grade = "-"; double hr = Double.NaN, rmssd = Double.NaN, R = Double.NaN, QRS = Double.NaN, QTcF = Double.NaN, noise = Double.NaN; int bucket; boolean good() { return grade.startsWith("A") || grade.startsWith("B"); } }
+    static final class EcgPoint { final EcgSeg.Pt s = new EcgSeg.Pt(); long ts; String grade = "-"; double hr = Double.NaN, rmssd = Double.NaN, R = Double.NaN, QRS = Double.NaN, QTcF = Double.NaN, noise = Double.NaN; int bucket, pos = -1; boolean good() { return grade.startsWith("A") || grade.startsWith("B"); } }
 
     static int bucketOf(long tsSec) {
         Calendar c = Calendar.getInstance(); c.setTimeInMillis(tsSec * 1000L); int h = c.get(Calendar.HOUR_OF_DAY); return h < 12 ? MORNING : h < 18 ? AFTERNOON : EVENING;
@@ -93,6 +94,7 @@ final class TrendSeries {
             EcgPoint p = new EcgPoint(); p.ts = ts; p.grade = r.grade; p.hr = r.hr; p.rmssd = r.rmssd; p.R = r.R; p.QRS = r.QRS; p.QTcF = r.QTcF; p.bucket = bucketOf(ts);
             EcgSeg.fromText(p.s, txt); EcgSeg.rebase(p.s, fct);
             if (nt != null) {
+                String ps = nt.get("pos"); if (ps != null) { String pu = ps.trim().toLowerCase(java.util.Locale.UK); p.pos = pu.startsWith("wrist") ? 0 : pu.startsWith("ankle") ? 1 : -1; }      // 0.94.0
                 p.noise = ReadingsTable.grab(nt.get("noise_8_25") == null ? "" : nt.get("noise_8_25"), "([\\d.]+)");
                 if (Double.isNaN(p.R)) p.R = ReadingsTable.grab(nt.get("live_R_uV") == null ? "" : nt.get("live_R_uV"), "([\\d.]+)");
                 if (Double.isNaN(p.QRS)) p.QRS = ReadingsTable.grab(nt.get("live_QRS_ms") == null ? "" : nt.get("live_QRS_ms"), "([\\d.]+)");
@@ -117,8 +119,8 @@ final class TrendSeries {
             Series s = new Series((String) def[m][0], (String) def[m][1], "ECG READINGS", (Integer) def[m][2], (Integer) def[m][3], (Integer) def[m][4], (Double) def[m][5], (Double) def[m][6], true);
             List<EcgPoint> use = new ArrayList<>();
             for (EcgPoint p : pts) { double x = valueOf(p, m); if (Double.isNaN(x) || (x <= 0 && !(m == 6 || m == 8 || m == 9))) continue; if (m != 5 && !p.good()) continue; use.add(p); }      // measures need a grade A or B reading; the noise of any reading counts
-            int n = use.size(); s.day = new double[n]; s.v = new double[n]; s.ts = new long[n]; s.bucket = new int[n];
-            for (int i = 0; i < n; i++) { EcgPoint p = use.get(i); s.day[i] = p.ts / 86400.0; s.v[i] = valueOf(p, m); s.ts[i] = p.ts; s.bucket[i] = p.bucket; }
+            int n = use.size(); s.day = new double[n]; s.v = new double[n]; s.ts = new long[n]; s.bucket = new int[n]; s.pos = new int[n];
+            for (int i = 0; i < n; i++) { EcgPoint p = use.get(i); s.day[i] = p.ts / 86400.0; s.v[i] = valueOf(p, m); s.ts[i] = p.ts; s.bucket[i] = p.bucket; s.pos[i] = p.pos; }
             out.add(s);
         }
         return out;

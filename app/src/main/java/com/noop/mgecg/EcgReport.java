@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.94.0 (26 Nov 2026): the report writes the meta tags ecg-noise (uV, 8 to 25 Hz), ecg-r (R wave height, uV) and ecg-early (the report's early-beat count, for the Rhythm screen) and the usual-range card gets a noise bar and an R wave bar (OwnRange, from 8 earlier readings that carry the tags).
 // FILE VERSION 0.91.0 (25 Nov 2026): report overhaul: one-sentence answer, Everyday/Research toggle (CSS only), averaged beat on top, own-range bars (OwnRange), rhythm card, QT ladder, recovery windows (RecoveryWindows), hidden Doctor page (DoctorPage). 0.89.0 (25 Nov 2026): slow-tone scale check card (SlowTone); scale wording follows the first direct check (decode log 438). 0.87.0 (24 Nov 2026): corner wording follows the phone-free step decays of 24 Nov (decode log 434: 0.38-0.42 Hz); the scenario card says the microvolt scale is not yet confirmed; 0.85.0 (24 Nov 2026): start-up corner card no longer says the corner depends on the skin contact (decode log 429: 0.399-0.406 Hz on three tone runs); 0.84.0 (24 Nov 2026): rhythm tile and summary say "Inconclusive" when a shape-blocked reading also has uneven beat gaps (decode log 426); 0.71.3 (20 Nov 2026): QT card says "This reading" (beat sampling only), adds the fewer-than-60-beats note and the person's own between-reading spread (ReadingRules, 318.5); 0.71.3 (20 Nov 2026): rhythm tile and summary say "signal not clean enough" when the shape gate withheld the rhythm word; 0.43.0 (6 Nov 2026): the report is a one-screen summary (grade, heart rate, HRV, QT, rhythm) with everything else in closed folds; the strap card, "All readings together" and the parameter table sit under ONE "Research" fold. No number or wording of a measurement changed. 0.42.0 (5 Nov 2026): the widget is refreshed after every saved report. 0.41.1 (5 Nov 2026): noise in the QRS band next to the grade, the HRV note in the strap card, and refreshLast() (the report is written again when the strap's end events arrive). 0.39.0 (3 Nov): "The strap's own beat analysis" card (events 118 / 119, R16 bytes 23 and 29-30) with the verdict check, and the settling note. 0.2.9 (4 Oct): contains saveReportFile and reportDir; research-only reading, explanations, QT per heart-rate band, fine-detail QRS view, flipped traces
 
 import java.util.List;
@@ -202,11 +203,19 @@ public final class EcgReport {
         String[] rtMeta = rhythmTile(r);
         double hrMeta = usableReading ? reportHr(r) : Double.NaN;
         String hrvMeta = (usableReading && !r.inconclusive && !Double.isNaN(r.rmssd)) ? String.valueOf(Math.round(r.rmssd)) : "-";
+        // 0.94.0: noise (8 to 25 Hz, uV, the figure under the quality sentence) and R wave height (uV, the figure on the average-beat card) so the usual-range card can show them from 8 readings on
+        final double nzUv = usableReading ? noiseQrsBandUv(strip) : Double.NaN;
+        final double rUv = (usableReading && r.qt != null && r.qt.avg != null && !Double.isNaN(r.qt.rAmpUv)) ? Math.abs(r.qt.rAmpUv) : Double.NaN;
+        String nzMeta = (!Double.isNaN(nzUv) && nzUv > 0) ? String.format(Locale.US, "%.1f", nzUv) : "-";
+        String rMeta = (!Double.isNaN(rUv) && rUv > 0) ? String.valueOf(Math.round(rUv)) : "-";
         b.append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">")
                 .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
                 .append("<meta name=\"ecg-grade\" content=\"").append(g.letter).append("\">")
                 .append("<meta name=\"ecg-hr\" content=\"").append(Double.isNaN(hrMeta) ? "-" : String.valueOf(Math.round(hrMeta))).append("\">")
                 .append("<meta name=\"ecg-hrv\" content=\"").append(hrvMeta).append("\">")
+                .append("<meta name=\"ecg-noise\" content=\"").append(nzMeta).append("\">")
+                .append("<meta name=\"ecg-r\" content=\"").append(rMeta).append("\">")
+                .append("<meta name=\"ecg-early\" content=\"").append(usableReading ? String.valueOf(r.early) : "-").append("\">")
                 .append("<meta name=\"ecg-rhythm\" content=\"").append(esc(rtMeta[0].replace("&ndash;", "-"))).append("\">")
                 .append("<title>ECG report</title><style>").append(CSS).append("</style></head><body><input type=\"radio\" name=\"v\" id=\"vE\" class=\"vr\" checked><input type=\"radio\" name=\"v\" id=\"vR\" class=\"vr\"><main>");
 
@@ -232,7 +241,7 @@ public final class EcgReport {
             double hrvN = (usableReading && !r.inconclusive && !Double.isNaN(r.rmssd)) ? Math.round(r.rmssd) : Double.NaN;
             double qtN = usableReading && q0 != null && q0.status == EcgIntervals.Status.OK ? q0.qtMs : Double.NaN;
             String ex = excludeName != null ? excludeName : nameOf(strip, meta);
-            b.append(OwnRange.card(hrN, hrvN, qtN, reportDir, ex, ReadingRules.pastQtList()));
+            b.append(OwnRange.card(hrN, hrvN, qtN, nzUv > 0 ? nzUv : Double.NaN, rUv > 0 ? rUv / 1000.0 : Double.NaN, reportDir, ex, ReadingRules.pastQtList()));
         }
         b.append(rhythmCard(r, usableReading));
 

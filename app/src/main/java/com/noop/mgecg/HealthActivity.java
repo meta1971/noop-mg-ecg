@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// FILE VERSION 0.94.0 (26 Nov 2026): the latest-ECG card on Today and Heart also shows QT (from the stored ECG history), R wave and noise (from the readings behind the Trends screen, filled in a moment after the card is drawn) against your usual, the unit under each bar says readings, and a Rhythm button opens the Rhythm screen.
 // 0.71.0 (18 Nov 2026): Today: a tap on a ring opens that ring's OWN PAGE (back arrow, the ring's number, then how it is worked out) instead of a drop-down card under the rings; the system Back key returns to Today at the same scroll position. Rest: the SLEEP RESEARCH section (regularity, last nights, 24 h heart-rate rhythm, age studies, sources) sits on the page itself; the two cards above it jump to it. The You page entry stays.
 // 0.64.0 (16 Nov 2026): You tab: FIND row and WELLBEING AND INSIGHTS shortcuts at the top; Heart Watch panel: IF THE PULSE FLAG SHOWS steps (no alert rule changed); sleep goal printed with one decimal.
 
@@ -283,13 +284,15 @@ public class HealthActivity extends Activity {
         }
     }
 
-    private void rangeRow(LinearLayout c, String label, String valTxt, String rangeTxt, UxLogic.Range r, double val) {
+    private void rangeRow(LinearLayout c, String label, String valTxt, String rangeTxt, UxLogic.Range r, double val) { rangeRow(c, label, valTxt, rangeTxt, r, val, "nights"); }
+
+    private void rangeRow(LinearLayout c, String label, String valTxt, String rangeTxt, UxLogic.Range r, double val, String what) {
         LinearLayout row = hrow();
         row.addView(tv(label, 13.5f, INK, 400), new LinearLayout.LayoutParams(0, -2, 1f));
         row.addView(tv(valTxt, 14, INK, 600));
         c.addView(row, lp(-1, -2, 14));
         c.addView(new RangeBarView(this, r, val, r.pos == UxLogic.INSIDE ? TEAL : GOLD), lp(-1, dpi(24), 4));
-        c.addView(tv("usual " + rangeTxt + "  ·  " + (r.pos == UxLogic.INSIDE ? "inside" : r.pos == UxLogic.BELOW ? "below" : "above") + "  ·  last " + r.n + " nights", 11.5f, MUT, 400), lp(-2, -2, 2));
+        c.addView(tv("usual " + rangeTxt + "  ·  " + (r.pos == UxLogic.INSIDE ? "inside" : r.pos == UxLogic.BELOW ? "below" : "above") + "  ·  last " + r.n + " " + what, 11.5f, MUT, 400), lp(-2, -2, 2));
     }
 
     /** The Rest card: this night against the same person's earlier nights. Says what is missing when there are fewer than five. */
@@ -2289,12 +2292,30 @@ public class HealthActivity extends Activity {
             eh.add(numOf(q.hr)); ev.add(numOf(q.hrv));
         }
         UxLogic.Range rH = UxLogic.range(toArr(eh), hr), rV = UxLogic.range(toArr(ev), hv);
+        // 0.94.0: QT from the stored ECG history (the list the report uses): this reading and every earlier stored one
+        double qtNow = Double.NaN; UxLogic.Range rQ = UxLogic.range(null, Double.NaN);
+        try {
+            org.json.JSONArray arr = new org.json.JSONArray(getSharedPreferences("labrador_ecg_control", MODE_PRIVATE).getString("ecg_history_json", "[]"));
+            long[] st = new long[arr.length()]; double[] qs = new double[arr.length()];
+            for (int i = 0; i < st.length; i++) {
+                org.json.JSONObject o = arr.optJSONObject(i), sd = o == null ? null : o.optJSONObject("stored");
+                st[i] = o == null ? 0L : o.optLong("start");
+                qs[i] = sd == null ? Double.NaN : sd.optDouble("qtMs", Double.NaN);
+            }
+            OwnRange.QtSplit qq = OwnRange.qtSplit(readingUnix(r0), st, qs);
+            qtNow = qq.now; rQ = UxLogic.range(toArr(qq.before), qtNow);
+        } catch (Throwable ignored) { }
         LinearLayout c = card(16);
         c.addView(caps(onToday ? "YOUR LATEST ECG" : "LATEST ECG AGAINST YOUR USUAL"));
         c.addView(tv(r0.when + ("-".equals(r0.rhythm) || r0.rhythm == null ? "" : "  \u00b7  " + r0.rhythm), 14, INK, 600), lp(-2, -2, 6));
-        if (rH.ok()) rangeRow(c, "Heart rate", UxLogic.num(hr) + " bpm", UxLogic.num(rH.lo) + " to " + UxLogic.num(rH.hi), rH, hr);
-        if (rV.ok()) rangeRow(c, "HRV (RMSSD)", UxLogic.num(hv) + " ms", UxLogic.num(rV.lo) + " to " + UxLogic.num(rV.hi), rV, hv);
-        if (!rH.ok() && !rV.ok()) {
+        if (rH.ok()) rangeRow(c, "Heart rate", UxLogic.num(hr) + " bpm", UxLogic.num(rH.lo) + " to " + UxLogic.num(rH.hi), rH, hr, "readings");
+        if (rV.ok()) rangeRow(c, "HRV (RMSSD)", UxLogic.num(hv) + " ms", UxLogic.num(rV.lo) + " to " + UxLogic.num(rV.hi), rV, hv, "readings");
+        if (rQ.ok()) rangeRow(c, "QT", UxLogic.num(qtNow) + " ms", UxLogic.num(rQ.lo) + " to " + UxLogic.num(rQ.hi), rQ, qtNow, "readings");
+        final LinearLayout extra = new LinearLayout(this);       // 0.94.0: R wave and noise, filled in by ecgExtra() when the readings are loaded
+        extra.setOrientation(LinearLayout.VERTICAL);
+        c.addView(extra, new LinearLayout.LayoutParams(-1, -2));
+        ecgExtra(extra, r0);
+        if (!rH.ok() && !rV.ok() && !rQ.ok()) {
             c.addView(tv("Your usual range appears after " + UxLogic.RANGE_MIN_N + " earlier readings of grade A or B. So far: " + Math.max(rH.n, rV.n) + ". No average of other people is used in its place.", 12.5f, MUT, 400), lp(-2, -2, 10));
         } else {
             TextView cap = tv("The band is the middle 80 % of your own earlier grade A and B readings (up to " + UxLogic.RANGE_MAX_N + "), the tick is their median. Outside the band means different from your usual, not good or bad.", 11.5f, MUT, 400);
@@ -2304,9 +2325,49 @@ public class HealthActivity extends Activity {
         LinearLayout row = hrow();
         LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, dpi(44), 1f); a.rightMargin = dpi(8);
         row.addView(pillButton("Open report", 0x1A2EE6A8, 0xFF2EE6A8, new View.OnClickListener() { @Override public void onClick(View v) { openReport(r0.file); } }), a);
-        row.addView(pillButton("Strip", 0x1A2FA8F0, BLUE, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, StripActivity.class).putExtra("path", r0.file.getAbsolutePath())); } }), new LinearLayout.LayoutParams(0, dpi(44), 1f));
+        row.addView(pillButton("Strip", 0x1A2FA8F0, BLUE, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, StripActivity.class).putExtra("path", r0.file.getAbsolutePath())); } }), stripLp());
+        row.addView(pillButton("Rhythm", 0x1A8E93E8, 0xFF8E93E8, new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(HealthActivity.this, RhythmActivity.class).putExtra("path", r0.file.getAbsolutePath())); } }), new LinearLayout.LayoutParams(0, dpi(44), 1f));      // 0.94.0
         c.addView(row, lp(-1, -2, 12));
         return c;
+    }
+
+    private LinearLayout.LayoutParams stripLp() { LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(0, dpi(44), 1f); l.rightMargin = dpi(8); return l; }
+
+    // 0.94.0: R wave (mV) and noise (uV, 8 to 25 Hz) of the newest reading against the same person's earlier grade A and B readings. They come from TrendSeries.loadEcg, the readings behind the Trends screen
+    // (the R wave re-based for a change of scale there), which reads every report file, so it runs off the main thread and the rows appear when it is done. The result is kept for the next time the card is built.
+    private static String exKey; private static double exRn = Double.NaN, exNn = Double.NaN; private static double[] exR, exN;
+
+    private void ecgExtra(final LinearLayout box, final HealthModel.Reading r0) {
+        final HealthModel.Data d = data;
+        final String key = r0.file.getAbsolutePath() + "|" + r0.file.length() + "|" + (d == null || d.readings == null ? 0 : d.readings.size());
+        if (key.equals(exKey) && exR != null) { fillExtra(box); return; }
+        if (d == null) return;
+        final long u = readingUnix(r0);
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    java.util.List<TrendSeries.EcgPoint> pts = TrendSeries.loadEcg(HealthActivity.this, d, 80);
+                    java.util.List<Double> er = new java.util.ArrayList<Double>(), en = new java.util.ArrayList<Double>();
+                    double rn = Double.NaN, nn = Double.NaN;
+                    for (TrendSeries.EcgPoint p : pts) {                      // oldest first
+                        if (p.ts == u) { rn = p.R / 1000.0; nn = p.noise; continue; }
+                        if (p.ts > u || !p.good()) continue;
+                        er.add(p.R / 1000.0); en.add(p.noise);
+                    }
+                    exR = toArr(er); exN = toArr(en); exRn = rn; exNn = nn; exKey = key;
+                    runOnUiThread(new Runnable() { @Override public void run() { if (!isFinishing()) fillExtra(box); } });
+                } catch (Throwable ignored) { }
+            }
+        }, "ecg-extra").start();
+    }
+
+    private void fillExtra(LinearLayout box) {
+        try {
+            box.removeAllViews();
+            UxLogic.Range rR = UxLogic.range(exR, exRn), rN = UxLogic.range(exN, exNn);
+            if (rR.ok()) rangeRow(box, "R wave", String.format(Locale.US, "%.2f mV", exRn), String.format(Locale.US, "%.2f to %.2f mV", rR.lo, rR.hi), rR, exRn, "readings");
+            if (rN.ok()) rangeRow(box, "Noise, 8 to 25 Hz", UxLogic.num(exNn) + " \u00b5V", UxLogic.num(rN.lo) + " to " + UxLogic.num(rN.hi) + " \u00b5V", rN, exNn, "readings");
+        } catch (Throwable ignored) { }
     }
 
     private View readingCard(final HealthModel.Reading r) {

@@ -10,6 +10,7 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+// FILE VERSION 0.94.0 (26 Nov 2026): noise (8 to 25 Hz, uV) and R wave (mV) join heart rate, HRV and QT: new reports carry the meta tags ecg-noise and ecg-r, the card shows a bar for each from 8 earlier readings that carry them, and qtSplit() gives the ECG card on the phone the QT of a reading and of the ones before it from the stored ECG history.
 // FILE VERSION 0.91.0 (25 Nov 2026): "your numbers against your usual". The range is built only from the person's own earlier readings (grade A or B), never from a population table.
 // Pure: no Android classes. HR and HRV come from the meta tags of the saved reports (ecg-hr, ecg-hrv, ecg-grade), QT from ReadingRules' stored list.
 final class OwnRange {
@@ -51,7 +52,7 @@ final class OwnRange {
     // ------------------------------------------------------------------ history from the saved reports
 
     /** HR (bpm) and HRV (ms) of earlier grade A/B readings, oldest first, from the report files in {@code dir}; {@code excludeName} (this reading's own file) is skipped. */
-    static final class Hist { List<Double> hr = new ArrayList<>(), hrv = new ArrayList<>(); int files; }
+    static final class Hist { List<Double> hr = new ArrayList<>(), hrv = new ArrayList<>(), nz = new ArrayList<>(), rv = new ArrayList<>(); int files; }
 
     static Hist load(File dir, String excludeName) {
         Hist h = new Hist();
@@ -73,6 +74,9 @@ final class OwnRange {
             Double hr = num(meta(head, "ecg-hr")), hrv = num(meta(head, "ecg-hrv"));
             if (hr != null) h.hr.add(hr);
             if (hrv != null) h.hrv.add(hrv);
+            Double nz = num(meta(head, "ecg-noise")), rr = num(meta(head, "ecg-r"));      // 0.94.0: only readings made with 0.94.0 or later carry them
+            if (nz != null) h.nz.add(nz);
+            if (rr != null) h.rv.add(rr / 1000.0);
         }
         return h;
     }
@@ -154,22 +158,31 @@ final class OwnRange {
      * The card for the report. NaN = this reading has no value for that metric. {@code pastQt}: QT of earlier readings (oldest first) or null when never loaded.
      * Never invents a range: with fewer than MIN earlier readings of a metric it says how many there are.
      */
-    static String card(double hrNow, double hrvNow, double qtNow, File dir, String excludeName, List<Double> pastQt) {
+    static String card(double hrNow, double hrvNow, double qtNow, File dir, String excludeName, List<Double> pastQt) { return card(hrNow, hrvNow, qtNow, Double.NaN, Double.NaN, dir, excludeName, pastQt); }
+
+    /** 0.94.0: with noise (uV, 8 to 25 Hz) and R wave (mV) of this reading; NaN = none. */
+    static String card(double hrNow, double hrvNow, double qtNow, double nzNow, double rNow, File dir, String excludeName, List<Double> pastQt) {
         Hist h = load(dir, excludeName);
-        Band bh = band(h.hr, false, 1.0), bv = band(h.hrv, true, 1.0), bq = band(trimOwn(pastQt, qtNow), false, 1.0);
+        Band bh = band(h.hr, false, 1.0), bv = band(h.hrv, true, 1.0), bq = band(trimOwn(pastQt, qtNow), false, 1.0), bn = band(h.nz, false, 0.5), br = band(h.rv, false, 0.02);
         StringBuilder s = new StringBuilder("<section class=\"card\"><div class=\"k\">Your numbers vs your usual</div>");
         boolean any = false;
         StringBuilder rows = new StringBuilder();
+        if (bn != null && !Double.isNaN(nzNow)) { any = true; rows.append(item("Noise, 8 to 25 Hz", "&micro;V", nzNow, bn, 0)); }
         if (bh != null && !Double.isNaN(hrNow)) { any = true; rows.append(item("Heart rate", "bpm", hrNow, bh, 0)); }
         if (bv != null && !Double.isNaN(hrvNow)) { any = true; rows.append(item("HRV (RMSSD)", "ms", hrvNow, bv, 0)); }
         if (bq != null && !Double.isNaN(qtNow)) { any = true; rows.append(item("QT", "ms", qtNow, bq, 0)); }
+        if (br != null && !Double.isNaN(rNow)) { any = true; rows.append(item("R wave", "mV", rNow, br, 2)); }
         if (any) {
             s.append("<p class=\"hint\">Built only from your own earlier readings of grade A or B: the shaded band holds the middle 80% of them. Grey dots are those readings.</p>").append(rows);
+            if ((bn != null && !Double.isNaN(nzNow)) || (br != null && !Double.isNaN(rNow)))
+                s.append("<p class=\"cap\">R wave and noise are in &micro;V as the scale setting read them when each reading was made; the bars assume the scale did not change between these readings (the Trends screen re-bases for a change of scale).</p>");
+            if ((bn == null && !Double.isNaN(nzNow)) || (br == null && !Double.isNaN(rNow)))
+                s.append("<p class=\"cap\">Noise and R wave bars appear after ").append(MIN).append(" readings made with this version. So far: ").append(h.nz.size()).append(" for noise, ").append(h.rv.size()).append(" for R wave.</p>");
             s.append("<p class=\"cap\">Outside the band is not a warning. It only says this reading differs from your usual ones, and a single reading varies with posture, breathing and time of day.</p>");
         } else {
             s.append("<p class=\"cap\">Your usual range appears after ").append(MIN).append(" readings of grade A or B. So far: ")
                     .append(h.hr.size()).append(" for heart rate, ").append(h.hrv.size()).append(" for HRV, ").append(bq == null ? (pastQt == null ? 0 : pastQt.size()) : bq.n)
-                    .append(" for QT. No average of other people is used in its place.</p>");
+                    .append(" for QT, ").append(h.nz.size()).append(" for noise, ").append(h.rv.size()).append(" for R wave. No average of other people is used in its place.</p>");
         }
         return s.append("</section>").toString();
     }
@@ -178,6 +191,23 @@ final class OwnRange {
         return "<h3>" + label + "</h3>" + bar(label, unit, now, b, dec)
                 + "<p class=\"cap\" style=\"margin-top:2px\">" + String.format(Locale.US, "%." + dec + "f", now) + " " + unit + " is " + where(now, b, unit, dec)
                 + String.format(Locale.US, " (median %." + dec + "f, from %d readings).", b.med, b.n) + "</p>";
+    }
+
+    /** 0.94.0: the stored QT (ms, as recorded) of one reading and of the readings before it, oldest first. {@code starts}/{@code qts}: the stored ECG history (start unix second and qtMs of each entry, any order, qtMs 0 or NaN = none). */
+    static final class QtSplit { double now = Double.NaN; List<Double> before = new ArrayList<>(); }
+
+    static QtSplit qtSplit(long startUnix, long[] starts, double[] qts) {
+        QtSplit o = new QtSplit();
+        if (starts == null || qts == null || startUnix <= 0) return o;
+        int m = Math.min(starts.length, qts.length);
+        List<long[]> idx = new ArrayList<>();
+        for (int i = 0; i < m; i++) if (qts[i] > 0 && !Double.isNaN(qts[i]) && !Double.isInfinite(qts[i])) idx.add(new long[] { starts[i], i });
+        Collections.sort(idx, (x, y) -> Long.compare(x[0], y[0]));
+        for (long[] e : idx) {
+            if (e[0] == startUnix) o.now = qts[(int) e[1]];
+            else if (e[0] < startUnix) o.before.add(qts[(int) e[1]]);
+        }
+        return o;
     }
 
     /** The stored QT list may already hold this reading (a report written again): drop a last value equal to this reading's QT. */

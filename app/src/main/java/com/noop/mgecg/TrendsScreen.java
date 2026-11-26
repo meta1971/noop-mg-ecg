@@ -1,4 +1,5 @@
 package com.noop.mgecg;
+// FILE VERSION 0.94.0 (26 Nov 2026): a WHAT CHANGED THIS WEEK sentence on top (TrendText.week, the changed figures coloured), and on the ECG graphs the strap position of each reading (wrist = gold circle, ankle = violet diamond, today ringed) with a legend. 0.72.0 below.
 
 // FILE VERSION 0.72.0 (20 Nov 2026): ECG DAY BY DAY card (EcgSeg grid, EcgDayGrid) above the ECG cards. 0.49.0 (9 Nov 2026): the Trends screen, rebuilt. Personal first: every card compares the newest value with YOUR usual (the robust median and spread of your own earlier values), says in words whether it is in your usual range, higher or lower, and
 // whether your own line is rising, falling or steady; the ECG measures are judged against your usual for the same time of day. Nights and ECG readings sit side by side. Tap a card for the full graph.
@@ -74,6 +75,10 @@ final class TrendsScreen {
         final LinearLayout seg = new LinearLayout(a); seg.setOrientation(LinearLayout.HORIZONTAL); seg.setBackground(glass(a, 16)); seg.setPadding(Math.round(dp(a, 4)), Math.round(dp(a, 4)), Math.round(dp(a, 4)), Math.round(dp(a, 4)));
         col.addView(seg, HeartGraph.lp(a, -1, -2, 16));
 
+        final LinearLayout weekCard = card(a); final TextView weekBody = HeartGraph.label(a, "", 16, INK, 400); weekBody.setLineSpacing(0, 1.3f);
+        weekCard.addView(HeartGraph.label(a, "WHAT CHANGED THIS WEEK", 11, MUT, 400)); weekCard.addView(weekBody, HeartGraph.lp(a, -1, -2, 8));
+        weekCard.addView(HeartGraph.label(a, "The last three days against your usual. Higher or lower is not good or bad on its own.", 11.5f, MUT, 400), HeartGraph.lp(a, -1, -2, 6));
+        col.addView(weekCard, HeartGraph.lp(a, -1, -2, 14));
         final LinearLayout sumCard = card(a); final TextView sumHead = HeartGraph.label(a, "YOUR PATTERN", 11, MUT, 400); final TextView sumBody = HeartGraph.label(a, "", 14, INK, 400); sumBody.setLineSpacing(0, 1.3f);
         sumCard.addView(sumHead); sumCard.addView(sumBody, HeartGraph.lp(a, -1, -2, 8)); col.addView(sumCard, HeartGraph.lp(a, -1, -2, 14));
 
@@ -104,6 +109,18 @@ final class TrendsScreen {
             double win = RANGE_D[range];
             List<TrendSeries.Series> all = new ArrayList<>(night); if (ecgHolder[0] != null) all.addAll(ecgHolder[0]);
             List<TrendSeries.Judged> js = new ArrayList<>(); for (TrendSeries.Series s : all) js.add(TrendSeries.judge(s, win));
+            try {
+                android.text.SpannableStringBuilder wb = new android.text.SpannableStringBuilder();
+                for (TrendText.Part pt : TrendText.week(all, js)) {
+                    int st = wb.length(); wb.append(pt.text);
+                    if (pt.kind != 0 && pt.text.length() > 0) {
+                        int col2 = pt.kind == 1 ? GREEN : pt.kind == 2 ? GOLD : TEAL;
+                        wb.setSpan(new android.text.style.ForegroundColorSpan(col2), st, wb.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                        wb.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), st, wb.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    }
+                }
+                weekBody.setText(wb);
+            } catch (Throwable ignored) { weekBody.setText(TrendText.weekText(all, js)); }
             sumBody.setText(summary(all, js, win));
             nightsBox.removeAllViews(); ecgBox.removeAllViews();
             boolean anyN = false, anyE = false;
@@ -172,17 +189,21 @@ final class TrendsScreen {
         @Override protected void onDraw(Canvas cv) {
             if (s == null || r == null || r.n == 0) return; Context c = getContext(); float w = getWidth(), h = getHeight(), padY = dp(c, 6);
             double tEnd = r.lastDay, t0 = tEnd - win; int n = 0; for (int i = 0; i < s.size(); i++) if (s.day[i] >= t0 && s.day[i] <= tEnd) n++;
-            if (n == 0) return; float[] xs = new float[n], ys = new float[n]; double[] vv = new double[n]; int k = 0;
+            if (n == 0) return; float[] xs = new float[n], ys = new float[n]; double[] vv = new double[n]; int[] pi = new int[n]; int k = 0;
             double lo = 1e300, hi = -1e300; for (int i = 0; i < s.size(); i++) if (s.day[i] >= t0 && s.day[i] <= tEnd) { vv[k++] = s.v[i]; lo = Math.min(lo, s.v[i]); hi = Math.max(hi, s.v[i]); }
             if (r.enough) { lo = Math.min(lo, r.lo); hi = Math.max(hi, r.hi); }
             double span = Math.max(hi - lo, 1e-6), padv = span * 0.12; lo -= padv; hi += padv; span = hi - lo;
-            k = 0; for (int i = 0; i < s.size(); i++) if (s.day[i] >= t0 && s.day[i] <= tEnd) { xs[k] = (float) (dp(c, 3) + (w - dp(c, 6)) * (s.day[i] - t0) / win); ys[k] = (float) (padY + (h - 2 * padY) * (1 - (s.v[i] - lo) / span)); k++; }
+            k = 0; for (int i = 0; i < s.size(); i++) if (s.day[i] >= t0 && s.day[i] <= tEnd) { xs[k] = (float) (dp(c, 3) + (w - dp(c, 6)) * (s.day[i] - t0) / win); ys[k] = (float) (padY + (h - 2 * padY) * (1 - (s.v[i] - lo) / span)); pi[k] = i; k++; }
             if (r.enough) { float y1 = (float) (padY + (h - 2 * padY) * (1 - (r.hi - lo) / span)), y2 = (float) (padY + (h - 2 * padY) * (1 - (r.lo - lo) / span)); cv.drawRoundRect(new RectF(0, y1, w, y2), dp(c, 6), dp(c, 6), paint(alpha(color, 0.13f)));
                 Paint mid = paint(alpha(color, 0.35f)); mid.setStrokeWidth(dp(c, 1)); mid.setPathEffect(new android.graphics.DashPathEffect(new float[] { dp(c, 3), dp(c, 4) }, 0)); float ym = (float) (padY + (h - 2 * padY) * (1 - (r.base - lo) / span)); cv.drawLine(0, ym, w, ym, mid); }
             Path path = new Path(); Trends.smoothPath(path, xs, ys, n);
             if (n >= 2) { Path fill = new Path(path); fill.lineTo(xs[n - 1], h); fill.lineTo(xs[0], h); fill.close(); Paint fp = new Paint(Paint.ANTI_ALIAS_FLAG); fp.setShader(new LinearGradient(0, 0, 0, h, alpha(color, 0.28f), alpha(color, 0.0f), Shader.TileMode.CLAMP)); cv.drawPath(fill, fp); }
             Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG); ln.setStyle(Paint.Style.STROKE); ln.setStrokeCap(Paint.Cap.ROUND); ln.setStrokeJoin(Paint.Join.ROUND); ln.setStrokeWidth(dp(c, 2.2f)); ln.setColor(color); cv.drawPath(path, ln);
-            if (n <= 40) for (int i = 0; i < n; i++) cv.drawCircle(xs[i], ys[i], dp(c, n > 20 ? 1.8f : 2.6f), paint(alpha(color, 0.75f)));
+            if (n <= 40) for (int i = 0; i < n; i++) {
+                int ps = s.ecg && pi[i] < s.pos.length ? s.pos[pi[i]] : -1; float rd = dp(c, n > 20 ? 1.8f : 2.6f);      // 0.94.0: wrist = gold circle, ankle = violet diamond
+                if (ps == 1) { Path dm = new Path(); float q = rd * 1.4f; dm.moveTo(xs[i], ys[i] - q); dm.lineTo(xs[i] + q, ys[i]); dm.lineTo(xs[i], ys[i] + q); dm.lineTo(xs[i] - q, ys[i]); dm.close(); cv.drawPath(dm, paint(0xFF8E93E8)); }
+                else cv.drawCircle(xs[i], ys[i], rd, paint(ps == 0 ? GOLD : alpha(color, 0.75f)));
+            }
             cv.drawCircle(xs[n - 1], ys[n - 1], dp(c, 7), paint(alpha(dotColor, 0.22f))); cv.drawCircle(xs[n - 1], ys[n - 1], dp(c, 3.6f), paint(dotColor));
         }
     }
@@ -201,6 +222,13 @@ final class TrendsScreen {
         final TextView headline = HeartGraph.label(a, "", 14, INK, 400); headline.setLineSpacing(0, 1.3f); col.addView(headline, HeartGraph.lp(a, -1, -2, 12));
         final TextView read = HeartGraph.label(a, "Touch the graph to read a point.", 13, MUT, 400); col.addView(read, HeartGraph.lp(a, -1, -2, 8));
         final DetailChart chart = new DetailChart(a); col.addView(chart, HeartGraph.lp(a, -1, Math.round(dp(a, 250)), 4));
+        if (s0.ecg) {
+            android.text.SpannableStringBuilder lg = new android.text.SpannableStringBuilder();
+            String[] w = { "\u25CF", " wrist     ", "\u25C6", " ankle     ", "\u25CB", " today     ", "\u25AC", " your usual" };
+            int[] cl = { GOLD, MUT, 0xFF8E93E8, MUT, INK, MUT, TEAL, MUT };
+            for (int q = 0; q < w.length; q++) { int st = lg.length(); lg.append(w[q]); lg.setSpan(new android.text.style.ForegroundColorSpan(cl[q]), st, lg.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE); }
+            TextView lt = HeartGraph.label(a, "", 12, MUT, 400); lt.setText(lg); col.addView(lt, HeartGraph.lp(a, -1, -2, 6));
+        }
         final LinearLayout tiles = new LinearLayout(a); tiles.setOrientation(LinearLayout.VERTICAL); col.addView(tiles, HeartGraph.lp(a, -1, -2, 14));
         LinearLayout about = card(a); about.addView(HeartGraph.label(a, "WHAT THIS MEANS", 11, MUT, 400));
         TextView at = HeartGraph.label(a, Explain.trend(s0.name) + "\n\nOnly your own line matters here: another device or method will read higher or lower for the same you, but it should rise and fall with it.", 13, INK, 400); at.setLineSpacing(0, 1.28f); about.addView(at, HeartGraph.lp(a, -1, -2, 6)); col.addView(about, HeartGraph.lp(a, -1, -2, 14));
@@ -270,7 +298,15 @@ final class TrendsScreen {
                 Paint tl = paint(alpha(INK, 0.5f)); tl.setStrokeWidth(dp(c, 1.4f)); tl.setPathEffect(new android.graphics.DashPathEffect(new float[] { dp(c, 7), dp(c, 5) }, 0)); cv.drawLine(xOf(t0, t0, w), ya, xOf(t0 + win, t0, w), yb, tl);
             }
             Path path = new Path(); Trends.smoothPath(path, xs, ys, n); Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG); ln.setStyle(Paint.Style.STROKE); ln.setStrokeCap(Paint.Cap.ROUND); ln.setStrokeJoin(Paint.Join.ROUND); ln.setStrokeWidth(dp(c, 2.2f)); ln.setColor(alpha(s.color, 0.9f)); cv.drawPath(path, ln);
-            k2 = 0; for (int i = 0; i < s.size(); i++) if (s.day[i] >= t0 && s.day[i] <= r.lastDay) { boolean out = r.enough && (s.v[i] < r.lo || s.v[i] > r.hi); int dc = !out ? s.color : (s.good == 0 ? GOLD : ((s.good * (s.v[i] - r.base) > 0) ? GREEN : ROSE)); cv.drawCircle(xs[k2], ys[k2], dp(c, n > 45 ? 2.4f : 4.2f), paint(dc)); k2++; }
+            java.util.Calendar cal = java.util.Calendar.getInstance(); cal.set(java.util.Calendar.HOUR_OF_DAY, 0); cal.set(java.util.Calendar.MINUTE, 0); cal.set(java.util.Calendar.SECOND, 0); long today0 = cal.getTimeInMillis() / 1000L;
+            k2 = 0; for (int i = 0; i < s.size(); i++) if (s.day[i] >= t0 && s.day[i] <= r.lastDay) {
+                boolean out = r.enough && (s.v[i] < r.lo || s.v[i] > r.hi); int dc = !out ? s.color : (s.good == 0 ? GOLD : ((s.good * (s.v[i] - r.base) > 0) ? GREEN : ROSE));
+                float rd = dp(c, n > 45 ? 2.4f : 4.2f); int ps = s.ecg && i < s.pos.length ? s.pos[i] : -1;
+                if (ps == 1) { Path dm = new Path(); float q = rd * 1.35f; dm.moveTo(xs[k2], ys[k2] - q); dm.lineTo(xs[k2] + q, ys[k2]); dm.lineTo(xs[k2], ys[k2] + q); dm.lineTo(xs[k2] - q, ys[k2]); dm.close(); cv.drawPath(dm, paint(0xFF8E93E8)); }
+                else cv.drawCircle(xs[k2], ys[k2], rd, paint(ps == 0 ? GOLD : dc));
+                if (ps >= 0 && out) { Paint rg = paint(dc); rg.setStyle(Paint.Style.STROKE); rg.setStrokeWidth(dp(c, 1.4f)); cv.drawCircle(xs[k2], ys[k2], rd * 1.9f, rg); }      // outside your usual: a ring in the colour it had before
+                if (s.ecg && s.ts[i] >= today0) { Paint rg = paint(INK); rg.setStyle(Paint.Style.STROKE); rg.setStrokeWidth(dp(c, 1.6f)); cv.drawCircle(xs[k2], ys[k2], rd * 1.6f + dp(c, 2), rg); }      // today
+                k2++; }
             if (n > 0) { cv.drawCircle(xs[n - 1], ys[n - 1], dp(c, 8), paint(alpha(s.color, 0.2f))); }
             tx.setTextAlign(Paint.Align.LEFT); SimpleDateFormat f = new SimpleDateFormat("d MMM", Locale.UK); cv.drawText(f.format(new Date((long) (t0 * 86400000.0))), 0, h - dp(c, 5), tx); tx.setTextAlign(Paint.Align.RIGHT); cv.drawText(f.format(new Date((long) (r.lastDay * 86400000.0))), w, h - dp(c, 5), tx);
             if (touchX >= 0f) { Paint cur = paint(0x99FFFFFF); cur.setStrokeWidth(dp(c, 1)); cv.drawLine(touchX, top, touchX, ch, cur); }
