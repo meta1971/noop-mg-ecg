@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// 0.93.0 (26 Nov 2026): the live reading screen of mockup 07 (progress ring with the strap's verdict and first-HRV ticks, one tip card, heart rate / clean beats / strap HRV cards, the last 6 s strip) shows while a reading runs; the old status card, rings and 500 Hz graph card are kept and still update, hidden. Switch: Reading setup > Live screen while reading. Display only: START / STOP, commands, frames and files are untouched.
 // 0.71.3 (20 Nov 2026): the posture tag is remembered for 45 minutes only (reading_tag_ms); an older tag is cleared at Start and the 0.39.0 auto-apply of the last tag no longer applies it (324.3)
 // 0.69.0 (17 Nov 2026): Lab S runs force the live raw stream (command 126, pref ecg_liveraw_mode = 1) for the whole run and put the setting back afterwards (decode log 262: a run with it off gave no raw file); the QUICK TICKS runs (LabQuick) use it too.
 // 0.61.0 (15 Nov 2026): BEFORE YOU START card in the ready state (strap link and whether calls can ring; the arm is a reminder, not a measurement; nothing blocks the start), a one-line verdict after a reading from the end rule (ReadingEnd: 60 s of best-quality seconds, 64 clean beats) with buzz and movement counts, a Take another reading pill, and phone-buzz / arm-movement bands on the replay (reading notes ring_episodes and motion_moving_times_s). Acquisition code is unchanged.
@@ -50,6 +51,9 @@ final class EcgPage {
     private LinearLayout colRef, bar, headerRow, statusCard, waveHost, detailsBody, resultDetails, liveCard, avgCard, nextCard, setupCard, cuePill, whyRow, holder;
     private TextView greetView, titleView, linkChip, stTitle, stSub, stPill, planView, noteView, sendNote, detailsHeader, resultBody, whyHint, strapLine, bandsView, avgText, nextText, nextPlain, setupVal, labVal, cueView, footer, nextBtn, targetBtn, countPill;
     private DailyViews.RingsView rings;
+    // 0.93.0: the live reading screen (mockup 07)
+    private LinearLayout live2, live2TipCard; private LiveRingView live2Ring; private LiveStripView live2Strip; private TextView live2Link, live2Pill2, live2Legend, live2Hr, live2Beats, live2Hrv, live2TipIcon, live2TipT, live2TipB, ringHint;
+    private double live2Lap; private long live2Sess = -1L, live2LinkMs; private int live2LinkLevel = -1, live2TipKind = -1; private String live2LegKey = "";
     private final float[] rFrac = new float[3];
     private final int[] rCol = { ROSE, BLUE, VIOLET };
     private final String[] rBig = { "--", "--", "--" }, rLab = { "HEART RATE", "STRAP HRV", "NOISE" }, rCap = { "", "", "" };
@@ -227,6 +231,7 @@ final class EcgPage {
         try { buildHeader(col); } catch (Throwable e) { fail("header", e); }
         try { buildStatus(col); } catch (Throwable e) { fail("status card", e); }
         try { buildRings(col); } catch (Throwable e) { fail("rings", e); }
+        try { buildLive2(col); } catch (Throwable e) { fail("live screen", e); }      // 0.93.0
         try { buildRunning(col, waveCard); } catch (Throwable e) { fail("live trace", e); }
         try { buildDetails(col); } catch (Throwable e) { fail("details", e); }
         try { buildCards(col); } catch (Throwable e) { fail("next test and setup", e); }
@@ -344,7 +349,7 @@ final class EcgPage {
             }
         });
         col.addView(rings, lp(-1, dp(196), 12));
-        TextView ringHint = t("Tap Heart rate, HRV or the third ring for graphs by time of day.", 11, MUT, 400); ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
+        ringHint = t("Tap Heart rate, HRV or the third ring for graphs by time of day.", 11, MUT, 400); ringHint.setGravity(Gravity.CENTER_HORIZONTAL);
         col.addView(ringHint, lp(-1, -2, 0));
         planView = t("", 14, INK, 400); planView.setLineSpacing(0, 1.25f);
         col.addView(planView, lp(-2, -2, 8));
@@ -529,6 +534,7 @@ final class EcgPage {
             if (retakePill != null) retakePill.setVisibility(done ? View.VISIBLE : View.GONE);
             applyDetails();
             if (!run) refreshNext(); else if (nextCard != null) nextCard.setVisibility(View.GONE);
+            applyLive2(run);      // 0.93.0
             String name = a.getSharedPreferences("today", android.content.Context.MODE_PRIVATE).getString("name", "Ame");
             if (rest) {
                 greetView.setText("Hi, " + name); titleView.setText("Ready for an ECG");
@@ -692,6 +698,7 @@ final class EcgPage {
     private static final String[] POSITION = { "Wrist", "Chest V2", "Chest V4", "Chest V5", "Chest V6", "Bicep L", "Bicep R", "Ankle R", "Ankle L", "H10 in hands" };      // 0.75.0: Ankle R and Ankle L (strap B on the ankle, addendum 354)
     private static final String[] WHERE = { "Not set", "Home", "Work", "Truck", "Outside", "Other" };
     private static final String[] AUTO = { "Off", "3 uV", "4 uV", "5 uV" };
+    private static final String[] LIVE_OPTS = { "New: ring, cards, 6 s strip", "Classic: rings and the 500 Hz graph" };      // 0.93.0
     private static final String[] ENDS = { "Report quality (the Auto-stop level)", "Enough data (60 s good signal, strap HRV)" };      // 0.54.0
 
     private void buildSetupRows() {
@@ -703,6 +710,7 @@ final class EcgPage {
         addRow(2, "Where", WHERE, () -> pref("where_tag", "").isEmpty() ? WHERE[0] : pref("where_tag", ""), i -> pr.edit().putString("where_tag", i == 0 ? "" : WHERE[i]).apply());
         addRow(4, "Auto-stop", AUTO, () -> { if (!pr.getBoolean("auto_stop", true)) return AUTO[0]; double tg = a.autoTargetValue(); return tg < 3.5 ? AUTO[1] : tg < 4.5 ? AUTO[2] : AUTO[3]; }, i -> {
             SharedPreferences.Editor e = pr.edit(); if (i == 0) e.putBoolean("auto_stop", false); else e.putBoolean("auto_stop", true).putFloat("auto_target", i == 1 ? 3f : i == 2 ? 4f : 5f); e.apply(); });
+        addRow(6, "Live screen while reading", LIVE_OPTS, () -> LIVE_OPTS[pr.getBoolean("live_v2", true) ? 0 : 1], i -> pr.edit().putBoolean("live_v2", i == 0).apply());      // 0.93.0
         addRow(5, "Ends when (Auto-stop on)", ENDS, () -> ENDS["enough".equals(pref("end_rule", "quality")) ? 1 : 0], i -> pr.edit().putString("end_rule", i == 1 ? "enough" : "quality").apply());
     }
 
@@ -977,6 +985,7 @@ final class EcgPage {
             setRing(2, clamp01(Math.min(100, pg) / 100.0), VIOLET, Math.min(100, pg) + "%", "STRAP CHECK", cd != 0 && pg == 100 ? "result " + cd : "its own analysis");
             drawRings();
             greetView.setText(String.format(Locale.UK, "ECG  \u00b7  %d:%02d", el / 60000, (el / 1000) % 60));
+            try { live2Update(el, live, n825, nz, rrS); } catch (Throwable e) { fail("live screen", e); }      // 0.93.0
             // averaged beat
             LiveMeasure.request();
             LiveMeasure.Out o = LiveMeasure.last();
@@ -1006,6 +1015,144 @@ final class EcgPage {
                 if (waveCardRef != null) for (int i = 0; i < waveCardRef.getChildCount(); i++) { View vv = waveCardRef.getChildAt(i); if (vv instanceof Live500View) vv.setContentDescription(desc); }
             } catch (Throwable ignored) { }
         } catch (Throwable e) { fail("update", e); }
+    }
+
+    // ------------------------------------------------------------------ 0.93.0: the live reading screen (mockup 07). Display only: it reads values the page already has.
+    private GradientDrawable liveBg(int color) {
+        GradientDrawable g = new GradientDrawable(); g.setColor((color & 0x00FFFFFF) | 0x1A000000); g.setCornerRadius(HealthViews.dp(a, 14)); g.setStroke(Math.max(1, dp(1)), (color & 0x00FFFFFF) | 0x66000000); return g;
+    }
+
+    private TextView livePill(String s, int color) {
+        TextView x = t(s, 12, color, 500); x.setGravity(Gravity.CENTER); x.setSingleLine(true); x.setEllipsize(android.text.TextUtils.TruncateAt.END); x.setPadding(dp(12), 0, dp(12), 0);
+        x.setBackground(liveBg(color)); return x;
+    }
+
+    private TextView statCard(LinearLayout row, String caption, boolean first) {
+        LinearLayout c = new LinearLayout(a); c.setOrientation(LinearLayout.VERTICAL); c.setBackground(HealthViews.glass(a, 18)); c.setPadding(dp(12), dp(12), dp(12), dp(10));
+        TextView cap = t(caption, 11, MUT, 500); cap.setLetterSpacing(0.06f); c.addView(cap);
+        TextView val = t("--", 26, INK, 600); c.addView(val, lp(-2, -2, 2));
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1f); if (!first) p.leftMargin = dp(8);
+        row.addView(c, p); return val;
+    }
+
+    private void setStat(TextView v, String val, String unit) {
+        if (v == null) return;
+        android.text.SpannableStringBuilder sb = new android.text.SpannableStringBuilder(val);
+        if (unit != null && !unit.isEmpty() && !"--".equals(val)) {
+            int s0 = sb.length(); sb.append(" ").append(unit);
+            sb.setSpan(new android.text.style.RelativeSizeSpan(0.5f), s0, sb.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sb.setSpan(new android.text.style.ForegroundColorSpan(MUT), s0, sb.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        v.setText(sb);
+    }
+
+    /** A small round dot or a thin bar for the legend line. */
+    private static final class MarkSpan extends android.text.style.ReplacementSpan {
+        final int color, w, h, gap; final boolean dot;
+        MarkSpan(int color, boolean dot, int w, int h, int gap) { this.color = color; this.dot = dot; this.w = w; this.h = h; this.gap = gap; }
+        @Override public int getSize(android.graphics.Paint p, CharSequence t, int s, int e, android.graphics.Paint.FontMetricsInt fm) { return w + gap; }
+        @Override public void draw(android.graphics.Canvas c, CharSequence t, int s, int e, float x, int top, int y, int bottom, android.graphics.Paint p) {
+            int old = p.getColor(); p.setColor(color); float cy = (top + bottom) / 2f;
+            if (dot) c.drawCircle(x + w / 2f, cy, w / 2f, p); else c.drawRect(x, cy - h / 2f, x + w, cy + h / 2f, p);
+            p.setColor(old);
+        }
+    }
+
+    private void legendMark(android.text.SpannableStringBuilder sb, int color, boolean dot, String label) {
+        if (sb.length() > 0) sb.append("     ");
+        int s0 = sb.length(); sb.append("​");
+        sb.setSpan(new MarkSpan(color, dot, dp(dot ? 10 : 3), dp(dot ? 10 : 12), dp(6)), s0, sb.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.append(label);
+    }
+
+    private void buildLive2(LinearLayout col) {
+        live2 = new LinearLayout(a); live2.setOrientation(LinearLayout.VERTICAL); live2.setVisibility(View.GONE);
+        LinearLayout pills = hrow(); pills.setGravity(Gravity.CENTER);
+        live2Link = livePill("●  Strap linked", HealthViews.TEAL); live2Pill2 = livePill("Live ECG", BLUE);
+        pills.addView(live2Link, new LinearLayout.LayoutParams(-2, dp(30)));
+        LinearLayout.LayoutParams p2 = new LinearLayout.LayoutParams(-2, dp(30)); p2.leftMargin = dp(8); pills.addView(live2Pill2, p2);
+        live2.addView(pills, lp(-1, -2, 4));
+        live2Ring = new LiveRingView(a);
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-2, -2); rp.gravity = Gravity.CENTER_HORIZONTAL; rp.topMargin = dp(14); live2.addView(live2Ring, rp);
+        live2Legend = t("", 12, MUT, 400); live2Legend.setGravity(Gravity.CENTER); live2Legend.setLineSpacing(0, 1.3f);
+        live2.addView(live2Legend, lp(-1, -2, 12));
+        LinearLayout stats = new LinearLayout(a); stats.setOrientation(LinearLayout.HORIZONTAL);
+        live2Hr = statCard(stats, "HEART RATE", true); live2Beats = statCard(stats, "CLEAN BEATS", false); live2Hrv = statCard(stats, "HRV SO FAR", false);
+        live2Hrv.setContentDescription("Heart rate variability so far, from the strap's own figure");
+        live2.addView(stats, lp(-1, -2, 14));
+        live2TipCard = glass(14);
+        LinearLayout tr = hrow(); tr.setGravity(Gravity.TOP);
+        live2TipIcon = t("!", 14, GOLD, 600); live2TipIcon.setGravity(Gravity.CENTER); tr.addView(live2TipIcon, new LinearLayout.LayoutParams(dp(26), dp(26)));
+        LinearLayout tx = new LinearLayout(a); tx.setOrientation(LinearLayout.VERTICAL);
+        live2TipT = t("", 15, INK, 500); live2TipB = t("", 12, MUT, 400); live2TipB.setLineSpacing(0, 1.2f);
+        tx.addView(live2TipT); tx.addView(live2TipB, lp(-1, -2, 2));
+        LinearLayout.LayoutParams txp = new LinearLayout.LayoutParams(0, -2, 1f); txp.leftMargin = dp(12); tr.addView(tx, txp);
+        live2TipCard.addView(tr, new LinearLayout.LayoutParams(-1, -2));
+        live2TipCard.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        live2.addView(live2TipCard, lp(-1, -2, 12));
+        LinearLayout sc = glass(12); live2Strip = new LiveStripView(a); sc.addView(live2Strip, new LinearLayout.LayoutParams(-1, -2));
+        live2.addView(sc, lp(-1, -2, 12));
+        TextView classic = t("Classic live view", 11, MUT, 400); classic.setGravity(Gravity.CENTER); classic.setPadding(dp(14), dp(12), dp(14), dp(12));
+        classic.setContentDescription("Switch to the classic live view with the rings and the 500 Hz graph");
+        classic.setOnClickListener(v -> { try { pr.edit().putBoolean("live_v2", false).apply(); applyMode(mode); a.toast("Classic live view. Switch back in Reading setup, Live screen while reading."); } catch (Throwable e) { fail("classic view", e); } });
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-2, -2); cp.gravity = Gravity.CENTER_HORIZONTAL; cp.topMargin = dp(4); live2.addView(classic, cp);
+        col.addView(live2, lp(-1, -2, 4));
+    }
+
+    /** Shows the new screen while a reading runs (setting "live_v2", on by default) and hides the old header, status card and rings and the 500 Hz graph card; every other state is as before. */
+    private void applyLive2(boolean run) {
+        boolean v2 = run && live2 != null && pr.getBoolean("live_v2", true);
+        if (live2 != null) live2.setVisibility(v2 ? View.VISIBLE : View.GONE);
+        int vis = v2 ? View.GONE : View.VISIBLE;
+        if (headerRow != null) headerRow.setVisibility(vis);
+        if (statusCard != null) statusCard.setVisibility(vis);
+        if (rings != null) rings.setVisibility(vis);
+        if (ringHint != null) ringHint.setVisibility(vis);
+        if (v2 && waveHost != null) waveHost.setVisibility(View.GONE);
+        if (v2) {
+            live2Lap = 0; live2LinkMs = 0L; live2LinkLevel = -1; live2TipKind = -1; live2LegKey = ""; live2Sess = -1L;
+            GuidedRun.Def d = GuidedRun.byId(guidedThisRun ? pref("run_id", "") : "");
+            live2Pill2.setText(guidedThisRun && !d.id.isEmpty() ? d.title : "Live ECG");
+        }
+    }
+
+    private void live2Update(long el, boolean live, double n825, double nz, double rrS) {
+        if (live2 == null || live2.getVisibility() != View.VISIBLE) return;
+        long now = System.currentTimeMillis();
+        if (live2Sess != Live500.sessionMs) { live2Sess = Live500.sessionMs; live2Lap = 0; live2LegKey = ""; live2TipKind = -1; }
+        boolean contact = live && Live500.everOn && Live500.openRun < 1;               // the same test as the old signal light
+        double verdictS = LiveScreenLogic.since(Live500.sessionMs, Live500.verdictMs), hrvS = LiveScreenLogic.since(Live500.sessionMs, Live500.hrvMs);
+        LiveScreenLogic.Ring r = LiveScreenLogic.ring(el / 1000.0, live2Lap, contact, verdictS, hrvS);
+        live2Lap = r.lapS; live2Ring.set(r);
+        String key = (Double.isNaN(verdictS) ? "-" : LiveScreenLogic.mmss(verdictS)) + "/" + (Double.isNaN(hrvS) ? "-" : LiveScreenLogic.mmss(hrvS));
+        if (!key.equals(live2LegKey)) {
+            live2LegKey = key;
+            android.text.SpannableStringBuilder sb = new android.text.SpannableStringBuilder();
+            legendMark(sb, MUT, true, "settling"); legendMark(sb, BLUE, true, "measuring");
+            if (!Double.isNaN(verdictS)) legendMark(sb, GOLD, false, LiveScreenLogic.verdictLabel(verdictS));
+            if (!Double.isNaN(hrvS)) legendMark(sb, HealthViews.TEAL, false, LiveScreenLogic.hrvLabel(hrvS));
+            live2Legend.setText(sb);
+        }
+        setStat(live2Hr, LiveScreenLogic.hr(rrS), "bpm");
+        setStat(live2Beats, String.valueOf(Live500.cleanBeats()), "");
+        setStat(live2Hrv, LiveScreenLogic.hrv(Live500.hrvMs, Live500.hrvVal), "ms");
+        LiveScreenLogic.Tip tp = LiveScreenLogic.tip(contact, LiveMotion.fresh(now) && LiveMotion.moving(), n825, nz);
+        if (tp.kind != live2TipKind) {
+            live2TipKind = tp.kind;
+            int c = tp.kind == LiveScreenLogic.TIP_GOOD ? GREEN : tp.kind == LiveScreenLogic.TIP_SETTLING ? MUT : (tp.kind == LiveScreenLogic.TIP_MOVING || tp.kind == LiveScreenLogic.TIP_FAIR) ? GOLD : ROSE;
+            live2TipIcon.setText(tp.kind == LiveScreenLogic.TIP_GOOD ? "✓" : tp.kind == LiveScreenLogic.TIP_SETTLING ? "…" : "!"); live2TipIcon.setTextColor(c);
+            GradientDrawable g = new GradientDrawable(); g.setShape(GradientDrawable.OVAL); g.setColor((c & 0x00FFFFFF) | 0x1A000000); g.setStroke(Math.max(1, dp(1)), (c & 0x00FFFFFF) | 0x66000000); live2TipIcon.setBackground(g);
+            live2TipT.setText(tp.title); live2TipB.setText(tp.body);
+        }
+        if (now - live2LinkMs > 2000L) {
+            live2LinkMs = now;
+            try {
+                LinkState.Info li = MainActivity.linkState(a);
+                int c = li.level == LinkState.GOOD ? HealthViews.TEAL : li.level == LinkState.WARN ? GOLD : ROSE;
+                live2Link.setText("●  " + li.chip); live2Link.setTextColor(c);
+                if (li.level != live2LinkLevel) { live2LinkLevel = li.level; live2Link.setBackground(liveBg(c)); }
+            } catch (Throwable ignored) { }
+        }
     }
 
     private void updateTarget(double est) {
