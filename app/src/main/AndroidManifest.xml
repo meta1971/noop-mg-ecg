@@ -120,6 +120,14 @@
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:exported="false" />
 
+        <!-- 0.94.0: beat timing of one reading (time plot, steadiness plot); read-only, no new permission -->
+        <activity
+            android:name=".RhythmActivity"
+            android:label="ECG rhythm"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:exported="false" />
+
         <activity
             android:name=".LiveFullActivity"
             android:label="${appLabel}"
