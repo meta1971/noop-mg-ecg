@@ -114,6 +114,13 @@
 
         <!-- 0.44.0: landscape full screen of the live 500 Hz graph; no new permission -->
         <activity
+            android:name=".StripActivity"
+            android:label="ECG strip"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:exported="false" />
+
+        <activity
             android:name=".LiveFullActivity"
             android:label="${appLabel}"
             android:screenOrientation="sensorLandscape"
