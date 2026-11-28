@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.95.0 (28 Nov 2026): RingView is a dot field (DotRing).
 // FILE VERSION 0.8.0 (22 Oct): the all-day health screen. Research only.
 
 import android.app.Activity;
@@ -7,6 +8,7 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
@@ -424,13 +426,14 @@ public class TodayActivity extends Activity {
             this.color = color;
             this.big = big;
         }
+        private Bitmap bm; private int bmPx;                         // 0.95.0: a dot field (DotRing)
+        @Override protected void onDetachedFromWindow() { super.onDetachedFromWindow(); bm = null; bmPx = 0; }
         @Override protected void onDraw(Canvas cv) {
             float d = getResources().getDisplayMetrics().density;
-            float w = 9f * d;
             float s = Math.min(getWidth(), getHeight());
-            RectF r = new RectF(w, w, s - w, s - w);
-            cv.drawArc(r, 0, 360, false, stroke(LINE, w));
-            if (frac > 0.003f) cv.drawArc(r, -90, 360f * frac, false, stroke(color, w));
+            int px = Math.round(s);
+            if (px >= 8 && (bm == null || bmPx != px)) { bm = DotRing.scoreBitmap(px, frac > 0.003f ? frac : 0f, color, 0x7D4701L + (color & 0xFF), -90f, 360f); bmPx = px; }
+            if (bm != null) cv.drawBitmap(bm, 0, 0, null);
             Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
             t.setColor(TEXT);
             t.setTypeface(Typeface.DEFAULT_BOLD);

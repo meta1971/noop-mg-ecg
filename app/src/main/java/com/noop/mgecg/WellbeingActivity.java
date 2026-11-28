@@ -1,4 +1,6 @@
 package com.noop.mgecg;
+
+// FILE VERSION 0.95.0 (28 Nov 2026): HeroView and MiniRingView are dot fields (DotRing).
 // FILE VERSION 0.71.3 (20 Nov 2026): the page, the Today brief card and the wake map read RhythmData.Bundle.nights (the nights as the Today header and the Rest page find them) instead of sri.nights.
 // 0.64.0 (16 Nov 2026): mood and energy two-tap check with YOUR OWN PATTERN (Mind64), calm minute log with before / after RMSSD from the strap's live beats, if-then plan, week on one page, preview cards WORK-DAY LOAD and OVERNIGHT GAP (Pair64, opt-in).
 
@@ -19,6 +21,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
@@ -1123,6 +1126,8 @@ public class WellbeingActivity extends Activity {
         private final double[] hrs;
         private final String word, sub;
         HeroView(Context c, double[] hrs, String word, String sub) { super(c); this.hrs = hrs; this.word = word; this.sub = sub; }
+        private Bitmap bm; private int bmPx;                         // 0.95.0: the nights as a dot field (DotRing)
+        @Override protected void onDetachedFromWindow() { super.onDetachedFromWindow(); bm = null; bmPx = 0; }
         @Override protected void onMeasure(int w, int h) {
             int s = MeasureSpec.getSize(w);
             setMeasuredDimension(s, Math.round(s * 0.88f));
@@ -1136,8 +1141,20 @@ public class WellbeingActivity extends Activity {
             p.setStrokeCap(Paint.Cap.ROUND);
             p.setStrokeWidth(sw);
             p.setColor(0x11FFFFFF);
-            cv.drawArc(box, 135f, 270f, false, p);
             int n = hrs.length;
+            int px = Math.round(size);
+            if (px >= 8 && n > 0) {
+                if (bm == null || bmPx != px) {
+                    float[] from = new float[n], to = new float[n], sal = new float[n]; int[] sc = new int[n];
+                    for (int k = 0; k < n; k++) {
+                        boolean good = hrs[k] >= WellbeingModel.GOAL_H;
+                        from[k] = k / (float) n + 0.004f; to[k] = (k + 1) / (float) n - 0.004f; sc[k] = good ? TEAL : GOLD; sal[k] = good ? 1f : 0.62f;
+                    }
+                    bm = DotRing.segmentBitmap(px, (r + sw / 2f) / (size / 2f), from, to, sc, sal, 0x3E11B0L, 135f, 270f);
+                    bmPx = px;
+                }
+                cv.drawBitmap(bm, 0, 0, null);
+            }
             float seg = 270f / n, capDeg = (float) Math.toDegrees((sw / 2f) / r), gap = 1.6f;
             Paint tx = new Paint(Paint.ANTI_ALIAS_FLAG);
             tx.setTextAlign(Paint.Align.CENTER);
@@ -1150,16 +1167,6 @@ public class WellbeingActivity extends Activity {
                 if (a1 - a0 < 0.8f) continue;
                 boolean ok = hrs[i] >= WellbeingModel.GOAL_H;
                 int col = ok ? TEAL : GOLD;
-                float[] ws = {sw + HealthViews.dp(c, 14), sw + HealthViews.dp(c, 9), sw + HealthViews.dp(c, 4)};
-                float[] al = {0.05f, 0.09f, 0.14f};
-                for (int k = 0; k < 3; k++) {
-                    p.setStrokeWidth(ws[k]);
-                    p.setColor(HealthViews.alpha(col, al[k]));
-                    cv.drawArc(box, a0, a1 - a0, false, p);
-                }
-                p.setStrokeWidth(sw);
-                p.setColor(HealthViews.alpha(col, ok ? 1f : 0.62f));
-                cv.drawArc(box, a0, a1 - a0, false, p);
                 double mid = Math.toRadians((a0 + a1) / 2f);
                 float lr = r + sw / 2f + HealthViews.dp(c, 14);
                 cv.drawText(String.format(Locale.UK, "%.1f", hrs[i]), cx + (float) (lr * Math.cos(mid)), cy + (float) (lr * Math.sin(mid)) + HealthViews.dp(c, 3.5f), tx);
@@ -1236,23 +1243,15 @@ public class WellbeingActivity extends Activity {
     static final class MiniRingView extends View {
         private final float frac; private final int color; private final String big;
         MiniRingView(Context c, float frac, int color, String big) { super(c); this.frac = Math.max(0f, Math.min(1f, frac)); this.color = color; this.big = big; }
+        private Bitmap bm; private int bmPx;                         // 0.95.0: a dot field (DotRing)
+        @Override protected void onDetachedFromWindow() { super.onDetachedFromWindow(); bm = null; bmPx = 0; }
         @Override protected void onDraw(Canvas cv) {
             Context c = getContext();
-            float size = getWidth(), cx = size / 2f, cy = size / 2f, sw = HealthViews.dp(c, 7), r = size / 2f - sw / 2f - HealthViews.dp(c, 5);
-            RectF box = new RectF(cx - r, cy - r, cx + r, cy + r);
-            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-            p.setStyle(Paint.Style.STROKE);
-            p.setStrokeCap(Paint.Cap.ROUND);
-            p.setStrokeWidth(sw);
-            p.setColor(0x12FFFFFF);
-            cv.drawArc(box, 135f, 270f, false, p);
-            if (frac > 0f) {
-                p.setStrokeWidth(sw + HealthViews.dp(c, 5));
-                p.setColor(HealthViews.alpha(color, 0.12f));
-                cv.drawArc(box, 135f, 270f * frac, false, p);
-                p.setStrokeWidth(sw);
-                p.setColor(color);
-                cv.drawArc(box, 135f, 270f * frac, false, p);
+            float size = getWidth(), cx = size / 2f, cy = size / 2f;
+            int px = Math.round(size);
+            if (px >= 8) {
+                if (bm == null || bmPx != px) { bm = DotRing.scoreBitmap(px, frac, color, 0x31A100L + (color & 0xFF), 135f, 270f); bmPx = px; }
+                cv.drawBitmap(bm, 0, 0, null);
             }
             Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
             t.setTextAlign(Paint.Align.CENTER);

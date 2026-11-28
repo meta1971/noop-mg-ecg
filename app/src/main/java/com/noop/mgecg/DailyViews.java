@@ -1,10 +1,12 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.95.0 (28 Nov 2026): the seven rings are dot fields (DotRing); Active is teal (was orange), Heart Watch usual is ice white (was mint).
 // FILE VERSION 0.63.0 (16 Nov 2026): Metric.deltaText() (the distance from your usual on the Today key statistics). The seven equal rings of RingsView are back (0.62.0's TodayRingsView hero row removed).
 // FILE VERSION 0.56.0 (14 Nov 2026): RING_COLORS / RING_NAMES gain the seventh ring, Heart Watch; heartColor(tier).
 // FILE VERSION 0.55.0 (14 Nov 2026): a fixed colour for each of the six rings (RING_COLORS). 0.54.4: RingsView draws 4 rings to a row and more beneath (bigger rings, centred last row, height from the rows, ringAt() for taps). 0.12.0 (26 Oct): the daily dashboard pieces: three rings, the health monitor against your own baseline. Research only.
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
@@ -29,9 +31,9 @@ final class DailyViews {
     static final int RED = 0xFFFF5C6C, AMBER = 0xFFF2B35B, OK = 0xFF5CE5A0, GREY = 0xFF6B7585;
 
     /** 0.55.0: one fixed colour per ring, six clearly different hues, so each ring reads apart at a glance. How high or low it is stays in the number and the caption. Order: Recovery, Effort, Active, Sleep, Stress, Fatigue. */
-    static final int RING_RECOVERY = 0xFF3DDC84, RING_EFFORT = 0xFF2FA8F0, RING_ACTIVE = 0xFFFF7A33, RING_SLEEP = 0xFF9B8CFF, RING_STRESS = 0xFFFF5C8A, RING_FATIGUE = 0xFFFFD60A;
+    static final int RING_RECOVERY = 0xFF3DDC84, RING_EFFORT = 0xFF2FA8F0, RING_ACTIVE = 0xFF4EE3CB, RING_SLEEP = 0xFF9B8CFF, RING_STRESS = 0xFFFF5C8A, RING_FATIGUE = 0xFFFFD60A;
     /** 0.56.0: the seventh ring, HEART WATCH, takes its colour from its level (usual mint, WATCH amber, CHECK red, not scored grey), see heartColor. */
-    static final int RING_HEART = 0xFF33E0D0;
+    static final int RING_HEART = 0xFFD7E6F5;      // 0.95.0: ice white (was mint, which Active's teal now takes)
     static final int[] RING_COLORS = { RING_RECOVERY, RING_EFFORT, RING_ACTIVE, RING_SLEEP, RING_STRESS, RING_FATIGUE, RING_HEART };
     static final String[] RING_NAMES = { "Recovery", "Effort", "Active", "Sleep", "Stress", "Fatigue", "Heart Watch" };
 
@@ -57,6 +59,9 @@ final class DailyViews {
             super(c);
             this.frac = frac; this.col = col; this.big = big; this.label = label; this.cap = cap;
         }
+        // 0.95.0: each ring is a dot field (DotRing), made once per ring and size and kept; the pulse only redraws the bitmaps and the number
+        private Bitmap[] bm; private int bmPx;
+        @Override protected void onDetachedFromWindow() { super.onDetachedFromWindow(); bm = null; bmPx = 0; }
         // 0.44.0 (decode log 50.6 item 1, A2): the number of one ring pulses (about 120 ms, up to 16 % larger) when a new R marker of the live graph appears
         private static final long PULSE_MS = 120L;
         private int pulseRing = -1; private double lastPulseDue = Double.NaN; private long pulseStart;
@@ -109,15 +114,11 @@ final class DailyViews {
                 int row = i / per, colI = i % per, count = Math.min(per, nr - row * per);
                 float off = (per - count) / 2f;
                 float cx = cellW * (off + colI + 0.5f), top = dp(c, 4) + row * rh;
-                RectF r = new RectF(cx - dia / 2f + sw / 2f, top + sw / 2f, cx + dia / 2f - sw / 2f, top + dia - sw / 2f);
-                Paint tr = new Paint(Paint.ANTI_ALIAS_FLAG);
-                tr.setStyle(Paint.Style.STROKE); tr.setStrokeWidth(sw); tr.setColor(0x1FFFFFFF); tr.setStrokeCap(Paint.Cap.ROUND);
-                cv.drawArc(r, 0, 360, false, tr);
+                int px = Math.max(8, Math.round(dia));
+                if (bm == null || bm.length != nr || bmPx != px) { bm = new Bitmap[nr]; bmPx = px; }
                 float f = Math.max(0f, Math.min(1f, frac[i]));
-                if (f > 0.004f) {
-                    Paint pr = new Paint(tr); pr.setColor(col[i]);
-                    cv.drawArc(r, -90, 360f * f, false, pr);
-                }
+                if (bm[i] == null) bm[i] = DotRing.scoreBitmap(px, f > 0.004f ? f : 0f, col[i], 0x5EED00L + i, -90f, 360f);
+                cv.drawBitmap(bm[i], cx - px / 2f, top, null);
                 Paint t = paint(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 300)); t.setTextSize(dp(c, g ? (big[i].length() > 3 ? 19 : 25) : (big[i].length() > 3 ? 22 : 28)) * (i == pulseRing && !"--".equals(big[i]) ? pulse : 1f));
                 cv.drawText(big[i], cx, top + dia / 2f + dp(c, g ? 8 : 9), t);
                 Paint l = paint(INK); l.setTextAlign(Paint.Align.CENTER); l.setTypeface(font(c, 400)); l.setTextSize(dp(c, g ? 10f : 11f)); l.setLetterSpacing(g ? 0.08f : 0.14f);

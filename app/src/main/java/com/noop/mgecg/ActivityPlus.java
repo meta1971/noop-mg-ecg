@@ -1,5 +1,6 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.95.0 (28 Nov 2026): DayStats.minState and dayStart (one state per minute, for the dot day ring).
 // FILE VERSION 0.54.0 (13 Nov 2026): NEW. All-day activity, not workouts: how long you are on your feet through the day, the stretches you stay still while awake, the hour-by-day map, your weekday habit and the
 // daily rhythm of your active minutes. Built on what the Activity screen already reads (ActivityDetector epochs, ActivityStore summaries), plus the strap's sleep state so that sleep is never counted as sitting.
 //   moving   : minutes the detector calls ACTIVE (heart rate above 10 % of reserve with wrist movement, or clear wrist movement), awake only
@@ -42,6 +43,8 @@ final class ActivityPlus {
         int stepsRaw;
         int firstMovingMin = -1, lastMovingMin = -1;       // minutes after the day start
         final int[] movingByHour = new int[24];            // by hour since the day start (04:00)
+        long dayStart;                                     // 0.95.0: the day start the minutes below count from (unix seconds)
+        final byte[] minState = new byte[1440];            // 0.95.0: per minute after the day start: 0 no data, 1 asleep, 2 still, 3 moving (DotRing.S_*); for the day ring
         final int[] stepsByHour = new int[24];
         double stillShare() { return awakeMin > 0 ? stillMin / (double) awakeMin : Double.NaN; }
     }
@@ -49,6 +52,7 @@ final class ActivityPlus {
     /** eps ascending; asleep[m] = the strap said asleep in minute m after dayStart (may be null). */
     static DayStats stats(List<ActivityDetector.Epoch> eps, long dayStart, boolean[] asleep) {
         DayStats s = new DayStats();
+        s.dayStart = dayStart;
         if (eps == null) return s;
         int run = 0; long prevStart = Long.MIN_VALUE;
         for (ActivityDetector.Epoch e : eps) {
@@ -56,6 +60,7 @@ final class ActivityPlus {
             if (e.kind == ActivityDetector.NO_DATA || mi < 0) { run = close(s, run); prevStart = Long.MIN_VALUE; continue; }
             s.validMin++;
             boolean sl = asleep != null && mi < asleep.length && asleep[mi];
+            if (mi < 1440) s.minState[mi] = sl ? DotRing.S_SLEEP : (e.kind == ActivityDetector.ACTIVE ? DotRing.S_MOVE : DotRing.S_STILL);
             if (sl) { s.asleepMin++; run = close(s, run); prevStart = e.start; continue; }
             s.awakeMin++;
             int h = Math.max(0, Math.min(23, mi / 60));

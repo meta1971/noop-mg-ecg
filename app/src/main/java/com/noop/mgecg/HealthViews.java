@@ -1,8 +1,10 @@
 package com.noop.mgecg;
 
+// FILE VERSION 0.95.0 (28 Nov 2026): StageRingView (the night on Rest) is a dot field (DotRing).
 // 0.55.0 (14 Nov 2026): NavBar draws a word under every tab icon (the ECG button is a little smaller and higher so its word fits).
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.DashPathEffect;
 import android.graphics.LinearGradient;
@@ -180,36 +182,26 @@ final class HealthViews {
         private final List<float[]> segs;
         private final String big, sub;
         StageRingView(Context c, List<float[]> segs, String big, String sub) { super(c); this.segs = segs; this.big = big; this.sub = sub; }
+        private Bitmap bm; private int bmPx;                         // 0.95.0: the night as a dot field (DotRing), one dot colour per stage
+        @Override protected void onDetachedFromWindow() { super.onDetachedFromWindow(); bm = null; bmPx = 0; }
         @Override protected void onMeasure(int w, int h) { int s = MeasureSpec.getSize(w); setMeasuredDimension(s, s); }
         @Override protected void onDraw(Canvas cv) {
             float size = getWidth(), cx = size / 2f, cy = size / 2f, r = size * 0.40f, sw = dp(getContext(), 15f);
-            RectF box = new RectF(cx - r, cy - r, cx + r, cy + r);
-            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-            p.setStyle(Paint.Style.STROKE);
-            p.setStrokeCap(Paint.Cap.ROUND);
-            p.setStrokeWidth(sw);
-            p.setColor(0x10FFFFFF);
-            cv.drawArc(box, 135f, 270f, false, p);
-            float capDeg = (float) Math.toDegrees((sw / 2f) / r), gapDeg = 1.1f;
-            for (int pass = 0; pass < 4; pass++) {
-                for (float[] s : segs) {
-                    float a0 = 135f + 270f * s[1] + capDeg + gapDeg, a1 = 135f + 270f * s[2] - capDeg - gapDeg;
-                    if (a1 - a0 < 0.8f) continue;
-                    int col = STAGE[(int) s[0]];
-                    boolean sure = s[3] > 0.5f;
-                    if (pass < 3) {
-                        p.setStrokeWidth(sw + dp(getContext(), 4 + 5 * (2 - pass)));
-                        p.setColor(alpha(col, (sure ? 0.10f : 0.05f) * (pass + 1)));
-                    } else {
-                        p.setStrokeWidth(sw);
-                        p.setColor(alpha(col, sure ? 1f : 0.62f));
-                    }
-                    cv.drawArc(box, a0, a1 - a0, false, p);
+            int px = Math.round(size);
+            if (px >= 8) {
+                if (bm == null || bmPx != px) {
+                    int ns = segs.size();
+                    float[] from = new float[ns], to = new float[ns], sal = new float[ns]; int[] sc = new int[ns];
+                    for (int k = 0; k < ns; k++) { float[] sg = segs.get(k); from[k] = sg[1]; to[k] = sg[2]; sc[k] = STAGE[(int) sg[0]]; sal[k] = sg[3] > 0.5f ? 1f : 0.62f; }
+                    bm = DotRing.segmentBitmap(px, (r + sw / 2f) / (size / 2f), from, to, sc, sal, 0x57A6E0L, 135f, 270f);
+                    bmPx = px;
                 }
+                cv.drawBitmap(bm, 0, 0, null);
             }
             Paint dot = paint(0xFFFFFFFF);
             double endA = Math.toRadians(135 + 270 * (segs.isEmpty() ? 0 : segs.get(segs.size() - 1)[2]));
-            cv.drawCircle(cx + (float) (r * Math.cos(endA)), cy + (float) (r * Math.sin(endA)), dp(getContext(), 3.5f), dot);
+            float rm = (r + sw / 2f) * (1f + DotRing.INNER) / 2f;
+            cv.drawCircle(cx + (float) (rm * Math.cos(endA)), cy + (float) (rm * Math.sin(endA)), dp(getContext(), 3.5f), dot);
             Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
             t.setTextAlign(Paint.Align.CENTER);
             t.setColor(0xFFFFFFFF);

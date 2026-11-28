@@ -1,4 +1,6 @@
 package com.noop.mgecg;
+
+// FILE VERSION 0.95.0 (28 Nov 2026): the avatar ring is a dot field; the Active ring page opens with the day as 1,440 dots (DotRing.DotDayView).
 // FILE VERSION 0.94.0 (26 Nov 2026): the latest-ECG card on Today and Heart also shows QT (from the stored ECG history), R wave and noise (from the readings behind the Trends screen, filled in a moment after the card is drawn) against your usual, the unit under each bar says readings, and a Rhythm button opens the Rhythm screen.
 // 0.71.0 (18 Nov 2026): Today: a tap on a ring opens that ring's OWN PAGE (back arrow, the ring's number, then how it is worked out) instead of a drop-down card under the rings; the system Back key returns to Today at the same scroll position. Rest: the SLEEP RESEARCH section (regularity, last nights, 24 h heart-rate rhythm, age studies, sources) sits on the page itself; the two cards above it jump to it. The You page entry stays.
 // 0.64.0 (16 Nov 2026): You tab: FIND row and WELLBEING AND INSIGHTS shortcuts at the top; Heart Watch panel: IF THE PULSE FLAG SHOWS steps (no alert rule changed); sleep goal printed with one decimal.
@@ -17,6 +19,7 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
@@ -974,6 +977,12 @@ public class HealthActivity extends Activity {
         c.addView(caps("ACTIVE: HOW IT IS WORKED OUT"));
         ActivityPlus.DayStats s = actToday;
         if (actMin < 0 || s == null) { note(c, "Not shown yet. It needs today's per-second records from the day logger."); return; }
+        try {                                                      // 0.95.0: the day as 1,440 dots, one per minute (DotRing), from the day start at the top
+            int nowMin = (int) Math.max(0L, Math.min(1439L, (System.currentTimeMillis() / 1000L - s.dayStart) / 60L));
+            java.util.Calendar cal = java.util.Calendar.getInstance(); cal.setTimeInMillis(s.dayStart * 1000L);
+            c.addView(new DotRing.DotDayView(this, s.minState, nowMin, cal.get(java.util.Calendar.HOUR_OF_DAY), HealthModel.hmShort(actMin * 60L), "MOVING TODAY", "goal " + HealthModel.hmShort(Math.max(30, actGoal) * 60L)), lp(-1, -2, 6));
+            note(c, "One dot is one minute. Teal: on the move. Slate: still. Violet: asleep. Outlines: still to come. The day starts at the top and runs clockwise.");
+        } catch (Throwable ignored) { }
         kv(c, "Moving today", ActivityPlus.hm(actMin));
         kv(c, "Goal (set on the Activity screen)", ActivityPlus.hm(Math.max(30, actGoal)));
         kv(c, "Still while awake", ActivityPlus.hm(s.stillMin) + (Double.isNaN(s.stillShare()) ? "" : String.format(Locale.UK, " (%.0f %%)", 100.0 * s.stillShare())));
@@ -3042,21 +3051,14 @@ public class HealthActivity extends Activity {
     private View avatar(final float frac) {
         final String letter = name().isEmpty() ? "A" : name().substring(0, 1).toUpperCase(Locale.UK);
         return new View(this) {
+            private Bitmap bm; private int bmPx;                    // 0.95.0: the avatar ring is a dot field (DotRing), gold to rose
+            @Override protected void onDetachedFromWindow() { super.onDetachedFromWindow(); bm = null; bmPx = 0; }
             @Override protected void onDraw(Canvas cv) {
                 Context c = getContext();
-                float size = getWidth(), cx = size / 2f, cy = size / 2f, r = size * 0.40f, sw = size * 0.059f, k = size / 170f;      // 0.67.0: scales with its size
-                RectF box = new RectF(cx - r, cy - r, cx + r, cy + r);
-                Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-                p.setStyle(Paint.Style.STROKE); p.setStrokeCap(Paint.Cap.ROUND); p.setStrokeWidth(sw);
-                p.setColor(0x12FFFFFF);
-                cv.drawArc(box, 0, 360, false, p);
-                for (int pass = 0; pass < 3; pass++) {
-                    p.setShader(new LinearGradient(0, 0, size, size, 0xFFF2B35B, 0xFFFF8CA2, Shader.TileMode.CLAMP));
-                    p.setStrokeWidth(sw + dp(c, 3 * (2 - pass)) * k);
-                    p.setAlpha(pass < 2 ? 50 + 40 * pass : 255);
-                    cv.drawArc(box, -90, 360f * frac, false, p);
-                }
-                p.setShader(null);
+                float size = getWidth(), cx = size / 2f, cy = size / 2f, k = size / 170f;      // 0.67.0: scales with its size
+                int px = Math.round(size);
+                if (px >= 8 && (bm == null || bmPx != px)) { bm = DotRing.gradientBitmap(px, frac, 0xFFF2B35B, 0xFFFF8CA2, 0xA7A700L, -90f, 360f); bmPx = px; }
+                if (bm != null) cv.drawBitmap(bm, 0, 0, null);
                 Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
                 t.setColor(INK); t.setTextAlign(Paint.Align.CENTER); t.setTypeface(font(c, 200)); t.setTextSize(dp(c, 62) * k);
                 cv.drawText(letter, cx, cy + dp(c, 22) * k, t);
